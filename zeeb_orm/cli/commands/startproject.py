@@ -225,7 +225,7 @@ Create a new app with: zeeb startapp <name>
 '''
 
 REQUIREMENTS_TXT = '''# Zeeb ORM and API
-zeeb-orm[all]>=0.1.0
+zeebpy[all]>=0.1.0
 zeeb-api>=0.1.0
 
 # FastAPI

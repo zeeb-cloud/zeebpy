@@ -25,13 +25,13 @@ A Django-like framework for building async APIs with FastAPI. Includes a powerfu
 ## Installation
 
 ```bash
-pip install zeeb-orm
+pip install zeebpy
 
 # With database drivers
-pip install zeeb-orm[postgresql]  # asyncpg + psycopg2
-pip install zeeb-orm[mysql]       # aiomysql + pymysql  
-pip install zeeb-orm[sqlite]      # aiosqlite
-pip install zeeb-orm[all]         # All drivers
+pip install zeebpy[postgresql]  # asyncpg + psycopg2
+pip install zeebpy[mysql]       # aiomysql + pymysql  
+pip install zeebpy[sqlite]      # aiosqlite
+pip install zeebpy[all]         # All drivers
 ```
 
 ## Quick Start - Project Setup

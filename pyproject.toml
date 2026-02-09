@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "zeeb-orm"
+name = "zeebpy"
 version = "0.1.0"
 description = "A Django-like ORM wrapper built on SQLAlchemy and Alembic"
 readme = "README.md"

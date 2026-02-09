@@ -50,7 +50,7 @@ router.register("posts", PostViewSet)
 ## Installation
 
 ```bash
-pip install zeeb-orm zeeb-api
+pip install zeebpy zeeb-api
 ```
 
 ## Creating a Project
