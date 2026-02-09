@@ -1,0 +1,316 @@
+"""
+Authentication router with login, refresh, logout, register endpoints.
+"""
+
+from __future__ import annotations
+
+from typing import Any, Callable, Awaitable
+
+from fastapi import APIRouter, Depends, Request
+from pydantic import BaseModel, Field, EmailStr
+
+from zeeb_api.auth.jwt import (
+    create_token_pair,
+    decode_token,
+    get_jwt_config,
+    TokenExpiredError,
+    TokenInvalidError,
+)
+from zeeb_api.auth.schemas import (
+    TokenResponse,
+    RefreshRequest,
+    UserInfo,
+    LogoutResponse,
+)
+from zeeb_api.auth.middleware import (
+    AuthenticatedUser,
+    get_current_user,
+)
+from zeeb_api.exceptions import (
+    AuthenticationException,
+    ErrorCode,
+    ErrorResponse,
+    ValidationException,
+    field_error,
+)
+
+
+# Type for user authentication callback
+AuthenticateFunc = Callable[[Request, dict[str, Any]], Awaitable[tuple[str, dict[str, Any]] | None]]
+
+
+class LoginRequest(BaseModel):
+    """Login request body."""
+    email: EmailStr = Field(description="User's email address")
+    password: str = Field(min_length=1, description="User's password")
+
+
+class RegisterRequest(BaseModel):
+    """Registration request body."""
+    email: EmailStr = Field(description="User's email address")
+    password: str = Field(min_length=8, description="Password (min 8 characters)")
+    first_name: str | None = Field(default=None, description="First name")
+    last_name: str | None = Field(default=None, description="Last name")
+
+
+class RegisterResponse(BaseModel):
+    """Registration response."""
+    id: str = Field(description="User ID")
+    email: str = Field(description="User's email")
+    message: str = Field(default="User registered successfully")
+
+
+def create_auth_router(
+    authenticate: AuthenticateFunc | None = None,
+    prefix: str = "/auth",
+    tags: list[str] | None = None,
+    on_logout: Callable[[str], Awaitable[None]] | None = None,
+    enable_registration: bool = True,
+    use_database: bool = True,
+) -> APIRouter:
+    """
+    Create an authentication router with login, refresh, logout, register endpoints.
+    
+    Args:
+        authenticate: Custom async function to validate credentials.
+                     If None and use_database=True, uses database authentication.
+        prefix: URL prefix for auth routes
+        tags: OpenAPI tags
+        on_logout: Optional async callback when user logs out
+        enable_registration: Whether to include /register/ endpoint
+        use_database: If True, uses database-backed authentication
+    
+    Returns:
+        FastAPI APIRouter with auth endpoints
+    
+    Usage:
+        # Database-backed auth (default)
+        auth_router = create_auth_router()
+        
+        # Custom authentication
+        async def my_auth(request, body):
+            ...
+        auth_router = create_auth_router(authenticate=my_auth)
+    """
+    router = APIRouter(prefix=prefix, tags=tags or ["auth"])
+    config = get_jwt_config()
+    
+    # Determine authentication function
+    auth_func = authenticate
+    if auth_func is None and use_database:
+        # Use database-backed authentication
+        async def db_authenticate(request: Request, body: dict) -> tuple[str, dict[str, Any]] | None:
+            from zeeb_api.auth.backends import authenticate as db_auth
+            
+            email = body.get("email")
+            password = body.get("password")
+            
+            user = await db_auth(email=email, password=password)
+            if user is None:
+                return None
+            
+            # Get claims from user
+            claims = {}
+            if hasattr(user, "get_claims"):
+                claims = user.get_claims()
+            
+            # Update last login
+            if hasattr(user, "update_last_login"):
+                await user.update_last_login()
+            
+            return (str(user.id), claims)
+        
+        auth_func = db_authenticate
+    
+    # Login endpoint
+    if auth_func:
+        @router.post(
+            "/login/",
+            response_model=TokenResponse,
+            responses={
+                401: {"model": ErrorResponse, "description": "Invalid credentials"},
+            },
+            summary="Login",
+            description="Authenticate with email/password and receive access/refresh tokens.",
+        )
+        async def login(request: Request, body: LoginRequest) -> TokenResponse:
+            """
+            Login with email and password.
+            
+            Returns access and refresh tokens on success.
+            """
+            result = await auth_func(request, body.model_dump())
+            if result is None:
+                raise AuthenticationException(
+                    code=ErrorCode.AUTH_INVALID_CREDENTIALS,
+                    message="Invalid email or password",
+                )
+            
+            user_id, claims = result
+            access_token, refresh_token = create_token_pair(user_id, claims)
+            
+            return TokenResponse(
+                access_token=access_token,
+                refresh_token=refresh_token,
+                token_type="bearer",
+                expires_in=config.access_token_expire_minutes * 60,
+            )
+    
+    # Registration endpoint
+    if enable_registration and use_database:
+        @router.post(
+            "/register/",
+            response_model=RegisterResponse,
+            responses={
+                400: {"model": ErrorResponse, "description": "Validation error"},
+                409: {"model": ErrorResponse, "description": "Email already exists"},
+            },
+            summary="Register",
+            description="Create a new user account.",
+        )
+        async def register(body: RegisterRequest) -> RegisterResponse:
+            """
+            Register a new user.
+            
+            Creates a new user account with the provided email and password.
+            """
+            from zeeb_api.auth.backends import get_user_model, create_user
+            
+            User = get_user_model()
+            
+            # Check if email already exists
+            existing = await User.objects.filter(email=body.email).first()
+            if existing:
+                raise ValidationException(
+                    message="Email already registered",
+                    details=[
+                        field_error("email", ErrorCode.FIELD_UNIQUE_CONSTRAINT, 
+                                   "This email is already registered")
+                    ],
+                )
+            
+            # Create user
+            extra_fields = {}
+            if body.first_name:
+                extra_fields["first_name"] = body.first_name
+            if body.last_name:
+                extra_fields["last_name"] = body.last_name
+            
+            user = await create_user(
+                email=body.email,
+                password=body.password,
+                **extra_fields,
+            )
+            
+            return RegisterResponse(
+                id=str(user.id),
+                email=user.email,
+                message="User registered successfully",
+            )
+    
+    @router.post(
+        "/refresh/",
+        response_model=TokenResponse,
+        responses={
+            401: {"model": ErrorResponse, "description": "Invalid or expired refresh token"},
+        },
+        summary="Refresh Token",
+        description="Get a new access token using a refresh token.",
+    )
+    async def refresh(body: RefreshRequest) -> TokenResponse:
+        """
+        Refresh access token.
+        
+        Use a valid refresh token to get a new access/refresh token pair.
+        """
+        try:
+            payload = decode_token(body.refresh_token, token_type="refresh")
+        except TokenExpiredError:
+            raise AuthenticationException(
+                code=ErrorCode.AUTH_TOKEN_EXPIRED,
+                message="Refresh token has expired",
+            )
+        except TokenInvalidError as e:
+            raise AuthenticationException(
+                code=ErrorCode.AUTH_TOKEN_INVALID,
+                message=str(e),
+            )
+        
+        # Create new token pair (preserving claims from original token)
+        access_token, refresh_token = create_token_pair(
+            payload.sub,
+            payload.claims,
+        )
+        
+        return TokenResponse(
+            access_token=access_token,
+            refresh_token=refresh_token,
+            token_type="bearer",
+            expires_in=config.access_token_expire_minutes * 60,
+        )
+    
+    @router.post(
+        "/logout/",
+        response_model=LogoutResponse,
+        summary="Logout",
+        description="Logout and optionally invalidate tokens.",
+    )
+    async def logout(
+        user: Any = Depends(get_current_user),
+    ) -> LogoutResponse:
+        """
+        Logout current user.
+        
+        If token blacklist is configured, the current token will be invalidated.
+        """
+        if on_logout:
+            # Get token JTI from user
+            token_payload = getattr(user, "_token_payload", None) or getattr(user, "token_payload", None)
+            if token_payload:
+                await on_logout(token_payload.jti)
+        
+        return LogoutResponse(
+            success=True,
+            message="Successfully logged out",
+        )
+    
+    @router.get(
+        "/me/",
+        response_model=UserInfo,
+        responses={
+            401: {"model": ErrorResponse, "description": "Not authenticated"},
+        },
+        summary="Get Current User",
+        description="Get information about the currently authenticated user.",
+    )
+    async def get_me(
+        user: Any = Depends(get_current_user),
+    ) -> UserInfo:
+        """
+        Get current user info.
+        
+        Returns user information. If using database auth, returns full user data.
+        """
+        # Handle both DB user model and AuthenticatedUser
+        user_id = str(getattr(user, "id", ""))
+        
+        # Build claims from user attributes or get_claims method
+        claims = {}
+        if hasattr(user, "get_claims"):
+            claims = user.get_claims()
+        elif hasattr(user, "claims"):
+            claims = user.claims
+        else:
+            # Build from common attributes
+            for attr in ["email", "username", "first_name", "last_name", 
+                        "is_staff", "is_superuser", "is_active"]:
+                if hasattr(user, attr):
+                    claims[attr] = getattr(user, attr)
+        
+        return UserInfo(
+            id=user_id,
+            is_authenticated=True,
+            claims=claims,
+        )
+    
+    return router

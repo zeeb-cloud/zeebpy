@@ -1,0 +1,1 @@
+Always update /docs when you add/change/remove features in the codebase. This is important to keep the documentation up to date and useful for users.
