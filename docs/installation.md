@@ -9,18 +9,18 @@
 
 ```bash
 # Install both packages
-pip install zeeb-orm zeeb-api
+pip install zeebpy zeeb-api
 
 # Or install individually
-pip install zeeb-orm  # ORM only
-pip install zeeb-api  # API framework (includes zeeb-orm)
+pip install zeebpy  # ORM only
+pip install zeeb-api  # API framework (includes zeebpy)
 ```
 
 ## Install from Source
 
 ```bash
-git clone https://github.com/zeeb-cloud/zeeb-orm.git
-cd zeeb-orm
+git clone https://github.com/zeeb-cloud/zeebpy.git
+cd zeebpy
 pip install -e .
 ```
 
@@ -135,7 +135,7 @@ Server starts at `http://127.0.0.1:8000`
 For development, install with dev dependencies:
 
 ```bash
-pip install zeeb-orm[dev] zeeb-api[dev]
+pip install zeebpy[dev] zeeb-api[dev]
 ```
 
 This includes:
