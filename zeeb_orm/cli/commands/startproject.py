@@ -154,18 +154,32 @@ async def lifespan(app: FastAPI):
     logger.info("Starting application", api_title=API_TITLE, debug=DEBUG)
     
     # Check migrations before startup (like Django)
-    if ENFORCE_MIGRATIONS and not DEBUG:
-        try:
-            check_migrations_applied(raise_on_pending=True)
-        except MigrationError as e:
-            separator = "=" * 60
+    try:
+        check_migrations_applied(raise_on_pending=True)
+    except MigrationError as e:
+        separator = "=" * 60
+        if ENFORCE_MIGRATIONS and not DEBUG:
             logger.error("Unapplied migrations detected", error=str(e))
             print(f"\\n{{separator}}")
             print("ERROR: Unapplied migrations detected!")
             print(str(e))
-            print("\\nRun: python manage.py migrate")
+            print("\\nRun the following commands:")
+            print("  python manage.py init           # If not already done")
+            print("  python manage.py makemigrations  # Create migrations")
+            print("  python manage.py migrate         # Apply migrations")
             print(f"{{separator}}\\n")
             raise SystemExit(1)
+        else:
+            # In DEBUG mode, warn but continue
+            logger.warning("Unapplied migrations detected", error=str(e))
+            print(f"\\n{{separator}}")
+            print("WARNING: Unapplied migrations detected!")
+            print(str(e))
+            print("\\nRun the following commands:")
+            print("  python manage.py init           # If not already done")
+            print("  python manage.py makemigrations  # Create migrations")
+            print("  python manage.py migrate         # Apply migrations")
+            print(f"{{separator}}\\n")
     
     # Startup
     await setup_database(DATABASE["url"])
@@ -304,6 +318,11 @@ source .venv/bin/activate  # or .venv\\Scripts\\activate on Windows
 
 # Install dependencies
 pip install -r requirements.txt
+
+# Initialize and run migrations (REQUIRED before starting)
+python manage.py init           # Initialize migrations folder
+python manage.py makemigrations  # Create migrations for all models
+python manage.py migrate         # Apply migrations to database
 ```
 
 ## Running
@@ -426,7 +445,9 @@ def run_startproject(name: str, directory: str) -> int:
         print(f"  python -m venv .venv")
         print(f"  source .venv/bin/activate")
         print(f"  pip install -r requirements.txt")
-        print(f"  python manage.py startapp myapp")
+        print(f"  python manage.py init           # Initialize migrations")
+        print(f"  python manage.py makemigrations  # Create initial migrations")
+        print(f"  python manage.py migrate         # Apply migrations")
         print(f"  python manage.py runserver")
 
         return 0

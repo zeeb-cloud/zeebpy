@@ -190,6 +190,7 @@ def check_migrations_applied(
     project_root: Path | None = None,
     db_url: str | None = None,
     raise_on_pending: bool = True,
+    check_tables: bool = True,
 ) -> bool:
     """
     Check if all migrations have been applied.
@@ -198,6 +199,7 @@ def check_migrations_applied(
         project_root: Project root directory.
         db_url: Database URL.
         raise_on_pending: If True, raise MigrationError when migrations are pending.
+        check_tables: If True, also check that all model tables exist in database.
     
     Returns:
         True if all migrations are applied, False otherwise.
@@ -208,12 +210,21 @@ def check_migrations_applied(
     state = get_migration_state(project_root, db_url)
     
     if not state.has_migrations_dir:
-        # No migrations directory - possibly new project or not using migrations
-        return True
+        if raise_on_pending:
+            raise MigrationError(
+                "No migrations directory found. "
+                "Run 'python manage.py init' to initialize migrations, "
+                "then 'python manage.py makemigrations' to create them."
+            )
+        return False
     
     if state.total_migrations == 0:
-        # No migrations defined yet
-        return True
+        if raise_on_pending:
+            raise MigrationError(
+                "No migrations found. "
+                "Run 'python manage.py makemigrations' to create migrations for your models."
+            )
+        return False
     
     # Check if at head
     if state.current_revision != state.head_revision:
