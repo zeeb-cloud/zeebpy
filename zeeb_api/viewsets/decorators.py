@@ -2,8 +2,14 @@
 
 from __future__ import annotations
 
-from typing import Any, Callable, Sequence
+from typing import Any, Callable, Sequence, TYPE_CHECKING
+
 from functools import wraps
+
+if TYPE_CHECKING:
+    from pydantic import BaseModel
+    from zeeb_api.serializers import Serializer
+    from zeeb_api.permissions.base import BasePermission
 
 
 def action(
@@ -11,6 +17,11 @@ def action(
     detail: bool = True,
     url_path: str | None = None,
     url_name: str | None = None,
+    request_schema: type[BaseModel] | None = None,
+    response_schema: type[BaseModel] | None = None,
+    request_serializer: type[Serializer] | None = None,
+    response_serializer: type[Serializer] | None = None,
+    permission_classes: list[type[BasePermission]] | None = None,
     **kwargs: Any,
 ) -> Callable:
     """
@@ -22,6 +33,11 @@ def action(
                 If False, action operates on the collection
         url_path: Custom URL path segment (default: method name)
         url_name: Custom URL name (default: method name)
+        request_schema: Pydantic model for request body validation
+        response_schema: Pydantic model for response (OpenAPI docs)
+        request_serializer: Custom Serializer class for request validation
+        response_serializer: Custom Serializer class for response
+        permission_classes: Override permissions for this action
     
     Usage:
         class UserViewSet(ModelViewSet):
@@ -40,6 +56,26 @@ def action(
                 users = await self.get_queryset().order_by("-created_at")[:10]
                 serializer = self.get_serializer(users, many=True)
                 return serializer.data
+            
+            # With request/response schemas
+            @action(
+                detail=False,
+                methods=["post"],
+                request_schema=SendEmailRequest,
+                response_schema=SendEmailResponse,
+            )
+            async def send_email(self, request):
+                data = self._request_body  # Pre-validated
+                return {"queued": True, "job_id": "abc123"}
+            
+            # With action-specific permissions
+            @action(
+                detail=True,
+                methods=["post"],
+                permission_classes=[IsAdminUser],
+            )
+            async def approve(self, request, pk=None):
+                ...
     """
     methods = methods or ["get"]
     methods = [m.upper() for m in methods]
@@ -50,6 +86,11 @@ def action(
             "detail": detail,
             "url_path": url_path or func.__name__,
             "url_name": url_name or func.__name__,
+            "request_schema": request_schema,
+            "response_schema": response_schema,
+            "request_serializer": request_serializer,
+            "response_serializer": response_serializer,
+            "permission_classes": permission_classes,
             "kwargs": kwargs,
         }
         

@@ -261,3 +261,162 @@ class TestPagination:
         paginator = CustomPagination()
         assert paginator.default_limit == 30
         assert paginator.max_limit == 150
+
+
+class TestCustomActionDecorator:
+    """Test @action decorator with schemas and permissions."""
+    
+    def test_action_with_request_schema(self):
+        from pydantic import BaseModel
+        from zeeb_api.viewsets import action, ModelViewSet
+        
+        class SendEmailRequest(BaseModel):
+            subject: str
+            body: str
+        
+        class TestViewSet(ModelViewSet):
+            @action(
+                detail=False,
+                methods=["post"],
+                request_schema=SendEmailRequest,
+            )
+            async def send_email(self, request):
+                return {"queued": True}
+        
+        config = TestViewSet.send_email._action_config
+        assert config["request_schema"] is SendEmailRequest
+        assert config["response_schema"] is None
+    
+    def test_action_with_response_schema(self):
+        from pydantic import BaseModel
+        from zeeb_api.viewsets import action, ModelViewSet
+        
+        class SendEmailResponse(BaseModel):
+            queued: bool
+            job_id: str
+        
+        class TestViewSet(ModelViewSet):
+            @action(
+                detail=False,
+                methods=["post"],
+                response_schema=SendEmailResponse,
+            )
+            async def send_email(self, request):
+                return {"queued": True, "job_id": "abc"}
+        
+        config = TestViewSet.send_email._action_config
+        assert config["response_schema"] is SendEmailResponse
+    
+    def test_action_with_both_schemas(self):
+        from pydantic import BaseModel
+        from zeeb_api.viewsets import action, ModelViewSet
+        
+        class SendEmailRequest(BaseModel):
+            subject: str
+            body: str
+        
+        class SendEmailResponse(BaseModel):
+            queued: bool
+            job_id: str
+        
+        class TestViewSet(ModelViewSet):
+            @action(
+                detail=False,
+                methods=["post"],
+                request_schema=SendEmailRequest,
+                response_schema=SendEmailResponse,
+            )
+            async def send_email(self, request):
+                data = self.get_action_request_body()
+                return {"queued": True, "job_id": "abc"}
+        
+        config = TestViewSet.send_email._action_config
+        assert config["request_schema"] is SendEmailRequest
+        assert config["response_schema"] is SendEmailResponse
+    
+    def test_action_with_serializer(self):
+        from zeeb_api.viewsets import action, ModelViewSet
+        from zeeb_api.serializers import Serializer, CharField
+        
+        class EmailSerializer(Serializer):
+            subject = CharField()
+            body = CharField()
+        
+        class TestViewSet(ModelViewSet):
+            @action(
+                detail=False,
+                methods=["post"],
+                request_serializer=EmailSerializer,
+            )
+            async def send_email(self, request):
+                return {"queued": True}
+        
+        config = TestViewSet.send_email._action_config
+        assert config["request_serializer"] is EmailSerializer
+    
+    def test_action_with_permission_classes(self):
+        from zeeb_api.viewsets import action, ModelViewSet
+        from zeeb_api.permissions import IsAuthenticated
+        
+        class TestViewSet(ModelViewSet):
+            @action(
+                detail=True,
+                methods=["post"],
+                permission_classes=[IsAuthenticated],
+            )
+            async def approve(self, request, pk=None):
+                return {"status": "approved"}
+        
+        config = TestViewSet.approve._action_config
+        assert config["permission_classes"] == [IsAuthenticated]
+    
+    def test_action_backward_compatible(self):
+        """Existing actions without new params should still work."""
+        from zeeb_api.viewsets import action, ModelViewSet
+        
+        class TestViewSet(ModelViewSet):
+            @action(detail=True, methods=["post"])
+            async def activate(self, request, pk=None):
+                return {"status": "activated"}
+        
+        config = TestViewSet.activate._action_config
+        assert config["detail"] is True
+        assert config["methods"] == ["POST"]
+        assert config["request_schema"] is None
+        assert config["response_schema"] is None
+        assert config["permission_classes"] is None
+
+
+class TestViewSetActionPermissions:
+    """Test action-specific permissions in ViewSet."""
+    
+    @pytest.mark.asyncio
+    async def test_action_permissions_override_class_permissions(self):
+        from zeeb_api.viewsets import ViewSet
+        from zeeb_api.permissions import AllowAny, IsAuthenticated
+        from unittest.mock import MagicMock
+        
+        class TestViewSet(ViewSet):
+            permission_classes = [AllowAny]
+        
+        # Without action-specific permissions
+        viewset = TestViewSet()
+        permissions = viewset.get_permissions()
+        assert len(permissions) == 1
+        assert isinstance(permissions[0], AllowAny)
+        
+        # With action-specific permissions
+        viewset2 = TestViewSet()
+        viewset2._action_permission_classes = [IsAuthenticated]
+        permissions2 = viewset2.get_permissions()
+        assert len(permissions2) == 1
+        assert isinstance(permissions2[0], IsAuthenticated)
+    
+    def test_get_action_request_body(self):
+        from zeeb_api.viewsets import ViewSet
+        
+        viewset = ViewSet()
+        assert viewset.get_action_request_body() is None
+        
+        viewset._request_body = {"subject": "Test", "body": "Hello"}
+        assert viewset.get_action_request_body() == {"subject": "Test", "body": "Hello"}

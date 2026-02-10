@@ -130,6 +130,75 @@ class QuerySet(Generic[ModelT]):
             clone._excludes.append(Q(**kwargs))
         return clone
 
+    # Permission filtering
+
+    def with_permission(self, user: Any, action: str) -> QuerySet[ModelT]:
+        """
+        Filter queryset by permission for a given action.
+        
+        Uses the model's permission rules to generate appropriate filters.
+        
+        Args:
+            user: User to check permissions for (can be None for anonymous)
+            action: Permission action ('read', 'change', 'delete')
+        
+        Usage:
+            Post.objects.with_permission(user, 'read')
+            Post.objects.with_permission(user, 'change').filter(status='draft')
+        """
+        permission_attr = f"{action}_permission"
+        filter_method = f"get_{action}_filter"
+        
+        # Check if model has the filter method
+        if hasattr(self.model, filter_method):
+            q_filter = getattr(self.model, filter_method)(user)
+            return self.filter(q_filter)
+        
+        # Check if model has the permission rule
+        if hasattr(self.model, "_permission_rules"):
+            rules = getattr(self.model, "_permission_rules", {})
+            if permission_attr in rules:
+                rule = rules[permission_attr]
+                q_filter = rule.to_q(user, self.model)
+                return self.filter(q_filter)
+        
+        # No permission defined - return unfiltered
+        return self._clone()
+
+    def readable_by(self, user: Any) -> QuerySet[ModelT]:
+        """
+        Filter queryset to objects readable by the given user.
+        
+        Shortcut for .with_permission(user, 'read')
+        
+        Usage:
+            Post.objects.readable_by(user)
+            Post.objects.readable_by(request.user).filter(featured=True)
+        """
+        return self.with_permission(user, "read")
+
+    def changeable_by(self, user: Any) -> QuerySet[ModelT]:
+        """
+        Filter queryset to objects changeable by the given user.
+        
+        Shortcut for .with_permission(user, 'change')
+        
+        Usage:
+            Post.objects.changeable_by(user)
+        """
+        return self.with_permission(user, "change")
+
+    def deletable_by(self, user: Any) -> QuerySet[ModelT]:
+        """
+        Filter queryset to objects deletable by the given user.
+        
+        Shortcut for .with_permission(user, 'delete')
+        
+        Usage:
+            Post.objects.deletable_by(user)
+        """
+        return self.with_permission(user, "delete")
+
     # Ordering
 
     def order_by(self, *fields: str) -> QuerySet[ModelT]:
