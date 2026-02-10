@@ -151,19 +151,124 @@ class ArticleViewSet(ModelViewSet):
 | `methods` | `["GET"]` | HTTP methods allowed |
 | `url_path` | Action name | Custom URL path |
 | `url_name` | Action name | Custom URL name for reversing |
-| `permission_classes` | ViewSet's | Override permissions |
-| `serializer_class` | ViewSet's | Override serializer |
+| `permission_classes` | ViewSet's | Override permissions for this action |
+| `request_schema` | None | Pydantic model for request body validation |
+| `response_schema` | None | Pydantic model for response (OpenAPI docs) |
+| `request_serializer` | None | Custom Serializer for request validation |
+| `response_serializer` | None | Custom Serializer for response |
+
+### Actions with Request/Response Schemas
+
+Use Pydantic models for request body validation and OpenAPI documentation:
 
 ```python
-@action(
-    detail=True,
-    methods=["POST", "DELETE"],
-    url_path="toggle-featured",
-    permission_classes=[IsAdminUser],
-)
-async def toggle_featured(self, request, pk=None):
-    """POST/DELETE /articles/{pk}/toggle-featured/"""
-    ...
+from pydantic import BaseModel
+from zeeb_api.viewsets import ModelViewSet, action
+from zeeb_api.permissions import IsAuthenticated
+
+
+class SendEmailRequest(BaseModel):
+    subject: str
+    body: str
+    recipient_ids: list[int]
+
+
+class SendEmailResponse(BaseModel):
+    queued: bool
+    job_id: str
+
+
+class ArticleViewSet(ModelViewSet):
+    queryset = Article.objects.all()
+    serializer_class = ArticleSerializer
+    
+    @action(
+        detail=False,
+        methods=["POST"],
+        request_schema=SendEmailRequest,
+        response_schema=SendEmailResponse,
+    )
+    async def send_newsletter(self, request):
+        """POST /articles/send_newsletter/"""
+        # Access validated request body
+        data = self.get_action_request_body()
+        
+        # data is already validated against SendEmailRequest
+        subject = data["subject"]
+        body = data["body"]
+        recipient_ids = data["recipient_ids"]
+        
+        # Queue the email job...
+        job_id = await queue_newsletter(subject, body, recipient_ids)
+        
+        return {"queued": True, "job_id": job_id}
+```
+
+You can also use custom Serializers instead of Pydantic models:
+
+```python
+from zeeb_api.serializers import Serializer, CharField, ListField, IntegerField
+
+
+class BulkUpdateSerializer(Serializer):
+    ids = ListField(child=IntegerField())
+    status = CharField()
+
+
+class ArticleViewSet(ModelViewSet):
+    queryset = Article.objects.all()
+    serializer_class = ArticleSerializer
+    
+    @action(
+        detail=False,
+        methods=["POST"],
+        request_serializer=BulkUpdateSerializer,
+    )
+    async def bulk_update_status(self, request):
+        """POST /articles/bulk_update_status/"""
+        data = self.get_action_request_body()
+        
+        await Article.objects.filter(id__in=data["ids"]).update(
+            status=data["status"]
+        )
+        return {"updated": len(data["ids"])}
+```
+
+### Actions with Custom Permissions
+
+Override permissions for specific actions:
+
+```python
+from zeeb_api.viewsets import ModelViewSet, action
+from zeeb_api.permissions import IsAuthenticated, IsAdminUser
+
+
+class ArticleViewSet(ModelViewSet):
+    queryset = Article.objects.all()
+    serializer_class = ArticleSerializer
+    permission_classes = [IsAuthenticated]  # Default for all actions
+    
+    @action(
+        detail=True,
+        methods=["POST"],
+        permission_classes=[IsAdminUser],  # Only admins
+    )
+    async def feature(self, request, pk=None):
+        """POST /articles/{pk}/feature/ - Admin only"""
+        article = await self.get_object()
+        article.featured = True
+        await article.save()
+        return {"status": "featured"}
+    
+    @action(
+        detail=True,
+        methods=["POST", "DELETE"],
+        url_path="toggle-featured",
+        permission_classes=[IsAdminUser],
+    )
+    async def toggle_featured(self, request, pk=None):
+        """POST/DELETE /articles/{pk}/toggle-featured/"""
+        ...
 ```
 
 ## Customizing Behavior

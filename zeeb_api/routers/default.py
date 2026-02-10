@@ -212,6 +212,10 @@ class SimpleRouter:
                 if not hasattr(viewset, action_name):
                     continue
                 
+                # Get action config if this is a custom action
+                action_method = getattr(viewset, action_name, None)
+                action_config = getattr(action_method, "_action_config", None) if action_method else None
+                
                 # Get action-specific schemas by checking if viewset has get_serializer_class
                 action_response_schema = default_response_schema
                 action_request_schema = default_request_schema
@@ -236,6 +240,7 @@ class SimpleRouter:
                 # Determine response model and request schema based on action
                 action_response_model = None
                 final_request_schema = None
+                action_permission_classes = None
                 
                 if action_name == "query":
                     # Query uses QueryRequest and QueryResponse
@@ -251,11 +256,17 @@ class SimpleRouter:
                     # This allows partial updates (PATCH) without requiring all fields
                     action_response_model = action_response_schema
                     # Don't set final_request_schema - let viewset handle validation
+                elif action_config:
+                    # Custom action - check for schemas/serializers in action config
+                    final_request_schema, action_response_model = self._get_action_schemas(
+                        action_config, method
+                    )
+                    action_permission_classes = action_config.get("permission_classes")
                 
                 # Create the endpoint function
                 endpoint = self._create_endpoint(
                     viewset, action_name, route.detail, lookup,
-                    final_request_schema, lookup_type,
+                    final_request_schema, lookup_type, action_permission_classes,
                 )
                 
                 # Register with FastAPI router
@@ -270,6 +281,48 @@ class SimpleRouter:
                 )
         
         return router
+    
+    def _get_action_schemas(
+        self,
+        action_config: dict[str, Any],
+        method: str,
+    ) -> tuple[type | None, type | None]:
+        """
+        Extract request and response schemas from action config.
+        
+        Supports both Pydantic models and custom Serializers.
+        Returns (request_schema, response_schema).
+        """
+        from pydantic import BaseModel
+        
+        request_schema = None
+        response_schema = None
+        
+        # Request schema: Pydantic takes precedence, then Serializer
+        if action_config.get("request_schema"):
+            request_schema = action_config["request_schema"]
+        elif action_config.get("request_serializer"):
+            serializer_class = action_config["request_serializer"]
+            # Instantiate to trigger schema generation
+            serializer_class(data={})
+            if hasattr(serializer_class, "RequestSchema"):
+                request_schema = serializer_class.RequestSchema
+        
+        # Response schema: Pydantic takes precedence, then Serializer
+        if action_config.get("response_schema"):
+            response_schema = action_config["response_schema"]
+        elif action_config.get("response_serializer"):
+            serializer_class = action_config["response_serializer"]
+            # Instantiate to trigger schema generation
+            serializer_class(data={})
+            if hasattr(serializer_class, "ResponseSchema"):
+                response_schema = serializer_class.ResponseSchema
+        
+        # Only use request schema for POST/PUT/PATCH methods
+        if method.upper() not in ("POST", "PUT", "PATCH"):
+            request_schema = None
+        
+        return request_schema, response_schema
     
     def _get_lookup_type(self, viewset: Type[ViewSet]) -> type:
         """Get the Python type for the lookup field (PK type)."""
@@ -301,6 +354,7 @@ class SimpleRouter:
         lookup: str,
         request_schema: type | None = None,
         lookup_type: type = uuid.UUID,
+        permission_classes: list | None = None,
     ) -> Callable:
         """Create a FastAPI endpoint function for a ViewSet action."""
         from pydantic import BaseModel
@@ -308,7 +362,7 @@ class SimpleRouter:
         lookup_field = lookup.strip("{}")
         
         if detail:
-            if request_schema and action_name in ("update", "partial_update"):
+            if request_schema:
                 # Detail endpoint with request body
                 async def detail_endpoint_with_body(
                     request: Request,
@@ -319,10 +373,14 @@ class SimpleRouter:
                     viewset.action = action_name
                     viewset.kwargs = path_params
                     
+                    # Use action-specific permissions if provided
+                    if permission_classes is not None:
+                        viewset._action_permission_classes = permission_classes
+                    
                     await viewset.check_permissions(request)
                     
-                    # Inject body data into request
-                    request._body = body.model_dump_json().encode()
+                    # Store body data for action
+                    viewset._request_body = body.model_dump()
                     
                     action = getattr(viewset, action_name)
                     result = await action(request, **path_params)
@@ -346,6 +404,10 @@ class SimpleRouter:
                     viewset.action = action_name
                     viewset.kwargs = path_params
                     
+                    # Use action-specific permissions if provided
+                    if permission_classes is not None:
+                        viewset._action_permission_classes = permission_classes
+                    
                     await viewset.check_permissions(request)
                     
                     action = getattr(viewset, action_name)
@@ -364,7 +426,7 @@ class SimpleRouter:
                 return detail_endpoint
         else:
             if request_schema:
-                # Non-detail endpoint with request body (create, query)
+                # Non-detail endpoint with request body (create, query, custom actions)
                 async def list_endpoint_with_body(
                     request: Request,
                     body: BaseModel,
@@ -372,6 +434,10 @@ class SimpleRouter:
                     viewset = viewset_class(request=request)
                     viewset.action = action_name
                     viewset.kwargs = {}
+                    
+                    # Use action-specific permissions if provided
+                    if permission_classes is not None:
+                        viewset._action_permission_classes = permission_classes
                     
                     await viewset.check_permissions(request)
                     
@@ -397,6 +463,10 @@ class SimpleRouter:
                     viewset = viewset_class(request=request)
                     viewset.action = action_name
                     viewset.kwargs = {}
+                    
+                    # Use action-specific permissions if provided
+                    if permission_classes is not None:
+                        viewset._action_permission_classes = permission_classes
                     
                     await viewset.check_permissions(request)
                     
@@ -430,16 +500,7 @@ class DefaultRouter(SimpleRouter):
     def __init__(self, **kwargs: Any) -> None:
         super().__init__()
         self.include_root_view = kwargs.get("include_root_view", True)
-    
-    def get_urls(self) -> list[APIRouter]:
-        """Generate URLs with optional root view."""
-        urls = super().get_urls()
-        
-        if self.include_root_view:
-            root_router = self._get_root_router()
-            urls.insert(0, root_router)
-        
-        return urls
+        self._api_routers: list[tuple[str, APIRouter]] = []
     
     def _get_root_router(self) -> APIRouter:
         """Create a root router with API index."""
@@ -459,19 +520,114 @@ class DefaultRouter(SimpleRouter):
     
     def include(
         self,
-        router: SimpleRouter | DefaultRouter,
+        router: "SimpleRouter | DefaultRouter | APIRouter",
         prefix: str = "",
     ) -> None:
         """
-        Include another router's registrations.
+        Include another router's registrations or an APIRouter.
         
         Args:
-            router: Router to include
+            router: Router to include (SimpleRouter, DefaultRouter, or FastAPI APIRouter)
             prefix: URL prefix to add
+        
+        Examples:
+            # Include a ViewSet router
+            router.include(blog_router)
+            
+            # Include auth patterns
+            from zeeb_api.auth.urls import auth_patterns
+            router.include(auth_patterns, prefix="/auth")
         """
-        for route_prefix, viewset, basename in router._registry:
-            combined_prefix = f"{prefix.strip('/')}/{route_prefix.strip('/')}" if prefix else route_prefix
-            self._registry.append((combined_prefix, viewset, basename))
+        if isinstance(router, (SimpleRouter, DefaultRouter)):
+            # Include ViewSet-based router
+            for route_prefix, viewset, basename in router._registry:
+                combined_prefix = f"{prefix.strip('/')}/{route_prefix.strip('/')}" if prefix else route_prefix
+                self._registry.append((combined_prefix, viewset, basename))
+        elif isinstance(router, APIRouter):
+            # Include FastAPI APIRouter directly (like auth_patterns)
+            self._api_routers.append((prefix, router))
+        else:
+            raise TypeError(f"Cannot include router of type {type(router)}")
         
         # Clear cached routes
         self._routes = []
+    
+    def get_urls(self) -> list[APIRouter]:
+        """Generate URLs with optional root view."""
+        urls = super().get_urls()
+        
+        # Add any raw APIRouters that were included
+        for prefix, api_router in self._api_routers:
+            if prefix:
+                # Create a wrapper router with the prefix
+                wrapper = APIRouter(prefix=f"/{prefix.strip('/')}")
+                wrapper.include_router(api_router)
+                urls.append(wrapper)
+            else:
+                urls.append(api_router)
+        
+        if self.include_root_view:
+            root_router = self._get_root_router()
+            urls.insert(0, root_router)
+        
+        return urls
+
+
+def include(router: APIRouter, prefix: str = "") -> tuple[str, APIRouter]:
+    """
+    Helper function to include an APIRouter with a prefix.
+    
+    This is a convenience function for Django-style URL inclusion.
+    
+    Usage:
+        from zeeb_api.routers import DefaultRouter, include
+        from zeeb_api.auth.urls import auth_patterns
+        
+        router = DefaultRouter()
+        router.include(*include(auth_patterns, "/auth"))
+    
+    Or directly on router.include():
+        router.include(auth_patterns, prefix="/auth")
+    """
+    return (prefix, router)
+
+
+def load_urlconf(urlconf_module: str) -> list[APIRouter]:
+    """
+    Load URL configuration from a module path.
+    
+    Like Django's ROOT_URLCONF, this loads the router from a module
+    and returns its routes.
+    
+    Args:
+        urlconf_module: Dotted path to the URL module (e.g., "myproject.urls")
+    
+    Returns:
+        List of APIRouters
+    
+    The URL module should define either:
+    - `router` - A DefaultRouter/SimpleRouter instance
+    - `get_routes()` - A function that returns routes
+    - `urlpatterns` - A list of APIRouters (Django-style)
+    """
+    import importlib
+    
+    module = importlib.import_module(urlconf_module)
+    
+    # Try different patterns
+    if hasattr(module, "router"):
+        router = module.router
+        if hasattr(router, "routes"):
+            return router.routes
+        elif hasattr(router, "get_urls"):
+            return router.get_urls()
+    
+    if hasattr(module, "get_routes"):
+        return module.get_routes()
+    
+    if hasattr(module, "urlpatterns"):
+        return module.urlpatterns
+    
+    raise ImportError(
+        f"URL module '{urlconf_module}' must define 'router', 'get_routes()', or 'urlpatterns'"
+    )

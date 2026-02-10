@@ -13,6 +13,10 @@ class CreateModelMixin:
     
     async def create(self, request: Request, **kwargs: Any) -> dict[str, Any]:
         """Create a new model instance."""
+        # Check add permission if object permissions are enabled
+        if hasattr(self, "check_add_permission"):
+            await self.check_add_permission()
+        
         # Get data from pre-validated body or parse from request
         if hasattr(self, "_request_body"):
             data = self._request_body

@@ -57,9 +57,18 @@ class ViewSet(metaclass=ViewSetMeta):
         self.request = request
         self.kwargs = kwargs
         self.action: str | None = None
+        self._action_permission_classes: list[type[BasePermission]] | None = None
     
     def get_permissions(self) -> list[BasePermission]:
-        """Get permission instances for this view."""
+        """
+        Get permission instances for this view.
+        
+        If the current action has specific permissions set via @action decorator,
+        those take precedence over the class-level permission_classes.
+        """
+        # Use action-specific permissions if set
+        if self._action_permission_classes is not None:
+            return [permission() for permission in self._action_permission_classes]
         return [permission() for permission in self.permission_classes]
     
     async def check_permissions(self, request: Request) -> None:
@@ -79,6 +88,14 @@ class ViewSet(metaclass=ViewSetMeta):
                 raise PermissionDenied(
                     getattr(permission, "message", "Permission denied")
                 )
+    
+    def get_action_request_body(self) -> dict[str, Any] | None:
+        """
+        Get the validated request body for the current action.
+        
+        Returns None if no request body was provided or validated.
+        """
+        return getattr(self, "_request_body", None)
 
 
 class GenericViewSet(ViewSet):
@@ -95,6 +112,19 @@ class GenericViewSet(ViewSet):
     lookup_url_kwarg: str | None = None
     pagination_class: type[BasePagination] | None = None
     filter_backends: list[type[BaseFilter]] = []
+    
+    # Object permission configuration
+    use_object_permissions: bool = False
+    
+    # Map actions to permission types for queryset filtering
+    _action_permission_map: ClassVar[dict[str, str]] = {
+        "list": "read",
+        "retrieve": "read",
+        "create": "add",
+        "update": "change",
+        "partial_update": "change",
+        "destroy": "delete",
+    }
     
     @classmethod
     def get_response_schema(cls) -> type | None:
@@ -121,9 +151,24 @@ class GenericViewSet(ViewSet):
             return create_list_response_schema(response_schema)
         return None
     
+    def _get_permission_type_for_action(self) -> str | None:
+        """Get the permission type for the current action."""
+        if self.action is None:
+            return None
+        return self._action_permission_map.get(self.action)
+    
+    def _get_user_from_request(self) -> Any:
+        """Extract user from request, returns None for anonymous."""
+        if self.request is None:
+            return None
+        return getattr(self.request, "user", None)
+    
     def get_queryset(self) -> Any:
         """
         Get the queryset for this view.
+        
+        If use_object_permissions is True and the model has permission rules,
+        automatically filters the queryset based on the current action.
         
         Override to customize queryset (e.g., filter by user).
         """
@@ -132,7 +177,31 @@ class GenericViewSet(ViewSet):
                 f"{self.__class__.__name__} should include a `queryset` attribute "
                 "or override `get_queryset()`"
             )
-        return self.queryset
+        
+        queryset = self.queryset
+        
+        # Apply object permission filtering if enabled
+        if self.use_object_permissions:
+            queryset = self._apply_permission_filter(queryset)
+        
+        return queryset
+    
+    def _apply_permission_filter(self, queryset: Any) -> Any:
+        """Apply permission filter to queryset based on current action."""
+        permission_type = self._get_permission_type_for_action()
+        if permission_type is None:
+            return queryset
+        
+        # Skip add permission - it's class-level, not queryset filter
+        if permission_type == "add":
+            return queryset
+        
+        # Check if queryset supports permission filtering
+        if hasattr(queryset, "with_permission"):
+            user = self._get_user_from_request()
+            return queryset.with_permission(user, permission_type)
+        
+        return queryset
     
     def get_serializer_class(self) -> type[Serializer]:
         """Get the serializer class for this view."""
@@ -199,6 +268,72 @@ class GenericViewSet(ViewSet):
         await self.check_object_permissions(self.request, obj)
         
         return obj
+    
+    async def check_object_permissions(self, request: Request, obj: Any) -> None:
+        """
+        Check if the request should be permitted for a specific object.
+        
+        First checks class-level permissions, then object-level permissions
+        if use_object_permissions is enabled.
+        """
+        # Check class-level permissions
+        for permission in self.get_permissions():
+            if not await permission.has_object_permission(request, self, obj):
+                from zeeb_api.response import PermissionDenied
+                raise PermissionDenied(
+                    getattr(permission, "message", "Permission denied")
+                )
+        
+        # Check model-level object permissions if enabled
+        if self.use_object_permissions:
+            await self._check_model_object_permission(request, obj)
+    
+    async def _check_model_object_permission(self, request: Request, obj: Any) -> None:
+        """Check model's object permission for the current action."""
+        permission_type = self._get_permission_type_for_action()
+        if permission_type is None:
+            return
+        
+        check_method_name = f"check_{permission_type}_permission"
+        
+        # Check if the object has the permission check method
+        if not hasattr(obj, check_method_name):
+            return
+        
+        check_method = getattr(obj, check_method_name)
+        user = self._get_user_from_request()
+        
+        # Call the check method
+        has_permission = await check_method(user)
+        
+        if not has_permission:
+            from zeeb_api.response import PermissionDenied
+            raise PermissionDenied(f"You do not have {permission_type} permission for this object")
+    
+    async def check_add_permission(self) -> None:
+        """Check if user has add permission for the model."""
+        if not self.use_object_permissions:
+            return
+        
+        # Get the model class
+        queryset = self.queryset
+        if queryset is None:
+            return
+        
+        model_class = getattr(queryset, "model", None)
+        if model_class is None:
+            return
+        
+        # Check if model has add permission check
+        if not hasattr(model_class, "check_add_permission"):
+            return
+        
+        user = self._get_user_from_request()
+        has_permission = await model_class.check_add_permission(user)
+        
+        if not has_permission:
+            from zeeb_api.response import PermissionDenied
+            raise PermissionDenied("You do not have permission to create this object")
     
     def get_pagination_class(self) -> type[BasePagination] | None:
         """Get pagination class."""

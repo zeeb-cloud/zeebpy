@@ -1,0 +1,71 @@
+"""
+Default settings for Zeeb API.
+
+These are the sensible defaults that can be overridden in your project's settings.py.
+"""
+
+# Debug mode - set to False in production
+DEBUG = False
+
+# Secret key for JWT tokens - MUST be overridden in production!
+SECRET_KEY = "INSECURE-DEFAULT-KEY-CHANGE-IN-PRODUCTION"
+
+# Database configuration
+DATABASE = {
+    "url": "sqlite+aiosqlite:///db.sqlite3",
+}
+
+# URL configuration - path to your urls module (like Django's ROOT_URLCONF)
+ROOT_URLCONF = None
+
+# Middleware classes (executed in order, top to bottom for requests, bottom to top for responses)
+MIDDLEWARE = [
+    "zeeb_api.middleware.CORSMiddleware",
+    "zeeb_api.middleware.JWTAuthMiddleware",
+]
+
+# Installed apps - list your app modules here
+INSTALLED_APPS = []
+
+# Custom user model (like Django's AUTH_USER_MODEL)
+# Set to your custom User model path, e.g., "apps.accounts.models.CustomUser"
+AUTH_USER_MODEL = None  # Uses default zeeb_api.auth.models.User
+
+# JWT Settings
+JWT_SECRET_KEY = None  # Falls back to SECRET_KEY if not set
+JWT_ALGORITHM = "HS256"
+JWT_ACCESS_TOKEN_EXPIRE_MINUTES = 60
+JWT_REFRESH_TOKEN_EXPIRE_DAYS = 7
+JWT_ISSUER = None
+JWT_AUDIENCE = None
+
+# Auth settings
+AUTH_LOAD_USER_FROM_DB = True  # Load full user from database vs just token claims
+
+# CORS settings
+CORS_ALLOW_ORIGINS = []
+CORS_ALLOW_CREDENTIALS = True
+CORS_ALLOW_METHODS = ["*"]
+CORS_ALLOW_HEADERS = ["*"]
+
+# API settings
+API_TITLE = "Zeeb API"
+API_DESCRIPTION = ""
+API_VERSION = "1.0.0"
+API_PREFIX = ""
+
+# Pagination settings
+DEFAULT_LIMIT = 20
+MAX_LIMIT = 100
+
+# Logging configuration
+LOGGING = {
+    "level": "INFO",
+    "json_logs": False,
+    "log_file": None,
+    "log_rotation": True,
+    "log_retention_days": 30,
+}
+
+# Exception handlers - set to False to disable default handlers
+INSTALL_EXCEPTION_HANDLERS = True

@@ -7,6 +7,8 @@ Provides:
 - Routers (auto-generate FastAPI routes)
 - Query (Q filter parsing, unified request/response)
 - Permissions (IsAuthenticated, IsAdminUser, custom)
+- Settings (Django-style settings management)
+- Middleware (configurable via settings)
 """
 
 from zeeb_api.serializers import (
@@ -41,7 +43,7 @@ from zeeb_api.viewsets import (
     action,
     QueryModelMixin,
 )
-from zeeb_api.routers import DefaultRouter
+from zeeb_api.routers import DefaultRouter, include, load_urlconf
 from zeeb_api import permissions
 from zeeb_api.query import (
     QueryRequest,
@@ -115,10 +117,26 @@ from zeeb_api.logging import (
     JsonFormatter,
     ConsoleFormatter,
 )
+from zeeb_api.conf import settings, get_settings, configure_settings
+from zeeb_api.middleware import (
+    install_middleware,
+    CORSMiddleware,
+)
+from zeeb_api.app import create_app, get_asgi_application
 
 __version__ = "0.1.0"
 
 __all__ = [
+    # App factory
+    "create_app",
+    "get_asgi_application",
+    # Settings
+    "settings",
+    "get_settings",
+    "configure_settings",
+    # Middleware
+    "install_middleware",
+    "CORSMiddleware",
     # Serializers
     "Serializer",
     "ModelSerializer",
@@ -150,6 +168,8 @@ __all__ = [
     "QueryModelMixin",
     # Routers
     "DefaultRouter",
+    "include",
+    "load_urlconf",
     # Permissions
     "permissions",
     # Query
