@@ -3,7 +3,6 @@
 Migrations Example - Zeeb ORM
 
 Demonstrates:
-- Initializing migrations directory
 - Creating migrations
 - Applying migrations
 - Migration CLI commands
@@ -19,20 +18,8 @@ print("""
 Zeeb ORM - Migrations Example
 =" * 60
 
-Zeeb ORM uses Alembic for migrations with Django-like commands.
-
-SETUP
------
-First, initialize the migrations directory:
-
-    $ zeeb init
-
-This creates:
-    migrations/
-    ├── versions/        # Migration files go here
-    ├── env.py          # Alembic environment (auto-configured)
-    └── script.py.mako  # Migration template
-
+Zeeb ORM provides Django-style migrations. No Alembic config files,
+no revision hashes — just clean numbered migration files.
 
 WORKFLOW
 --------
@@ -60,111 +47,72 @@ WORKFLOW
 
 3. CREATE MIGRATION:
 
-    $ zeeb makemigrations -m "create users table"
+    $ python manage.py makemigrations
 
     This auto-detects model changes and generates:
-    migrations/versions/abc123_create_users_table.py
+    migrations/0001_initial.py
+
+    The file looks like:
+
+    import sqlalchemy as sa
+    from zeeb_orm.migrations import Migration, operations
+
+    class Migration(Migration):
+        initial = True
+        dependencies = []
+        operations = [
+            operations.CreateModel(
+                name='User',
+                table='users',
+                columns=[
+                    sa.Column('id', sa.Uuid(), nullable=False),
+                    sa.Column('name', sa.String(100), nullable=False),
+                    sa.Column('email', sa.String(254), nullable=False, unique=True),
+                ],
+                primary_key=['id'],
+            ),
+        ]
 
 
-4. REVIEW MIGRATION (optional):
+4. APPLY MIGRATIONS:
 
-    The generated file looks like:
+    $ python manage.py migrate
 
-    def upgrade():
-        op.create_table(
-            'users',
-            sa.Column('id', sa.Integer(), primary_key=True),
-            sa.Column('name', sa.String(100), nullable=False),
-            sa.Column('email', sa.String(254), nullable=False, unique=True),
-        )
-
-    def downgrade():
-        op.drop_table('users')
+    Running migrations:
+      Applying 0001_initial... OK
 
 
-5. APPLY MIGRATIONS:
+5. CHECK STATUS:
 
-    $ zeeb migrate
+    $ python manage.py showmigrations
 
-    Or migrate to specific revision:
-    $ zeeb migrate abc123
-
-
-6. CHECK STATUS:
-
-    $ zeeb showmigrations
-
-    Output:
-      [X] abc123 - create users table
-      [ ] def456 - add user profile
-
-    $ zeeb current
-    Current revision: abc123
+     [X] 0001_initial
+     [ ] 0002_add_views_to_posts
 
 
-7. ROLLBACK (if needed):
+6. ROLLBACK (if needed):
 
-    $ zeeb rollback        # One step back
-    $ zeeb rollback -1     # One step back (explicit)
-    $ zeeb rollback base   # All the way back
+    $ python manage.py migrate --rollback 1    # Roll back 1
+    $ python manage.py migrate zero             # Roll back all
 
 
 CLI COMMANDS
 ------------
 
-    zeeb init                    Initialize migrations directory
-    zeeb makemigrations -m MSG   Create new migration
-    zeeb makemigrations --empty  Create empty migration (for manual edits)
-    zeeb migrate                 Apply all pending migrations
-    zeeb migrate REVISION        Migrate to specific revision
-    zeeb migrate --sql           Output SQL without executing
-    zeeb rollback                Roll back one migration
-    zeeb rollback REVISION       Roll back to specific revision
-    zeeb showmigrations          Show all migrations and status
-    zeeb current                 Show current revision
-
-
-EXAMPLE SESSION
----------------
-
-    $ cd myproject
-    
-    $ zeeb init
-    Created migrations directory: migrations
-    
-    $ zeeb makemigrations -m "initial"
-    Created new migration: a1b2c3d4e5f6
-    
-    $ zeeb migrate
-    Migrated to: head
-    
-    $ zeeb showmigrations
-    Migrations:
-    --------------------------------------------------
-      [X] a1b2c3d4e5f6 - initial
-    
-    # ... make model changes ...
-    
-    $ zeeb makemigrations -m "add user profile"
-    Created new migration: g7h8i9j0k1l2
-    
-    $ zeeb migrate
-    Migrated to: head
-    
-    $ zeeb showmigrations
-    Migrations:
-    --------------------------------------------------
-      [X] a1b2c3d4e5f6 - initial
-      [X] g7h8i9j0k1l2 - add user profile
+    python manage.py makemigrations              Create new migration
+    python manage.py makemigrations -n MSG       With custom name
+    python manage.py makemigrations --empty      Empty migration (for manual edits)
+    python manage.py migrate                     Apply all pending
+    python manage.py migrate 0001               Migrate to specific migration
+    python manage.py migrate zero               Roll back all
+    python manage.py migrate --rollback 1       Roll back N migrations
+    python manage.py showmigrations             Show status
 
 
 PROGRAMMATIC USAGE
 ------------------
 
-You can also use migrations programmatically:
-
     from zeeb_orm.migrations import (
-        init_migrations,
         makemigrations,
         migrate,
         rollback,
@@ -172,11 +120,8 @@ You can also use migrations programmatically:
         current,
     )
 
-    # Initialize
-    init_migrations('migrations')
-
     # Create migration
-    revision = makemigrations(message='add new model')
+    name = makemigrations(message='add new model')
 
     # Apply
     migrate()
@@ -188,21 +133,17 @@ You can also use migrations programmatically:
 TIPS
 ----
 
-1. Always review generated migrations before applying
-2. Keep migrations in version control
-3. Don't modify migrations after they're applied to production
-4. Use --sql flag to preview SQL before applying
+1. No 'init' step needed — makemigrations creates the directory
+2. Always review generated migrations before applying
+3. Keep migrations in version control
+4. Don't modify migrations after they're applied to production
 5. Create manual migrations with --empty for complex changes
-6. Use meaningful migration messages
-
-
-For more details, see the README.md or Alembic documentation.
+6. Use meaningful migration names
 """)
 
 # Demonstrate programmatic migration functions (info only)
 if __name__ == "__main__":
     from zeeb_orm.migrations import (
-        init_migrations,
         makemigrations,
         migrate,
         rollback,
@@ -211,10 +152,9 @@ if __name__ == "__main__":
     )
 
     print("\nProgrammatic functions available:")
-    print(f"  - init_migrations(directory)")
     print(f"  - makemigrations(message, autogenerate, empty)")
-    print(f"  - migrate(revision, sql)")
-    print(f"  - rollback(revision, sql)")
+    print(f"  - migrate(target, fake)")
+    print(f"  - rollback(steps)")
     print(f"  - showmigrations()")
     print(f"  - current()")
     print("\n✓ See code examples above for usage!")

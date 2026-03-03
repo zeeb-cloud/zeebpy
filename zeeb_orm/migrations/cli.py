@@ -1,405 +1,332 @@
-"""Migration CLI commands using Alembic."""
+"""
+Django-style migration commands — programmatic API.
+
+Provides ``makemigrations``, ``migrate``, ``showmigrations``, ``rollback``,
+and ``current`` without any subprocess calls or Alembic config files.
+"""
 
 from __future__ import annotations
 
-import argparse
-import os
 import sys
 from pathlib import Path
 from typing import Any
 
 
-def get_alembic_config(migrations_dir: str | None = None) -> Any:
-    """Create Alembic config programmatically."""
-    from alembic.config import Config
+def _find_project_root() -> Path | None:
+    current = Path.cwd()
+    while current != current.parent:
+        if (current / "manage.py").exists():
+            return current
+        if (current / "migrations").exists():
+            return current
+        current = current.parent
+    return None
 
+
+def _get_database_url() -> str:
+    """Get database URL from settings."""
     from zeeb_orm.conf.settings import get_settings
+    return get_settings().database.url
 
-    settings = get_settings()
-    migrations_dir = migrations_dir or settings.migrations_dir
 
-    # Create alembic.ini content in memory
-    config = Config()
-    config.set_main_option("script_location", migrations_dir)
-    config.set_main_option("sqlalchemy.url", settings.database.url)
+def _get_migrations_dir(migrations_dir: str | None = None) -> Path:
+    """Resolve migrations directory path."""
+    if migrations_dir:
+        return Path(migrations_dir)
+    project_root = _find_project_root() or Path.cwd()
+    return project_root / "migrations"
 
-    return config
 
+def _register_models(project_root: Path | None = None) -> None:
+    """Import and register all models so metadata is populated."""
+    from zeeb_orm.models.base import Model
+
+    if project_root is None:
+        project_root = _find_project_root() or Path.cwd()
+
+    sys.path.insert(0, str(project_root))
+    try:
+        # Load settings to get INSTALLED_APPS
+        installed_apps: list[str] = []
+        for item in project_root.iterdir():
+            if item.is_dir() and (item / "settings.py").exists():
+                import importlib.util
+                spec = importlib.util.spec_from_file_location("settings", item / "settings.py")
+                if spec and spec.loader:
+                    settings_module = importlib.util.module_from_spec(spec)
+                    spec.loader.exec_module(settings_module)
+                    installed_apps = list(getattr(settings_module, "INSTALLED_APPS", []))
+                break
+
+        # Register auth models
+        try:
+            from zeeb_api.auth.models import Permission, UserPermission
+            Permission._get_table()
+            UserPermission._get_table()
+            auth_user = None
+            for item in project_root.iterdir():
+                if item.is_dir() and (item / "settings.py").exists():
+                    import importlib.util
+                    spec = importlib.util.spec_from_file_location("settings", item / "settings.py")
+                    if spec and spec.loader:
+                        mod = importlib.util.module_from_spec(spec)
+                        spec.loader.exec_module(mod)
+                        auth_user = getattr(mod, "AUTH_USER_MODEL", None)
+                    break
+            if not auth_user:
+                from zeeb_api.auth.models import User
+                User._get_table()
+        except Exception:
+            pass
+
+        # Register models from installed apps
+        for app in installed_apps:
+            if app == "zeeb_auth":
+                continue
+            clean_name = app.replace("apps.", "")
+            try:
+                import importlib
+                models_module = importlib.import_module(f"apps.{clean_name}.models")
+                for name in dir(models_module):
+                    obj = getattr(models_module, name)
+                    if (isinstance(obj, type) and issubclass(obj, Model)
+                            and obj is not Model
+                            and not getattr(obj._meta, 'abstract', False)):
+                        obj._get_table()
+            except Exception:
+                pass
+    finally:
+        if str(project_root) in sys.path:
+            sys.path.remove(str(project_root))
+
+
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
 
 def init_migrations(directory: str = "migrations") -> None:
-    """
-    Initialize migrations directory structure.
-
-    Similar to Django's: python manage.py migrate --fake-initial
-    Or Alembic's: alembic init migrations
-    """
-    from alembic import command
-
-    from zeeb_orm.migrations.templates import create_migrations_env
-
+    """Initialize migrations directory. Called automatically by makemigrations."""
     migrations_path = Path(directory)
-
     if migrations_path.exists():
         print(f"Migrations directory '{directory}' already exists.")
         return
-
-    # Create directory structure
     migrations_path.mkdir(parents=True)
-    (migrations_path / "versions").mkdir()
-
-    # Create env.py
-    create_migrations_env(migrations_path)
-
-    # Create script.py.mako template
-    mako_template = '''"""${message}
-
-Revision ID: ${up_revision}
-Revises: ${down_revision | comma,n}
-Create Date: ${create_date}
-
-"""
-from typing import Sequence, Union
-
-from alembic import op
-import sqlalchemy as sa
-${imports if imports else ""}
-
-# revision identifiers, used by Alembic.
-revision: str = ${repr(up_revision)}
-down_revision: Union[str, None] = ${repr(down_revision)}
-branch_labels: Union[str, Sequence[str], None] = ${repr(branch_labels)}
-depends_on: Union[str, Sequence[str], None] = ${repr(depends_on)}
-
-
-def upgrade() -> None:
-    ${upgrades if upgrades else "pass"}
-
-
-def downgrade() -> None:
-    ${downgrades if downgrades else "pass"}
-'''
-    (migrations_path / "script.py.mako").write_text(mako_template)
-
     print(f"Created migrations directory: {directory}")
-    print("  - versions/     (migration files)")
-    print("  - env.py        (Alembic environment)")
-    print("  - script.py.mako (migration template)")
 
 
 def makemigrations(
-    message: str = "auto",
+    message: str | None = None,
     autogenerate: bool = True,
     empty: bool = False,
     migrations_dir: str | None = None,
 ) -> str | None:
     """
-    Create a new migration file.
+    Create a new migration by auto-detecting model changes.
 
-    Similar to Django's: python manage.py makemigrations
-    Or Alembic's: alembic revision --autogenerate -m "message"
+    Like Django's ``python manage.py makemigrations``.
 
-    Returns the revision ID if successful.
+    Args:
+        message: Human-readable migration description.
+        autogenerate: Auto-detect model changes (default True).
+        empty: Create an empty migration for manual editing.
+        migrations_dir: Override migrations directory.
+
+    Returns:
+        The migration name (e.g. ``"0001_initial"``) or None.
     """
-    from alembic import command
-    from alembic.script import ScriptDirectory
+    from zeeb_orm.migrations.writer import write_migration
+    from zeeb_orm.migrations.autodetector import detect_changes
 
-    from zeeb_orm.conf.settings import get_settings
+    project_root = _find_project_root() or Path.cwd()
+    mig_dir = _get_migrations_dir(migrations_dir)
 
-    settings = get_settings()
-    migrations_dir = migrations_dir or settings.migrations_dir
+    # Auto-create migrations directory
+    mig_dir.mkdir(parents=True, exist_ok=True)
 
-    # Ensure migrations directory exists
-    if not Path(migrations_dir).exists():
-        print(f"Migrations directory '{migrations_dir}' not found.")
-        print("Run 'zeeb init' first to initialize migrations.")
-        return None
-
-    config = get_alembic_config(migrations_dir)
+    # Register all models so metadata is populated
+    _register_models(project_root)
 
     if empty:
-        # Create empty migration
-        command.revision(config, message=message, autogenerate=False)
-    else:
-        # Auto-generate migration from model changes
-        command.revision(config, message=message, autogenerate=autogenerate)
+        # Create empty migration for manual editing
+        filepath = write_migration(mig_dir, operations=[], name=message or "empty")
+        migration_name = filepath.stem
+        print(f"Migrations for 'all apps':")
+        print(f"  {filepath.name}")
+        print(f"\nEmpty migration created — edit it to add custom operations.")
+        return migration_name
 
-    # Get the latest revision
-    script = ScriptDirectory.from_config(config)
-    head = script.get_current_head()
+    # Detect changes
+    db_url = _get_database_url()
+    operations = detect_changes(db_url)
 
-    print(f"Created new migration: {head}")
-    return head
+    if not operations:
+        print("No changes detected.")
+        return None
+
+    # Determine if this is the initial migration
+    from zeeb_orm.migrations.executor import list_migration_files
+    existing = list_migration_files(mig_dir)
+    initial = len(existing) == 0
+
+    filepath = write_migration(
+        mig_dir,
+        operations=operations,
+        name=message,
+        initial=initial,
+    )
+    migration_name = filepath.stem
+
+    print(f"Migrations for 'all apps':")
+    print(f"  {filepath.name}")
+    for op in operations:
+        print(f"    - {op.describe()}")
+
+    return migration_name
 
 
 def migrate(
-    revision: str = "head",
+    target: str | None = None,
     migrations_dir: str | None = None,
-    sql: bool = False,
+    fake: bool = False,
 ) -> None:
     """
-    Apply migrations to the database.
+    Apply pending migrations.
 
-    Similar to Django's: python manage.py migrate
-    Or Alembic's: alembic upgrade head
+    Like Django's ``python manage.py migrate``.
 
     Args:
-        revision: Target revision ('head' for latest, or specific revision)
-        migrations_dir: Path to migrations directory
-        sql: If True, output SQL instead of executing
+        target: Target migration name, ``"zero"`` to rollback all,
+                or None to apply all pending.
+        migrations_dir: Override migrations directory.
+        fake: Mark as applied without running.
     """
-    from alembic import command
+    from zeeb_orm.migrations import executor
 
-    from zeeb_orm.conf.settings import get_settings
-
-    settings = get_settings()
-    migrations_dir = migrations_dir or settings.migrations_dir
-
-    if not Path(migrations_dir).exists():
-        print(f"Migrations directory '{migrations_dir}' not found.")
-        print("Run 'zeeb init' first to initialize migrations.")
+    mig_dir = _get_migrations_dir(migrations_dir)
+    if not mig_dir.exists():
+        print("No migrations directory found.")
+        print("Run 'python manage.py makemigrations' to create migrations.")
         return
 
-    config = get_alembic_config(migrations_dir)
+    db_url = _get_database_url()
+    project_root = _find_project_root() or Path.cwd()
 
-    if sql:
-        # Output SQL only
-        command.upgrade(config, revision, sql=True)
+    applied = executor.migrate(
+        target=target,
+        database_url=db_url,
+        project_root=project_root,
+        fake=fake,
+    )
+
+    if target == "zero":
+        if applied:
+            for name in applied:
+                print(f"  Unapplying {name}... OK")
+        else:
+            print("  No migrations to unapply.")
+    elif applied:
+        print("Running migrations:")
+        for name in applied:
+            prefix = "  Faking" if fake else "  Applying"
+            print(f"{prefix} {name}... OK")
     else:
-        command.upgrade(config, revision)
-        print(f"Migrated to: {revision}")
+        print("  No migrations to apply.")
 
 
 def rollback(
-    revision: str = "-1",
+    steps: int = 1,
     migrations_dir: str | None = None,
-    sql: bool = False,
 ) -> None:
     """
-    Rollback migrations.
-
-    Similar to Django's: python manage.py migrate app_name 0001
-    Or Alembic's: alembic downgrade -1
+    Rollback the last N migrations.
 
     Args:
-        revision: Target revision ('-1' for one step back, 'base' for all)
-        migrations_dir: Path to migrations directory
-        sql: If True, output SQL instead of executing
+        steps: Number of migrations to roll back.
+        migrations_dir: Override migrations directory.
     """
-    from alembic import command
+    from zeeb_orm.migrations import executor
 
-    from zeeb_orm.conf.settings import get_settings
-
-    settings = get_settings()
-    migrations_dir = migrations_dir or settings.migrations_dir
-
-    if not Path(migrations_dir).exists():
-        print(f"Migrations directory '{migrations_dir}' not found.")
+    mig_dir = _get_migrations_dir(migrations_dir)
+    if not mig_dir.exists():
+        print("No migrations directory found.")
         return
 
-    config = get_alembic_config(migrations_dir)
+    db_url = _get_database_url()
+    project_root = _find_project_root() or Path.cwd()
 
-    if sql:
-        command.downgrade(config, revision, sql=True)
+    # Get current state and determine target
+    status = executor.showmigrations(database_url=db_url, project_root=project_root)
+    applied = [name for name, is_applied in status if is_applied]
+
+    if not applied:
+        print("No migrations to roll back.")
+        return
+
+    # Determine target: roll back `steps` from the end
+    if steps >= len(applied):
+        target = "zero"
     else:
-        command.downgrade(config, revision)
-        print(f"Rolled back to: {revision}")
+        target = applied[-(steps + 1)]
+
+    rolled_back = executor.migrate(
+        target=target,
+        database_url=db_url,
+        project_root=project_root,
+    )
+
+    if rolled_back:
+        for name in rolled_back:
+            print(f"  Unapplying {name}... OK")
+    else:
+        print("  No migrations to roll back.")
 
 
 def showmigrations(migrations_dir: str | None = None) -> None:
     """
-    Show all migrations and their status.
+    Show all migrations and their applied status.
 
-    Similar to Django's: python manage.py showmigrations
-    Or Alembic's: alembic history
+    Like Django's ``python manage.py showmigrations``.
     """
-    from alembic import command
-    from alembic.runtime.migration import MigrationContext
-    from alembic.script import ScriptDirectory
-    from sqlalchemy import create_engine
+    from zeeb_orm.migrations import executor
 
-    from zeeb_orm.conf.settings import get_settings
-
-    settings = get_settings()
-    migrations_dir = migrations_dir or settings.migrations_dir
-
-    if not Path(migrations_dir).exists():
-        print(f"Migrations directory '{migrations_dir}' not found.")
+    mig_dir = _get_migrations_dir(migrations_dir)
+    if not mig_dir.exists():
+        print("No migrations directory found.")
         return
 
-    config = get_alembic_config(migrations_dir)
-    script = ScriptDirectory.from_config(config)
+    db_url = _get_database_url()
+    project_root = _find_project_root() or Path.cwd()
 
-    # Get current revision from database
-    # Convert async URL to sync for checking
-    url = settings.database.url
-    sync_url = url.replace("+asyncpg", "").replace("+aiomysql", "").replace("+aiosqlite", "")
+    status = executor.showmigrations(database_url=db_url, project_root=project_root)
 
-    try:
-        engine = create_engine(sync_url)
-        with engine.connect() as conn:
-            context = MigrationContext.configure(conn)
-            current_rev = context.get_current_revision()
-    except Exception:
-        current_rev = None
+    if not status:
+        print("No migrations.")
+        return
 
-    print("Migrations:")
-    print("-" * 50)
-
-    for rev in script.walk_revisions():
-        status = "[X]" if rev.revision == current_rev else "[ ]"
-        print(f"  {status} {rev.revision[:12]} - {rev.doc or 'No description'}")
+    for name, is_applied in status:
+        marker = "[X]" if is_applied else "[ ]"
+        print(f" {marker} {name}")
 
 
 def current(migrations_dir: str | None = None) -> str | None:
-    """
-    Show current migration revision.
+    """Show the last applied migration."""
+    from zeeb_orm.migrations import executor
 
-    Similar to Alembic's: alembic current
-    """
-    from alembic.runtime.migration import MigrationContext
-    from sqlalchemy import create_engine
-
-    from zeeb_orm.conf.settings import get_settings
-
-    settings = get_settings()
-    migrations_dir = migrations_dir or settings.migrations_dir
-
-    # Convert async URL to sync
-    url = settings.database.url
-    sync_url = url.replace("+asyncpg", "").replace("+aiomysql", "").replace("+aiosqlite", "")
-
-    try:
-        engine = create_engine(sync_url)
-        with engine.connect() as conn:
-            context = MigrationContext.configure(conn)
-            current_rev = context.get_current_revision()
-            print(f"Current revision: {current_rev or 'None (no migrations applied)'}")
-            return current_rev
-    except Exception as e:
-        print(f"Error getting current revision: {e}")
+    mig_dir = _get_migrations_dir(migrations_dir)
+    if not mig_dir.exists():
+        print("No migrations directory found.")
         return None
 
+    db_url = _get_database_url()
+    project_root = _find_project_root() or Path.cwd()
 
-def main() -> None:
-    """Main CLI entry point."""
-    parser = argparse.ArgumentParser(
-        prog="zeeb",
-        description="Zeeb ORM - Django-like migrations powered by Alembic",
-    )
+    status = executor.showmigrations(database_url=db_url, project_root=project_root)
+    applied = [name for name, is_applied in status if is_applied]
 
-    subparsers = parser.add_subparsers(dest="command", help="Commands")
-
-    # init command
-    init_parser = subparsers.add_parser("init", help="Initialize migrations directory")
-    init_parser.add_argument(
-        "-d",
-        "--directory",
-        default="migrations",
-        help="Migrations directory name (default: migrations)",
-    )
-
-    # makemigrations command
-    make_parser = subparsers.add_parser("makemigrations", help="Create new migration")
-    make_parser.add_argument(
-        "-m",
-        "--message",
-        default="auto",
-        help="Migration message",
-    )
-    make_parser.add_argument(
-        "--empty",
-        action="store_true",
-        help="Create empty migration (no auto-detection)",
-    )
-    make_parser.add_argument(
-        "-d",
-        "--directory",
-        help="Migrations directory",
-    )
-
-    # migrate command
-    migrate_parser = subparsers.add_parser("migrate", help="Apply migrations")
-    migrate_parser.add_argument(
-        "revision",
-        nargs="?",
-        default="head",
-        help="Target revision (default: head)",
-    )
-    migrate_parser.add_argument(
-        "--sql",
-        action="store_true",
-        help="Output SQL instead of executing",
-    )
-    migrate_parser.add_argument(
-        "-d",
-        "--directory",
-        help="Migrations directory",
-    )
-
-    # rollback command
-    rollback_parser = subparsers.add_parser("rollback", help="Rollback migrations")
-    rollback_parser.add_argument(
-        "revision",
-        nargs="?",
-        default="-1",
-        help="Target revision (default: -1, use 'base' for all)",
-    )
-    rollback_parser.add_argument(
-        "--sql",
-        action="store_true",
-        help="Output SQL instead of executing",
-    )
-    rollback_parser.add_argument(
-        "-d",
-        "--directory",
-        help="Migrations directory",
-    )
-
-    # showmigrations command
-    show_parser = subparsers.add_parser("showmigrations", help="Show migration status")
-    show_parser.add_argument(
-        "-d",
-        "--directory",
-        help="Migrations directory",
-    )
-
-    # current command
-    current_parser = subparsers.add_parser("current", help="Show current revision")
-    current_parser.add_argument(
-        "-d",
-        "--directory",
-        help="Migrations directory",
-    )
-
-    args = parser.parse_args()
-
-    if args.command == "init":
-        init_migrations(args.directory)
-    elif args.command == "makemigrations":
-        makemigrations(
-            message=args.message,
-            empty=args.empty,
-            migrations_dir=args.directory,
-        )
-    elif args.command == "migrate":
-        migrate(
-            revision=args.revision,
-            migrations_dir=args.directory,
-            sql=args.sql,
-        )
-    elif args.command == "rollback":
-        rollback(
-            revision=args.revision,
-            migrations_dir=args.directory,
-            sql=args.sql,
-        )
-    elif args.command == "showmigrations":
-        showmigrations(migrations_dir=args.directory)
-    elif args.command == "current":
-        current(migrations_dir=args.directory)
+    if applied:
+        last = applied[-1]
+        print(f"Current: {last}")
+        return last
     else:
-        parser.print_help()
-
-
-if __name__ == "__main__":
-    main()
+        print("Current: (no migrations applied)")
+        return None

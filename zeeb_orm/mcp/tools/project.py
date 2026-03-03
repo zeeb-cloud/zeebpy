@@ -261,7 +261,7 @@ def zeeb_delete_app(
     # Optionally remove migrations
     if remove_migrations:
         # Note: This is a simplified approach
-        # Real migration cleanup would need to handle alembic properly
+        # Real migration cleanup would need to handle the migration history properly
         pass
     
     return {
@@ -326,7 +326,7 @@ def zeeb_project_info(project_path: str | None = None) -> dict[str, Any]:
     
     # Check migrations status
     migrations_dir = root / "migrations"
-    has_migrations = migrations_dir.exists() and (migrations_dir / "versions").exists()
+    has_migrations = migrations_dir.exists()
     
     return {
         "success": True,
