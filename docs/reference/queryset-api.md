@@ -318,6 +318,28 @@ ids = await User.objects.values_list("id", flat=True).all()
 
 ---
 
+## Field Selection Methods
+
+### only(\*fields)
+
+Load only the specified fields (plus PK, which is always included).
+
+```python
+# Load only name and email
+users = await User.objects.only("name", "email").all()
+```
+
+### defer(\*fields)
+
+Load all fields except the specified ones (PK is never deferred).
+
+```python
+# Load everything except the large content field
+articles = await Article.objects.defer("content").all()
+```
+
+---
+
 ## Relationship Methods
 
 ### select_related(\*fields)
@@ -494,6 +516,7 @@ users = await User.objects.raw(
 | **Slicing** | `limit()`, `offset()`, `[start:end]` |
 | **Annotation** | `annotate()`, `aggregate()` |
 | **Values** | `values()`, `values_list()` |
+| **Field Selection** | `only()`, `defer()` |
 | **Relations** | `select_related()`, `prefetch_related()` |
 | **Distinct** | `distinct()` |
 | **Update** | `update()`, `bulk_update()` |

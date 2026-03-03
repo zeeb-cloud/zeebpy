@@ -523,14 +523,100 @@ class QuerySet(Generic[ModelT]):
 
         return order_clauses
 
+    def _apply_select_related(self, stmt: Select[Any], table: Any) -> Select[Any]:
+        """Add LEFT JOINs and columns for select_related fields."""
+        from sqlalchemy import outerjoin
+        from zeeb_orm.models.fields import ForeignKeyField
+
+        join_target = table
+        for field_path in self._select_related:
+            parts = field_path.split("__")
+            current_model = self.model
+            current_table = table
+
+            for part in parts:
+                # Find the FK field on the current model
+                fk_field = None
+                for f in current_model._fk_fields:
+                    if f.name == part:
+                        fk_field = f
+                        break
+
+                if fk_field is None:
+                    raise ValueError(
+                        f"select_related: '{part}' is not a ForeignKey field on {current_model.__name__}"
+                    )
+
+                target_model = fk_field.get_target_model()
+                target_table = target_model._get_table()
+
+                # Alias the target table to avoid collisions with repeated joins
+                alias_name = f"_sr_{field_path.replace('__', '_')}_{part}"
+                aliased_table = target_table.alias(alias_name)
+
+                # Add the aliased columns to the select with prefixed labels
+                prefix = field_path.replace("__", "_")
+                for col in aliased_table.c:
+                    stmt = stmt.add_columns(col.label(f"_sr_{prefix}_{col.name}"))
+
+                # JOIN condition: current_table.fk_col = aliased_table.pk
+                fk_col_name = fk_field.db_column or f"{part}_id"
+                fk_col = getattr(current_table.c, fk_col_name, None)
+                pk_col_name = target_model._meta.pk.db_column or target_model._meta.pk_name
+                pk_col = getattr(aliased_table.c, pk_col_name, None)
+
+                if fk_col is not None and pk_col is not None:
+                    join_target = outerjoin(join_target, aliased_table, fk_col == pk_col)
+
+                current_model = target_model
+                current_table = aliased_table
+
+        stmt = stmt.select_from(join_target)
+        return stmt
+
+    def _get_select_columns(self, table: Any) -> list[Any]:
+        """Get columns to select based on only/defer fields."""
+        from zeeb_orm.models.fields import ForeignKeyField
+
+        if self._only_fields is not None:
+            # Select only specified columns (always include PK)
+            pk_col_name = self.model._meta.pk.db_column or self.model._meta.pk_name
+            cols = set()
+            cols.add(pk_col_name)
+            for field_name in self._only_fields:
+                field = self.model._meta.get_field(field_name)
+                if field is not None:
+                    cols.add(field.db_column or field.name)
+                else:
+                    col = getattr(table.c, field_name, None)
+                    if col is not None:
+                        cols.add(field_name)
+            return [getattr(table.c, c) for c in cols if hasattr(table.c, c)]
+
+        if self._defer_fields is not None:
+            # Select all columns except deferred (never defer PK)
+            pk_col_name = self.model._meta.pk.db_column or self.model._meta.pk_name
+            defer_cols = set()
+            for field_name in self._defer_fields:
+                field = self.model._meta.get_field(field_name)
+                if field is not None:
+                    defer_cols.add(field.db_column or field.name)
+                else:
+                    defer_cols.add(field_name)
+            defer_cols.discard(pk_col_name)
+            return [c for c in table.c if c.name not in defer_cols]
+
+        return [table]
+
     def _build_select(self) -> Select[Any]:
         """Build the complete SELECT statement."""
         table = self.model._get_table()
 
-        # Build select columns - table columns plus annotations
+        # Build select columns
+        base_columns = self._get_select_columns(table)
+
         if self._annotations:
-            # Include all table columns plus resolved annotations
-            columns = [table]
+            columns = list(base_columns)
             for alias, expr in self._annotations.items():
                 if hasattr(expr, 'resolve'):
                     columns.append(expr.resolve(self.model).label(alias))
@@ -538,8 +624,7 @@ class QuerySet(Generic[ModelT]):
                     columns.append(literal_column(str(expr)).label(alias))
             stmt = select(*columns)
         else:
-            # Use table-based select (simpler and avoids ORM complexity)
-            stmt = select(table)
+            stmt = select(*base_columns)
 
         # Apply filters
         where_clause = self._build_where_clause()
@@ -562,6 +647,10 @@ class QuerySet(Generic[ModelT]):
                     if col is not None:
                         stmt = stmt.order_by(col.asc())
 
+        # Apply select_related JOINs
+        if self._select_related:
+            stmt = self._apply_select_related(stmt, table)
+
         # Apply distinct
         if self._distinct_fields:
             stmt = stmt.distinct()
@@ -571,9 +660,6 @@ class QuerySet(Generic[ModelT]):
             stmt = stmt.limit(self._limit)
         if self._offset is not None:
             stmt = stmt.offset(self._offset)
-
-        # Note: select_related and prefetch_related would need ORM-style queries
-        # For now, we use the simpler table-based approach
 
         return stmt
 
@@ -587,6 +673,11 @@ class QuerySet(Generic[ModelT]):
         from zeeb_orm.db.connection import get_connection
 
         db = await get_connection(self._db_alias)
+
+        # Handle raw SQL mode
+        if self._raw_sql is not None:
+            return await self._fetch_raw(db)
+
         stmt = self._build_select()
 
         async with db.session() as session:
@@ -637,10 +728,193 @@ class QuerySet(Generic[ModelT]):
                     for alias in self._annotations:
                         if alias in row._mapping:
                             setattr(instance, alias, row._mapping[alias])
+                # Hydrate select_related objects from joined columns
+                if self._select_related and hasattr(row, "_mapping"):
+                    self._hydrate_select_related(instance, row._mapping)
+                instances.append(instance)
+
+            # Handle prefetch_related after main fetch
+            if self._prefetch_related and instances:
+                await self._do_prefetch_related(instances, db)
+
+            self._result_cache = instances
+            return instances
+
+    async def _fetch_raw(self, db: Any) -> list[Any]:
+        """Execute a raw SQL query and return model instances."""
+        from sqlalchemy import text
+
+        async with db.session() as session:
+            stmt = text(self._raw_sql)
+            params = {}
+            if self._raw_params:
+                # Support both positional (list) and named (dict) params
+                if isinstance(self._raw_params, dict):
+                    params = self._raw_params
+                else:
+                    # Convert positional list to dict with :param_0, :param_1, etc.
+                    params = {f"param_{i}": v for i, v in enumerate(self._raw_params)}
+                    # Replace ? placeholders with :param_N
+                    sql = self._raw_sql
+                    for i in range(len(self._raw_params)):
+                        sql = sql.replace("?", f":param_{i}", 1)
+                    stmt = text(sql)
+
+            result = await session.execute(stmt, params)
+            rows = result.fetchall()
+
+            instances = []
+            for row in rows:
+                instance = self.model._from_row(row)
                 instances.append(instance)
 
             self._result_cache = instances
             return instances
+
+    def _hydrate_select_related(self, instance: Any, mapping: Any) -> None:
+        """Populate select_related objects from joined row data."""
+        from zeeb_orm.models.fields import ForeignKeyField
+
+        for field_path in self._select_related:
+            parts = field_path.split("__")
+            current_model = self.model
+            current_instance = instance
+
+            for i, part in enumerate(parts):
+                # Find FK field
+                fk_field = None
+                for f in current_model._fk_fields:
+                    if f.name == part:
+                        fk_field = f
+                        break
+                if fk_field is None:
+                    break
+
+                target_model = fk_field.get_target_model()
+                prefix = "_".join(parts[: i + 1])
+
+                # Extract related object data from the row
+                related_kwargs = {}
+                has_data = False
+                for field in target_model._meta.local_fields:
+                    col_name = field.db_column or field.name
+                    key = f"_sr_{prefix}_{col_name}"
+                    value = mapping.get(key)
+                    if value is not None:
+                        has_data = True
+                    if isinstance(field, ForeignKeyField):
+                        related_kwargs[f"{field.name}_id"] = value
+                    else:
+                        related_kwargs[field.name] = value
+
+                if has_data:
+                    related_obj = target_model(**related_kwargs)
+                    related_obj._state.persisted = True
+                    # Cache on the instance so FK access returns it directly
+                    setattr(current_instance, f"_cache_{part}", related_obj)
+                    current_model = target_model
+                    current_instance = related_obj
+                else:
+                    break
+
+    async def _do_prefetch_related(self, instances: list[Any], db: Any) -> None:
+        """Execute separate queries for prefetch_related lookups."""
+        from zeeb_orm.models.fields import ForeignKeyField
+
+        for lookup in self._prefetch_related:
+            if isinstance(lookup, Prefetch):
+                field_name = lookup.lookup
+                custom_qs = lookup.queryset
+                to_attr = lookup.to_attr
+            else:
+                field_name = str(lookup)
+                custom_qs = None
+                to_attr = None
+
+            attr_name = to_attr or field_name
+
+            # Determine if this is a FK relation (forward) or reverse relation
+            fk_field = None
+            for f in self.model._fk_fields:
+                if f.name == field_name:
+                    fk_field = f
+                    break
+
+            if fk_field is not None:
+                # Forward FK prefetch: collect FK IDs and fetch target objects
+                target_model = fk_field.get_target_model()
+                fk_ids = set()
+                for inst in instances:
+                    fk_id = getattr(inst, f"_field_{field_name}_id", None)
+                    if fk_id is not None:
+                        fk_ids.add(fk_id)
+
+                if not fk_ids:
+                    continue
+
+                if custom_qs is not None:
+                    related_qs = custom_qs.filter(pk__in=list(fk_ids))
+                else:
+                    related_qs = QuerySet(target_model).filter(pk__in=list(fk_ids))
+                related_qs._db_alias = self._db_alias
+
+                related_objects = await related_qs._fetch_all()
+                pk_name = target_model._meta.pk_name
+                related_map = {getattr(obj, pk_name): obj for obj in related_objects}
+
+                for inst in instances:
+                    fk_id = getattr(inst, f"_field_{field_name}_id", None)
+                    if fk_id is not None and fk_id in related_map:
+                        setattr(inst, f"_cache_{field_name}", related_map[fk_id])
+            else:
+                # Reverse relation prefetch: find which model has FK pointing to us
+                from zeeb_orm.models.base import _model_registry
+
+                related_model = None
+                reverse_fk_name = None
+
+                # Check if field_name matches a related_name or {model}_set pattern
+                for model_cls in _model_registry.values():
+                    for fk in getattr(model_cls, '_fk_fields', []):
+                        target = fk.get_target_model()
+                        if target is self.model:
+                            rel_name = fk.related_name or f"{model_cls.__name__.lower()}_set"
+                            if rel_name == field_name:
+                                related_model = model_cls
+                                reverse_fk_name = fk.db_column or f"{fk.name}_id"
+                                break
+                    if related_model is not None:
+                        break
+
+                if related_model is None:
+                    continue
+
+                pk_name = self.model._meta.pk_name
+                parent_pks = [getattr(inst, pk_name) for inst in instances]
+
+                if custom_qs is not None:
+                    related_qs = custom_qs.filter(**{f"{reverse_fk_name}__in": parent_pks})
+                else:
+                    related_qs = QuerySet(related_model).filter(
+                        **{f"{reverse_fk_name}__in": parent_pks}
+                    )
+                related_qs._db_alias = self._db_alias
+
+                related_objects = await related_qs._fetch_all()
+
+                # Group by FK value
+                grouped: dict[Any, list[Any]] = {}
+                for obj in related_objects:
+                    fk_val = getattr(obj, f"_field_{reverse_fk_name}", None)
+                    if fk_val is None:
+                        # Try direct attribute
+                        fk_val = getattr(obj, reverse_fk_name, None)
+                    if fk_val is not None:
+                        grouped.setdefault(fk_val, []).append(obj)
+
+                for inst in instances:
+                    pk_val = getattr(inst, pk_name)
+                    setattr(inst, attr_name, grouped.get(pk_val, []))
 
     async def __aiter__(self) -> AsyncIterator[Any]:
         """Async iteration support."""

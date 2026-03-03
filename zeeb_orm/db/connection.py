@@ -289,17 +289,22 @@ async def atomic(using: str | None = None) -> AsyncGenerator[AsyncSession, None]
             await Post.objects.create(title='Hello')
             # Both committed together or rolled back on error
     """
+    from zeeb_orm.db.transaction import _on_commit_callbacks, _run_on_commit_callbacks
+
     db = await get_connection(using)
 
     async with db.session() as session:
         token = _active_session.set(session)
+        cb_token = _on_commit_callbacks.set([])
         try:
             yield session
             await session.commit()
+            _run_on_commit_callbacks()
         except Exception:
             await session.rollback()
             raise
         finally:
+            _on_commit_callbacks.reset(cb_token)
             _active_session.reset(token)
 
 
