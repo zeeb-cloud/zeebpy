@@ -430,5 +430,110 @@ async def test_model_delete(db):
     assert exists is False
 
 
+# Tests for previously no-op features
+
+
+@pytest.mark.asyncio
+async def test_only_fields(db):
+    """Test only() selects specific columns."""
+    await User.objects.create(name="Alice", email="alice@example.com", age=25)
+
+    users = await User.objects.only("name")
+    assert len(users) == 1
+    assert users[0].name == "Alice"
+    assert users[0].id is not None  # PK always included
+
+
+@pytest.mark.asyncio
+async def test_defer_fields(db):
+    """Test defer() excludes specific columns."""
+    await User.objects.create(name="Alice", email="alice@example.com", age=25)
+
+    users = await User.objects.defer("age")
+    assert len(users) == 1
+    assert users[0].name == "Alice"
+    assert users[0].email == "alice@example.com"
+
+
+@pytest.mark.asyncio
+async def test_raw_query(db):
+    """Test raw() executes raw SQL."""
+    await User.objects.create(name="Alice", email="alice@example.com", age=25)
+    await User.objects.create(name="Bob", email="bob@example.com", age=30)
+
+    table_name = User._meta.db_table
+    users = await User.objects.raw(f"SELECT * FROM {table_name} WHERE age > 26")
+    assert len(users) == 1
+    assert users[0].name == "Bob"
+
+
+@pytest.mark.asyncio
+async def test_select_related(db):
+    """Test select_related() loads FK objects via JOIN."""
+    user = await User.objects.create(name="Alice", email="alice@example.com", age=25)
+    post = await Post.objects.create(
+        title="Test Post", content="Content", author=user, published=True
+    )
+
+    posts = await Post.objects.select_related("author").filter(id=post.id)
+    assert len(posts) == 1
+    p = posts[0]
+    # The related author should be cached — no lazy load needed
+    cached = getattr(p, "_cache_author", None)
+    assert cached is not None
+    assert cached.name == "Alice"
+
+
+@pytest.mark.asyncio
+async def test_prefetch_related_reverse(db):
+    """Test prefetch_related() loads reverse FK objects."""
+    user = await User.objects.create(name="Alice", email="alice@example.com", age=25)
+    await Post.objects.create(
+        title="Post 1", content="C1", author=user, published=True
+    )
+    await Post.objects.create(
+        title="Post 2", content="C2", author=user, published=False
+    )
+
+    users = await User.objects.prefetch_related("posts").filter(id=user.id)
+    assert len(users) == 1
+    u = users[0]
+    assert hasattr(u, "posts")
+    assert len(u.posts) == 2
+
+
+@pytest.mark.asyncio
+async def test_on_commit(db):
+    """Test on_commit() runs callbacks after commit."""
+    from zeeb_orm.db.connection import atomic
+    from zeeb_orm.db.transaction import on_commit
+
+    results = []
+
+    async with atomic():
+        await User.objects.create(name="Alice", email="alice@example.com")
+        on_commit(lambda: results.append("committed"))
+
+    assert results == ["committed"]
+
+
+@pytest.mark.asyncio
+async def test_on_commit_not_called_on_rollback(db):
+    """Test on_commit() callbacks are NOT called on rollback."""
+    from zeeb_orm.db.connection import atomic
+    from zeeb_orm.db.transaction import on_commit
+
+    results = []
+
+    try:
+        async with atomic():
+            on_commit(lambda: results.append("committed"))
+            raise ValueError("force rollback")
+    except ValueError:
+        pass
+
+    assert results == []
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

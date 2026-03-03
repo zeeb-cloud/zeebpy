@@ -529,6 +529,19 @@ async with atomic():
 
 Operations inside `atomic()` share the same database session, ensuring proper transaction isolation.
 
+### on_commit
+
+Register a callback that runs only after the transaction successfully commits:
+
+```python
+from zeeb_orm.db.transaction import on_commit
+
+async with atomic():
+    user = await User.objects.create(name="John", email="john@example.com")
+    on_commit(lambda: send_welcome_email(user.email))
+    # If the transaction rolls back, the email is never sent
+```
+
 ## QuerySet Chaining
 
 QuerySets are lazy and chainable:
