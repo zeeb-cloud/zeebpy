@@ -54,20 +54,17 @@ def _register_models(project_root: Path | None = None) -> None:
                     auth_user_model = getattr(settings_module, "AUTH_USER_MODEL", None)
                 break
 
-        # Register auth models
+        # Register auth models — Permission first (no FK dependencies)
         try:
             from zeeb_api.auth.models import Permission
             Permission._get_table()
             if not auth_user_model:
-                # Only register default User and UserPermission when no custom
-                # user model is configured — UserPermission has a FK to auth_users
-                from zeeb_api.auth.models import User, UserPermission
+                from zeeb_api.auth.models import User
                 User._get_table()
-                UserPermission._get_table()
         except Exception:
             pass
 
-        # Register models from installed apps
+        # Register models from installed apps (including custom user models)
         for app in installed_apps:
             if app == "zeeb_auth":
                 continue
@@ -104,6 +101,29 @@ def _register_models(project_root: Path | None = None) -> None:
                     f"Could not import models from app '{app}': {last_error}",
                     stacklevel=2,
                 )
+
+        # Clear cached user model so it re-resolves with sys.path set up
+        try:
+            from zeeb_api.auth.backends import clear_user_model_cache
+            clear_user_model_cache()
+        except Exception:
+            pass
+
+        # Register UserPermission after app models so that the user FK
+        # target (default User or custom user model) is already available
+        try:
+            from zeeb_api.auth.models import UserPermission
+            UserPermission._get_table()
+        except Exception:
+            pass
+
+        # Resolve any pending reverse relations (callable FK targets that
+        # were deferred during import are now resolvable)
+        try:
+            from zeeb_orm.models.base import _process_pending_relations
+            _process_pending_relations(resolve_callables=True)
+        except Exception:
+            pass
     finally:
         if str(project_root) in sys.path:
             sys.path.remove(str(project_root))

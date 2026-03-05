@@ -218,6 +218,10 @@ AUTHENTICATION_BACKENDS = [
 
 ## Permissions
 
+Permissions work with both the default `User` and custom user models.
+When `AUTH_USER_MODEL` is set, `UserPermission` automatically references
+the configured user model.
+
 ### Permission Model
 
 ```python
@@ -227,14 +231,13 @@ from zeeb_api.auth.models import Permission, UserPermission
 perm = await Permission.objects.create(
     codename="publish_article",
     name="Can publish articles",
-    content_type="article",
 )
 
-# Assign to user
-await UserPermission.objects.create(user=user, permission=perm)
+# Assign to user (works with default or custom user model)
+await UserPermission.objects.create(user_id=user.id, permission_id=perm.id)
 
 # Check permission
-if await user.has_perm("article.publish_article"):
+if await user.has_perm_async("publish_article"):
     # User can publish
     ...
 ```

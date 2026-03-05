@@ -124,8 +124,12 @@ def get_user_model() -> type:
                 _user_model_cache = _resolve_model_string(auth_user_model)
                 return _user_model_cache
             except (ImportError, ValueError) as e:
-                # Log warning but fall back to default
-                print(f"Warning: {e}")
+                # Don't cache fallback — the model may become resolvable
+                # once sys.path is fully set up (e.g. inside _register_models)
+                import warnings
+                warnings.warn(str(e), stacklevel=2)
+                from zeeb_api.auth.models import User
+                return User
     
     # Fall back to default User model
     from zeeb_api.auth.models import User

@@ -275,14 +275,27 @@ def _make_filter_method(permission_type: str, rule: Rule):
 _pending_relations: list[tuple[type, Any]] = []
 
 
-def _process_pending_relations() -> None:
-    """Process pending reverse relations."""
+def _process_pending_relations(resolve_callables: bool = False) -> None:
+    """Process pending reverse relations.
+
+    Args:
+        resolve_callables: If True, also resolve callable FK targets
+            (e.g. ``get_user_model``).  Set to True after all models
+            and settings have been loaded (inside ``_register_models``).
+    """
     from zeeb_orm.models.manager import RelatedManagerDescriptor
 
     still_pending = []
 
     for source_model, fk_field in _pending_relations:
         try:
+            # Callable FK targets (e.g. get_user_model) may not be resolvable
+            # during import — keep them pending until _register_models() runs
+            if (not resolve_callables
+                    and callable(fk_field.to)
+                    and not isinstance(fk_field.to, type)):
+                still_pending.append((source_model, fk_field))
+                continue
             target_model = fk_field.get_target_model()
 
             # Determine the reverse accessor name
