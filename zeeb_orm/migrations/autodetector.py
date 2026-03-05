@@ -21,15 +21,6 @@ from zeeb_orm.migrations.operations import (
 )
 
 
-def _get_sync_url(url: str) -> str:
-    """Convert async database URL to sync driver."""
-    return (
-        url.replace("+asyncpg", "")
-        .replace("+aiomysql", "")
-        .replace("+aiosqlite", "")
-    )
-
-
 def _table_name_to_model_name(table_name: str) -> str:
     """Guess a model name from a table name (e.g. 'blog_posts' -> 'Post')."""
     from zeeb_orm.models.base import _model_registry
@@ -43,37 +34,66 @@ def _table_name_to_model_name(table_name: str) -> str:
     return "".join(p.capitalize() for p in parts)
 
 
-def detect_changes(database_url: str | None = None) -> list[Operation]:
+def detect_changes(
+    database_url: str | None = None,
+    migrations_dir: str | None = None,
+) -> list[Operation]:
     """
-    Compare current model state against the database and return operations.
+    Compare current model state against existing migration state and return operations.
 
     This is the core of ``makemigrations`` — it detects what changed.
 
+    Instead of comparing against the live database (which would re-detect
+    already-migrated changes if migrations haven't been applied yet), this
+    replays all existing migration files into an in-memory SQLite database
+    and compares the model metadata against that state.
+
     Args:
-        database_url: Database URL. If None, reads from settings.
+        database_url: Unused, kept for backward compatibility.
+        migrations_dir: Path to the migrations directory. If None, auto-detected.
 
     Returns:
         List of Operation objects representing detected changes.
     """
-    from sqlalchemy import create_engine, MetaData as SAMetaData, inspect as sa_inspect
+    from pathlib import Path
+    from sqlalchemy import create_engine
     from alembic.autogenerate import compare_metadata
     from alembic.runtime.migration import MigrationContext
 
     from zeeb_orm.models.base import metadata
+    from zeeb_orm.migrations.executor import list_migration_files, load_migration
 
-    if database_url is None:
-        from zeeb_orm.conf.settings import get_settings
-        database_url = get_settings().database.url
+    # Resolve migrations directory
+    if migrations_dir is not None:
+        mig_dir = Path(migrations_dir)
+    else:
+        from zeeb_orm.migrations.state import find_project_root
+        project_root = find_project_root() or Path.cwd()
+        mig_dir = project_root / "migrations"
 
-    sync_url = _get_sync_url(database_url)
-    engine = create_engine(sync_url)
-
+    # Build migration state in an in-memory SQLite database by replaying
+    # all existing migration files forward.
+    mem_engine = create_engine("sqlite:///:memory:")
     try:
-        with engine.connect() as conn:
+        all_migrations = list_migration_files(mig_dir)
+        if all_migrations:
+            with mem_engine.connect() as conn:
+                for _name, path in all_migrations:
+                    mig = load_migration(path)
+                    for op in mig.operations:
+                        try:
+                            op.forward(conn)
+                        except Exception:
+                            # Skip operations that fail in SQLite (e.g. unsupported types)
+                            pass
+                    conn.commit()
+
+        # Compare model metadata against the in-memory migration state
+        with mem_engine.connect() as conn:
             migration_ctx = MigrationContext.configure(conn)
             diffs = compare_metadata(migration_ctx, metadata)
     finally:
-        engine.dispose()
+        mem_engine.dispose()
 
     return _convert_diffs(diffs)
 

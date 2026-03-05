@@ -102,9 +102,6 @@ def run_makemigrations(app: str | None, name: str | None, empty: bool) -> int:
     # Register all models
     _register_models(project_root)
 
-    settings = load_project_settings(project_root)
-    db_url = settings.get("DATABASE", {}).get("url", "sqlite:///db.sqlite3")
-
     installed_apps = get_installed_apps(project_root)
     print("Checking for model changes in installed apps:")
     for app_name in installed_apps:
@@ -122,8 +119,8 @@ def run_makemigrations(app: str | None, name: str | None, empty: bool) -> int:
         print(f"\nEmpty migration created — edit it to add custom operations.")
         return 0
 
-    # Detect changes
-    operations = detect_changes(db_url)
+    # Detect changes against existing migration state
+    operations = detect_changes(migrations_dir=str(migrations_dir))
 
     if not operations:
         print("\nNo changes detected.")
