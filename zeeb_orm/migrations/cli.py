@@ -56,12 +56,14 @@ def _register_models(project_root: Path | None = None) -> None:
 
         # Register auth models
         try:
-            from zeeb_api.auth.models import Permission, UserPermission
+            from zeeb_api.auth.models import Permission
             Permission._get_table()
-            UserPermission._get_table()
             if not auth_user_model:
-                from zeeb_api.auth.models import User
+                # Only register default User and UserPermission when no custom
+                # user model is configured — UserPermission has a FK to auth_users
+                from zeeb_api.auth.models import User, UserPermission
                 User._get_table()
+                UserPermission._get_table()
         except Exception:
             pass
 
