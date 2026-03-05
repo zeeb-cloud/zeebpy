@@ -85,7 +85,7 @@ def run_init(directory: str) -> int:
     return 0
 
 
-def run_makemigrations(app: str | None, name: str | None, empty: bool) -> int:
+def run_makemigrations(name: str | None, empty: bool) -> int:
     """Create new migration files by detecting model changes."""
     from zeeb_orm.migrations.autodetector import detect_changes
     from zeeb_orm.migrations.writer import write_migration
@@ -145,7 +145,7 @@ def run_makemigrations(app: str | None, name: str | None, empty: bool) -> int:
     return 0
 
 
-def run_migrate(app: str | None, migration: str | None, rollback_steps: int | None, fake: bool) -> int:
+def run_migrate(migration: str | None, rollback_steps: int | None, fake: bool) -> int:
     """Apply or rollback migrations."""
     from zeeb_orm.migrations import executor
 
@@ -220,7 +220,7 @@ def run_migrate(app: str | None, migration: str | None, rollback_steps: int | No
     return 0
 
 
-def run_showmigrations(app: str | None) -> int:
+def run_showmigrations() -> int:
     """Show migration status."""
     from zeeb_orm.migrations import executor
 
