@@ -14,7 +14,7 @@ Usage (from project directory):
 Commands:
     startproject <name>     Create a new Zeeb project
     startapp <name>         Create a new app within a project
-    makemigrations [app]    Create new migrations
+    makemigrations              Create new migrations
     migrate [migration]     Apply migrations
     showmigrations          Show migration status
     createsuperuser         Create a superuser account
@@ -60,20 +60,17 @@ def main() -> int:
 
     # makemigrations
     sp_makemig = subparsers.add_parser("makemigrations", help="Create new migrations")
-    sp_makemig.add_argument("app", nargs="?", help="App name (optional)")
     sp_makemig.add_argument("--name", "-n", help="Migration name")
     sp_makemig.add_argument("--empty", action="store_true", help="Create empty migration")
 
     # migrate
     sp_migrate = subparsers.add_parser("migrate", help="Apply migrations")
-    sp_migrate.add_argument("app", nargs="?", help="App name (optional)")
-    sp_migrate.add_argument("migration", nargs="?", help="Migration name (optional)")
+    sp_migrate.add_argument("migration", nargs="?", help="Migration name or 'zero' (optional)")
     sp_migrate.add_argument("--rollback", "-r", type=int, metavar="N", help="Rollback N migrations")
     sp_migrate.add_argument("--fake", action="store_true", help="Mark as applied without running")
 
     # showmigrations
     sp_showmig = subparsers.add_parser("showmigrations", help="Show migration status")
-    sp_showmig.add_argument("app", nargs="?", help="App name (optional)")
 
     # shell
     sp_shell = subparsers.add_parser("shell", help="Start interactive Python shell")
@@ -137,15 +134,15 @@ def main() -> int:
 
     elif args.command == "makemigrations":
         from zeeb_orm.cli.commands.migrate import run_makemigrations
-        return run_makemigrations(args.app, args.name, args.empty)
+        return run_makemigrations(args.name, args.empty)
 
     elif args.command == "migrate":
         from zeeb_orm.cli.commands.migrate import run_migrate
-        return run_migrate(args.app, args.migration, args.rollback, args.fake)
+        return run_migrate(args.migration, args.rollback, args.fake)
 
     elif args.command == "showmigrations":
         from zeeb_orm.cli.commands.migrate import run_showmigrations
-        return run_showmigrations(args.app)
+        return run_showmigrations()
 
     elif args.command == "shell":
         from zeeb_orm.cli.commands.shell import run_shell
