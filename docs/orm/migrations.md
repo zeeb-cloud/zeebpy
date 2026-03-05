@@ -168,6 +168,12 @@ class Migration(Migration):
 
 ### Auto-detection
 
+Zeeb compares your current model definitions against the **state described by existing migration files** (not the live database). This means:
+
+- Running `makemigrations` multiple times without model changes produces no duplicate migrations
+- You don't need to apply migrations before generating new ones
+- Changes are detected reliably regardless of the database state
+
 Zeeb auto-detects these changes:
 
 - **Tables**: Create, drop
@@ -294,6 +300,34 @@ Or disable the check in settings:
 # settings.py
 CHECK_MIGRATIONS_ON_STARTUP = False
 ```
+
+### "No changes detected" when changes exist
+
+If `makemigrations` says "No changes detected" but you've added or modified models, make sure:
+
+1. Your app is listed in `INSTALLED_APPS` in `settings.py`
+2. Your models are defined in the app's `models.py` file
+3. Your models inherit from `Model` and are not abstract
+
+```python
+# settings.py
+INSTALLED_APPS = [
+    "apps.blog",   # ✓ App must be listed here
+]
+```
+
+### App models not detected
+
+If `makemigrations` doesn't find your app's models, check the console for warnings like:
+
+```
+UserWarning: Could not import models from app 'apps.myapp': No module named 'apps.myapp.models'
+```
+
+Common causes:
+- Missing `models.py` in the app directory
+- Missing `__init__.py` in the app or `apps/` directory
+- Import errors within the models file (check the warning message)
 
 ## Best Practices
 

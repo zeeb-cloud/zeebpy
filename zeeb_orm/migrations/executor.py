@@ -58,14 +58,8 @@ def get_migrations_dir(project_root: Path | None = None) -> Path:
 
 
 def _find_project_root() -> Path | None:
-    current = Path.cwd()
-    while current != current.parent:
-        if (current / "manage.py").exists():
-            return current
-        if (current / "migrations").exists():
-            return current
-        current = current.parent
-    return None
+    from zeeb_orm.migrations.state import find_project_root
+    return find_project_root()
 
 
 def list_migration_files(migrations_dir: Path) -> list[tuple[str, Path]]:

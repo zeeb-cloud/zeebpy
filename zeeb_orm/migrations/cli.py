@@ -13,14 +13,8 @@ from typing import Any
 
 
 def _find_project_root() -> Path | None:
-    current = Path.cwd()
-    while current != current.parent:
-        if (current / "manage.py").exists():
-            return current
-        if (current / "migrations").exists():
-            return current
-        current = current.parent
-    return None
+    from zeeb_orm.migrations.state import find_project_root
+    return find_project_root()
 
 
 def _get_database_url() -> str:
@@ -46,8 +40,9 @@ def _register_models(project_root: Path | None = None) -> None:
 
     sys.path.insert(0, str(project_root))
     try:
-        # Load settings to get INSTALLED_APPS
+        # Load settings to get INSTALLED_APPS and AUTH_USER_MODEL
         installed_apps: list[str] = []
+        auth_user_model: str | None = None
         for item in project_root.iterdir():
             if item.is_dir() and (item / "settings.py").exists():
                 import importlib.util
@@ -56,6 +51,7 @@ def _register_models(project_root: Path | None = None) -> None:
                     settings_module = importlib.util.module_from_spec(spec)
                     spec.loader.exec_module(settings_module)
                     installed_apps = list(getattr(settings_module, "INSTALLED_APPS", []))
+                    auth_user_model = getattr(settings_module, "AUTH_USER_MODEL", None)
                 break
 
         # Register auth models
@@ -63,17 +59,7 @@ def _register_models(project_root: Path | None = None) -> None:
             from zeeb_api.auth.models import Permission, UserPermission
             Permission._get_table()
             UserPermission._get_table()
-            auth_user = None
-            for item in project_root.iterdir():
-                if item.is_dir() and (item / "settings.py").exists():
-                    import importlib.util
-                    spec = importlib.util.spec_from_file_location("settings", item / "settings.py")
-                    if spec and spec.loader:
-                        mod = importlib.util.module_from_spec(spec)
-                        spec.loader.exec_module(mod)
-                        auth_user = getattr(mod, "AUTH_USER_MODEL", None)
-                    break
-            if not auth_user:
+            if not auth_user_model:
                 from zeeb_api.auth.models import User
                 User._get_table()
         except Exception:
@@ -84,17 +70,38 @@ def _register_models(project_root: Path | None = None) -> None:
             if app == "zeeb_auth":
                 continue
             clean_name = app.replace("apps.", "")
-            try:
-                import importlib
-                models_module = importlib.import_module(f"apps.{clean_name}.models")
-                for name in dir(models_module):
-                    obj = getattr(models_module, name)
-                    if (isinstance(obj, type) and issubclass(obj, Model)
-                            and obj is not Model
-                            and not getattr(obj._meta, 'abstract', False)):
-                        obj._get_table()
-            except Exception:
-                pass
+            import importlib
+            import warnings
+
+            # Try multiple import paths for flexibility
+            import_paths = [f"apps.{clean_name}.models"]
+            if not app.startswith("apps."):
+                import_paths.append(f"{app}.models")
+
+            imported = False
+            last_error = None
+            for import_path in import_paths:
+                try:
+                    models_module = importlib.import_module(import_path)
+                    for name in dir(models_module):
+                        obj = getattr(models_module, name)
+                        if (isinstance(obj, type) and issubclass(obj, Model)
+                                and obj is not Model
+                                and not getattr(obj._meta, 'abstract', False)):
+                            obj._get_table()
+                    imported = True
+                    break
+                except ImportError as e:
+                    last_error = e
+                except Exception as e:
+                    last_error = e
+                    break  # Non-import errors are real problems
+
+            if not imported and last_error is not None:
+                warnings.warn(
+                    f"Could not import models from app '{app}': {last_error}",
+                    stacklevel=2,
+                )
     finally:
         if str(project_root) in sys.path:
             sys.path.remove(str(project_root))
@@ -155,9 +162,8 @@ def makemigrations(
         print(f"\nEmpty migration created — edit it to add custom operations.")
         return migration_name
 
-    # Detect changes
-    db_url = _get_database_url()
-    operations = detect_changes(db_url)
+    # Detect changes against existing migration state
+    operations = detect_changes(migrations_dir=str(mig_dir))
 
     if not operations:
         print("No changes detected.")
