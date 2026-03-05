@@ -286,7 +286,7 @@ class Comment(Model):
 ```
 
 **Options:**
-- `to` - Related model (class, string, or `"self"` for self-referential)
+- `to` - Related model (class, string, callable returning a class, or `"self"` for self-referential)
 - `on_delete` (required) - Deletion behavior:
   - `"CASCADE"` - Delete related objects
   - `"PROTECT"` - Prevent deletion

@@ -280,6 +280,22 @@ SELECT * FROM zeeb_migrations;
 -- 2  | 0002_add_profile  | 2024-01-16T09:00:00
 ```
 
+## Custom User Models
+
+When using a custom user model via `AUTH_USER_MODEL`, the migration system
+automatically handles the `UserPermission` table.  Its foreign key points to
+whichever user model is configured — no extra setup needed.
+
+```python
+# settings.py
+AUTH_USER_MODEL = "apps.accounts.CustomUser"
+```
+
+```bash
+python manage.py makemigrations
+# → Creates migration with CustomUser, Permission, and UserPermission
+```
+
 ## Troubleshooting
 
 ### Pending Migrations Error

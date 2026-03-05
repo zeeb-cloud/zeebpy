@@ -5,7 +5,7 @@ from __future__ import annotations
 import datetime
 import decimal
 import uuid
-from typing import TYPE_CHECKING, Any, Generic, TypeVar, overload
+from typing import TYPE_CHECKING, Any, Callable, Generic, TypeVar, overload
 
 from sqlalchemy import (
     JSON,
@@ -335,7 +335,7 @@ class ForeignKeyField(Field[ModelT]):
 
     def __init__(
         self,
-        to: type[ModelT] | str,
+        to: type[ModelT] | str | Callable[[], type[ModelT]],
         *,
         on_delete: str = "CASCADE",
         related_name: str | None = None,
@@ -350,7 +350,16 @@ class ForeignKeyField(Field[ModelT]):
         super().__init__(null=null, **kwargs)
 
     def get_target_model(self) -> type[Model]:
-        """Resolve the target model class."""
+        """Resolve the target model class.
+
+        Supports three forms for ``to``:
+        - A model **class** (returned as-is).
+        - A **string** name looked up in the model registry (e.g. ``"User"``).
+        - A **callable** that returns the model class (lazy resolution,
+          useful for swappable models like ``AUTH_USER_MODEL``).
+        """
+        if callable(self.to) and not isinstance(self.to, type):
+            return self.to()
         if isinstance(self.to, str):
             # Handle self-referential ForeignKey
             if self.to == "self":
@@ -462,7 +471,7 @@ class ForeignKeyLazyLoader:
 class OneToOneField(ForeignKeyField[ModelT]):
     """One-to-one relationship field."""
 
-    def __init__(self, to: type[ModelT] | str, **kwargs: Any) -> None:
+    def __init__(self, to: type[ModelT] | str | Callable[[], type[ModelT]], **kwargs: Any) -> None:
         kwargs.setdefault("unique", True)
         super().__init__(to, **kwargs)
 

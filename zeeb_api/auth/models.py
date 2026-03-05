@@ -17,6 +17,17 @@ from zeeb_orm import Model, fields
 from zeeb_api.auth.hashers import make_password, check_password, is_password_usable
 
 
+def _get_user_model() -> type:
+    """Lazy resolver for the configured user model.
+
+    Used as a callable FK target so that ``UserPermission.user`` always
+    points to whatever model ``AUTH_USER_MODEL`` resolves to (or the
+    default ``User`` when no custom model is configured).
+    """
+    from zeeb_api.auth.backends import get_user_model
+    return get_user_model()
+
+
 class AbstractBaseUser(Model):
     """
     Abstract base user with password functionality.
@@ -234,7 +245,7 @@ class UserPermission(Model):
         )
     """
     
-    user = fields.ForeignKey("User", related_name="user_permissions")
+    user = fields.ForeignKey(_get_user_model, related_name="user_permissions")
     permission = fields.ForeignKey(Permission, related_name="user_permissions")
     
     class Meta:
