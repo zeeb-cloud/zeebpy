@@ -199,12 +199,23 @@ def run_migrate(migration: str | None, rollback_steps: int | None, fake: bool) -
                 return 1
 
         print(f"Migrating to: {target}")
-        applied = executor.migrate(target=target, database_url=db_url, project_root=project_root, fake=fake)
-        for name in applied:
-            prefix = "  Faking" if fake else "  Applying"
-            print(f"{prefix} {name}... OK")
-        if not applied:
-            print("  No migrations to apply.")
+        # Determine direction: if target is already applied, we're rolling back
+        status = executor.showmigrations(database_url=db_url, project_root=project_root)
+        applied_set = {name for name, is_applied in status if is_applied}
+        is_rollback = target == "zero" or target in applied_set
+
+        result = executor.migrate(target=target, database_url=db_url, project_root=project_root, fake=fake)
+        for name in result:
+            if is_rollback:
+                print(f"  Unapplying {name}... OK")
+            else:
+                prefix = "  Faking" if fake else "  Applying"
+                print(f"{prefix} {name}... OK")
+        if not result:
+            if is_rollback:
+                print("  No migrations to unapply.")
+            else:
+                print("  No migrations to apply.")
 
     else:
         # Apply all pending
