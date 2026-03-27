@@ -543,6 +543,11 @@ class DefaultRouter(SimpleRouter):
             for route_prefix, viewset, basename in router._registry:
                 combined_prefix = f"{prefix.strip('/')}/{route_prefix.strip('/')}" if prefix else route_prefix
                 self._registry.append((combined_prefix, viewset, basename))
+            # Propagate raw APIRouters from nested DefaultRouters
+            if hasattr(router, '_api_routers'):
+                for api_prefix, api_router in router._api_routers:
+                    combined = f"{prefix.strip('/')}/{api_prefix.strip('/')}" if prefix and api_prefix else (prefix or api_prefix)
+                    self._api_routers.append((combined, api_router))
         elif isinstance(router, APIRouter):
             # Include FastAPI APIRouter directly (like auth_patterns)
             self._api_routers.append((prefix, router))
