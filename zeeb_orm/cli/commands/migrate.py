@@ -85,7 +85,7 @@ def run_init(directory: str) -> int:
     return 0
 
 
-def run_makemigrations(name: str | None, empty: bool) -> int:
+def run_makemigrations(name: str | None, empty: bool, check: bool = False, dry_run: bool = False) -> int:
     """Create new migration files by detecting model changes."""
     from zeeb_orm.migrations.autodetector import detect_changes
     from zeeb_orm.migrations.writer import write_migration
@@ -97,7 +97,8 @@ def run_makemigrations(name: str | None, empty: bool) -> int:
         return 1
 
     migrations_dir = project_root / "migrations"
-    migrations_dir.mkdir(parents=True, exist_ok=True)
+    if not check and not dry_run:
+        migrations_dir.mkdir(parents=True, exist_ok=True)
 
     # Register all models
     _register_models(project_root)
@@ -109,6 +110,9 @@ def run_makemigrations(name: str | None, empty: bool) -> int:
         print(f"  - {clean_name}")
 
     if empty:
+        if check or dry_run:
+            print("Empty migration would be created.")
+            return 0
         filepath = write_migration(
             migrations_dir,
             operations=[],
@@ -124,6 +128,25 @@ def run_makemigrations(name: str | None, empty: bool) -> int:
 
     if not operations:
         print("\nNo changes detected.")
+        return 0
+
+    # --check: signal pending changes and exit 1
+    if check:
+        print("\nPending model changes detected:")
+        for op in operations:
+            print(f"    - {op.describe()}")
+        return 1
+
+    # --dry-run: show what would be written without writing
+    if dry_run:
+        from zeeb_orm.migrations.writer import next_migration_number, _auto_name, _slugify
+        number = next_migration_number(migrations_dir) if migrations_dir.exists() else 1
+        slug = _slugify(name) if name else (_auto_name(operations) if number > 1 else "initial")
+        filename = f"{number:04d}_{slug}.py"
+        print(f"\nMigrations for 'all apps' (dry run — no files written):")
+        print(f"  {filename}")
+        for op in operations:
+            print(f"    - {op.describe()}")
         return 0
 
     # Determine if initial
@@ -145,7 +168,13 @@ def run_makemigrations(name: str | None, empty: bool) -> int:
     return 0
 
 
-def run_migrate(migration: str | None, rollback_steps: int | None, fake: bool) -> int:
+def run_migrate(
+    migration: str | None,
+    rollback_steps: int | None,
+    fake: bool,
+    fake_initial: bool = False,
+    plan: bool = False,
+) -> int:
     """Apply or rollback migrations."""
     from zeeb_orm.migrations import executor
 
@@ -177,6 +206,13 @@ def run_migrate(migration: str | None, rollback_steps: int | None, fake: bool) -
         else:
             target = applied[-(rollback_steps + 1)]
 
+        if plan:
+            planned = executor.migrate(target=target, database_url=db_url, project_root=project_root, plan=True)
+            print("Planned rollback:")
+            for name in planned:
+                print(f"  {name}")
+            return 0
+
         rolled_back = executor.migrate(target=target, database_url=db_url, project_root=project_root)
         for name in rolled_back:
             print(f"  Unapplying {name}... OK")
@@ -199,12 +235,26 @@ def run_migrate(migration: str | None, rollback_steps: int | None, fake: bool) -
                 return 1
 
         print(f"Migrating to: {target}")
+
+        if plan:
+            planned = executor.migrate(target=target, database_url=db_url, project_root=project_root, plan=True)
+            print("Planned migrations:")
+            for name in planned:
+                print(f"  {name}")
+            return 0
+
         # Determine direction: if target is already applied, we're rolling back
         status = executor.showmigrations(database_url=db_url, project_root=project_root)
         applied_set = {name for name, is_applied in status if is_applied}
         is_rollback = target == "zero" or target in applied_set
 
-        result = executor.migrate(target=target, database_url=db_url, project_root=project_root, fake=fake)
+        result = executor.migrate(
+            target=target,
+            database_url=db_url,
+            project_root=project_root,
+            fake=fake,
+            fake_initial=fake_initial,
+        )
         for name in result:
             if is_rollback:
                 print(f"  Unapplying {name}... OK")
@@ -219,8 +269,23 @@ def run_migrate(migration: str | None, rollback_steps: int | None, fake: bool) -
 
     else:
         # Apply all pending
+        if plan:
+            planned = executor.migrate(database_url=db_url, project_root=project_root, plan=True)
+            if planned:
+                print("Planned migrations:")
+                for name in planned:
+                    print(f"  {name}")
+            else:
+                print("Planned migrations: (none)")
+            return 0
+
         print("Running migrations:")
-        applied = executor.migrate(database_url=db_url, project_root=project_root, fake=fake)
+        applied = executor.migrate(
+            database_url=db_url,
+            project_root=project_root,
+            fake=fake,
+            fake_initial=fake_initial,
+        )
         if applied:
             for name in applied:
                 prefix = "  Faking" if fake else "  Applying"
@@ -259,3 +324,28 @@ def run_showmigrations() -> int:
         print(f" {marker} {name}")
 
     return 0
+
+
+def run_squashmigrations(
+    start: str,
+    end: str,
+    squashed_name: str | None = None,
+    no_optimize: bool = False,
+) -> int:
+    """Squash a range of migrations into a single file."""
+    from zeeb_orm.migrations.cli import squashmigrations
+
+    project_root = find_project_root()
+    if project_root is None:
+        print("Error: Could not find project root")
+        return 1
+
+    migrations_dir = str(project_root / "migrations")
+    result = squashmigrations(
+        start=start,
+        end=end,
+        squashed_name=squashed_name,
+        migrations_dir=migrations_dir,
+        no_optimize=no_optimize,
+    )
+    return 0 if result else 1
