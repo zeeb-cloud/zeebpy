@@ -270,7 +270,12 @@ def run_migrate(
     else:
         # Apply all pending
         if plan:
-            planned = executor.migrate(database_url=db_url, project_root=project_root, plan=True)
+            planned = executor.migrate(
+                database_url=db_url,
+                project_root=project_root,
+                plan=True,
+                fake_initial=fake_initial,
+            )
             if planned:
                 print("Planned migrations:")
                 for name in planned:
