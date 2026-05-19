@@ -518,14 +518,28 @@ class AddConstraint(Operation):
         name = getattr(self.constraint, 'name', None) or 'unnamed'
         return f"Add constraint {name} to {self.model_name}"
 
-    def forward(self, connection) -> None:
+    def _get_bound_constraint(self, connection):
         from sqlalchemy import MetaData, Table
+
+        constraint_table = getattr(self.constraint, 'table', None)
+        if constraint_table is not None:
+            return self.constraint
+
+        metadata = MetaData()
+        table = Table(self.table, metadata, autoload_with=connection)
+        return self.constraint.copy(target_table=table)
+
+    def forward(self, connection) -> None:
         from sqlalchemy.schema import AddConstraint as SAAddConstraint
-        connection.execute(SAAddConstraint(self.constraint))
+
+        constraint = self._get_bound_constraint(connection)
+        connection.execute(SAAddConstraint(constraint))
 
     def backward(self, connection) -> None:
         from sqlalchemy.schema import DropConstraint
-        connection.execute(DropConstraint(self.constraint))
+
+        constraint = self._get_bound_constraint(connection)
+        connection.execute(DropConstraint(constraint))
 
     def __repr__(self) -> str:
         from sqlalchemy import UniqueConstraint, CheckConstraint
