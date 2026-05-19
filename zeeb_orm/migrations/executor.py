@@ -232,6 +232,15 @@ def migrate(
                         if name not in applied
                     ]
                     if plan:
+                        # Filter out initial migrations when fake_initial=True and tables exist
+                        if fake_initial:
+                            filtered = []
+                            for name, path in to_apply:
+                                mig = load_migration(path)
+                                if mig.initial and _tables_exist(conn, mig):
+                                    continue  # Skip this migration in the plan
+                                filtered.append(name)
+                            return filtered
                         return [name for name, _ in to_apply]
                     for name, path in to_apply:
                         mig = load_migration(path)
