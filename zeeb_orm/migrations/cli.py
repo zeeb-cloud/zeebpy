@@ -442,7 +442,7 @@ def squashmigrations(
     """
     from zeeb_orm.migrations.executor import list_migration_files, load_migration
     from zeeb_orm.migrations.optimizer import optimize
-    from zeeb_orm.migrations.writer import write_migration, _slugify, next_migration_number
+    from zeeb_orm.migrations.writer import _slugify
 
     mig_dir = _get_migrations_dir(migrations_dir)
     if not mig_dir.exists():
