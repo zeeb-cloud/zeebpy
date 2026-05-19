@@ -20,6 +20,7 @@ import shutil
 import textwrap
 import warnings
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 import sqlalchemy as sa
@@ -30,10 +31,12 @@ from zeeb_orm.migrations.autodetector import detect_changes
 from zeeb_orm.migrations.writer import write_migration
 from zeeb_orm.migrations.executor import list_migration_files
 from zeeb_orm.migrations.operations import (
+    AddConstraint,
     AddField,
     AlterField,
     CreateModel,
     RemoveField,
+    RemoveConstraint,
     RenameField,
     RenameModel,
 )
@@ -251,6 +254,94 @@ class TestNewOperations:
         )
         r = repr(op)
         assert "old_column_type" in r
+
+    def test_add_constraint_describe_and_repr(self):
+        op = AddConstraint(
+            model_name="Post",
+            table="posts",
+            constraint=sa.UniqueConstraint("slug", name="uq_posts_slug"),
+        )
+        assert op.describe() == "Add constraint uq_posts_slug to Post"
+        r = repr(op)
+        assert "AddConstraint" in r
+        assert "'slug'" in r
+        assert "uq_posts_slug" in r
+
+    def test_remove_constraint_describe_and_repr(self):
+        op = RemoveConstraint(
+            model_name="Post",
+            table="posts",
+            name="uq_posts_slug",
+            constraint_type="unique",
+        )
+        assert op.describe() == "Remove constraint uq_posts_slug from Post"
+        r = repr(op)
+        assert "RemoveConstraint" in r
+        assert "constraint_type='unique'" in r
+
+    def test_add_constraint_forward_unique_uses_alembic_operations(self):
+        from alembic.operations import Operations
+
+        engine = sa.create_engine("sqlite:///:memory:")
+        with engine.begin() as conn, patch.object(
+            Operations,
+            "create_unique_constraint",
+            autospec=True,
+        ) as create_unique_constraint:
+            op = AddConstraint(
+                model_name="Post",
+                table="posts",
+                constraint=sa.UniqueConstraint("slug", name="uq_posts_slug"),
+            )
+            op.forward(conn)
+
+        _, name, table, columns = create_unique_constraint.call_args.args
+        assert name == "uq_posts_slug"
+        assert table == "posts"
+        assert columns == ["slug"]
+
+    def test_add_constraint_backward_check_uses_alembic_operations(self):
+        from alembic.operations import Operations
+
+        engine = sa.create_engine("sqlite:///:memory:")
+        with engine.begin() as conn, patch.object(
+            Operations,
+            "drop_constraint",
+            autospec=True,
+        ) as drop_constraint:
+            op = AddConstraint(
+                model_name="Post",
+                table="posts",
+                constraint=sa.CheckConstraint("length(slug) > 1", name="ck_posts_slug_len"),
+            )
+            op.backward(conn)
+
+        _, name, table = drop_constraint.call_args.args
+        assert name == "ck_posts_slug_len"
+        assert table == "posts"
+        assert drop_constraint.call_args.kwargs == {"type_": "check"}
+
+    def test_remove_constraint_forward_uses_alembic_operations(self):
+        from alembic.operations import Operations
+
+        engine = sa.create_engine("sqlite:///:memory:")
+        with engine.begin() as conn, patch.object(
+            Operations,
+            "drop_constraint",
+            autospec=True,
+        ) as drop_constraint:
+            op = RemoveConstraint(
+                model_name="Post",
+                table="posts",
+                name="uq_posts_slug",
+                constraint_type="unique",
+            )
+            op.forward(conn)
+
+        _, name, table = drop_constraint.call_args.args
+        assert name == "uq_posts_slug"
+        assert table == "posts"
+        assert drop_constraint.call_args.kwargs == {"type_": "unique"}
 
 
 # ---------------------------------------------------------------------------
@@ -663,4 +754,3 @@ class TestMigratePlan:
         )
         assert len(planned) == 1
         assert "initial" in planned[0]
-

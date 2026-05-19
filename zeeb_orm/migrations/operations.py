@@ -518,6 +518,16 @@ class AddConstraint(Operation):
         name = getattr(self.constraint, 'name', None) or 'unnamed'
         return f"Add constraint {name} to {self.model_name}"
 
+    def _unique_column_names(self) -> list[str]:
+        columns = [
+            col.key if hasattr(col, 'key') else str(col)
+            for col in self.constraint.columns
+        ]
+        if columns:
+            return columns
+        pending = getattr(self.constraint, "_pending_colargs", ())
+        return [col.name if hasattr(col, "name") else str(col) for col in pending]
+
     def _get_bound_constraint(self, connection):
         from sqlalchemy import MetaData, Table
 
@@ -525,18 +535,61 @@ class AddConstraint(Operation):
         if constraint_table is not None:
             return self.constraint
 
+        from sqlalchemy import CheckConstraint, UniqueConstraint
+        if isinstance(self.constraint, (UniqueConstraint, CheckConstraint)):
+            raise ValueError(
+                "Unbound UniqueConstraint and CheckConstraint "
+                "should be applied via Alembic operations."
+            )
+
         metadata = MetaData()
         table = Table(self.table, metadata, autoload_with=connection)
         return self.constraint.copy(target_table=table)
 
     def forward(self, connection) -> None:
+        from alembic.operations import Operations
+        from alembic.runtime.migration import MigrationContext
+        from sqlalchemy import CheckConstraint, UniqueConstraint
         from sqlalchemy.schema import AddConstraint as SAAddConstraint
+
+        ctx = MigrationContext.configure(connection)
+        op = Operations(ctx)
+
+        if isinstance(self.constraint, UniqueConstraint):
+            op.create_unique_constraint(
+                self.constraint.name,
+                self.table,
+                self._unique_column_names(),
+            )
+            return
+
+        if isinstance(self.constraint, CheckConstraint):
+            op.create_check_constraint(
+                self.constraint.name,
+                self.table,
+                str(self.constraint.sqltext),
+            )
+            return
 
         constraint = self._get_bound_constraint(connection)
         connection.execute(SAAddConstraint(constraint))
 
     def backward(self, connection) -> None:
+        from alembic.operations import Operations
+        from alembic.runtime.migration import MigrationContext
+        from sqlalchemy import CheckConstraint, UniqueConstraint
         from sqlalchemy.schema import DropConstraint
+
+        ctx = MigrationContext.configure(connection)
+        op = Operations(ctx)
+
+        if isinstance(self.constraint, UniqueConstraint):
+            op.drop_constraint(self.constraint.name, self.table, type_="unique")
+            return
+
+        if isinstance(self.constraint, CheckConstraint):
+            op.drop_constraint(self.constraint.name, self.table, type_="check")
+            return
 
         constraint = self._get_bound_constraint(connection)
         connection.execute(DropConstraint(constraint))
@@ -545,12 +598,14 @@ class AddConstraint(Operation):
         from sqlalchemy import UniqueConstraint, CheckConstraint
         c = self.constraint
         if isinstance(c, UniqueConstraint):
-            cols = [col.key if hasattr(col, 'key') else str(col) for col in c.columns]
+            cols = self._unique_column_names()
+            constraint_repr = ", ".join(repr(col) for col in cols)
             return (
                 f"    operations.AddConstraint(\n"
                 f"        model_name={self.model_name!r},\n"
                 f"        table={self.table!r},\n"
-                f"        constraint=sa.UniqueConstraint({', '.join(repr(col) for col in cols)}, name={c.name!r}),\n"
+                "        constraint=sa.UniqueConstraint("
+                f"{constraint_repr}, name={c.name!r}),\n"
                 f"    )"
             )
         if isinstance(c, CheckConstraint):
