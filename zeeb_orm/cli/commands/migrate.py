@@ -207,7 +207,7 @@ def run_migrate(
             target = applied[-(rollback_steps + 1)]
 
         if plan:
-            planned = executor.migrate(target=target, database_url=db_url, project_root=project_root, plan=True)
+            planned = executor.migrate(target=target, database_url=db_url, project_root=project_root, plan=True, fake_initial=fake_initial)
             print("Planned rollback:")
             for name in planned:
                 print(f"  {name}")
@@ -237,7 +237,7 @@ def run_migrate(
         print(f"Migrating to: {target}")
 
         if plan:
-            planned = executor.migrate(target=target, database_url=db_url, project_root=project_root, plan=True)
+            planned = executor.migrate(target=target, database_url=db_url, project_root=project_root, plan=True, fake_initial=fake_initial)
             print("Planned migrations:")
             for name in planned:
                 print(f"  {name}")
