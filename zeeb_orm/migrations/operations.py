@@ -510,6 +510,12 @@ class AddConstraint(Operation):
     """Add a named constraint (UniqueConstraint, CheckConstraint, etc.) to a table."""
 
     def __init__(self, model_name: str, table: str, constraint: Any):
+        name = getattr(constraint, 'name', None)
+        if not name:
+            raise ValueError(
+                "AddConstraint requires the constraint to have a non-empty name. "
+                "Pass name=... when constructing UniqueConstraint / CheckConstraint."
+            )
         self.model_name = model_name
         self.table = table
         self.constraint = constraint

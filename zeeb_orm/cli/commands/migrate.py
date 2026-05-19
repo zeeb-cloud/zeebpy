@@ -219,7 +219,11 @@ def run_migrate(
                 print(f"  {name}")
             return 0
 
-        rolled_back = executor.migrate(target=target, database_url=db_url, project_root=project_root)
+        rolled_back = executor.migrate(
+            target=target,
+            database_url=db_url,
+            project_root=project_root,
+        )
         for name in rolled_back:
             print(f"  Unapplying {name}... OK")
         return 0
