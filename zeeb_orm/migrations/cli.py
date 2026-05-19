@@ -281,6 +281,7 @@ def migrate(
             database_url=db_url,
             project_root=project_root,
             plan=True,
+            fake_initial=fake_initial,
         )
         if not planned:
             print("Planned migrations: (none)")
