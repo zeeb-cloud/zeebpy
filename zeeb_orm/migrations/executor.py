@@ -280,7 +280,13 @@ def migrate(
                     if name not in applied
                 ]
                 if plan:
-                    return [name for name, _ in to_apply]
+                    planned_names: list[str] = []
+                    for name, path in to_apply:
+                        mig = load_migration(path)
+                        if fake_initial and mig.initial and _tables_exist(conn, mig):
+                            continue
+                        planned_names.append(name)
+                    return planned_names
                 for name, path in to_apply:
                     mig = load_migration(path)
                     if not fake:
