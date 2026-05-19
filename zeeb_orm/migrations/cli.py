@@ -148,6 +148,8 @@ def makemigrations(
     autogenerate: bool = True,
     empty: bool = False,
     migrations_dir: str | None = None,
+    check: bool = False,
+    dry_run: bool = False,
 ) -> str | None:
     """
     Create a new migration by auto-detecting model changes.
@@ -159,6 +161,11 @@ def makemigrations(
         autogenerate: Auto-detect model changes (default True).
         empty: Create an empty migration for manual editing.
         migrations_dir: Override migrations directory.
+        check: If True, exit with code 1 when changes are detected (no file
+               is written).  Useful in CI pipelines to ensure all migrations
+               have been committed.
+        dry_run: If True, print what would be generated without writing any
+                 files.
 
     Returns:
         The migration name (e.g. ``"0001_initial"``) or None.
@@ -169,14 +176,17 @@ def makemigrations(
     project_root = _find_project_root() or Path.cwd()
     mig_dir = _get_migrations_dir(migrations_dir)
 
-    # Auto-create migrations directory
-    mig_dir.mkdir(parents=True, exist_ok=True)
+    # Auto-create migrations directory (unless --check / --dry-run)
+    if not check and not dry_run:
+        mig_dir.mkdir(parents=True, exist_ok=True)
 
     # Register all models so metadata is populated
     _register_models(project_root)
 
     if empty:
-        # Create empty migration for manual editing
+        if check or dry_run:
+            print("Empty migration would be created.")
+            return None
         filepath = write_migration(mig_dir, operations=[], name=message or "empty")
         migration_name = filepath.stem
         print(f"Migrations for 'all apps':")
@@ -189,6 +199,27 @@ def makemigrations(
 
     if not operations:
         print("No changes detected.")
+        return None
+
+    # --check: report and signal with a non-zero exit
+    if check:
+        print("Pending model changes detected:")
+        for op in operations:
+            print(f"    - {op.describe()}")
+        raise SystemExit(1)
+
+    # --dry-run: show what would be written without actually writing
+    if dry_run:
+        from zeeb_orm.migrations.executor import list_migration_files
+        from zeeb_orm.migrations.writer import next_migration_number, _auto_name, _slugify
+
+        number = next_migration_number(mig_dir) if mig_dir.exists() else 1
+        slug = _slugify(message) if message else (_auto_name(operations) if number > 1 else "initial")
+        filename = f"{number:04d}_{slug}.py"
+        print(f"Migrations for 'all apps' (dry run — no files written):")
+        print(f"  {filename}")
+        for op in operations:
+            print(f"    - {op.describe()}")
         return None
 
     # Determine if this is the initial migration
@@ -216,6 +247,8 @@ def migrate(
     target: str | None = None,
     migrations_dir: str | None = None,
     fake: bool = False,
+    fake_initial: bool = False,
+    plan: bool = False,
 ) -> None:
     """
     Apply pending migrations.
@@ -227,6 +260,9 @@ def migrate(
                 or None to apply all pending.
         migrations_dir: Override migrations directory.
         fake: Mark as applied without running.
+        fake_initial: If True, skip the first migration when tables already
+                      exist (for adopting migrations in an existing project).
+        plan: If True, print what would happen without applying anything.
     """
     from zeeb_orm.migrations import executor
 
@@ -239,11 +275,28 @@ def migrate(
     db_url = _get_database_url()
     project_root = _find_project_root() or Path.cwd()
 
+    if plan:
+        planned = executor.migrate(
+            target=target,
+            database_url=db_url,
+            project_root=project_root,
+            plan=True,
+            fake_initial=fake_initial,
+        )
+        if not planned:
+            print("Planned migrations: (none)")
+        else:
+            print("Planned migrations:")
+            for name in planned:
+                print(f"  {name}")
+        return
+
     applied = executor.migrate(
         target=target,
         database_url=db_url,
         project_root=project_root,
         fake=fake,
+        fake_initial=fake_initial,
     )
 
     if target == "zero":
@@ -358,3 +411,140 @@ def current(migrations_dir: str | None = None) -> str | None:
     else:
         print("Current: (no migrations applied)")
         return None
+
+
+def squashmigrations(
+    start: str,
+    end: str,
+    squashed_name: str | None = None,
+    migrations_dir: str | None = None,
+    no_optimize: bool = False,
+) -> str | None:
+    """
+    Squash migrations from *start* through *end* into a single file.
+
+    Similar to Django's ``python manage.py squashmigrations``, but this
+    command only generates a consolidated migration file. It does not record
+    Django-style ``replaces`` metadata and does not make the executor skip
+    the original migrations automatically.
+
+    After generating the squashed migration, delete or archive the superseded
+    migration files before running a fresh ``migrate`` against an empty
+    database. Leaving both the squashed file and the original files in place
+    can cause both sets of operations to be applied.
+
+    Args:
+        start: Name of the first migration in the range (inclusive).
+        end: Name of the last migration in the range (inclusive).
+        squashed_name: Optional human-readable name for the squashed file.
+        migrations_dir: Override migrations directory.
+        no_optimize: Skip the optimizer step and keep all operations as-is.
+
+    Returns:
+        The squashed migration name, or None on error.
+    """
+    from zeeb_orm.migrations.executor import list_migration_files, load_migration
+    from zeeb_orm.migrations.optimizer import optimize
+    from zeeb_orm.migrations.writer import _slugify
+
+    mig_dir = _get_migrations_dir(migrations_dir)
+    if not mig_dir.exists():
+        print("No migrations directory found.")
+        return None
+
+    all_migrations = list_migration_files(mig_dir)
+    all_names = [name for name, _ in all_migrations]
+
+    if start not in all_names:
+        print(f"Error: Migration '{start}' not found.")
+        return None
+    if end not in all_names:
+        print(f"Error: Migration '{end}' not found.")
+        return None
+
+    start_idx = all_names.index(start)
+    end_idx = all_names.index(end)
+
+    if start_idx > end_idx:
+        print(f"Error: '{start}' comes after '{end}'.")
+        return None
+
+    squash_range = all_migrations[start_idx: end_idx + 1]
+
+    # Collect all operations in order
+    all_ops = []
+    for _name, path in squash_range:
+        mig = load_migration(path)
+        all_ops.extend(mig.operations)
+
+    # Optionally optimize
+    if not no_optimize:
+        optimized_ops = optimize(all_ops)
+        saved = len(all_ops) - len(optimized_ops)
+        if saved:
+            print(f"Optimized {len(all_ops)} operations down to {len(optimized_ops)} ({saved} removed).")
+    else:
+        optimized_ops = all_ops
+
+    # Dependencies: the squashed migration depends on everything *before* start
+    if start_idx > 0:
+        dependencies = [all_names[start_idx - 1]]
+    else:
+        dependencies = []
+
+    # Name for the squashed file
+    if squashed_name:
+        slug = _slugify(squashed_name)
+    else:
+        slug = f"squashed_{_slugify(start)}_to_{_slugify(end)}"
+
+    # Use the next number after the end migration so the squashed migration
+    # sorts after all the migrations it replaces
+    squash_number = int(end[:4]) + 1 if end[:4].isdigit() else (end_idx + 2)
+    filename = f"{squash_number:04d}_{slug}.py"
+    filepath = mig_dir / filename
+
+    if filepath.exists():
+        print(f"Error: File '{filename}' already exists. Choose a different name.")
+        return None
+
+    migration_name = filepath.stem
+    
+    # List of migrations being replaced
+    replaced = [name for name, _ in squash_range]
+    
+    from zeeb_orm.migrations.writer import _render_migration
+    content = _render_migration(
+        migration_name=migration_name,
+        operations=optimized_ops,
+        dependencies=dependencies,
+        initial=(start_idx == 0),
+        replaces=replaced,
+    )
+
+    # Add a header comment listing which migrations are replaced
+    replaced_comment = (
+        "# This squashed migration replaces the following migrations:\n"
+        + "".join(f"#   - {n}\n" for n in replaced)
+        + "#\n"
+        + "# The 'replaces' attribute ensures that when this migration is applied,\n"
+        + "# the replaced migrations are automatically marked as applied.\n"
+        + "# Once this migration has been deployed everywhere, the original\n"
+        + "# migration files can be safely deleted.\n"
+    )
+    # Insert after the docstring closing '''
+    content = content.replace(
+        'from zeeb_orm.migrations import Migration, operations',
+        replaced_comment + 'from zeeb_orm.migrations import Migration, operations',
+        1,
+    )
+
+    filepath.write_text(content)
+
+    print(f"Squashed migration created: {filename}")
+    print(f"  Replaces: {', '.join(replaced)}")
+    print(f"  Operations: {len(optimized_ops)}")
+    print(f"\nReview '{filename}', then commit it alongside the original files.")
+    print("After deploying, you may delete the original migration files.")
+
+    return migration_name

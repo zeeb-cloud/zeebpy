@@ -17,6 +17,7 @@ Commands:
     makemigrations              Create new migrations
     migrate [migration]     Apply migrations
     showmigrations          Show migration status
+    squashmigrations        Squash a range of migrations into one file
     createsuperuser         Create a superuser account
     check                   Check project configuration
     shell                   Start interactive Python shell
@@ -62,15 +63,52 @@ def main() -> int:
     sp_makemig = subparsers.add_parser("makemigrations", help="Create new migrations")
     sp_makemig.add_argument("--name", "-n", help="Migration name")
     sp_makemig.add_argument("--empty", action="store_true", help="Create empty migration")
+    sp_makemig.add_argument(
+        "--check",
+        action="store_true",
+        help="Exit with status 1 if model changes are detected (no file written). Useful in CI.",
+    )
+    sp_makemig.add_argument(
+        "--dry-run",
+        action="store_true",
+        dest="dry_run",
+        help="Show what migration would be created without writing any files.",
+    )
 
     # migrate
     sp_migrate = subparsers.add_parser("migrate", help="Apply migrations")
     sp_migrate.add_argument("migration", nargs="?", help="Migration name or 'zero' (optional)")
     sp_migrate.add_argument("--rollback", "-r", type=int, metavar="N", help="Rollback N migrations")
     sp_migrate.add_argument("--fake", action="store_true", help="Mark as applied without running")
+    sp_migrate.add_argument(
+        "--fake-initial",
+        action="store_true",
+        dest="fake_initial",
+        help="Skip initial migration if tables already exist.",
+    )
+    sp_migrate.add_argument(
+        "--plan",
+        action="store_true",
+        help="Show which migrations would be applied without running them.",
+    )
 
     # showmigrations
     sp_showmig = subparsers.add_parser("showmigrations", help="Show migration status")
+
+    # squashmigrations
+    sp_squash = subparsers.add_parser(
+        "squashmigrations",
+        help="Squash a range of migrations into a single file",
+    )
+    sp_squash.add_argument("start", help="First migration in the range (e.g. 0001_initial)")
+    sp_squash.add_argument("end", help="Last migration in the range (e.g. 0005_add_views)")
+    sp_squash.add_argument("--name", "-n", dest="squashed_name", help="Name for the squashed migration")
+    sp_squash.add_argument(
+        "--no-optimize",
+        action="store_true",
+        dest="no_optimize",
+        help="Skip the optimizer — keep all operations as-is.",
+    )
 
     # shell
     sp_shell = subparsers.add_parser("shell", help="Start interactive Python shell")
@@ -134,15 +172,19 @@ def main() -> int:
 
     elif args.command == "makemigrations":
         from zeeb_orm.cli.commands.migrate import run_makemigrations
-        return run_makemigrations(args.name, args.empty)
+        return run_makemigrations(args.name, args.empty, args.check, args.dry_run)
 
     elif args.command == "migrate":
         from zeeb_orm.cli.commands.migrate import run_migrate
-        return run_migrate(args.migration, args.rollback, args.fake)
+        return run_migrate(args.migration, args.rollback, args.fake, args.fake_initial, args.plan)
 
     elif args.command == "showmigrations":
         from zeeb_orm.cli.commands.migrate import run_showmigrations
         return run_showmigrations()
+
+    elif args.command == "squashmigrations":
+        from zeeb_orm.cli.commands.migrate import run_squashmigrations
+        return run_squashmigrations(args.start, args.end, args.squashed_name, args.no_optimize)
 
     elif args.command == "shell":
         from zeeb_orm.cli.commands.shell import run_shell

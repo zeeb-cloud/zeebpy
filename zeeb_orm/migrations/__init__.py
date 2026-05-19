@@ -9,6 +9,7 @@ from zeeb_orm.migrations.cli import (
     migrate,
     rollback,
     showmigrations,
+    squashmigrations,
 )
 from zeeb_orm.migrations.state import (
     MigrationError,
@@ -28,6 +29,7 @@ __all__ = [
     "migrate",
     "rollback",
     "showmigrations",
+    "squashmigrations",
     "current",
     # State management
     "MigrationError",

@@ -130,6 +130,7 @@ def _render_migration(
     operations: list[Operation],
     dependencies: list[str],
     initial: bool,
+    replaces: list[str] | None = None,
 ) -> str:
     """Render the migration file content."""
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
@@ -160,6 +161,11 @@ def _render_migration(
     # Dependencies
     lines.append(f"    dependencies = {dependencies!r}")
     lines.append(f"")
+
+    # Replaces (for squashed migrations)
+    if replaces:
+        lines.append(f"    replaces = {replaces!r}")
+        lines.append(f"")
 
     # Operations
     lines.append(f"    operations = [")

@@ -38,5 +38,28 @@ class Migration:
     # List of migration names this depends on (e.g. ['0001_initial'])
     dependencies: list[str] = []
 
+    # List of migration names this squashed migration replaces (e.g. ['0001_initial', '0002_add_field'])
+    # Used by squashmigrations to indicate which migrations are superseded by this one
+    replaces: list[str] = []
+
     # List of Operation instances
     operations: list[Operation] = []
+
+    # If True (default), all operations in this migration run inside a single
+    # database transaction. Set to False for migrations that cannot run inside
+    # a transaction (e.g. CREATE INDEX CONCURRENTLY on PostgreSQL).
+    atomic: bool = True
+
+    def pre_migrate(self, connection) -> None:
+        """Hook called before this migration's operations are executed.
+
+        Override in subclasses to perform setup work or validations.
+        Receives the active database connection.
+        """
+
+    def post_migrate(self, connection) -> None:
+        """Hook called after this migration's operations are executed.
+
+        Override in subclasses to perform cleanup or follow-up work.
+        Receives the active database connection.
+        """
