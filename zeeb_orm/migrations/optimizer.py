@@ -111,13 +111,15 @@ def _one_pass(ops: list[Operation]) -> tuple[list[Operation], bool]:
                 and current.table == later.table
                 and current.name == later.name
             ):
-                import sqlalchemy as sa
                 col = current.column
-                new_col = sa.Column(
-                    col.name,
-                    later.column_type if later.column_type is not None else col.type,
-                    nullable=later.nullable if later.nullable is not None else col.nullable,
-                )
+                # Copy the column to preserve all attributes (server_default,
+                # unique, foreign_keys, comment, autoincrement, etc.) and only
+                # override the specific attributes changed by AlterField.
+                new_col = col.copy()
+                if later.column_type is not None:
+                    new_col.type = later.column_type
+                if later.nullable is not None:
+                    new_col.nullable = later.nullable
                 fused = AddField(
                     model_name=current.model_name,
                     table=current.table,
