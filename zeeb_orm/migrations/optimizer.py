@@ -132,10 +132,11 @@ def _one_pass(ops: list[Operation]) -> tuple[list[Operation], bool]:
                 merged = True
                 break
 
-            # AddIndex + RemoveIndex (same name) → eliminate both
+            # AddIndex + RemoveIndex (same table + name) → eliminate both
             if (
                 isinstance(current, AddIndex)
                 and isinstance(later, RemoveIndex)
+                and current.table == later.table
                 and current.name == later.name
             ):
                 ops = ops[:i] + ops[i + 1:j] + ops[j + 1:]
