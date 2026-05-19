@@ -243,7 +243,13 @@ def run_migrate(
         print(f"Migrating to: {target}")
 
         if plan:
-            planned = executor.migrate(target=target, database_url=db_url, project_root=project_root, plan=True, fake_initial=fake_initial)
+            planned = executor.migrate(
+                target=target,
+                database_url=db_url,
+                project_root=project_root,
+                plan=True,
+                fake_initial=fake_initial,
+            )
             print("Planned migrations:")
             for name in planned:
                 print(f"  {name}")
