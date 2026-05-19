@@ -160,6 +160,8 @@ def migrate(
     database_url: str | None = None,
     project_root: Path | None = None,
     fake: bool = False,
+    fake_initial: bool = False,
+    plan: bool = False,
 ) -> list[str]:
     """
     Apply pending migrations (or migrate to a specific target).
@@ -170,9 +172,14 @@ def migrate(
         database_url: Database URL. Reads from settings if None.
         project_root: Project root directory.
         fake: If True, mark as applied without running.
+        fake_initial: If True, skip the initial migration when the tables
+                      already exist (useful when adopting migrations in an
+                      existing project).
+        plan: If True, return the list of migrations that *would* be
+              applied/unapplied without actually executing anything.
 
     Returns:
-        List of migration names that were applied/unapplied.
+        List of migration names that were (or would be) applied/unapplied.
     """
     from sqlalchemy import create_engine
 
@@ -191,17 +198,28 @@ def migrate(
     try:
         with engine.connect() as conn:
             applied = get_applied_migrations(conn)
+            
+            # Build a set of migrations that are replaced by squashed migrations
+            # (both already-applied and unapplied squashed migrations)
+            replaced_by_applied = set()
+            for name, path in all_migrations:
+                mig = load_migration(path)
+                if hasattr(mig, 'replaces') and mig.replaces:
+                    # If this squashed migration is already applied OR exists in the list,
+                    # mark its replaced migrations as superseded
+                    replaced_by_applied.update(mig.replaces)
 
             if target == "zero":
                 # Rollback all applied migrations in reverse order
                 to_unapply = [
                     (name, path) for name, path in reversed(all_migrations) if name in applied
                 ]
+                if plan:
+                    return [name for name, _ in to_unapply]
                 for name, path in to_unapply:
                     mig = load_migration(path)
                     if not fake:
-                        for op in reversed(mig.operations):
-                            op.backward(conn)
+                        _run_backward(conn, mig)
                     unrecord_migration(conn, name)
                     conn.commit()
                     applied_names.append(name)
@@ -218,43 +236,142 @@ def migrate(
 
                 if target_idx > current_idx:
                     # Forward to target
-                    for name, path in all_migrations[current_idx + 1 : target_idx + 1]:
-                        if name not in applied:
-                            mig = load_migration(path)
-                            if not fake:
-                                for op in mig.operations:
-                                    op.forward(conn)
-                            record_migration(conn, name)
-                            conn.commit()
-                            applied_names.append(name)
-                else:
-                    # Backward to target
-                    for name, path in reversed(all_migrations[target_idx + 1 : current_idx + 1]):
-                        if name in applied:
-                            mig = load_migration(path)
-                            if not fake:
-                                for op in reversed(mig.operations):
-                                    op.backward(conn)
-                            unrecord_migration(conn, name)
-                            conn.commit()
-                            applied_names.append(name)
-
-            else:
-                # Apply all pending
-                for name, path in all_migrations:
-                    if name not in applied:
+                    to_apply = [
+                        (name, path)
+                        for name, path in all_migrations[current_idx + 1: target_idx + 1]
+                        if name not in applied and name not in replaced_by_applied
+                    ]
+                    if plan:
+                        # Filter out initial migrations when fake_initial=True and tables exist
+                        if fake_initial:
+                            filtered = []
+                            for name, path in to_apply:
+                                mig = load_migration(path)
+                                if mig.initial and _tables_exist(conn, mig):
+                                    continue  # Skip this migration in the plan
+                                filtered.append(name)
+                            return filtered
+                        return [name for name, _ in to_apply]
+                    for name, path in to_apply:
                         mig = load_migration(path)
                         if not fake:
-                            for op in mig.operations:
-                                op.forward(conn)
+                            if fake_initial and mig.initial:
+                                if _tables_exist(conn, mig):
+                                    record_migration(conn, name)
+                                    conn.commit()
+                                    applied_names.append(name)
+                                    continue
+                            _run_forward(conn, mig)
                         record_migration(conn, name)
                         conn.commit()
                         applied_names.append(name)
+                        
+                        # If this migration replaces others, mark them as applied too
+                        if hasattr(mig, 'replaces') and mig.replaces:
+                            for replaced_name in mig.replaces:
+                                if replaced_name not in applied and replaced_name not in applied_names:
+                                    record_migration(conn, replaced_name)
+                                    conn.commit()
+                else:
+                    # Backward to target
+                    to_unapply = [
+                        (name, path)
+                        for name, path in reversed(all_migrations[target_idx + 1: current_idx + 1])
+                        if name in applied
+                    ]
+                    if plan:
+                        return [name for name, _ in to_unapply]
+                    for name, path in to_unapply:
+                        mig = load_migration(path)
+                        if not fake:
+                            _run_backward(conn, mig)
+                        unrecord_migration(conn, name)
+                        conn.commit()
+                        applied_names.append(name)
+
+            else:
+                # Apply all pending
+                to_apply = [
+                    (name, path)
+                    for name, path in all_migrations
+                    if name not in applied and name not in replaced_by_applied
+                ]
+                if plan:
+                    planned_names: list[str] = []
+                    for name, path in to_apply:
+                        mig = load_migration(path)
+                        if fake_initial and mig.initial and _tables_exist(conn, mig):
+                            continue
+                        planned_names.append(name)
+                    return planned_names
+                for name, path in to_apply:
+                    mig = load_migration(path)
+                    if not fake:
+                        if fake_initial and mig.initial:
+                            if _tables_exist(conn, mig):
+                                record_migration(conn, name)
+                                conn.commit()
+                                applied_names.append(name)
+                                continue
+                        _run_forward(conn, mig)
+                    record_migration(conn, name)
+                    conn.commit()
+                    applied_names.append(name)
+                    
+                    # If this migration replaces others, mark them as applied too
+                    if hasattr(mig, 'replaces') and mig.replaces:
+                        for replaced_name in mig.replaces:
+                            if replaced_name not in applied and replaced_name not in applied_names:
+                                record_migration(conn, replaced_name)
+                                conn.commit()
 
     finally:
         engine.dispose()
 
     return applied_names
+
+
+def _run_forward(conn, mig) -> None:
+    """Run a migration's forward operations, respecting atomic setting."""
+    if mig.atomic:
+        with conn.begin_nested():
+            mig.pre_migrate(conn)
+            for op in mig.operations:
+                op.forward(conn)
+            mig.post_migrate(conn)
+    else:
+        mig.pre_migrate(conn)
+        for op in mig.operations:
+            op.forward(conn)
+        mig.post_migrate(conn)
+
+
+def _run_backward(conn, mig) -> None:
+    """Run a migration's backward operations, respecting atomic setting."""
+    if mig.atomic:
+        with conn.begin_nested():
+            mig.pre_migrate(conn)
+            for op in reversed(mig.operations):
+                op.backward(conn)
+            mig.post_migrate(conn)
+    else:
+        mig.pre_migrate(conn)
+        for op in reversed(mig.operations):
+            op.backward(conn)
+        mig.post_migrate(conn)
+
+
+def _tables_exist(conn, mig) -> bool:
+    """Return True if all tables created by the initial migration already exist."""
+    from sqlalchemy import inspect as sa_inspect
+    from zeeb_orm.migrations.operations import CreateModel
+
+    inspector = sa_inspect(conn)
+    existing = set(inspector.get_table_names())
+    create_ops = [op for op in mig.operations if isinstance(op, CreateModel)]
+    if not create_ops:
+        return False
+    return all(op.table in existing for op in create_ops)
 
 
 def showmigrations(

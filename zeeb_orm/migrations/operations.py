@@ -175,12 +175,20 @@ class AddField(Operation):
 
 
 class RemoveField(Operation):
-    """Remove a column from an existing table."""
+    """Remove a column from an existing table.
 
-    def __init__(self, model_name: str, table: str, name: str):
+    Pass ``field`` (a ``sqlalchemy.Column``) to enable reversal.
+    """
+
+    def __init__(self, model_name: str, table: str, name: str, field: Any = None):
         self.model_name = model_name
         self.table = table
         self.name = name
+        self.field = field  # Optional: stored column for reversal
+
+    @property
+    def reversible(self):
+        return self.field is not None
 
     def describe(self) -> str:
         return f"Remove field {self.name} from {self.model_name}"
@@ -193,20 +201,31 @@ class RemoveField(Operation):
         op.drop_column(self.table, self.name)
 
     def backward(self, connection) -> None:
-        pass  # Cannot re-add without type info
+        if self.field is not None:
+            from alembic.operations import Operations
+            from alembic.runtime.migration import MigrationContext
+            ctx = MigrationContext.configure(connection)
+            op = Operations(ctx)
+            op.add_column(self.table, self.field)
 
     def __repr__(self) -> str:
-        return (
+        parts = [
             f"    operations.RemoveField(\n"
             f"        model_name={self.model_name!r},\n"
             f"        table={self.table!r},\n"
             f"        name={self.name!r},\n"
-            f"    )"
-        )
+        ]
+        if self.field is not None:
+            parts.append(f"        field={_repr_column(self.field)},\n")
+        parts.append(f"    )")
+        return "".join(parts)
 
 
 class AlterField(Operation):
-    """Alter a column's type, nullable, default, etc."""
+    """Alter a column's type, nullable, default, etc.
+
+    Pass ``old_column_type`` and/or ``old_nullable`` to enable reversal.
+    """
 
     def __init__(
         self,
@@ -215,6 +234,8 @@ class AlterField(Operation):
         name: str,
         column_type: Any = None,
         nullable: bool | None = None,
+        old_column_type: Any = None,
+        old_nullable: bool | None = None,
         **kwargs,
     ):
         self.model_name = model_name
@@ -222,7 +243,13 @@ class AlterField(Operation):
         self.name = name
         self.column_type = column_type
         self.nullable = nullable
+        self.old_column_type = old_column_type
+        self.old_nullable = old_nullable
         self.kwargs = kwargs
+
+    @property
+    def reversible(self):
+        return self.old_column_type is not None or self.old_nullable is not None
 
     def describe(self) -> str:
         return f"Alter field {self.name} on {self.model_name}"
@@ -242,7 +269,17 @@ class AlterField(Operation):
             op.alter_column(self.table, self.name, **alter_kwargs)
 
     def backward(self, connection) -> None:
-        pass  # Cannot reverse without old type info
+        from alembic.operations import Operations
+        from alembic.runtime.migration import MigrationContext
+        ctx = MigrationContext.configure(connection)
+        op = Operations(ctx)
+        alter_kwargs: dict[str, Any] = {}
+        if self.old_column_type is not None:
+            alter_kwargs["type_"] = self.old_column_type
+        if self.old_nullable is not None:
+            alter_kwargs["nullable"] = self.old_nullable
+        if alter_kwargs:
+            op.alter_column(self.table, self.name, **alter_kwargs)
 
     def __repr__(self) -> str:
         parts = [
@@ -255,6 +292,10 @@ class AlterField(Operation):
             parts.append(f"        column_type={_repr_sa_type(self.column_type)},\n")
         if self.nullable is not None:
             parts.append(f"        nullable={self.nullable!r},\n")
+        if self.old_column_type is not None:
+            parts.append(f"        old_column_type={_repr_sa_type(self.old_column_type)},\n")
+        if self.old_nullable is not None:
+            parts.append(f"        old_nullable={self.old_nullable!r},\n")
         parts.append(f"    )")
         return "".join(parts)
 
@@ -371,6 +412,10 @@ class RunPython(Operation):
         self.code = code
         self.reverse_code = reverse_code
 
+    @property
+    def reversible(self):
+        return self.reverse_code is not None
+
     def describe(self) -> str:
         name = getattr(self.code, '__name__', 'function')
         return f"Run Python {name}"
@@ -385,6 +430,248 @@ class RunPython(Operation):
     def __repr__(self) -> str:
         name = getattr(self.code, '__name__', 'function')
         return f"    operations.RunPython({name})"
+
+
+class RenameModel(Operation):
+    """Rename a database table."""
+
+    def __init__(self, old_name: str, new_name: str, old_table: str, new_table: str):
+        self.old_name = old_name
+        self.new_name = new_name
+        self.old_table = old_table
+        self.new_table = new_table
+
+    def describe(self) -> str:
+        return f"Rename model {self.old_name} to {self.new_name}"
+
+    def forward(self, connection) -> None:
+        from alembic.operations import Operations
+        from alembic.runtime.migration import MigrationContext
+        ctx = MigrationContext.configure(connection)
+        op = Operations(ctx)
+        op.rename_table(self.old_table, self.new_table)
+
+    def backward(self, connection) -> None:
+        from alembic.operations import Operations
+        from alembic.runtime.migration import MigrationContext
+        ctx = MigrationContext.configure(connection)
+        op = Operations(ctx)
+        op.rename_table(self.new_table, self.old_table)
+
+    def __repr__(self) -> str:
+        return (
+            f"    operations.RenameModel(\n"
+            f"        old_name={self.old_name!r},\n"
+            f"        new_name={self.new_name!r},\n"
+            f"        old_table={self.old_table!r},\n"
+            f"        new_table={self.new_table!r},\n"
+            f"    )"
+        )
+
+
+class RenameField(Operation):
+    """Rename a column on an existing table."""
+
+    def __init__(self, model_name: str, table: str, old_name: str, new_name: str):
+        self.model_name = model_name
+        self.table = table
+        self.old_name = old_name
+        self.new_name = new_name
+
+    def describe(self) -> str:
+        return f"Rename field {self.old_name} to {self.new_name} on {self.model_name}"
+
+    def forward(self, connection) -> None:
+        from alembic.operations import Operations
+        from alembic.runtime.migration import MigrationContext
+        ctx = MigrationContext.configure(connection)
+        op = Operations(ctx)
+        op.alter_column(self.table, self.old_name, new_column_name=self.new_name)
+
+    def backward(self, connection) -> None:
+        from alembic.operations import Operations
+        from alembic.runtime.migration import MigrationContext
+        ctx = MigrationContext.configure(connection)
+        op = Operations(ctx)
+        op.alter_column(self.table, self.new_name, new_column_name=self.old_name)
+
+    def __repr__(self) -> str:
+        return (
+            f"    operations.RenameField(\n"
+            f"        model_name={self.model_name!r},\n"
+            f"        table={self.table!r},\n"
+            f"        old_name={self.old_name!r},\n"
+            f"        new_name={self.new_name!r},\n"
+            f"    )"
+        )
+
+
+class AddConstraint(Operation):
+    """Add a named constraint (UniqueConstraint, CheckConstraint, etc.) to a table."""
+
+    def __init__(self, model_name: str, table: str, constraint: Any):
+        name = getattr(constraint, 'name', None)
+        if not name:
+            raise ValueError(
+                "AddConstraint requires the constraint to have a non-empty name. "
+                "Pass name=... when constructing UniqueConstraint / CheckConstraint."
+            )
+        self.model_name = model_name
+        self.table = table
+        self.constraint = constraint
+
+    def describe(self) -> str:
+        name = getattr(self.constraint, 'name', None) or 'unnamed'
+        return f"Add constraint {name} to {self.model_name}"
+
+    def _unique_column_names(self) -> list[str]:
+        columns = [
+            col.key if hasattr(col, 'key') else str(col)
+            for col in self.constraint.columns
+        ]
+        if columns:
+            return columns
+        pending = getattr(self.constraint, "_pending_colargs", ())
+        return [col.name if hasattr(col, "name") else str(col) for col in pending]
+
+    def _get_bound_constraint(self, connection):
+        from sqlalchemy import MetaData, Table
+
+        constraint_table = getattr(self.constraint, 'table', None)
+        if constraint_table is not None:
+            return self.constraint
+
+        from sqlalchemy import CheckConstraint, UniqueConstraint
+        if isinstance(self.constraint, (UniqueConstraint, CheckConstraint)):
+            raise ValueError(
+                "Unbound UniqueConstraint and CheckConstraint "
+                "should be applied via Alembic operations."
+            )
+
+        metadata = MetaData()
+        table = Table(self.table, metadata, autoload_with=connection)
+        return self.constraint.copy(target_table=table)
+
+    def forward(self, connection) -> None:
+        from alembic.operations import Operations
+        from alembic.runtime.migration import MigrationContext
+        from sqlalchemy import CheckConstraint, UniqueConstraint
+        from sqlalchemy.schema import AddConstraint as SAAddConstraint
+
+        ctx = MigrationContext.configure(connection)
+        op = Operations(ctx)
+
+        if isinstance(self.constraint, UniqueConstraint):
+            op.create_unique_constraint(
+                self.constraint.name,
+                self.table,
+                self._unique_column_names(),
+            )
+            return
+
+        if isinstance(self.constraint, CheckConstraint):
+            op.create_check_constraint(
+                self.constraint.name,
+                self.table,
+                str(self.constraint.sqltext),
+            )
+            return
+
+        constraint = self._get_bound_constraint(connection)
+        connection.execute(SAAddConstraint(constraint))
+
+    def backward(self, connection) -> None:
+        from alembic.operations import Operations
+        from alembic.runtime.migration import MigrationContext
+        from sqlalchemy import CheckConstraint, UniqueConstraint
+        from sqlalchemy.schema import DropConstraint
+
+        ctx = MigrationContext.configure(connection)
+        op = Operations(ctx)
+
+        if isinstance(self.constraint, UniqueConstraint):
+            op.drop_constraint(self.constraint.name, self.table, type_="unique")
+            return
+
+        if isinstance(self.constraint, CheckConstraint):
+            op.drop_constraint(self.constraint.name, self.table, type_="check")
+            return
+
+        constraint = self._get_bound_constraint(connection)
+        connection.execute(DropConstraint(constraint))
+
+    def __repr__(self) -> str:
+        from sqlalchemy import UniqueConstraint, CheckConstraint
+        c = self.constraint
+        if isinstance(c, UniqueConstraint):
+            cols = self._unique_column_names()
+            constraint_repr = ", ".join(repr(col) for col in cols)
+            return (
+                f"    operations.AddConstraint(\n"
+                f"        model_name={self.model_name!r},\n"
+                f"        table={self.table!r},\n"
+                "        constraint=sa.UniqueConstraint("
+                f"{constraint_repr}, name={c.name!r}),\n"
+                f"    )"
+            )
+        if isinstance(c, CheckConstraint):
+            return (
+                f"    operations.AddConstraint(\n"
+                f"        model_name={self.model_name!r},\n"
+                f"        table={self.table!r},\n"
+                f"        constraint=sa.CheckConstraint({str(c.sqltext)!r}, name={c.name!r}),\n"
+                f"    )"
+            )
+        return (
+            f"    operations.AddConstraint(\n"
+            f"        model_name={self.model_name!r},\n"
+            f"        table={self.table!r},\n"
+            f"        constraint={c!r},\n"
+            f"    )"
+        )
+
+
+class RemoveConstraint(Operation):
+    """Drop a named constraint from a table."""
+
+    reversible = False
+
+    def __init__(self, model_name: str, table: str, name: str, constraint_type: str = "unique"):
+        """
+        Args:
+            model_name: Model name for documentation
+            table: Table name
+            name: Constraint name
+            constraint_type: Type of constraint ('unique', 'check', 'foreignkey', 'primary')
+                           Defaults to 'unique' for backward compatibility.
+        """
+        self.model_name = model_name
+        self.table = table
+        self.name = name
+        self.constraint_type = constraint_type
+
+    def describe(self) -> str:
+        return f"Remove constraint {self.name} from {self.model_name}"
+
+    def forward(self, connection) -> None:
+        from alembic.operations import Operations
+        from alembic.runtime.migration import MigrationContext
+        ctx = MigrationContext.configure(connection)
+        op = Operations(ctx)
+        op.drop_constraint(self.name, self.table, type_=self.constraint_type)
+
+    def backward(self, connection) -> None:
+        pass  # Cannot recreate without constraint definition
+
+    def __repr__(self) -> str:
+        return (
+            f"    operations.RemoveConstraint(\n"
+            f"        model_name={self.model_name!r},\n"
+            f"        table={self.table!r},\n"
+            f"        name={self.name!r},\n"
+            f"        constraint_type={self.constraint_type!r},\n"
+            f"    )"
+        )
 
 
 # --- Helpers for repr ---
