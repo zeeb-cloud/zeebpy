@@ -575,24 +575,29 @@ class RemoveConstraint(Operation):
 
     reversible = False
 
-    def __init__(self, model_name: str, table: str, name: str):
+    def __init__(self, model_name: str, table: str, name: str, constraint_type: str = "unique"):
+        """
+        Args:
+            model_name: Model name for documentation
+            table: Table name
+            name: Constraint name
+            constraint_type: Type of constraint ('unique', 'check', 'foreignkey', 'primary')
+                           Defaults to 'unique' for backward compatibility.
+        """
         self.model_name = model_name
         self.table = table
         self.name = name
+        self.constraint_type = constraint_type
 
     def describe(self) -> str:
         return f"Remove constraint {self.name} from {self.model_name}"
 
     def forward(self, connection) -> None:
-        from sqlalchemy import text
-        dialect = connection.engine.dialect.name
-        if dialect == "postgresql":
-            connection.execute(text(f'ALTER TABLE {self.table} DROP CONSTRAINT IF EXISTS "{self.name}"'))
-        elif dialect == "mysql":
-            connection.execute(text(f"ALTER TABLE {self.table} DROP INDEX `{self.name}`"))
-        else:
-            # SQLite doesn't support DROP CONSTRAINT; best-effort
-            pass
+        from alembic.operations import Operations
+        from alembic.runtime.migration import MigrationContext
+        ctx = MigrationContext.configure(connection)
+        op = Operations(ctx)
+        op.drop_constraint(self.name, self.table, type_=self.constraint_type)
 
     def backward(self, connection) -> None:
         pass  # Cannot recreate without constraint definition
@@ -603,6 +608,7 @@ class RemoveConstraint(Operation):
             f"        model_name={self.model_name!r},\n"
             f"        table={self.table!r},\n"
             f"        name={self.name!r},\n"
+            f"        constraint_type={self.constraint_type!r},\n"
             f"    )"
         )
 
