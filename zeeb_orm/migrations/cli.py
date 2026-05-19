@@ -423,12 +423,15 @@ def squashmigrations(
     """
     Squash migrations from *start* through *end* into a single file.
 
-    Like Django's ``python manage.py squashmigrations``.
+    Similar to Django's ``python manage.py squashmigrations``, but this
+    command only generates a consolidated migration file. It does not record
+    Django-style ``replaces`` metadata and does not make the executor skip
+    the original migrations automatically.
 
-    The resulting squashed migration replaces the range of migrations it
-    covers.  When it is applied for the first time the individual migrations
-    in the squashed range are skipped; when the squashed migration itself has
-    been applied everywhere the original files can be deleted.
+    After generating the squashed migration, delete or archive the superseded
+    migration files before running a fresh ``migrate`` against an empty
+    database. Leaving both the squashed file and the original files in place
+    can cause both sets of operations to be applied.
 
     Args:
         start: Name of the first migration in the range (inclusive).
