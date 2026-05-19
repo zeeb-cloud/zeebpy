@@ -333,28 +333,32 @@ def migrate(
 
 def _run_forward(conn, mig) -> None:
     """Run a migration's forward operations, respecting atomic setting."""
-    mig.pre_migrate(conn)
     if mig.atomic:
         with conn.begin_nested():
+            mig.pre_migrate(conn)
             for op in mig.operations:
                 op.forward(conn)
+            mig.post_migrate(conn)
     else:
+        mig.pre_migrate(conn)
         for op in mig.operations:
             op.forward(conn)
-    mig.post_migrate(conn)
+        mig.post_migrate(conn)
 
 
 def _run_backward(conn, mig) -> None:
     """Run a migration's backward operations, respecting atomic setting."""
-    mig.pre_migrate(conn)
     if mig.atomic:
         with conn.begin_nested():
+            mig.pre_migrate(conn)
             for op in reversed(mig.operations):
                 op.backward(conn)
+            mig.post_migrate(conn)
     else:
+        mig.pre_migrate(conn)
         for op in reversed(mig.operations):
             op.backward(conn)
-    mig.post_migrate(conn)
+        mig.post_migrate(conn)
 
 
 def _tables_exist(conn, mig) -> bool:
