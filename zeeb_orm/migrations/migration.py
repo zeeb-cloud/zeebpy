@@ -38,6 +38,10 @@ class Migration:
     # List of migration names this depends on (e.g. ['0001_initial'])
     dependencies: list[str] = []
 
+    # List of migration names this squashed migration replaces (e.g. ['0001_initial', '0002_add_field'])
+    # Used by squashmigrations to indicate which migrations are superseded by this one
+    replaces: list[str] = []
+
     # List of Operation instances
     operations: list[Operation] = []
 

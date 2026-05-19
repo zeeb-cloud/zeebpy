@@ -595,11 +595,14 @@ class TestSquashMigrations:
             migrations_dir=str(tmp_migrations_dir),
         )
         assert result is not None
-        squash_file = next(tmp_migrations_dir.glob(f"{start[:4]}*squashed*.py"), None)
+        # Squashed migration should be numbered after the end migration (0003)
+        squash_file = next(tmp_migrations_dir.glob("0003*squashed*.py"), None)
         assert squash_file is not None
         content = squash_file.read_text()
         # After optimization CreateModel includes name column, so only one CreateModel op
         assert "CreateModel" in content
+        # Check that replaces attribute is present
+        assert "replaces = ['0001_initial', '0002_add_name']" in content
 
     def test_squash_invalid_start(self, tmp_migrations_dir):
         from zeeb_orm.migrations.cli import squashmigrations
@@ -658,12 +661,105 @@ class TestSquashMigrations:
             no_optimize=True,
         )
         assert result is not None
-        squash_file = next(tmp_migrations_dir.glob(f"{start[:4]}*squashed*.py"), None)
+        # Squashed migration should be numbered after the end migration (0003)
+        squash_file = next(tmp_migrations_dir.glob("0003*squashed*.py"), None)
         assert squash_file is not None
         content = squash_file.read_text()
         # Both operations should remain
         assert "CreateModel" in content
         assert "AddField" in content
+        # Check that replaces attribute is present
+        assert "replaces = ['0001_initial', '0002_add_label']" in content
+
+    def test_squash_replaces_mechanism(self, tmp_migrations_dir):
+        """Test that squashed migrations properly replace original migrations."""
+        from zeeb_orm.migrations.cli import squashmigrations
+        from zeeb_orm.migrations import executor
+        
+        # Create two migrations
+        write_migration(
+            tmp_migrations_dir,
+            operations=[
+                CreateModel(
+                    name="Item",
+                    table="sq_items",
+                    columns=[sa.Column("id", sa.Integer(), primary_key=True)],
+                    primary_key=["id"],
+                )
+            ],
+            name="initial",
+            initial=True,
+        )
+        write_migration(
+            tmp_migrations_dir,
+            operations=[
+                AddField(
+                    model_name="Item",
+                    table="sq_items",
+                    name="name",
+                    column=sa.Column("name", sa.String(100), nullable=False),
+                )
+            ],
+            name="add_name",
+        )
+        
+        all_migs = list_migration_files(tmp_migrations_dir)
+        start = all_migs[0][0]
+        end = all_migs[1][0]
+        
+        # Create squashed migration
+        result = squashmigrations(
+            start=start,
+            end=end,
+            migrations_dir=str(tmp_migrations_dir),
+        )
+        assert result is not None
+        
+        # Verify the squashed migration has replaces attribute
+        squash_file = next(tmp_migrations_dir.glob("0003*squashed*.py"), None)
+        assert squash_file is not None
+        
+        # Load the squashed migration and verify replaces
+        from zeeb_orm.migrations.executor import load_migration
+        squashed_mig = load_migration(squash_file)
+        assert hasattr(squashed_mig, 'replaces')
+        assert squashed_mig.replaces == ['0001_initial', '0002_add_name']
+        
+        # Verify that when we apply the squashed migration, the replaced ones
+        # are skipped and marked as applied
+        import tempfile
+        with tempfile.NamedTemporaryFile(suffix='.db', delete=False) as f:
+            db_path = f.name
+        
+        try:
+            applied = executor.migrate(
+                target=None,
+                database_url=f"sqlite:///{db_path}",
+                project_root=tmp_migrations_dir.parent,
+            )
+            
+            # Only the squashed migration should be in the applied list
+            # (the replaced migrations are skipped)
+            assert '0003_squashed_0001_initial_to_0002_add_name' in applied
+            assert '0001_initial' not in applied
+            assert '0002_add_name' not in applied
+            
+            # Check what's in the database - all three should be marked as applied
+            from sqlalchemy import create_engine
+            from zeeb_orm.migrations.executor import get_applied_migrations
+            engine = create_engine(f"sqlite:///{db_path}")
+            with engine.connect() as conn:
+                applied_in_db = get_applied_migrations(conn)
+            engine.dispose()
+            
+            # All three should be marked as applied in the database
+            assert '0001_initial' in applied_in_db
+            assert '0002_add_name' in applied_in_db
+            assert '0003_squashed_0001_initial_to_0002_add_name' in applied_in_db
+        finally:
+            import os
+            if os.path.exists(db_path):
+                os.unlink(db_path)
 
 
 # ---------------------------------------------------------------------------

@@ -495,9 +495,9 @@ def squashmigrations(
     else:
         slug = f"squashed_{_slugify(start)}_to_{_slugify(end)}"
 
-    # Write squashed migration using the number just before start (with a
-    # _squashed suffix so it sorts into the right position)
-    squash_number = int(start[:4]) if start[:4].isdigit() else (start_idx + 1)
+    # Use the next number after the end migration so the squashed migration
+    # sorts after all the migrations it replaces
+    squash_number = int(end[:4]) + 1 if end[:4].isdigit() else (end_idx + 2)
     filename = f"{squash_number:04d}_{slug}.py"
     filepath = mig_dir / filename
 
@@ -506,22 +506,28 @@ def squashmigrations(
         return None
 
     migration_name = filepath.stem
+    
+    # List of migrations being replaced
+    replaced = [name for name, _ in squash_range]
+    
     from zeeb_orm.migrations.writer import _render_migration
     content = _render_migration(
         migration_name=migration_name,
         operations=optimized_ops,
         dependencies=dependencies,
         initial=(start_idx == 0),
+        replaces=replaced,
     )
 
     # Add a header comment listing which migrations are replaced
-    replaced = [name for name, _ in squash_range]
     replaced_comment = (
-        "# This migration replaces the following migrations:\n"
+        "# This squashed migration replaces the following migrations:\n"
         + "".join(f"#   - {n}\n" for n in replaced)
         + "#\n"
-        + "# Once this migration has been applied everywhere, the original\n"
-        + "# migration files can be deleted.\n"
+        + "# The 'replaces' attribute ensures that when this migration is applied,\n"
+        + "# the replaced migrations are automatically marked as applied.\n"
+        + "# Once this migration has been deployed everywhere, the original\n"
+        + "# migration files can be safely deleted.\n"
     )
     # Insert after the docstring closing '''
     content = content.replace(

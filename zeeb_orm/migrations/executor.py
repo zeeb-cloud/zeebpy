@@ -198,6 +198,16 @@ def migrate(
     try:
         with engine.connect() as conn:
             applied = get_applied_migrations(conn)
+            
+            # Build a set of migrations that are replaced by squashed migrations
+            # (both already-applied and unapplied squashed migrations)
+            replaced_by_applied = set()
+            for name, path in all_migrations:
+                mig = load_migration(path)
+                if hasattr(mig, 'replaces') and mig.replaces:
+                    # If this squashed migration is already applied OR exists in the list,
+                    # mark its replaced migrations as superseded
+                    replaced_by_applied.update(mig.replaces)
 
             if target == "zero":
                 # Rollback all applied migrations in reverse order
@@ -229,7 +239,7 @@ def migrate(
                     to_apply = [
                         (name, path)
                         for name, path in all_migrations[current_idx + 1: target_idx + 1]
-                        if name not in applied
+                        if name not in applied and name not in replaced_by_applied
                     ]
                     if plan:
                         # Filter out initial migrations when fake_initial=True and tables exist
@@ -255,6 +265,13 @@ def migrate(
                         record_migration(conn, name)
                         conn.commit()
                         applied_names.append(name)
+                        
+                        # If this migration replaces others, mark them as applied too
+                        if hasattr(mig, 'replaces') and mig.replaces:
+                            for replaced_name in mig.replaces:
+                                if replaced_name not in applied and replaced_name not in applied_names:
+                                    record_migration(conn, replaced_name)
+                                    conn.commit()
                 else:
                     # Backward to target
                     to_unapply = [
@@ -277,7 +294,7 @@ def migrate(
                 to_apply = [
                     (name, path)
                     for name, path in all_migrations
-                    if name not in applied
+                    if name not in applied and name not in replaced_by_applied
                 ]
                 if plan:
                     planned_names: list[str] = []
@@ -300,6 +317,13 @@ def migrate(
                     record_migration(conn, name)
                     conn.commit()
                     applied_names.append(name)
+                    
+                    # If this migration replaces others, mark them as applied too
+                    if hasattr(mig, 'replaces') and mig.replaces:
+                        for replaced_name in mig.replaces:
+                            if replaced_name not in applied and replaced_name not in applied_names:
+                                record_migration(conn, replaced_name)
+                                conn.commit()
 
     finally:
         engine.dispose()
