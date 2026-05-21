@@ -83,6 +83,7 @@ python manage.py runserver
 - [Expressions](orm/expressions.md) - F, Q, annotations, and functions
 - [Relationships](orm/relationships.md) - ForeignKey, OneToOne, ManyToMany
 - [Migrations](orm/migrations.md) - Database migrations
+- [Signals](orm/signals.md) - Model lifecycle signals
 
 ### API (zeeb_api)
 - [Serializers](api/serializers.md) - Serialize and validate data

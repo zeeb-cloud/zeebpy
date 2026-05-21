@@ -107,6 +107,16 @@ from zeeb_agents.testing import run_tests
 # Shell / management commands
 from zeeb_agents.shell import run_management_command
 
+# Signals scaffolding
+from zeeb_agents.signals import (
+    create_signal_receiver,
+    delete_signal_receiver,
+    edit_signal_receiver,
+    list_model_signals,
+    list_signal_receivers,
+    read_signal_receiver,
+)
+
 __version__ = "0.1.0"
 
 __all__ = [
@@ -166,4 +176,11 @@ __all__ = [
     "run_tests",
     # Shell
     "run_management_command",
+    # Signals scaffolding
+    "create_signal_receiver",
+    "list_signal_receivers",
+    "read_signal_receiver",
+    "edit_signal_receiver",
+    "delete_signal_receiver",
+    "list_model_signals",
 ]
