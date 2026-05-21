@@ -39,14 +39,12 @@ dependencies = [
 postgresql = ["asyncpg>=0.29.0", "psycopg2-binary>=2.9.0"]
 mysql = ["aiomysql>=0.2.0", "pymysql>=1.1.0"]
 sqlite = ["aiosqlite>=0.19.0"]
-mcp = ["mcp>=1.0.0"]
 all = [
     "asyncpg>=0.29.0",
     "psycopg2-binary>=2.9.0",
     "aiomysql>=0.2.0",
     "pymysql>=1.1.0",
     "aiosqlite>=0.19.0",
-    "mcp>=1.0.0",
 ]
 dev = [
     "pytest>=7.4.0",
@@ -54,16 +52,14 @@ dev = [
     "pytest-cov>=4.1.0",
     "mypy>=1.5.0",
     "ruff>=0.1.0",
-    "mcp>=1.0.0",
 ]
 
 [project.scripts]
 zeeb = "zeeb_orm.cli.main:main"
 zeeb-manage = "zeeb_orm.cli.main:main"
-zeeb-mcp = "zeeb_orm.mcp.server:main"
 
 [tool.hatch.build.targets.wheel]
-packages = ["zeeb_orm", "zeeb_api"]
+packages = ["zeeb_orm", "zeeb_api", "zeeb_agents"]
 
 [tool.ruff]
 line-length = 100

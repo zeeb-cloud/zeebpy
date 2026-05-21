@@ -4,7 +4,6 @@ Zeeb CLI - Django-like management commands.
 
 Usage (from anywhere after pip install):
     zeeb startproject <name>
-    zeeb mcp stdio              # Start MCP server
     zeeb-manage <command>
 
 Usage (from project directory):
@@ -22,7 +21,6 @@ Commands:
     check                   Check project configuration
     shell                   Start interactive Python shell
     runserver [host:port]   Start development server
-    mcp <subcommand>        MCP server for LLM integration
 """
 
 import argparse
@@ -140,21 +138,6 @@ def main() -> int:
     sp_init = subparsers.add_parser("init", help="Initialize migrations for a project")
     sp_init.add_argument("--directory", "-d", default="migrations", help="Migrations directory")
 
-    # mcp - MCP server commands
-    sp_mcp = subparsers.add_parser("mcp", help="MCP server for LLM integration")
-    mcp_subparsers = sp_mcp.add_subparsers(dest="mcp_command", help="MCP commands")
-    
-    # mcp stdio
-    mcp_stdio = mcp_subparsers.add_parser("stdio", help="Run MCP server in stdio mode (for Claude Desktop, Cursor, etc.)")
-    
-    # mcp serve
-    mcp_serve = mcp_subparsers.add_parser("serve", help="Run MCP server in HTTP mode")
-    mcp_serve.add_argument("--host", default="127.0.0.1", help="Host to bind to")
-    mcp_serve.add_argument("--port", type=int, default=3000, help="Port to bind to")
-    
-    # mcp tools
-    mcp_tools = mcp_subparsers.add_parser("tools", help="List available MCP tools")
-
     args = parser.parse_args()
 
     if args.command is None:
@@ -206,68 +189,9 @@ def main() -> int:
         from zeeb_orm.cli.commands.migrate import run_init
         return run_init(args.directory)
 
-    elif args.command == "mcp":
-        return run_mcp_command(args)
-
     else:
         parser.print_help()
         return 1
-
-
-def run_mcp_command(args) -> int:
-    """Handle MCP subcommands."""
-    if args.mcp_command is None:
-        print("Usage: zeeb mcp <command>")
-        print("\nCommands:")
-        print("  stdio    Run MCP server in stdio mode (for Claude Desktop, Cursor)")
-        print("  serve    Run MCP server in HTTP mode")
-        print("  tools    List available MCP tools")
-        return 0
-    
-    if args.mcp_command == "stdio":
-        import asyncio
-        from zeeb_orm.mcp.server import run_stdio
-        asyncio.run(run_stdio())
-        return 0
-    
-    elif args.mcp_command == "serve":
-        from zeeb_orm.mcp.server import run_http
-        run_http(args.host, args.port)
-        return 0
-    
-    elif args.mcp_command == "tools":
-        # Import to register tools
-        from zeeb_orm.mcp.server import _tool_handlers
-        from zeeb_orm.mcp.tools import project, models, serializers, viewsets, migrations, data
-        from zeeb_orm.mcp.tools import server as srv
-        
-        print("Available Zeeb MCP Tools")
-        print("=" * 60)
-        
-        # Group by category
-        categories = {
-            "Project": ["zeeb_create_project", "zeeb_create_app", "zeeb_delete_app", "zeeb_project_info"],
-            "Models": ["zeeb_create_model", "zeeb_update_model", "zeeb_delete_model", "zeeb_list_models", 
-                      "zeeb_add_field", "zeeb_remove_field", "zeeb_add_relationship"],
-            "Serializers": ["zeeb_create_serializer", "zeeb_update_serializer"],
-            "ViewSets": ["zeeb_create_viewset", "zeeb_add_viewset_action", "zeeb_generate_crud", "zeeb_list_endpoints"],
-            "Migrations": ["zeeb_run_migrations", "zeeb_migration_status", "zeeb_rollback_migration"],
-            "Data": ["zeeb_seed_data", "zeeb_query_data"],
-            "Server": ["zeeb_start_server", "zeeb_stop_server", "zeeb_server_status"],
-        }
-        
-        for category, tools in categories.items():
-            print(f"\n{category}:")
-            for tool_name in tools:
-                if tool_name in _tool_handlers:
-                    desc = _tool_handlers[tool_name]["description"]
-                    print(f"  {tool_name}")
-                    print(f"    {desc}")
-        
-        print(f"\nTotal: {len(_tool_handlers)} tools")
-        return 0
-    
-    return 1
 
 
 if __name__ == "__main__":

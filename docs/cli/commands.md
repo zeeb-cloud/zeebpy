@@ -263,26 +263,6 @@ Opens appropriate shell for your database:
 - PostgreSQL: `psql`
 - MySQL: `mysql`
 
-## MCP Commands
-
-### mcp stdio
-
-Start MCP server in stdio mode (for AI assistants).
-
-```bash
-python manage.py mcp stdio
-```
-
-### mcp serve
-
-Start MCP server in HTTP mode.
-
-```bash
-python manage.py mcp serve --host 0.0.0.0 --port 8080
-```
-
-See [MCP Tools](mcp.md) for full documentation.
-
 ## Utility Commands
 
 ### showurls
@@ -414,6 +394,5 @@ export DEBUG=true
 
 ## Next Steps
 
-- [MCP Tools](mcp.md) - AI assistant integration
 - [Settings](../configuration/settings.md) - Configuration
 - [Migrations](../orm/migrations.md) - Migration system
