@@ -29,12 +29,27 @@ ENV/
 # Test artifacts
 .pytest_cache/
 .coverage
+.coverage.*
+coverage.xml
+*.cover
 htmlcov/
 .tox/
 .nox/
 
+# Type checking
+.mypy_cache/
+
 # Ruff
 .ruff_cache/
+
+# Logs
+logs/
+*.log
+
+# Environment / secrets
+.env
+.env.*
+*.env
 
 # OS files
 .DS_Store
