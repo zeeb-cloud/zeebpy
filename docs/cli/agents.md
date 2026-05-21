@@ -383,3 +383,57 @@ result = await run_management_command("showmigrations")
 result = await run_management_command("createsuperuser", args=["--no-input", "--username=admin"])
 # result.data == {"command": "...", "args": [...], "returncode": 0, "output": "..."}
 ```
+
+---
+
+## Signals Scaffolding
+
+Manage `@receiver` decorated functions in `{app}/signals.py` files.
+
+### `create_signal_receiver(app, signal_name, model_name, function_name, project_root=None)`
+Create an async receiver stub. Creates `signals.py` if it doesn't exist.
+
+- `signal_name`: One of `pre_save`, `post_save`, `pre_delete`, `post_delete`.
+
+```python
+result = await create_signal_receiver("blog", "post_save", "Article", "on_article_saved")
+# result.data == {"path": "blog/signals.py", "signal": "post_save", "action": "created", ...}
+```
+
+### `list_signal_receivers(app, project_root=None)`
+List all `@receiver(...)` decorated functions in `{app}/signals.py`.
+
+```python
+result = await list_signal_receivers("blog")
+# result.data == {"receivers": [{"func_name": "on_article_saved", "signal": "post_save", "sender": "Article"}], "count": 1}
+```
+
+### `read_signal_receiver(app, function_name, project_root=None)`
+Return the full source (decorator + body) of a specific receiver.
+
+```python
+result = await read_signal_receiver("blog", "on_article_saved")
+# result.data == {"source": "@receiver(post_save, sender=Article)\nasync def on_article_saved(...): ...", ...}
+```
+
+### `edit_signal_receiver(app, function_name, new_body, project_root=None)`
+Replace the body of an existing receiver function (decorator is preserved).
+
+```python
+result = await edit_signal_receiver("blog", "on_article_saved", "    await notify(instance)")
+```
+
+### `delete_signal_receiver(app, function_name, project_root=None)`
+Remove a receiver function and its `@receiver(...)` decorator from `signals.py`.
+
+```python
+result = await delete_signal_receiver("blog", "on_article_saved")
+```
+
+### `list_model_signals(app, model_name, project_root=None)`
+Filter receivers by `sender=<model_name>` — shows all signals for one model.
+
+```python
+result = await list_model_signals("blog", "Article")
+# result.data == {"model": "Article", "receivers": [{"func_name": "...", "signal": "post_save"}], "count": 1}
+```

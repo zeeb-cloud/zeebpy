@@ -614,10 +614,23 @@ class Model(metaclass=ModelBase):
         Save the model instance to the database.
 
         If update_fields is provided, only those fields will be updated.
+
+        Fires :data:`~zeeb_orm.signals.pre_save` before the DB write and
+        :data:`~zeeb_orm.signals.post_save` after the commit.
         """
         from zeeb_orm.db.connection import get_connection
+        from zeeb_orm.signals import post_save, pre_save
 
         db = await get_connection()
+        created = not self._state.persisted
+
+        # pre_save fires BEFORE the session opens — exceptions abort the save
+        await pre_save.send(
+            sender=type(self),
+            instance=self,
+            created=created,
+            update_fields=update_fields,
+        )
 
         async with db.session() as session:
             if self._state.persisted:
@@ -672,10 +685,23 @@ class Model(metaclass=ModelBase):
 
                 self._state.persisted = True
 
+        # post_save fires AFTER commit — data is in the database
+        await post_save.send(
+            sender=type(self),
+            instance=self,
+            created=created,
+            update_fields=update_fields,
+        )
+
     async def delete(self) -> None:
-        """Delete this model instance from the database."""
+        """Delete this model instance from the database.
+
+        Fires :data:`~zeeb_orm.signals.pre_delete` before the DB delete and
+        :data:`~zeeb_orm.signals.post_delete` after the commit.
+        """
         from zeeb_orm.db.connection import get_connection
         from sqlalchemy import delete
+        from zeeb_orm.signals import post_delete, pre_delete
 
         if not self._state.persisted:
             return
@@ -685,12 +711,18 @@ class Model(metaclass=ModelBase):
         pk_col = getattr(table.c, self._meta.pk_name)
         pk_value = getattr(self, self._meta.pk_name)
 
+        # pre_delete fires BEFORE the session opens — exceptions abort the delete
+        await pre_delete.send(sender=type(self), instance=self)
+
         async with db.session() as session:
             stmt = delete(table).where(pk_col == pk_value)
             await session.execute(stmt)
             await session.commit()
 
         self._state.persisted = False
+
+        # post_delete fires AFTER commit — instance pk is still set for reference
+        await post_delete.send(sender=type(self), instance=self)
 
     async def refresh_from_db(self, fields: list[str] | None = None) -> None:
         """Reload the model from the database."""
