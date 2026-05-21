@@ -241,6 +241,108 @@ async def add_relationship(
     return await add_field(app, model_name, rel, project_root)
 
 
+async def replace_model_fields(
+    app: str,
+    model_name: str,
+    fields: list[dict],
+    project_root: Path | None = None,
+) -> AgentResult:
+    """Replace **all** fields in a model with a new set.
+
+    This is a destructive operation — existing field lines are removed and
+    replaced with *fields*.  ``class Meta:`` is preserved intact.
+
+    Use :func:`add_field` / :func:`remove_field` for incremental changes.
+
+    Args:
+        app: App directory name.
+        model_name: PascalCase model class name.
+        fields: New list of field spec dicts (same format as :func:`create_model`).
+        project_root: Auto-detected if ``None``.
+    """
+    try:
+        root = require_project_root(project_root)
+        path = _models_file(app, root)
+        if not path.exists():
+            return AgentResult(success=False, message=f"models.py not found at {path}")
+
+        def _replace() -> list[str]:
+            import re
+
+            content = path.read_text(encoding="utf-8")
+            if not class_exists(content, model_name):
+                raise ValueError(f"Model '{model_name}' not found in {path}")
+
+            lines = content.splitlines(keepends=True)
+            indent = "    "
+            field_pattern = re.compile(rf"^{re.escape(indent)}\w+\s*=\s*fields\.")
+
+            # Locate class start
+            class_start: int | None = None
+            for i, line in enumerate(lines):
+                if re.match(rf"^class {re.escape(model_name)}\b", line):
+                    class_start = i
+                    break
+            if class_start is None:
+                raise ValueError(f"Model '{model_name}' not found (class_start)")
+
+            # Find where to insert (before class Meta or at class end)
+            class_end = len(lines)
+            meta_start: int | None = None
+            for i in range(class_start + 1, len(lines)):
+                line = lines[i]
+                stripped = line.strip()
+                if stripped and not line.startswith(indent) and not stripped.startswith("#"):
+                    class_end = i
+                    break
+                if re.match(r"\s+class Meta\b", line):
+                    meta_start = i
+                    break
+
+            insert_before = meta_start if meta_start is not None else class_end
+
+            # Remove existing field lines between class_start+1 and insert_before
+            new_lines: list[str] = []
+            for i, line in enumerate(lines):
+                if class_start + 1 <= i < insert_before and field_pattern.match(line):
+                    continue  # drop old field
+                new_lines.append(line)
+
+            # Recompute insert position after removal
+            new_insert = None
+            for i, line in enumerate(new_lines):
+                if i <= class_start:
+                    continue
+                if re.match(r"\s+class Meta\b", line):
+                    new_insert = i
+                    break
+                stripped = line.strip()
+                if stripped and not line.startswith(indent) and not stripped.startswith("#"):
+                    new_insert = i
+                    break
+            if new_insert is None:
+                new_insert = len(new_lines)
+
+            # Insert new field lines
+            field_lines = [f"{indent}{render_field_line(f)}\n" for f in fields]
+            if not fields:
+                field_lines = [f"{indent}pass\n"]
+            for fi, fl in enumerate(field_lines):
+                new_lines.insert(new_insert + fi, fl)
+
+            path.write_text("".join(new_lines), encoding="utf-8")
+            return [f["name"] for f in fields]
+
+        new_field_names = await asyncio.to_thread(_replace)
+        return AgentResult(
+            success=True,
+            message=f"Replaced all fields in '{model_name}' ({len(new_field_names)} field(s))",
+            data={"app": app, "model": model_name, "fields": new_field_names},
+        )
+    except Exception as exc:
+        return AgentResult(success=False, message=str(exc))
+
+
 async def update_model(
     app: str,
     model_name: str,

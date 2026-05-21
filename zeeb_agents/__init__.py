@@ -3,12 +3,13 @@
 All functions return an :class:`AgentResult` and can be imported directly::
 
     from zeeb_agents import (
-        create_project, create_app, get_project_info,
-        create_model, add_field, remove_field, add_relationship,
-        create_serializer, create_viewset, generate_crud,
+        create_project, create_app, get_project_info, list_apps, get_project_structure,
+        create_model, add_field, remove_field, replace_model_fields, add_relationship,
+        create_serializer, create_viewset, generate_crud, create_route,
         run_migrations, make_migrations, get_migration_status,
+        generate_seed_script,
         read_logs, search_logs, clear_logs,
-        get_settings, get_env, set_env, delete_env,
+        get_settings, manage_settings, get_env, set_env, delete_env,
         read_file, write_file, list_files, search_code,
         list_tables, describe_table, run_query,
         run_tests,
@@ -27,6 +28,8 @@ from zeeb_agents.project import (
     create_project,
     delete_app,
     get_project_info,
+    get_project_structure,
+    list_apps,
     rename_app,
 )
 
@@ -38,6 +41,7 @@ from zeeb_agents.models import (
     delete_model,
     list_models,
     remove_field,
+    replace_model_fields,
     update_model,
 )
 
@@ -55,6 +59,9 @@ from zeeb_agents.viewsets import (
     list_endpoints,
     register_route,
 )
+
+# Standalone routes
+from zeeb_agents.routes import create_route
 
 # Migrations
 from zeeb_agents.migrations import (
@@ -83,8 +90,12 @@ from zeeb_agents.config import (
     delete_env,
     get_env,
     get_settings,
+    manage_settings,
     set_env,
 )
+
+# Seed data
+from zeeb_agents.seed import generate_seed_script
 
 # File system
 from zeeb_agents.files import (
@@ -128,9 +139,12 @@ __all__ = [
     "delete_app",
     "get_project_info",
     "rename_app",
+    "list_apps",
+    "get_project_structure",
     # Models
     "create_model",
     "update_model",
+    "replace_model_fields",
     "delete_model",
     "list_models",
     "add_field",
@@ -145,6 +159,8 @@ __all__ = [
     "register_route",
     "generate_crud",
     "list_endpoints",
+    # Standalone routes
+    "create_route",
     # Migrations
     "make_migrations",
     "run_migrations",
@@ -160,6 +176,7 @@ __all__ = [
     "clear_logs",
     # Config & environment
     "get_settings",
+    "manage_settings",
     "get_env",
     "set_env",
     "delete_env",
@@ -176,6 +193,8 @@ __all__ = [
     "run_tests",
     # Shell
     "run_management_command",
+    # Seed data
+    "generate_seed_script",
     # Signals scaffolding
     "create_signal_receiver",
     "list_signal_receivers",

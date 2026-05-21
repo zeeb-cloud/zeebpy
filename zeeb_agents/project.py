@@ -10,7 +10,7 @@ from zeeb_agents._utils import AgentResult
 from zeeb_agents._utils.project import (
     find_project_root,
     get_app_path,
-    list_apps,
+    list_apps as list_apps_util,
     load_project_settings,
     require_project_root,
     to_class_name,
@@ -100,7 +100,7 @@ async def get_project_info(project_root: Path | None = None) -> AgentResult:
 
         def _load() -> dict:
             settings = load_project_settings(root)
-            apps = list_apps(root)
+            apps = list_apps_util(root)
             # Find project package name (directory with settings.py, excluding apps/)
             project_pkg = None
             for item in root.iterdir():
@@ -121,6 +121,88 @@ async def get_project_info(project_root: Path | None = None) -> AgentResult:
             success=True,
             message=f"Project info for '{info.get('project_package', root.name)}'",
             data=info,
+        )
+    except Exception as exc:
+        return AgentResult(success=False, message=str(exc))
+
+
+async def list_apps(project_root: Path | None = None) -> AgentResult:
+    """Return all app directory names found under ``apps/`` in the project.
+
+    Args:
+        project_root: Auto-detected if ``None``.
+    """
+    try:
+        root = require_project_root(project_root)
+        apps = await asyncio.to_thread(list_apps_util, root)
+        return AgentResult(
+            success=True,
+            message=f"Found {len(apps)} app(s)",
+            data={"apps": apps, "count": len(apps)},
+        )
+    except Exception as exc:
+        return AgentResult(success=False, message=str(exc))
+
+
+async def get_project_structure(
+    project_root: Path | None = None,
+    max_depth: int = 3,
+) -> AgentResult:
+    """Return a nested directory tree for the project.
+
+    Skips hidden directories, ``__pycache__``, ``.git``, ``node_modules``,
+    ``*.pyc`` files, and ``*.egg-info`` directories.
+
+    Args:
+        project_root: Auto-detected if ``None``.
+        max_depth: Maximum directory depth to traverse (default: 3).
+
+    Returns:
+        ``AgentResult`` with ``tree`` (nested dict), ``root``, and ``file_count``.
+    """
+    _SKIP_DIRS = frozenset({
+        "__pycache__", ".git", "node_modules", ".mypy_cache",
+        ".ruff_cache", ".pytest_cache", ".venv", "venv", ".tox",
+    })
+
+    try:
+        root = require_project_root(project_root)
+
+        def _walk(path: Path, depth: int) -> dict:
+            node: dict = {"name": path.name, "type": "dir", "children": []}
+            if depth <= 0:
+                return node
+            try:
+                entries = sorted(path.iterdir(), key=lambda p: (p.is_file(), p.name))
+            except PermissionError:
+                return node
+            for entry in entries:
+                if entry.name.startswith(".") and entry.name != ".env":
+                    continue
+                if entry.is_dir():
+                    if entry.name in _SKIP_DIRS or entry.name.endswith(".egg-info"):
+                        continue
+                    node["children"].append(_walk(entry, depth - 1))
+                else:
+                    if entry.suffix in (".pyc", ".pyo"):
+                        continue
+                    node["children"].append({"name": entry.name, "type": "file"})
+            return node
+
+        def _build() -> tuple[dict, int]:
+            tree = _walk(root, max_depth)
+            # Count files
+            def _count(node: dict) -> int:
+                if node["type"] == "file":
+                    return 1
+                return sum(_count(c) for c in node.get("children", []))
+            return tree, _count(tree)
+
+        tree, file_count = await asyncio.to_thread(_build)
+        return AgentResult(
+            success=True,
+            message=f"Project structure for '{root.name}' ({file_count} files, depth {max_depth})",
+            data={"root": str(root), "max_depth": max_depth, "file_count": file_count, "tree": tree},
         )
     except Exception as exc:
         return AgentResult(success=False, message=str(exc))
