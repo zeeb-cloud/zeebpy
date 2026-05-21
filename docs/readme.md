@@ -49,7 +49,7 @@ router.register("posts", PostViewSet)
 ## Installation
 
 ```bash
-pip install zeebpy zeeb-api
+pip install git+https://github.com/zeeb-cloud/zeebpy.git
 ```
 
 ## Creating a Project

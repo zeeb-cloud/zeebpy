@@ -5,18 +5,20 @@
 - Python 3.11 or higher
 - pip or poetry
 
-## Install from PyPI
+## Install from GitHub
 
 ```bash
-# Install both packages
-pip install zeebpy zeeb-api
+# Install the latest version directly from GitHub
+pip install git+https://github.com/zeeb-cloud/zeebpy.git
 
-# Or install individually
-pip install zeebpy  # ORM only
-pip install zeeb-api  # API framework (includes zeebpy)
+# With database drivers (PEP 508 extras syntax)
+pip install "zeebpy[postgresql] @ git+https://github.com/zeeb-cloud/zeebpy.git"  # asyncpg + psycopg2
+pip install "zeebpy[mysql] @ git+https://github.com/zeeb-cloud/zeebpy.git"       # aiomysql + pymysql
+pip install "zeebpy[sqlite] @ git+https://github.com/zeeb-cloud/zeebpy.git"      # aiosqlite
+pip install "zeebpy[all] @ git+https://github.com/zeeb-cloud/zeebpy.git"         # All drivers
 ```
 
-## Install from Source
+## Install from Source (for contributors)
 
 ```bash
 git clone https://github.com/zeeb-cloud/zeebpy.git
@@ -135,7 +137,7 @@ Server starts at `http://127.0.0.1:8000`
 For development, install with dev dependencies:
 
 ```bash
-pip install zeebpy[dev] zeeb-api[dev]
+pip install "zeebpy[dev] @ git+https://github.com/zeeb-cloud/zeebpy.git"
 ```
 
 This includes:
