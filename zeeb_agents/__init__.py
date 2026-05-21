@@ -14,6 +14,14 @@ All functions return an :class:`AgentResult` and can be imported directly::
         list_tables, describe_table, run_query,
         run_tests,
         run_management_command,
+        # BaaS tools
+        create_user, list_users, get_user, update_user, delete_user, set_user_password,
+        configure_cors, get_cors_config,
+        create_task, list_tasks, delete_task,
+        create_health_endpoint, check_system_health,
+        get_model_json_schema, list_all_routes, export_openapi,
+        generate_dockerfile, generate_requirements, check_production_readiness,
+        create_permission_class, list_permission_classes,
     )
 
 Designed to be used from an MCP server, CLI tool, or any other Python code
@@ -128,6 +136,55 @@ from zeeb_agents.signals import (
     read_signal_receiver,
 )
 
+# User management (BaaS)
+from zeeb_agents.users import (
+    create_user,
+    delete_user,
+    get_user,
+    list_users,
+    set_user_password,
+    update_user,
+)
+
+# CORS configuration (BaaS)
+from zeeb_agents.cors import (
+    configure_cors,
+    get_cors_config,
+)
+
+# Background tasks (BaaS)
+from zeeb_agents.tasks import (
+    create_task,
+    delete_task,
+    list_tasks,
+)
+
+# Health checks (BaaS)
+from zeeb_agents.health import (
+    check_system_health,
+    create_health_endpoint,
+)
+
+# API schema & route introspection (BaaS)
+from zeeb_agents.schema import (
+    export_openapi,
+    get_model_json_schema,
+    list_all_routes,
+)
+
+# Deployment scaffolding (BaaS)
+from zeeb_agents.deploy import (
+    check_production_readiness,
+    generate_dockerfile,
+    generate_requirements,
+)
+
+# Permission class scaffolding (BaaS)
+from zeeb_agents.permissions_scaffold import (
+    create_permission_class,
+    list_permission_classes,
+)
+
 __version__ = "0.1.0"
 
 __all__ = [
@@ -202,4 +259,32 @@ __all__ = [
     "edit_signal_receiver",
     "delete_signal_receiver",
     "list_model_signals",
+    # User management (BaaS)
+    "create_user",
+    "list_users",
+    "get_user",
+    "update_user",
+    "delete_user",
+    "set_user_password",
+    # CORS configuration (BaaS)
+    "configure_cors",
+    "get_cors_config",
+    # Background tasks (BaaS)
+    "create_task",
+    "list_tasks",
+    "delete_task",
+    # Health checks (BaaS)
+    "create_health_endpoint",
+    "check_system_health",
+    # API schema & route introspection (BaaS)
+    "get_model_json_schema",
+    "list_all_routes",
+    "export_openapi",
+    # Deployment scaffolding (BaaS)
+    "generate_dockerfile",
+    "generate_requirements",
+    "check_production_readiness",
+    # Permission class scaffolding (BaaS)
+    "create_permission_class",
+    "list_permission_classes",
 ]

@@ -535,3 +535,251 @@ result = await generate_seed_script("blog", count=10)
 # Run the generated script
 # python seeds/blog_seed.py
 ```
+
+---
+
+## BaaS — User Management
+
+Functions for runtime user CRUD against the project's live database.
+Passwords are always hashed via zeeb_api's PBKDF2 hasher.
+
+### `create_user(email, password, is_staff=False, is_superuser=False, project_root=None)`
+Create a new user.  The user table is auto-detected (first table with `email` + `password` columns).
+
+```python
+result = await create_user("alice@example.com", "s3cr3t")
+result = await create_user("admin@example.com", "admin123", is_staff=True, is_superuser=True)
+```
+
+### `list_users(limit=50, offset=0, project_root=None)`
+List users (passwords omitted from results).
+
+```python
+result = await list_users(limit=20)
+# result.data == {"users": [...], "total": 42, "limit": 20, "offset": 0}
+```
+
+### `get_user(email_or_id, project_root=None)`
+Fetch a single user by email or integer ID.
+
+```python
+result = await get_user("alice@example.com")
+result = await get_user(1)
+```
+
+### `update_user(email_or_id, changes, project_root=None)`
+Update user fields.  Pass `password` through `set_user_password` instead.
+
+```python
+result = await update_user("alice@example.com", {"is_staff": True, "is_active": False})
+```
+
+### `delete_user(email_or_id, project_root=None)`
+Delete a user by email or integer ID.
+
+```python
+result = await delete_user("alice@example.com")
+```
+
+### `set_user_password(email_or_id, new_password, project_root=None)`
+Set a new hashed password for an existing user.
+
+```python
+result = await set_user_password("alice@example.com", "n3wP@ssword!")
+```
+
+---
+
+## BaaS — CORS Configuration
+
+### `configure_cors(origins, methods=None, allow_credentials=True, allow_headers=None, expose_headers=None, project_root=None)`
+Write CORS settings to `settings.py`.  `zeeb_api.middleware.CORSMiddleware`
+reads these keys automatically.
+
+```python
+result = await configure_cors(
+    origins=["https://myapp.com", "http://localhost:3000"],
+    methods=["GET", "POST", "PUT", "DELETE"],
+)
+# Writes: CORS_ALLOW_ORIGINS, CORS_ALLOW_METHODS, CORS_ALLOW_CREDENTIALS, CORS_ALLOW_HEADERS
+```
+
+Add middleware in `settings.py`:
+```python
+MIDDLEWARE = [
+    "zeeb_api.middleware.CORSMiddleware",
+]
+```
+
+### `get_cors_config(project_root=None)`
+Read the current CORS settings from the project.
+
+```python
+result = await get_cors_config()
+# result.data == {"cors": {"CORS_ALLOW_ORIGINS": [...], ...}}
+```
+
+---
+
+## BaaS — Background Tasks
+
+### `create_task(app, function_name, schedule=None, project_root=None)`
+Scaffold an async task function in `apps/{app}/tasks.py`.
+Creates the file with a header if it does not exist.
+
+- `schedule`: Cron expression (e.g. `"0 9 1 * *"`) used as a comment in the stub.
+
+```python
+result = await create_task("billing", "send_monthly_invoices", schedule="0 9 1 * *")
+result = await create_task("notifications", "cleanup_old_notifications")
+```
+
+### `list_tasks(app, project_root=None)`
+List all async task functions in `apps/{app}/tasks.py`.
+
+```python
+result = await list_tasks("billing")
+# result.data == {"tasks": ["send_monthly_invoices", "retry_failed_payments"], "count": 2}
+```
+
+### `delete_task(app, function_name, project_root=None)`
+Remove a task function from `apps/{app}/tasks.py`.
+
+```python
+result = await delete_task("billing", "send_monthly_invoices")
+```
+
+---
+
+## BaaS — Health Endpoints
+
+### `create_health_endpoint(project_root=None)`
+Scaffold `/health` (liveness) and `/ready` (readiness + DB ping) route handlers
+in `health.py` at the project root.
+
+```python
+result = await create_health_endpoint()
+# Creates health.py with GET /health and GET /ready
+
+# Register in your main app:
+# from health import router as health_router
+# app.include_router(health_router)
+```
+
+### `check_system_health(project_root=None)`
+Run runtime health checks: settings load, DB connectivity, table inventory.
+
+```python
+result = await check_system_health()
+# result.success == True  (overall healthy)
+# result.data == {
+#   "checks": {"settings": "ok", "db": "ok", "tables": [...], "overall": "healthy"}
+# }
+```
+
+---
+
+## BaaS — API Schema & Route Introspection
+
+### `get_model_json_schema(app, model_name, project_root=None)`
+Return a JSON Schema object for a zeeb_orm model — useful for client SDK
+generation or frontend form validation.
+
+```python
+result = await get_model_json_schema("blog", "Post")
+# result.data["schema"] == {
+#   "$schema": "...", "title": "Post", "type": "object",
+#   "properties": {"id": ..., "title": ..., "body": ...},
+#   "required": ["title"]
+# }
+```
+
+### `list_all_routes(project_root=None)`
+Scan all apps for both ViewSet registrations and standalone route decorators.
+
+```python
+result = await list_all_routes()
+# result.data["routes"] == [
+#   {"app": "blog", "type": "viewset", "prefix": "posts", "viewset": "PostViewSet"},
+#   {"app": "blog", "type": "route",   "method": "GET",   "path": "/posts/featured"},
+# ]
+```
+
+### `export_openapi(output_path=None, port=8000, project_root=None)`
+Fetch the live OpenAPI spec from the running dev server and save to `openapi.json`.
+The dev server must be running (`zeeb runserver`).
+
+```python
+result = await export_openapi(port=8000)
+# Saves openapi.json in project root
+```
+
+---
+
+## BaaS — Deployment Scaffolding
+
+### `generate_dockerfile(python_version="3.12", port=8000, project_root=None)`
+Generate a multi-stage production `Dockerfile` and `.dockerignore`.
+
+```python
+result = await generate_dockerfile(python_version="3.12", port=8080)
+# result.data == {"files_written": ["Dockerfile", ".dockerignore"], ...}
+```
+
+### `generate_requirements(output_path="requirements.txt", project_root=None)`
+Run `pip freeze` and write `requirements.txt` (filters out editable installs).
+
+```python
+result = await generate_requirements()
+# result.data == {"path": "requirements.txt", "package_count": 42}
+```
+
+### `check_production_readiness(project_root=None)`
+Validate that the project is ready for production.  Checks:
+
+- `DEBUG = False`
+- `SECRET_KEY` is set and not a placeholder
+- Database is not SQLite
+- `requirements.txt` exists
+- `Dockerfile` exists
+
+```python
+result = await check_production_readiness()
+# result.success == False  (has issues)
+# result.data == {
+#   "ready": False,
+#   "issues": ["DEBUG is True ...", "Database is SQLite ..."],
+#   "passed": ["SECRET_KEY is set."]
+# }
+```
+
+---
+
+## BaaS — Permission Class Scaffolding
+
+### `create_permission_class(app, class_name, logic="deny_all", project_root=None)`
+Scaffold a `BasePermission` subclass in `apps/{app}/permissions.py`.
+
+Available `logic` presets:
+- `"deny_all"` — reject all (safe default during development)
+- `"allow_all"` — accept all unconditionally
+- `"owner_only"` — allow if `obj.user_id == request.user.id`
+- `"staff_only"` — allow if `request.user.is_staff`
+- `"authenticated"` — allow any authenticated user
+
+```python
+result = await create_permission_class("blog", "IsPostOwner", logic="owner_only")
+result = await create_permission_class("admin", "IsStaffUser", logic="staff_only")
+
+# Use in a ViewSet:
+# class PostViewSet(ModelViewSet):
+#     permission_classes = [IsPostOwner]
+```
+
+### `list_permission_classes(app, project_root=None)`
+List all permission classes in `apps/{app}/permissions.py`.
+
+```python
+result = await list_permission_classes("blog")
+# result.data == {"permissions": ["IsPostOwner", "IsPublicRead"], "count": 2}
+```

@@ -93,7 +93,7 @@ python manage.py runserver
 
 ### CLI & Tools
 - [Commands](cli/commands.md) - Management commands
-- [Agent Functions](cli/agents.md) - Importable async functions for scaffolding & management
+- [Agent Functions](cli/agents.md) - Importable async functions for scaffolding, management & BaaS operations
 
 ### Configuration
 - [Settings](configuration/settings.md) - Project configuration
