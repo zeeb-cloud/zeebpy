@@ -10,7 +10,6 @@ Zeeb provides a familiar Django-style API for building async web applications wi
 - **DRF-style API** - Serializers, ViewSets, and automatic routing
 - **Async-first** - Built on SQLAlchemy async and FastAPI
 - **Full CLI** - Django-style management commands
-- **MCP Integration** - Build APIs with LLM assistance
 
 ## Quick Example
 
@@ -93,7 +92,7 @@ python manage.py runserver
 
 ### CLI & Tools
 - [Commands](cli/commands.md) - Management commands
-- [MCP Tools](cli/mcp.md) - LLM integration
+- [Agent Functions](cli/agents.md) - Importable async functions for scaffolding & management
 
 ### Configuration
 - [Settings](configuration/settings.md) - Project configuration
