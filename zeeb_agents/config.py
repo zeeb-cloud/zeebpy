@@ -8,6 +8,28 @@ from pathlib import Path
 from zeeb_agents._utils import AgentResult
 from zeeb_agents._utils.project import load_project_settings, require_project_root
 
+_SCALAR_TYPES = (str, int, float, bool, type(None))
+
+
+def _find_settings_file(root: Path) -> Path | None:
+    """Return the path to the project settings.py."""
+    for item in root.iterdir():
+        if item.is_dir() and (item / "settings.py").exists():
+            return item / "settings.py"
+    return None
+
+
+def _render_value(value: object) -> str:
+    """Render a scalar Python value as source text."""
+    if isinstance(value, bool):
+        return str(value)
+    if isinstance(value, str):
+        escaped = value.replace("\\", "\\\\").replace('"', '\\"')
+        return f'"{escaped}"'
+    if value is None:
+        return "None"
+    return str(value)
+
 
 def _find_env_file(root: Path) -> Path:
     """Return the primary .env file path (creates reference path even if absent)."""
@@ -155,6 +177,100 @@ async def delete_env(
             success=True,
             message=f"Removed '{key}' from .env",
             data={"key": key},
+        )
+    except Exception as exc:
+        return AgentResult(success=False, message=str(exc))
+
+
+async def manage_settings(
+    key: str,
+    value: object = None,
+    *,
+    read_only: bool = False,
+    project_root: "Path | None" = None,
+) -> "AgentResult":
+    """Read or update a top-level setting in ``settings.py``.
+
+    **Read mode** — pass only ``key`` (or ``read_only=True``)::
+
+        result = await manage_settings("DEBUG")
+        print(result.data["value"])   # e.g. True
+
+    **Write mode** — pass both ``key`` and ``value``::
+
+        await manage_settings("DEBUG", False)
+        await manage_settings("SECRET_KEY", "my-new-secret")
+
+    Write mode only supports scalar values (``str``, ``int``, ``float``,
+    ``bool``, ``None``).  For complex types (``dict``, ``list``) use
+    :func:`~zeeb_agents.files.read_file` / :func:`~zeeb_agents.files.write_file`
+    to edit ``settings.py`` directly.
+
+    Args:
+        key: Top-level setting name (e.g. ``"DEBUG"``, ``"SECRET_KEY"``).
+        value: New value for write mode.  Pass ``None`` with ``read_only=True``
+            to explicitly read a ``None``-valued setting.
+        read_only: Force read mode even when ``value`` is ``None``.
+        project_root: Auto-detected if ``None``.
+    """
+    import re
+
+    try:
+        root = require_project_root(project_root)
+        is_read = read_only or (value is None and not read_only)
+
+        if is_read:
+            settings = await asyncio.to_thread(load_project_settings, root)
+            if key not in settings:
+                return AgentResult(
+                    success=False,
+                    message=f"Setting '{key}' not found in settings.py",
+                    data={"key": key},
+                )
+            return AgentResult(
+                success=True,
+                message=f"Read setting '{key}'",
+                data={"key": key, "value": settings[key]},
+            )
+
+        # Write mode
+        if not isinstance(value, _SCALAR_TYPES):
+            return AgentResult(
+                success=False,
+                message=(
+                    f"manage_settings only supports scalar values "
+                    f"(str, int, float, bool, None). "
+                    f"Got {type(value).__name__}. "
+                    f"Use read_file/write_file to edit settings.py directly."
+                ),
+            )
+
+        def _write() -> bool:
+            settings_file = _find_settings_file(root)
+            if settings_file is None:
+                raise FileNotFoundError("settings.py not found in project")
+            content = settings_file.read_text(encoding="utf-8")
+            rendered = _render_value(value)
+            pattern = re.compile(
+                rf"^({re.escape(key)}\s*=\s*).*$", re.MULTILINE
+            )
+            if not pattern.search(content):
+                return False  # key not present
+            new_content = pattern.sub(rf"\g<1>{rendered}", content)
+            settings_file.write_text(new_content, encoding="utf-8")
+            return True
+
+        found = await asyncio.to_thread(_write)
+        if not found:
+            return AgentResult(
+                success=False,
+                message=f"Setting '{key}' not found in settings.py (key must already exist to update it)",
+                data={"key": key},
+            )
+        return AgentResult(
+            success=True,
+            message=f"Updated setting '{key}' in settings.py",
+            data={"key": key, "value": value},
         )
     except Exception as exc:
         return AgentResult(success=False, message=str(exc))

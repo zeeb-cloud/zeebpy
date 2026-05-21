@@ -437,3 +437,101 @@ Filter receivers by `sender=<model_name>` — shows all signals for one model.
 result = await list_model_signals("blog", "Article")
 # result.data == {"model": "Article", "receivers": [{"func_name": "...", "signal": "post_save"}], "count": 1}
 ```
+
+---
+
+## Project Introspection
+
+### `list_apps(project_root=None)`
+Return all app directory names found under `apps/`.
+
+```python
+result = await list_apps()
+# result.data == {"apps": ["blog", "users"], "count": 2}
+```
+
+### `get_project_structure(project_root=None, max_depth=3)`
+Return a nested directory tree for the project. Skips `__pycache__`, `.git`, `.venv`, etc.
+
+```python
+result = await get_project_structure(max_depth=2)
+# result.data == {"root": "/path/to/project", "file_count": 42, "tree": {...}}
+# tree == {"name": "myproject", "type": "dir", "children": [...]}
+```
+
+---
+
+## Standalone Routes
+
+### `create_route(app, path, method, function_name, response_model=None, project_root=None)`
+Append a standalone `@router.<method>(path)` async handler to `{app}/views.py`.
+Unlike `create_viewset`, this creates a plain function — not a class-based ViewSet.
+
+- `method`: One of `get`, `post`, `put`, `patch`, `delete`.
+- `response_model`: Optional Pydantic model name added as `response_model=...`.
+
+```python
+result = await create_route("blog", "/posts/featured", "get", "get_featured_posts")
+result = await create_route("blog", "/posts/{post_id}/publish", "post", "publish_post")
+# result.data == {"app": "blog", "path": "/posts/featured", "method": "get", "function_name": "get_featured_posts"}
+```
+
+---
+
+## Model Field Replacement
+
+### `replace_model_fields(app, model_name, fields, project_root=None)`
+Destructively replace **all** field lines in a model with a new set.
+`class Meta:` is preserved. Use `add_field`/`remove_field` for incremental changes.
+
+```python
+result = await replace_model_fields("blog", "Post", [
+    {"name": "title", "type": "CharField", "max_length": 200},
+    {"name": "body",  "type": "TextField"},
+    {"name": "published", "type": "BooleanField", "default": False},
+])
+# result.data == {"model": "Post", "fields": ["title", "body", "published"]}
+```
+
+---
+
+## Settings Management
+
+### `manage_settings(key, value=None, *, read_only=False, project_root=None)`
+Read or update a top-level scalar setting in `settings.py`.
+
+**Read a setting:**
+```python
+result = await manage_settings("DEBUG")
+# result.data == {"key": "DEBUG", "value": True}
+```
+
+**Update a setting:**
+```python
+result = await manage_settings("DEBUG", False)
+result = await manage_settings("SECRET_KEY", "new-secret-value")
+# result.data == {"key": "DEBUG", "value": False}
+```
+
+Supports scalar types only (`str`, `int`, `float`, `bool`, `None`).
+For complex types (dict, list), use `read_file`/`write_file` to edit `settings.py` directly.
+
+---
+
+## Seed Data
+
+### `generate_seed_script(app, models=None, count=5, output_path=None, project_root=None)`
+Generate a Python seed script that populates the database with sample records.
+Reads model definitions from `{app}/models.py` and writes `seeds/{app}_seed.py`.
+
+- `models`: List of model names to include. Defaults to all models in the app.
+- `count`: Number of records to create per model (default: 5).
+- `output_path`: Override the output file path (relative to project root).
+
+```python
+result = await generate_seed_script("blog", count=10)
+# result.data == {"path": "seeds/blog_seed.py", "models_seeded": ["Post", "Comment"], "count": 10}
+
+# Run the generated script
+# python seeds/blog_seed.py
+```
