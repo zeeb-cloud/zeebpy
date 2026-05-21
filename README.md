@@ -22,6 +22,11 @@ A Django-like framework for building async APIs with FastAPI. Includes a powerfu
 - **User Model**: Database-backed User/Permission like Django
 - **Exception Handling**: Standardized error responses with i18n support
 
+### Agent Functions (zeeb_agents)
+- **43 async functions** — scaffolding, migrations, server lifecycle, logs, config, files, database, testing
+- **Zero MCP dependency** — import directly from any Python code; plug into an MCP server externally
+- **Uniform return type** — every function returns `AgentResult(success, message, data)`
+
 ## Installation
 
 ```bash
@@ -699,6 +704,75 @@ raise ZeebException(
     details=[{"code": "RESOURCE_NOT_FOUND", "field": "id"}]
 )
 ```
+
+---
+
+---
+
+## zeeb_agents — Agent Functions
+
+`zeeb_agents` is a standalone async Python library with 43 functions covering everything needed to scaffold, manage, and inspect a Zeeb project.  It has no MCP dependency — consume it from any Python code or wire it into an external MCP server.
+
+```python
+from zeeb_agents import (
+    # Scaffolding
+    create_project, create_app, create_model, add_field, generate_crud,
+    # Migrations
+    make_migrations, run_migrations, get_migration_status,
+    # Server
+    start_server, stop_server, get_server_status,
+    # Observability
+    read_logs, search_logs,
+    get_settings, get_env, set_env,
+    read_file, write_file, search_code,
+    list_tables, run_query,
+    run_tests,
+    run_management_command,
+)
+```
+
+All functions return an `AgentResult`:
+
+```python
+@dataclass
+class AgentResult:
+    success: bool          # True on success
+    message: str           # Human-readable summary
+    data: dict | None      # Structured output
+
+if result:   # AgentResult is truthy on success
+    print(result.message)
+    print(result.data)
+```
+
+### Quick examples
+
+```python
+# Generate full CRUD (model + serializer + viewset + route) in one call
+result = await generate_crud("blog", "Post", fields=[
+    {"name": "title", "type": "CharField", "max_length": 200},
+    {"name": "body",  "type": "TextField"},
+])
+
+# Read last 50 error log lines
+result = await read_logs(lines=50, level="ERROR")
+
+# Inspect the live database
+tables = await list_tables()
+rows   = await run_query("SELECT id, title FROM blog_post LIMIT 5")
+
+# Manage environment
+await set_env("DEBUG", "0")
+
+# Run tests
+result = await run_tests()
+# result.message == "114 passed"
+
+# Run any management command
+await run_management_command("createsuperuser", args=["--no-input", "--username=admin"])
+```
+
+Full API reference: [`docs/cli/agents.md`](docs/cli/agents.md)
 
 ---
 
