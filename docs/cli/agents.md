@@ -783,3 +783,93 @@ List all permission classes in `apps/{app}/permissions.py`.
 result = await list_permission_classes("blog")
 # result.data == {"permissions": ["IsPostOwner", "IsPublicRead"], "count": 2}
 ```
+
+---
+
+## MCP Resource Content
+
+Functions that return rich markdown documentation for use as MCP resource
+bodies.  Each function maps to one `mcp://` URI and returns an
+`AgentResult` with:
+
+- `data["content"]`   — markdown string (serve as resource body)
+- `data["uri"]`       — the canonical `mcp://` URI
+- `data["mime_type"]` — always `"text/markdown"`
+
+When `project_root` is supplied, live project context (app list, migration
+status, readiness check, etc.) is appended to the static documentation.
+
+### `get_resource(uri, project_root=None)` — URI dispatcher
+
+```python
+from zeeb_agents import get_resource, RESOURCE_URIS
+
+# RESOURCE_URIS maps short names → full URIs
+# {
+#   "capabilities":       "mcp://docs/capabilities",
+#   "project-lifecycle":  "mcp://docs/project-lifecycle",
+#   "backend-generation": "mcp://docs/backend-generation",
+#   "frontend-generation":"mcp://docs/frontend-generation",
+#   "deployment":         "mcp://docs/deployment",
+# }
+
+result = await get_resource("mcp://docs/capabilities")
+print(result.data["content"])   # markdown
+
+# With live project context
+result = await get_resource("mcp://docs/deployment", project_root=Path("."))
+```
+
+### `get_capabilities_doc(project_root=None)` → `mcp://docs/capabilities`
+
+Complete inventory of all public `zeeb_agents` functions (80+), organised
+by module with signatures and descriptions.
+
+### `get_project_lifecycle_doc(project_root=None)` → `mcp://docs/project-lifecycle`
+
+Step-by-step guide from `create_project` → apps → models → migrations →
+API → users → server → tasks → monitoring.  Dynamic context: current app
+list and migration status.
+
+### `get_backend_generation_doc(project_root=None)` → `mcp://docs/backend-generation`
+
+How to generate models, serializers, viewsets, routes, migrations, signals,
+permissions, tasks, and seeds.  Includes field type reference table.
+
+### `get_frontend_generation_doc(project_root=None)` → `mcp://docs/frontend-generation`
+
+Frontend integration: CORS setup, JWT authentication, OpenAPI export, JSON
+Schema for models, route inventory, health endpoints, WebSocket notes.
+Dynamic context: configured CORS origins and registered route count.
+
+### `get_deployment_doc(project_root=None)` → `mcp://docs/deployment`
+
+Production deployment: readiness check, Dockerfile generation,
+requirements.txt, health probes (k8s/Docker Compose examples), migrations
+in CI/CD, environment variable reference, recommended stack.  Dynamic
+context: live readiness check result.
+
+### MCP server integration example
+
+```python
+# In your MCP server (using mcp-python or similar):
+from mcp.server import Server
+from mcp.types import Resource
+from zeeb_agents import get_resource, RESOURCE_URIS
+
+server = Server("zeebpy-mcp")
+
+@server.list_resources()
+async def list_resources():
+    return [
+        Resource(uri=uri, name=name.replace("-", " ").title(), mimeType="text/markdown")
+        for name, uri in RESOURCE_URIS.items()
+    ]
+
+@server.read_resource()
+async def read_resource(uri: str):
+    result = await get_resource(uri)
+    if not result.success:
+        raise ValueError(result.message)
+    return result.data["content"]
+```

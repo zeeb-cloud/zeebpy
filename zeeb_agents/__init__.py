@@ -22,6 +22,9 @@ All functions return an :class:`AgentResult` and can be imported directly::
         get_model_json_schema, list_all_routes, export_openapi,
         generate_dockerfile, generate_requirements, check_production_readiness,
         create_permission_class, list_permission_classes,
+        # MCP resources
+        get_resource, get_capabilities_doc, get_project_lifecycle_doc,
+        get_backend_generation_doc, get_frontend_generation_doc, get_deployment_doc,
     )
 
 Designed to be used from an MCP server, CLI tool, or any other Python code
@@ -185,6 +188,17 @@ from zeeb_agents.permissions_scaffold import (
     list_permission_classes,
 )
 
+# MCP resource content
+from zeeb_agents.resources import (
+    RESOURCE_URIS,
+    get_capabilities_doc,
+    get_deployment_doc,
+    get_backend_generation_doc,
+    get_frontend_generation_doc,
+    get_project_lifecycle_doc,
+    get_resource,
+)
+
 __version__ = "0.1.0"
 
 __all__ = [
@@ -287,4 +301,12 @@ __all__ = [
     # Permission class scaffolding (BaaS)
     "create_permission_class",
     "list_permission_classes",
+    # MCP resource content
+    "RESOURCE_URIS",
+    "get_resource",
+    "get_capabilities_doc",
+    "get_project_lifecycle_doc",
+    "get_backend_generation_doc",
+    "get_frontend_generation_doc",
+    "get_deployment_doc",
 ]
