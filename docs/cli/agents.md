@@ -799,7 +799,27 @@ bodies.  Each function maps to one `mcp://` URI and returns an
 When `project_root` is supplied, live project context (app list, migration
 status, readiness check, etc.) is appended to the static documentation.
 
-### `get_resource(uri, project_root=None)` — URI dispatcher
+### Tool name prefix
+
+All documentation files use `{prefix}` as a placeholder before every tool
+name.  When the markdown is rendered, `{prefix}` is replaced with the
+`tool_prefix` argument you pass — matching whatever prefix your MCP server
+registered the tools under.
+
+```python
+# MCP server that registers tools as "zeeb_create_model", "zeeb_list_apps", …
+result = await get_resource("mcp://docs/capabilities", tool_prefix="zeeb_")
+# → docs show zeeb_create_model, zeeb_list_apps, …
+
+# MCP server with no prefix (tools keep their Python function names)
+result = await get_resource("mcp://docs/capabilities", tool_prefix="")
+# → docs show create_model, list_apps, …
+```
+
+The `tool_prefix` parameter is available on every individual doc function and
+on `get_resource()`.
+
+### `get_resource(uri, project_root=None, tool_prefix="")` — URI dispatcher
 
 ```python
 from zeeb_agents import get_resource, RESOURCE_URIS
@@ -813,36 +833,37 @@ from zeeb_agents import get_resource, RESOURCE_URIS
 #   "deployment":         "mcp://docs/deployment",
 # }
 
-result = await get_resource("mcp://docs/capabilities")
-print(result.data["content"])   # markdown
+result = await get_resource("mcp://docs/capabilities", tool_prefix="zeeb_")
+print(result.data["content"])   # markdown with zeeb_* tool names
 
 # With live project context
-result = await get_resource("mcp://docs/deployment", project_root=Path("."))
+result = await get_resource("mcp://docs/deployment", project_root=Path("."), tool_prefix="zeeb_")
 ```
 
-### `get_capabilities_doc(project_root=None)` → `mcp://docs/capabilities`
+### `get_capabilities_doc(project_root=None, tool_prefix="")` → `mcp://docs/capabilities`
 
 Complete inventory of all public `zeeb_agents` functions (80+), organised
-by module with signatures and descriptions.
+by module with signatures and descriptions.  Tool names use `{prefix}` in
+the source file — rendered with the given `tool_prefix` at call time.
 
-### `get_project_lifecycle_doc(project_root=None)` → `mcp://docs/project-lifecycle`
+### `get_project_lifecycle_doc(project_root=None, tool_prefix="")` → `mcp://docs/project-lifecycle`
 
 Step-by-step guide from `create_project` → apps → models → migrations →
 API → users → server → tasks → monitoring.  Dynamic context: current app
 list and migration status.
 
-### `get_backend_generation_doc(project_root=None)` → `mcp://docs/backend-generation`
+### `get_backend_generation_doc(project_root=None, tool_prefix="")` → `mcp://docs/backend-generation`
 
 How to generate models, serializers, viewsets, routes, migrations, signals,
 permissions, tasks, and seeds.  Includes field type reference table.
 
-### `get_frontend_generation_doc(project_root=None)` → `mcp://docs/frontend-generation`
+### `get_frontend_generation_doc(project_root=None, tool_prefix="")` → `mcp://docs/frontend-generation`
 
 Frontend integration: CORS setup, JWT authentication, OpenAPI export, JSON
 Schema for models, route inventory, health endpoints, WebSocket notes.
 Dynamic context: configured CORS origins and registered route count.
 
-### `get_deployment_doc(project_root=None)` → `mcp://docs/deployment`
+### `get_deployment_doc(project_root=None, tool_prefix="")` → `mcp://docs/deployment`
 
 Production deployment: readiness check, Dockerfile generation,
 requirements.txt, health probes (k8s/Docker Compose examples), migrations
@@ -859,6 +880,9 @@ from zeeb_agents import get_resource, RESOURCE_URIS
 
 server = Server("zeebpy-mcp")
 
+# The prefix your server uses when registering zeeb_agents tools
+TOOL_PREFIX = "zeeb_"
+
 @server.list_resources()
 async def list_resources():
     return [
@@ -868,7 +892,7 @@ async def list_resources():
 
 @server.read_resource()
 async def read_resource(uri: str):
-    result = await get_resource(uri)
+    result = await get_resource(uri, tool_prefix=TOOL_PREFIX)
     if not result.success:
         raise ValueError(result.message)
     return result.data["content"]

@@ -1,12 +1,16 @@
 # Backend Generation Guide
 
-How to generate and iterate on all backend components using `zeeb_agents`.
+How to generate and iterate on all backend components using zeeb_agents tools.
+
+> **Tool name prefix**: Tool calls below use `{prefix}` as a placeholder.
+> It is replaced with the prefix your MCP server registered these tools under
+> (e.g. `zeeb_`, `myapp_`, or empty string).
 
 ## Models
 
 ### Field Types Reference
 
-| zeeb_orm Field | JSON Schema type | Notes |
+| Field Type | JSON Schema type | Notes |
 |---|---|---|
 | `CharField(max_length=N)` | `string` | Required: `max_length` |
 | `TextField` | `string` | Unlimited text |
@@ -29,72 +33,62 @@ Add `null=True` for optional fields.
 
 ### Creating Models
 
-```python
-from zeeb_agents import create_model
-
-await create_model("shop", "Product", [
-    {"name": "name",        "type": "CharField",  "max_length": 200},
+```
+{prefix}create_model(app="shop", name="Product", fields=[
+    {"name": "name",        "type": "CharField",   "max_length": 200},
     {"name": "price",       "type": "DecimalField","max_digits": 10, "decimal_places": 2},
     {"name": "stock",       "type": "IntegerField","default": 0},
-    {"name": "description", "type": "TextField",  "null": True},
+    {"name": "description", "type": "TextField",   "null": True},
     {"name": "created_at",  "type": "DateTimeField","auto_now_add": True},
 ])
 ```
 
 ### Inspecting Models
 
-```python
-from zeeb_agents import list_models, get_model_json_schema
-
-result = await list_models("shop")
+```
+{prefix}list_models(app="shop")
 # result.data["models"] == ["Product", "Category", "Order"]
 
-schema = await get_model_json_schema("shop", "Product")
-# schema.data["schema"] — JSON Schema dict usable for validation / SDK gen
+{prefix}get_model_json_schema(app="shop", model_name="Product")
+# result.data["schema"] — JSON Schema dict usable for validation / SDK gen
 ```
 
 ## Migrations
 
-```python
-from zeeb_agents import make_migrations, run_migrations, get_migration_status, rollback_migration
+```
+{prefix}make_migrations()              # auto-detect all app changes
+{prefix}make_migrations(app="shop")   # single-app only
 
-await make_migrations()            # auto-detect all app changes
-await make_migrations("shop")      # single-app only
+{prefix}run_migrations()
 
-await run_migrations()
+{prefix}get_migration_status()
+# result.data["pending"] — list of unapplied migration names
 
-status = await get_migration_status()
-# status.data["pending"] — list of unapplied migration names
-
-await rollback_migration("shop", "0002_add_stock_field")
+{prefix}rollback_migration(app="shop", migration_name="0002_add_stock_field")
 ```
 
 ## Serializers
 
 Zeeb serializers are Pydantic-like classes that validate and serialize data.
 
-```python
-from zeeb_agents import create_serializer, update_serializer
-
+```
 # Generate serializer from model fields (auto-detects field types)
-await create_serializer("shop", "Product")
+{prefix}create_serializer(app="shop", model="Product")
 
 # Override which fields to expose
-await create_serializer("shop", "Product", fields=["id", "name", "price"])
+{prefix}create_serializer(app="shop", model="Product", fields=["id", "name", "price"])
 
 # Add a field later
-await update_serializer("shop", "Product", fields=["id", "name", "price", "stock"])
+{prefix}update_serializer(app="shop", model="Product", fields=["id", "name", "price", "stock"])
 ```
 
 ## ViewSets
 
-```python
-from zeeb_agents import create_viewset, add_viewset_action
-
-await create_viewset("shop", "Product")
+```
+{prefix}create_viewset(app="shop", model="Product")
 
 # Custom action: POST /products/{id}/restock/
-await add_viewset_action("shop", "ProductViewSet", {
+{prefix}add_viewset_action(app="shop", viewset="ProductViewSet", action_def={
     "name": "restock",
     "method": "post",
     "detail": True,
@@ -106,36 +100,29 @@ await add_viewset_action("shop", "ProductViewSet", {
 
 For non-CRUD endpoints (webhooks, computed endpoints, etc.):
 
-```python
-from zeeb_agents import create_route
-
-await create_route("shop", "/products/featured",   "get",  "get_featured_products")
-await create_route("shop", "/checkout",             "post", "checkout",
-                   response_model="CheckoutResponse")
+```
+{prefix}create_route(app="shop", path="/products/featured",   method="get",  function_name="get_featured_products")
+{prefix}create_route(app="shop", path="/checkout",            method="post", function_name="checkout")
 ```
 
 ## Full CRUD in One Call
 
-```python
-from zeeb_agents import generate_crud
-
+```
 # Creates model serializer + viewset + registers route
-await generate_crud("shop", "Product")
-await generate_crud("shop", "Category")
-await generate_crud("shop", "Order")
+{prefix}generate_crud(app="shop", model="Product")
+{prefix}generate_crud(app="shop", model="Category")
+{prefix}generate_crud(app="shop", model="Order")
 ```
 
 ## Signals (Model Lifecycle Hooks)
 
-```python
-from zeeb_agents import create_signal_receiver, list_model_signals
-
+```
 # Attach a post_save hook to Product
-await create_signal_receiver("shop", "post_save", "Product")
+{prefix}create_signal_receiver(app="shop", signal="post_save", model="Product")
 # Writes a receiver stub to apps/shop/signals.py
 
 # See which signals are connected to a model
-result = await list_model_signals("shop", "Product")
+{prefix}list_model_signals(app="shop", model="Product")
 ```
 
 Signals fire automatically in `Model.save()` / `Model.delete()`:
@@ -144,48 +131,42 @@ Signals fire automatically in `Model.save()` / `Model.delete()`:
 
 ## Permissions
 
-```python
-from zeeb_agents import create_permission_class, list_permission_classes
+```
+{prefix}create_permission_class(app="shop", class_name="IsProductOwner", logic="owner_only")
+{prefix}create_permission_class(app="shop", class_name="IsStaff",        logic="staff_only")
+{prefix}create_permission_class(app="shop", class_name="PublicRead",     logic="authenticated")
 
-await create_permission_class("shop", "IsProductOwner", logic="owner_only")
-await create_permission_class("shop", "IsStaff",        logic="staff_only")
-await create_permission_class("shop", "PublicRead",     logic="authenticated")
-
-result = await list_permission_classes("shop")
+{prefix}list_permission_classes(app="shop")
 # result.data["permissions"] == ["IsProductOwner", "IsStaff", "PublicRead"]
 ```
 
+Available `logic` presets: `deny_all`, `allow_all`, `owner_only`, `staff_only`, `authenticated`.
+
 ## Background Tasks
 
-```python
-from zeeb_agents import create_task, list_tasks
+```
+{prefix}create_task(app="shop",    function_name="send_order_confirmation", schedule=None)
+{prefix}create_task(app="shop",    function_name="sync_inventory",          schedule="0 * * * *")
+{prefix}create_task(app="billing", function_name="generate_invoices",       schedule="0 9 1 * *")
 
-await create_task("shop", "send_order_confirmation", schedule=None)
-await create_task("shop", "sync_inventory",          schedule="0 * * * *")
-await create_task("billing", "generate_invoices",    schedule="0 9 1 * *")
-
-result = await list_tasks("shop")
+{prefix}list_tasks(app="shop")
 # result.data["tasks"] == ["send_order_confirmation", "sync_inventory"]
 ```
 
 ## Database Operations
 
-```python
-from zeeb_agents import list_tables, describe_table, run_query
-
-await list_tables()                    # all tables
-await describe_table("shop_product")   # columns + types
+```
+{prefix}list_tables()                           # all tables
+{prefix}describe_table(table_name="shop_product")   # columns + types
 
 # Read-only queries only
-await run_query("SELECT id, name, price FROM shop_product ORDER BY price DESC LIMIT 10")
+{prefix}run_query(sql="SELECT id, name, price FROM shop_product ORDER BY price DESC LIMIT 10")
 ```
 
 ## Seed Data
 
-```python
-from zeeb_agents import generate_seed_script
-
-await generate_seed_script("shop", models=["Product", "Category"], count=20)
+```
+{prefix}generate_seed_script(app="shop", models=["Product", "Category"], count=20)
 # Writes seeds/shop_seed.py — run independently:
 # python seeds/shop_seed.py
 ```

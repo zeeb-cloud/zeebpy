@@ -139,6 +139,7 @@ async def _build_deployment_context(project_root: Path) -> str:
 
 async def get_capabilities_doc(
     project_root: Path | None = None,
+    tool_prefix: str = "",
 ) -> AgentResult:
     """Return the full `zeeb_agents` capability reference.
 
@@ -150,8 +151,13 @@ async def get_capabilities_doc(
 
     Args:
         project_root: When provided, a live project context section is appended.
+        tool_prefix: String prepended to every ``{prefix}`` placeholder in the
+            markdown, matching the tool name prefix your MCP server uses.
+            For example ``"zeeb_"`` turns ``{prefix}create_model`` into
+            ``zeeb_create_model``.  Defaults to ``""`` (no prefix).
     """
     content = await asyncio.to_thread(_read_doc, "capabilities")
+    content = content.replace("{prefix}", tool_prefix)
     if project_root is not None:
         content += await _build_project_context(project_root)
     return AgentResult(
@@ -163,6 +169,7 @@ async def get_capabilities_doc(
 
 async def get_project_lifecycle_doc(
     project_root: Path | None = None,
+    tool_prefix: str = "",
 ) -> AgentResult:
     """Return the end-to-end project lifecycle guide.
 
@@ -175,8 +182,11 @@ async def get_project_lifecycle_doc(
     Args:
         project_root: When provided, current app list and migration status
             are appended.
+        tool_prefix: String prepended to every ``{prefix}`` placeholder in the
+            markdown.  Defaults to ``""`` (no prefix).
     """
     content = await asyncio.to_thread(_read_doc, "project-lifecycle")
+    content = content.replace("{prefix}", tool_prefix)
     if project_root is not None:
         content += await _build_project_context(project_root)
     return AgentResult(
@@ -188,6 +198,7 @@ async def get_project_lifecycle_doc(
 
 async def get_backend_generation_doc(
     project_root: Path | None = None,
+    tool_prefix: str = "",
 ) -> AgentResult:
     """Return the backend code-generation guide.
 
@@ -199,8 +210,11 @@ async def get_backend_generation_doc(
 
     Args:
         project_root: When provided, current app list is appended.
+        tool_prefix: String prepended to every ``{prefix}`` placeholder in the
+            markdown.  Defaults to ``""`` (no prefix).
     """
     content = await asyncio.to_thread(_read_doc, "backend-generation")
+    content = content.replace("{prefix}", tool_prefix)
     if project_root is not None:
         content += await _build_project_context(project_root)
     return AgentResult(
@@ -212,6 +226,7 @@ async def get_backend_generation_doc(
 
 async def get_frontend_generation_doc(
     project_root: Path | None = None,
+    tool_prefix: str = "",
 ) -> AgentResult:
     """Return the frontend integration guide.
 
@@ -224,8 +239,11 @@ async def get_frontend_generation_doc(
     Args:
         project_root: When provided, current CORS settings and route
             inventory are appended.
+        tool_prefix: String prepended to every ``{prefix}`` placeholder in the
+            markdown.  Defaults to ``""`` (no prefix).
     """
     content = await asyncio.to_thread(_read_doc, "frontend-generation")
+    content = content.replace("{prefix}", tool_prefix)
     if project_root is not None:
         extra_lines: list[str] = ["\n---\n\n## Current Project State\n"]
         try:
@@ -256,6 +274,7 @@ async def get_frontend_generation_doc(
 
 async def get_deployment_doc(
     project_root: Path | None = None,
+    tool_prefix: str = "",
 ) -> AgentResult:
     """Return the deployment guide.
 
@@ -268,8 +287,11 @@ async def get_deployment_doc(
     Args:
         project_root: When provided, the current production readiness check
             result is appended.
+        tool_prefix: String prepended to every ``{prefix}`` placeholder in the
+            markdown.  Defaults to ``""`` (no prefix).
     """
     content = await asyncio.to_thread(_read_doc, "deployment")
+    content = content.replace("{prefix}", tool_prefix)
     if project_root is not None:
         content += await _build_deployment_context(project_root)
     return AgentResult(
@@ -295,6 +317,7 @@ _URI_MAP = {
 async def get_resource(
     uri: str,
     project_root: Path | None = None,
+    tool_prefix: str = "",
 ) -> AgentResult:
     """Fetch MCP resource content by URI.
 
@@ -313,6 +336,11 @@ async def get_resource(
         uri: The ``mcp://`` resource URI.
         project_root: Passed through to the underlying documentation function.
             When supplied, live project context is appended to the static docs.
+        tool_prefix: String prepended to every ``{prefix}`` placeholder in the
+            returned markdown, matching the tool name prefix your MCP server
+            uses.  For example ``"zeeb_"`` turns ``{prefix}create_model`` into
+            ``zeeb_create_model`` so agents see the correct tool names.
+            Defaults to ``""`` (no prefix — bare function names).
 
     Returns:
         ``AgentResult`` with ``data["content"]`` (markdown),
@@ -320,7 +348,10 @@ async def get_resource(
 
     Example::
 
-        result = await get_resource("mcp://docs/deployment", project_root=Path("."))
+        result = await get_resource(
+            "mcp://docs/capabilities",
+            tool_prefix="zeeb_",
+        )
         print(result.data["content"])
     """
     fn = _URI_MAP.get(uri)
@@ -332,4 +363,4 @@ async def get_resource(
                 f"Available: {', '.join(sorted(_URI_MAP))}."
             ),
         )
-    return await fn(project_root)
+    return await fn(project_root, tool_prefix)
