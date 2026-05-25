@@ -3,14 +3,16 @@
 How a frontend application (SPA, mobile, or 3rd-party client) integrates
 with a Zeeb BaaS and how to generate the artefacts it needs.
 
+> **Tool name prefix**: Tool calls below use `{prefix}` as a placeholder.
+> It is replaced with the prefix your MCP server registered these tools under
+> (e.g. `zeeb_`, `myapp_`, or empty string).
+
 ## 1 — Configure CORS
 
 The very first step when a frontend on a different origin calls the API:
 
-```python
-from zeeb_agents import configure_cors
-
-await configure_cors(
+```
+{prefix}configure_cors(
     origins=["https://myapp.vercel.app", "http://localhost:5173"],
     methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
     allow_credentials=True,
@@ -26,9 +28,8 @@ MIDDLEWARE = [
 ```
 
 Read current CORS settings:
-```python
-from zeeb_agents import get_cors_config
-result = await get_cors_config()
+```
+{prefix}get_cors_config()
 # result.data["cors"]["CORS_ALLOW_ORIGINS"] == [...]
 ```
 
@@ -59,23 +60,19 @@ The auth URLs are registered automatically when `zeeb_api.auth` is in `INSTALLED
 
 ### Create Initial Users
 
-```python
-from zeeb_agents import create_user
-
-await create_user("admin@example.com", "admin123", is_superuser=True)
-await create_user("user@example.com",  "user123")
+```
+{prefix}create_user(email="admin@example.com", password="admin123", is_superuser=True)
+{prefix}create_user(email="user@example.com",  password="user123")
 ```
 
 ## 3 — OpenAPI / Swagger Documentation
 
-The live server exposes `/docs` (Swagger UI) and `/openapi.json`
-automatically.  To save the spec for client SDK generation:
+The live server exposes `/docs` (Swagger UI) and `/openapi.json` automatically.
+To save the spec for client SDK generation:
 
-```python
-from zeeb_agents import export_openapi
-
+```
 # Dev server must be running (zeeb runserver)
-await export_openapi(port=8000, output_path="openapi.json")
+{prefix}export_openapi(port=8000, output_path="openapi.json")
 ```
 
 The saved `openapi.json` can be used with:
@@ -87,11 +84,9 @@ The saved `openapi.json` can be used with:
 
 Get the exact shape of any model for frontend form generation or validation:
 
-```python
-from zeeb_agents import get_model_json_schema
-
-result = await get_model_json_schema("blog", "Post")
-schema = result.data["schema"]
+```
+{prefix}get_model_json_schema(app="blog", model_name="Post")
+# result.data["schema"] ==
 # {
 #   "title": "Post",
 #   "type": "object",
@@ -117,39 +112,35 @@ Use this schema directly with:
 
 Discover all available endpoints without a running server:
 
-```python
-from zeeb_agents import list_all_routes
-
-result = await list_all_routes()
+```
+{prefix}list_all_routes()
 # result.data["routes"] == [
-#   {"app": "blog", "type": "viewset", "prefix": "posts", "viewset": "PostViewSet"},
-#   {"app": "blog", "type": "route",   "method": "GET",   "path": "/posts/featured"},
-#   {"app": "users","type": "viewset", "prefix": "users", "viewset": "UserViewSet"},
+#   {"app": "blog", "type": "viewset", "prefix": "posts",  "viewset": "PostViewSet"},
+#   {"app": "blog", "type": "route",   "method": "GET",    "path": "/posts/featured"},
+#   {"app": "users","type": "viewset", "prefix": "users",  "viewset": "UserViewSet"},
 # ]
 ```
 
 Standard ViewSet `{prefix}` expands to these REST endpoints:
 | Method | Path | Action |
 |---|---|---|
-| GET    | `/{prefix}/`     | list |
-| POST   | `/{prefix}/`     | create |
-| GET    | `/{prefix}/{id}/`| retrieve |
-| PUT    | `/{prefix}/{id}/`| update |
-| PATCH  | `/{prefix}/{id}/`| partial_update |
-| DELETE | `/{prefix}/{id}/`| destroy |
+| GET    | `/{route_prefix}/`      | list |
+| POST   | `/{route_prefix}/`      | create |
+| GET    | `/{route_prefix}/{id}/` | retrieve |
+| PUT    | `/{route_prefix}/{id}/` | update |
+| PATCH  | `/{route_prefix}/{id}/` | partial_update |
+| DELETE | `/{route_prefix}/{id}/` | destroy |
 
 ## 6 — Health / Status Endpoints
 
 Add health probes that frontend monitoring dashboards or load balancers use:
 
-```python
-from zeeb_agents import create_health_endpoint
-
-await create_health_endpoint()
+```
+{prefix}create_health_endpoint()
 # Creates health.py with GET /health and GET /ready
 ```
 
-Register the router in your main app and then:
+After registering the router:
 ```
 GET /health  →  {"status": "ok"}                       # 200 always
 GET /ready   →  {"status": "ready", "db": "ok"}        # 200 / 503
@@ -163,21 +154,17 @@ Zeeb does not yet ship a built-in WebSocket layer.  For real-time features:
 - Add **Broadcaster** + **starlette-websockets** manually for pub/sub
 - Use an external managed service (Pusher, Ably, Supabase Realtime)
 
-The `create_route` function can scaffold a WebSocket endpoint stub:
-```python
-from zeeb_agents import create_route
-
-await create_route("chat", "/ws/messages", "websocket", "ws_messages_handler")
+Scaffold a WebSocket endpoint stub:
+```
+{prefix}create_route(app="chat", path="/ws/messages", method="websocket", function_name="ws_messages_handler")
 ```
 
 ## 8 — Environment Configuration
 
 Set frontend-relevant settings via env:
 
-```python
-from zeeb_agents import set_env, get_env
-
-await set_env("FRONTEND_URL", "https://myapp.vercel.app")
-await set_env("JWT_ACCESS_TOKEN_LIFETIME_MINUTES", "60")
-await set_env("JWT_REFRESH_TOKEN_LIFETIME_DAYS", "7")
+```
+{prefix}set_env(key="FRONTEND_URL",                        value="https://myapp.vercel.app")
+{prefix}set_env(key="JWT_ACCESS_TOKEN_LIFETIME_MINUTES",   value="60")
+{prefix}set_env(key="JWT_REFRESH_TOKEN_LIFETIME_DAYS",     value="7")
 ```

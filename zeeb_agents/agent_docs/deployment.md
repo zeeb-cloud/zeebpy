@@ -1,16 +1,17 @@
 # Deployment Guide
 
-How to prepare and deploy a Zeeb BaaS project to production using
-`zeeb_agents`.
+How to prepare and deploy a Zeeb BaaS project to production.
+
+> **Tool name prefix**: Tool calls below use `{prefix}` as a placeholder.
+> It is replaced with the prefix your MCP server registered these tools under
+> (e.g. `zeeb_`, `myapp_`, or empty string).
 
 ## Step 1 — Production Readiness Check
 
 Run this first to identify all issues before deploying:
 
-```python
-from zeeb_agents import check_production_readiness
-
-result = await check_production_readiness()
+```
+{prefix}check_production_readiness()
 # result.success == True  → ready to deploy
 # result.data["issues"] — list of problems to fix
 # result.data["passed"] — list of passing checks
@@ -27,16 +28,14 @@ Checks performed:
 
 ## Step 2 — Configure Production Settings
 
-```python
-from zeeb_agents import manage_settings, set_env
-
+```
 # In settings.py
-await manage_settings("DEBUG", False)
+{prefix}manage_settings(key="DEBUG", value=False)
 
 # In .env (keep secrets out of settings.py)
-await set_env("SECRET_KEY", "your-strong-random-secret-key-here")
-await set_env("DATABASE_URL", "postgresql+asyncpg://user:pass@host/dbname")
-await set_env("ALLOWED_HOSTS", "myapi.example.com")
+{prefix}set_env(key="SECRET_KEY",   value="your-strong-random-secret-key-here")
+{prefix}set_env(key="DATABASE_URL", value="postgresql+asyncpg://user:pass@host/dbname")
+{prefix}set_env(key="ALLOWED_HOSTS",value="myapi.example.com")
 ```
 
 Example production `settings.py`:
@@ -69,10 +68,8 @@ CORS_ALLOW_CREDENTIALS = True
 
 ## Step 3 — Generate Dockerfile
 
-```python
-from zeeb_agents import generate_dockerfile
-
-await generate_dockerfile(python_version="3.12", port=8000)
+```
+{prefix}generate_dockerfile(python_version="3.12", port=8000)
 # Writes Dockerfile (multi-stage) and .dockerignore
 ```
 
@@ -95,19 +92,15 @@ CMD ["gunicorn", "config.asgi:application", "-k", "uvicorn.workers.UvicornWorker
 
 ## Step 4 — Generate requirements.txt
 
-```python
-from zeeb_agents import generate_requirements
-
-await generate_requirements()
+```
+{prefix}generate_requirements()
 # Runs pip freeze, filters editable installs, writes requirements.txt
 ```
 
 ## Step 5 — Add Health Endpoints
 
-```python
-from zeeb_agents import create_health_endpoint
-
-await create_health_endpoint()
+```
+{prefix}create_health_endpoint()
 # GET /health  → liveness probe  (always 200)
 # GET /ready   → readiness probe (200 / 503 based on DB)
 ```
@@ -143,11 +136,9 @@ In your deployment pipeline (before starting the container):
 python manage.py migrate --run-syncdb
 ```
 
-Or via agent:
-```python
-from zeeb_agents import run_migrations
-
-await run_migrations()
+Or via tool:
+```
+{prefix}run_migrations()
 ```
 
 ## Step 7 — Docker Build & Push
@@ -160,11 +151,9 @@ docker push registry.example.com/myapi:latest
 ## Step 8 — Runtime Health Check
 
 After deployment, verify with:
-```python
-from zeeb_agents import check_system_health
-
-result = await check_system_health()
-# result.data["checks"]["db"]      == "ok"
+```
+{prefix}check_system_health()
+# result.data["checks"]["db"]       == "ok"
 # result.data["checks"]["settings"] == "ok"
 # result.data["checks"]["overall"]  == "healthy"
 ```
