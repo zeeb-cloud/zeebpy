@@ -1198,29 +1198,35 @@ class QuerySet(Generic[ModelT]):
         ignore_conflicts: bool = False,
     ) -> list[ModelT]:
         """Insert multiple objects efficiently."""
+        from sqlalchemy import insert as _sa_insert
         from zeeb_orm.db.connection import get_session
 
         if not objs:
             return []
 
         batch_size = batch_size or 1000
+        table = self.model._get_table()
+        pk_name = self.model._meta.pk_name
 
-        created = []
+        created: list[ModelT] = []
         async with get_session(self._db_alias) as (session, should_commit):
-            all_sa_instances = []
             for i in range(0, len(objs), batch_size):
                 batch = objs[i : i + batch_size]
-                sa_instances = [obj._to_sa_instance() for obj in batch]
-                all_sa_instances.extend(sa_instances)
-                session.add_all(sa_instances)
+                for obj in batch:
+                    values = obj._to_insert_values()
+                    stmt = _sa_insert(table).values(**values)
+                    result = await session.execute(stmt)
+
+                    # Read back DB-generated PK for auto-increment fields
+                    if getattr(obj, pk_name) is None:
+                        pk_value = result.inserted_primary_key[0]
+                        setattr(obj, pk_name, pk_value)
+
+                    obj._state.persisted = True
+                    created.append(obj)
 
             if should_commit:
                 await session.commit()
-
-            # Refresh to get generated values for all instances
-            for sa_instance in all_sa_instances:
-                await session.refresh(sa_instance)
-                created.append(self.model._from_sa_instance(sa_instance))
 
         return created
 

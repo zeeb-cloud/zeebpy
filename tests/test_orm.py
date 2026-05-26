@@ -419,6 +419,38 @@ async def test_model_save(db):
 
 
 @pytest.mark.asyncio
+async def test_model_save_fk(db):
+    """Test that save() works for models with ForeignKey fields (INSERT path).
+
+    Regression test: the old SA-ORM INSERT path created a fresh DeclarativeBase
+    per model, so FK target tables were not in the new Base's metadata and the
+    insert failed with a NoReferencedTableError.
+    """
+    user = await User.objects.create(name="Author", email="author@example.com")
+
+    # Assign FK via model instance
+    post = Post(title="Hello", content="World", author=user)
+    await post.save()
+
+    assert post.id is not None
+    assert post._state.persisted is True
+    assert post.author_id == user.id
+
+    # Verify round-trip
+    fetched = await Post.objects.get(id=post.id)
+    assert fetched.title == "Hello"
+    assert fetched.author_id == user.id
+
+    # Assign FK via raw id
+    post2 = Post(title="Second", content="Post")
+    post2.author_id = user.id
+    await post2.save()
+
+    assert post2.id is not None
+    assert post2.author_id == user.id
+
+
+@pytest.mark.asyncio
 async def test_model_delete(db):
     """Test model delete method."""
     user = await User.objects.create(name="John", email="john@example.com")

@@ -535,7 +535,12 @@ class Model(metaclass=ModelBase):
         return cls._sa_model
 
     def _to_sa_instance(self) -> Any:
-        """Convert to SQLAlchemy model instance."""
+        """Convert to SQLAlchemy model instance.
+
+        .. deprecated::
+            Use :meth:`_to_insert_values` for new INSERT paths.  This method
+            is kept for backwards compatibility but is not used internally.
+        """
         sa_model = self._get_sa_model()
         kwargs = {}
 
@@ -564,6 +569,59 @@ class Model(metaclass=ModelBase):
                 kwargs[field.db_column or field.name] = value
 
         return sa_model(**kwargs)
+
+    def _to_insert_values(self) -> dict[str, Any]:
+        """Build a ``{column_name: value}`` dict ready for a Core SQL INSERT.
+
+        This is the correct replacement for :meth:`_to_sa_instance`.  It uses
+        Core SQL (no ``DeclarativeBase``) so FK models work without any shared-
+        metadata issues.
+
+        - FK fields: reads the raw id via the ``{name}_id`` property.
+        - Callable defaults (e.g. ``UUIDAutoField``): called and stored on the
+          instance so it reflects what will be written.
+        - Auto timestamps (``auto_now_add`` / ``auto_now``): generated here and
+          stored on the instance.
+        - Auto-increment PKs with no value yet: omitted so the DB generates them.
+        """
+        values: dict[str, Any] = {}
+
+        for field in self._meta.local_fields:
+            if isinstance(field, ForeignKeyField):
+                value = getattr(self, f"{field.name}_id", None)
+            else:
+                value = getattr(self, field.name, None)
+
+            # Callable defaults
+            if value is None and field.default is not None and callable(field.default):
+                value = field.default()
+                setattr(self, field.name, value)
+
+            # Auto timestamps
+            if isinstance(field, DateTimeField):
+                if field.auto_now_add and value is None:
+                    value = datetime.datetime.now(datetime.timezone.utc)
+                    setattr(self, field.name, value)
+                elif field.auto_now:
+                    value = datetime.datetime.now(datetime.timezone.utc)
+                    setattr(self, field.name, value)
+            elif isinstance(field, DateField):
+                if field.auto_now_add and value is None:
+                    value = datetime.date.today()
+                    setattr(self, field.name, value)
+                elif field.auto_now:
+                    value = datetime.date.today()
+                    setattr(self, field.name, value)
+
+            # Let the DB generate auto-increment PKs
+            if field.primary_key and value is None:
+                continue
+
+            col_name = field.db_column or field.name
+            if value is not None:
+                values[col_name] = value
+
+        return values
 
     @classmethod
     def _from_row(cls: type[ModelT], row: Any) -> ModelT:
@@ -671,17 +729,19 @@ class Model(metaclass=ModelBase):
                 await session.execute(stmt)
                 await session.commit()
             else:
-                # Insert new
-                sa_instance = self._to_sa_instance()
-                session.add(sa_instance)
-                await session.commit()
-                await session.refresh(sa_instance)
+                # Insert new via Core SQL (avoids DeclarativeBase FK resolution issues)
+                from sqlalchemy import insert as _sa_insert
 
-                # Update our instance with generated values
-                for field in self._meta.local_fields:
-                    col_name = field.db_column or field.name
-                    value = getattr(sa_instance, col_name, None)
-                    setattr(self, field.name, value)
+                table = self._get_table()
+                insert_values = self._to_insert_values()
+                stmt = _sa_insert(table).values(**insert_values)
+                result = await session.execute(stmt)
+                await session.commit()
+
+                # Read back DB-generated PK (auto-increment integers)
+                if getattr(self, self._meta.pk_name) is None:
+                    pk_value = result.inserted_primary_key[0]
+                    setattr(self, self._meta.pk_name, pk_value)
 
                 self._state.persisted = True
 
