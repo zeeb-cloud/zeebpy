@@ -17,6 +17,7 @@ class DatabaseConfig:
     max_overflow: int = 10
     pool_timeout: int = 30
     pool_recycle: int = 1800
+    pool_pre_ping: bool = True
     connect_args: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
@@ -29,6 +30,7 @@ class DatabaseConfig:
             max_overflow=int(os.environ.get(f"{prefix}_MAX_OVERFLOW", "10")),
             pool_timeout=int(os.environ.get(f"{prefix}_POOL_TIMEOUT", "30")),
             pool_recycle=int(os.environ.get(f"{prefix}_POOL_RECYCLE", "1800")),
+            pool_pre_ping=os.environ.get(f"{prefix}_POOL_PRE_PING", "true").lower() != "false",
         )
 
 
