@@ -443,6 +443,14 @@ asyncpg.InvalidParameterValueError: SSL connection is required
 - Add `?ssl=require` to URL
 - Or set `connect_args: {"ssl": "require"}`
 
+### Connection Is Closed
+
+```
+asyncpg.exceptions.InterfaceError: connection is closed
+```
+
+This happens when a pooled connection is closed by the server (idle timeout, restart, network issue) before SQLAlchemy detects it. `pool_pre_ping` (enabled by default) prevents this by testing each connection before use. If you encounter this error, ensure `pool_pre_ping` is not set to `False`, and consider lowering `pool_recycle` to match your database's idle connection timeout.
+
 ## Next Steps
 
 - [Migrations](../orm/migrations.md) - Database migrations

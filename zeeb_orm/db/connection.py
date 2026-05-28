@@ -50,6 +50,7 @@ class Database:
         max_overflow: int = 10,
         pool_timeout: int = 30,
         pool_recycle: int = 1800,
+        pool_pre_ping: bool = True,
         connect_args: dict[str, Any] | None = None,
     ) -> None:
         if config:
@@ -62,6 +63,7 @@ class Database:
                 max_overflow=max_overflow,
                 pool_timeout=pool_timeout,
                 pool_recycle=pool_recycle,
+                pool_pre_ping=pool_pre_ping,
                 connect_args=connect_args or {},
             )
         else:
@@ -102,6 +104,7 @@ class Database:
                 "max_overflow": self.config.max_overflow,
                 "pool_timeout": self.config.pool_timeout,
                 "pool_recycle": self.config.pool_recycle,
+                "pool_pre_ping": self.config.pool_pre_ping,
             }
 
         if self.is_async:
