@@ -10,7 +10,7 @@ from zeeb_api.serializers.fields import (
     BooleanField, DateTimeField, DateField, EmailField, UUIDField,
     empty,
 )
-from zeeb_api.response import ValidationError
+from zeeb_api.exceptions import ValidationError
 
 ModelT = TypeVar("ModelT")
 

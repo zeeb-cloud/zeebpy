@@ -10,6 +10,7 @@ if TYPE_CHECKING:
     from zeeb_api.permissions.base import BasePermission
     from zeeb_api.pagination.base import BasePagination
     from zeeb_api.filters.base import BaseFilter
+    from zeeb_api.throttling.base import BaseThrottle
 
 
 class ViewSetMeta(type):
@@ -52,13 +53,16 @@ class ViewSet(metaclass=ViewSetMeta):
     
     # Configuration
     permission_classes: ClassVar[list[type[BasePermission]]] = []
-    
+    # None means "use settings.DEFAULT_THROTTLE_CLASSES"; [] disables throttling.
+    throttle_classes: ClassVar[list[type[BaseThrottle]] | None] = None
+
     def __init__(self, request: Request | None = None, **kwargs: Any) -> None:
         self.request = request
         self.kwargs = kwargs
         self.action: str | None = None
+        self.version: str | None = None
         self._action_permission_classes: list[type[BasePermission]] | None = None
-    
+
     def get_permissions(self) -> list[BasePermission]:
         """
         Get permission instances for this view.
@@ -75,7 +79,7 @@ class ViewSet(metaclass=ViewSetMeta):
         """Check if the request should be permitted."""
         for permission in self.get_permissions():
             if not await permission.has_permission(request, self):
-                from zeeb_api.response import PermissionDenied
+                from zeeb_api.exceptions import PermissionDenied
                 raise PermissionDenied(
                     getattr(permission, "message", "Permission denied")
                 )
@@ -84,11 +88,50 @@ class ViewSet(metaclass=ViewSetMeta):
         """Check if the request should be permitted for a specific object."""
         for permission in self.get_permissions():
             if not await permission.has_object_permission(request, self, obj):
-                from zeeb_api.response import PermissionDenied
+                from zeeb_api.exceptions import PermissionDenied
                 raise PermissionDenied(
                     getattr(permission, "message", "Permission denied")
                 )
-    
+
+    def get_throttles(self) -> list[BaseThrottle]:
+        """
+        Get throttle instances for this view.
+
+        Uses the class-level throttle_classes if set, otherwise falls back
+        to settings.DEFAULT_THROTTLE_CLASSES (dotted paths, resolved and
+        cached).
+        """
+        throttle_classes = self.throttle_classes
+        if throttle_classes is None:
+            from zeeb_api.throttling.base import get_default_throttle_classes
+            throttle_classes = get_default_throttle_classes()
+        return [throttle() for throttle in throttle_classes]
+
+    async def check_throttles(self, request: Request) -> None:
+        """
+        Check if the request should be throttled.
+
+        Raises RateLimitException (429, Retry-After) if any throttle denies
+        the request.
+        """
+        throttle_durations: list[float] = []
+        throttled = False
+
+        for throttle in self.get_throttles():
+            if not await throttle.allow_request(request, self):
+                throttled = True
+                wait = throttle.wait()
+                if wait is not None:
+                    throttle_durations.append(wait)
+
+        if throttled:
+            import math
+
+            from zeeb_api.exceptions import RateLimitException
+
+            retry_after = math.ceil(max(throttle_durations)) if throttle_durations else None
+            raise RateLimitException(retry_after=retry_after)
+
     def get_action_request_body(self) -> dict[str, Any] | None:
         """
         Get the validated request body for the current action.
@@ -248,7 +291,7 @@ class GenericViewSet(ViewSet):
         lookup_value = self.kwargs.get(lookup_url_kwarg)
         
         if lookup_value is None:
-            from zeeb_api.response import NotFound
+            from zeeb_api.exceptions import NotFound
             raise NotFound("Object not found")
         
         # Build filter
@@ -261,7 +304,7 @@ class GenericViewSet(ViewSet):
             obj = None
         
         if obj is None:
-            from zeeb_api.response import NotFound
+            from zeeb_api.exceptions import NotFound
             raise NotFound("Object not found")
         
         # Check object permissions
@@ -279,7 +322,7 @@ class GenericViewSet(ViewSet):
         # Check class-level permissions
         for permission in self.get_permissions():
             if not await permission.has_object_permission(request, self, obj):
-                from zeeb_api.response import PermissionDenied
+                from zeeb_api.exceptions import PermissionDenied
                 raise PermissionDenied(
                     getattr(permission, "message", "Permission denied")
                 )
@@ -307,7 +350,7 @@ class GenericViewSet(ViewSet):
         has_permission = await check_method(user)
         
         if not has_permission:
-            from zeeb_api.response import PermissionDenied
+            from zeeb_api.exceptions import PermissionDenied
             raise PermissionDenied(f"You do not have {permission_type} permission for this object")
     
     async def check_add_permission(self) -> None:
@@ -332,7 +375,7 @@ class GenericViewSet(ViewSet):
         has_permission = await model_class.check_add_permission(user)
         
         if not has_permission:
-            from zeeb_api.response import PermissionDenied
+            from zeeb_api.exceptions import PermissionDenied
             raise PermissionDenied("You do not have permission to create this object")
     
     def get_pagination_class(self) -> type[BasePagination] | None:

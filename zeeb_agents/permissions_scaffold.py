@@ -6,8 +6,8 @@ import asyncio
 import re
 from pathlib import Path
 
-from zeeb_agents._utils import AgentResult
-from zeeb_agents._utils.project import get_app_path, require_project_root
+from zeeb_agents._utils import AgentResult, agent_function
+from zeeb_agents._utils.project import get_app_path
 
 _PERMISSIONS_HEADER = '''\
 """Custom permission classes for the {app} app.
@@ -93,6 +93,7 @@ def _permissions_file(app: str, root: Path) -> Path:
     return get_app_path(app, root) / "permissions.py"
 
 
+@agent_function
 async def create_permission_class(
     app: str,
     class_name: str,
@@ -126,53 +127,49 @@ async def create_permission_class(
             success=False,
             message=f"Unknown logic preset '{logic}'. Choose from: {', '.join(_LOGIC_PRESETS)}.",
         )
-    try:
-        root = require_project_root(project_root)
-        perms_file = _permissions_file(app, root)
+    root = project_root
+    perms_file = _permissions_file(app, root)
 
-        def _write() -> bool:
-            created = False
-            if not perms_file.exists():
-                header = _PERMISSIONS_HEADER.format(app=app, example_class=class_name)
-                perms_file.write_text(header, encoding="utf-8")
-                created = True
+    def _write() -> bool:
+        created = False
+        if not perms_file.exists():
+            header = _PERMISSIONS_HEADER.format(app=app, example_class=class_name)
+            perms_file.write_text(header, encoding="utf-8")
+            created = True
 
-            content = perms_file.read_text(encoding="utf-8")
-            if re.search(rf"^class {re.escape(class_name)}\b", content, re.MULTILINE):
-                raise ValueError(f"Permission class '{class_name}' already exists in permissions.py.")
+        content = perms_file.read_text(encoding="utf-8")
+        if re.search(rf"^class {re.escape(class_name)}\b", content, re.MULTILINE):
+            raise ValueError(f"Permission class '{class_name}' already exists in permissions.py.")
 
-            body = _LOGIC_PRESETS[logic]
-            docstring = _LOGIC_DOCSTRINGS.get(logic, "Custom permission.")
-            message = _LOGIC_MESSAGES.get(logic, "Permission denied.")
-            block = _CLASS_TEMPLATE.format(
-                class_name=class_name,
-                docstring=docstring,
-                message=message,
-                body=body,
-            )
-            perms_file.write_text(content.rstrip("\n") + block, encoding="utf-8")
-            return created
-
-        created = await asyncio.to_thread(_write)
-        rel = str(perms_file.relative_to(root))
-        action = "created" if created else "updated"
-        return AgentResult(
-            success=True,
-            message=f"Permission class '{class_name}' added — {rel} {action}.",
-            data={
-                "app": app,
-                "class_name": class_name,
-                "logic": logic,
-                "path": rel,
-                "file_created": created,
-            },
+        body = _LOGIC_PRESETS[logic]
+        docstring = _LOGIC_DOCSTRINGS.get(logic, "Custom permission.")
+        message = _LOGIC_MESSAGES.get(logic, "Permission denied.")
+        block = _CLASS_TEMPLATE.format(
+            class_name=class_name,
+            docstring=docstring,
+            message=message,
+            body=body,
         )
-    except ValueError as exc:
-        return AgentResult(success=False, message=str(exc))
-    except Exception as exc:
-        return AgentResult(success=False, message=str(exc))
+        perms_file.write_text(content.rstrip("\n") + block, encoding="utf-8")
+        return created
+
+    created = await asyncio.to_thread(_write)
+    rel = str(perms_file.relative_to(root))
+    action = "created" if created else "updated"
+    return AgentResult(
+        success=True,
+        message=f"Permission class '{class_name}' added — {rel} {action}.",
+        data={
+            "app": app,
+            "class_name": class_name,
+            "logic": logic,
+            "path": rel,
+            "file_created": created,
+        },
+    )
 
 
+@agent_function
 async def list_permission_classes(
     app: str,
     project_root: Path | None = None,
@@ -183,26 +180,22 @@ async def list_permission_classes(
         app: App directory name.
         project_root: Auto-detected if ``None``.
     """
-    try:
-        root = require_project_root(project_root)
-        perms_file = _permissions_file(app, root)
+    perms_file = _permissions_file(app, project_root)
 
-        if not perms_file.exists():
-            return AgentResult(
-                success=True,
-                message=f"No permissions.py found for app '{app}'.",
-                data={"permissions": [], "count": 0},
-            )
-
-        def _read() -> list[str]:
-            source = perms_file.read_text(encoding="utf-8")
-            return re.findall(r"^class (\w+)\s*\(", source, re.MULTILINE)
-
-        classes = await asyncio.to_thread(_read)
+    if not perms_file.exists():
         return AgentResult(
             success=True,
-            message=f"Found {len(classes)} permission class(es) in apps/{app}/permissions.py.",
-            data={"app": app, "permissions": classes, "count": len(classes)},
+            message=f"No permissions.py found for app '{app}'.",
+            data={"permissions": [], "count": 0},
         )
-    except Exception as exc:
-        return AgentResult(success=False, message=str(exc))
+
+    def _read() -> list[str]:
+        source = perms_file.read_text(encoding="utf-8")
+        return re.findall(r"^class (\w+)\s*\(", source, re.MULTILINE)
+
+    classes = await asyncio.to_thread(_read)
+    return AgentResult(
+        success=True,
+        message=f"Found {len(classes)} permission class(es) in apps/{app}/permissions.py.",
+        data={"app": app, "permissions": classes, "count": len(classes)},
+    )

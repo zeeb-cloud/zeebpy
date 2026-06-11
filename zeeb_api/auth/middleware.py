@@ -4,7 +4,8 @@ JWT authentication middleware and FastAPI dependencies.
 
 from __future__ import annotations
 
-from typing import Any, Callable, Awaitable
+from collections.abc import Awaitable, Callable
+from typing import Any
 
 from fastapi import Depends, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -12,14 +13,13 @@ from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoin
 from starlette.responses import Response
 
 from zeeb_api.auth.jwt import (
-    TokenPayload,
-    decode_token,
     TokenError,
     TokenExpiredError,
     TokenInvalidError,
+    TokenPayload,
+    decode_token,
 )
 from zeeb_api.exceptions import AuthenticationException, ErrorCode
-
 
 # Type for user loader function
 UserLoaderFunc = Callable[[TokenPayload], Awaitable[Any]]
@@ -33,26 +33,26 @@ class AuthenticatedUser:
     This is a fallback when no user_loader is configured.
     When using database-backed auth, the actual User model instance is used instead.
     """
-    
+
     def __init__(self, token_payload: TokenPayload):
         self.id = token_payload.sub
         self.token_payload = token_payload
         self.claims = token_payload.claims
         self.is_authenticated = True
-    
+
     def __repr__(self) -> str:
         return f"<AuthenticatedUser id={self.id}>"
-    
+
     @property
     def is_staff(self) -> bool:
         """Check if user has staff role (from claims)."""
         return self.claims.get("is_staff", False)
-    
+
     @property
     def is_admin(self) -> bool:
         """Check if user has admin role (from claims)."""
         return self.claims.get("is_admin", False)
-    
+
     @property
     def is_superuser(self) -> bool:
         """Check if user is superuser (from claims)."""
@@ -67,8 +67,9 @@ async def default_user_loader(payload: TokenPayload) -> Any:
     queries by the user ID from the token.
     """
     from uuid import UUID
+
     from zeeb_api.auth.backends import get_user_model
-    
+
     User = get_user_model()
     try:
         # Convert string UUID to UUID object for proper comparison
@@ -77,7 +78,7 @@ async def default_user_loader(payload: TokenPayload) -> Any:
             user_id = UUID(user_id)
         except (ValueError, TypeError):
             pass  # Not a UUID, use as-is
-        
+
         user = await User.objects.get(id=user_id)
         # Attach token payload for access to claims
         user._token_payload = payload
@@ -111,31 +112,69 @@ class JWTAuthMiddleware(BaseHTTPMiddleware):
             return await MyUser.objects.get(id=payload.sub)
         app.add_middleware(JWTAuthMiddleware, user_loader=my_loader)
     """
-    
+
     def __init__(
         self,
         app: Any,
         user_loader: UserLoaderFunc | None = None,
         load_user_from_db: bool = True,
+        external_validators: list[Any] | None = None,
     ):
         """
         Initialize middleware.
-        
+
         Args:
             app: FastAPI/Starlette app
             user_loader: Custom async function to load user from token payload.
             load_user_from_db: If True and no user_loader provided, loads user from DB.
                               If False, uses AuthenticatedUser (token claims only).
+            external_validators: Optional list of async callables
+                ``(token) -> user | None`` tried (first non-None wins) when the
+                token is not a locally-issued JWT (e.g.
+                ``zeeb_api.auth.oauth.ExternalTokenValidator`` for Azure AD
+                tokens). None (the default) lazily self-configures from
+                ``settings.OAUTH_ACCEPT_EXTERNAL_TOKENS`` on first request
+                (``install_middleware`` passes no kwargs); pass ``[]`` to
+                disable explicitly.
         """
         super().__init__(app)
-        
+
         if user_loader:
             self.user_loader = user_loader
         elif load_user_from_db:
             self.user_loader = default_user_loader
         else:
             self.user_loader = None
-    
+
+        # None = lazily resolve from settings on first request; [] = disabled.
+        self._external_validators = external_validators
+
+    def _get_external_validators(self) -> list[Any]:
+        """Resolve external token validators (lazy settings-based config)."""
+        if self._external_validators is None:
+            validators: list[Any] = []
+            try:
+                from zeeb_api.conf import settings
+                names = getattr(settings, "OAUTH_ACCEPT_EXTERNAL_TOKENS", []) or []
+                if names:
+                    from zeeb_api.auth.oauth.bearer import build_validators_from_settings
+                    validators = build_validators_from_settings()
+            except Exception:
+                validators = []
+            self._external_validators = validators
+        return self._external_validators
+
+    async def _try_external_validators(self, token: str) -> Any | None:
+        """Try external validators (first non-None wins). Never raises."""
+        for validator in self._get_external_validators():
+            try:
+                user = await validator(token)
+            except Exception:
+                continue
+            if user is not None:
+                return user
+        return None
+
     async def dispatch(
         self,
         request: Request,
@@ -143,25 +182,26 @@ class JWTAuthMiddleware(BaseHTTPMiddleware):
     ) -> Response:
         # Initialize user as None
         request.state.user = None
-        
+
         # Try to extract and validate token
         auth_header = request.headers.get("Authorization")
         if auth_header and auth_header.startswith("Bearer "):
             token = auth_header[7:]  # Remove "Bearer " prefix
-            
+
             try:
                 payload = decode_token(token, token_type="access")
-                
+
                 # Load user (custom loader or default)
                 if self.user_loader:
                     request.state.user = await self.user_loader(payload)
                 else:
                     request.state.user = AuthenticatedUser(payload)
-                    
+
             except TokenError:
-                # Don't raise - let endpoints decide if auth is required
-                pass
-        
+                # Not a locally-issued token. Give externally-issued tokens
+                # (e.g. Azure AD) a chance, still never raising.
+                request.state.user = await self._try_external_validators(token)
+
         return await call_next(request)
 
 
@@ -191,11 +231,11 @@ async def get_current_user_optional(
     user = getattr(request.state, "user", None)
     if user is not None:
         return user
-    
+
     # If no middleware, try to decode from credentials
     if credentials is None:
         return None
-    
+
     try:
         payload = decode_token(credentials.credentials, token_type="access")
         return AuthenticatedUser(payload)
@@ -221,14 +261,14 @@ async def get_current_user(
     user = getattr(request.state, "user", None)
     if user is not None:
         return user
-    
+
     # No middleware or no user - try to decode from credentials
     if credentials is None:
         raise AuthenticationException(
             code=ErrorCode.AUTH_TOKEN_MISSING,
             message="Authentication required",
         )
-    
+
     try:
         payload = decode_token(credentials.credentials, token_type="access")
         return AuthenticatedUser(payload)
@@ -265,7 +305,7 @@ def require_auth(
     ) -> AuthenticatedUser:
         if roles:
             user_roles = user.claims.get("roles", [])
-            
+
             if any_role:
                 # User needs at least one of the roles
                 if not any(role in user_roles for role in roles):
@@ -281,7 +321,7 @@ def require_auth(
                         code=ErrorCode.PERM_INSUFFICIENT_ROLE,
                         message=f"Missing required roles: {', '.join(missing)}",
                     )
-        
+
         return user
-    
+
     return dependency

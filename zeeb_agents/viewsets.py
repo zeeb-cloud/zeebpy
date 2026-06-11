@@ -6,14 +6,14 @@ import asyncio
 import re
 from pathlib import Path
 
-from zeeb_agents._utils import AgentResult
+from zeeb_agents._utils import AgentResult, agent_function
 from zeeb_agents._utils.code_gen import (
     append_block,
     class_exists,
     ensure_import,
     render_viewset_class,
 )
-from zeeb_agents._utils.project import get_app_path, require_project_root
+from zeeb_agents._utils.project import get_app_path
 from zeeb_agents.models import create_model
 from zeeb_agents.serializers import create_serializer
 
@@ -26,6 +26,7 @@ def _urls_file(app: str, root: Path) -> Path:
     return get_app_path(app, root) / "urls.py"
 
 
+@agent_function
 async def create_viewset(
     app: str,
     model_name: str,
@@ -44,36 +45,33 @@ async def create_viewset(
             Default: ``"IsAuthenticatedOrReadOnly"``.
         project_root: Auto-detected if ``None``.
     """
-    try:
-        root = require_project_root(project_root)
-        path = _views_file(app, root)
-        if not path.exists():
-            return AgentResult(success=False, message=f"views.py not found at {path}")
+    path = _views_file(app, project_root)
+    if not path.exists():
+        return AgentResult(success=False, message=f"views.py not found at {path}")
 
-        class_name = f"{model_name}ViewSet"
+    class_name = f"{model_name}ViewSet"
 
-        def _write() -> None:
-            content = path.read_text(encoding="utf-8")
-            if class_exists(content, class_name):
-                raise ValueError(f"'{class_name}' already exists in {path}")
-            class_code = render_viewset_class(model_name, serializer_class, permission)
-            ensure_import(path, "from zeeb_api import viewsets, permissions")
-            ensure_import(path, "from zeeb_api.viewsets import ModelViewSet")
-            ser = serializer_class or f"{model_name}Serializer"
-            ensure_import(path, f"from .models import {model_name}")
-            ensure_import(path, f"from .serializers import {ser}")
-            append_block(path, class_code)
+    def _write() -> None:
+        content = path.read_text(encoding="utf-8")
+        if class_exists(content, class_name):
+            raise ValueError(f"'{class_name}' already exists in {path}")
+        class_code = render_viewset_class(model_name, serializer_class, permission)
+        ensure_import(path, "from zeeb_api import viewsets, permissions")
+        ensure_import(path, "from zeeb_api.viewsets import ModelViewSet")
+        ser = serializer_class or f"{model_name}Serializer"
+        ensure_import(path, f"from .models import {model_name}")
+        ensure_import(path, f"from .serializers import {ser}")
+        append_block(path, class_code)
 
-        await asyncio.to_thread(_write)
-        return AgentResult(
-            success=True,
-            message=f"'{class_name}' created in apps/{app}/views.py",
-            data={"app": app, "model": model_name, "viewset": class_name},
-        )
-    except Exception as exc:
-        return AgentResult(success=False, message=str(exc))
+    await asyncio.to_thread(_write)
+    return AgentResult(
+        success=True,
+        message=f"'{class_name}' created in apps/{app}/views.py",
+        data={"app": app, "model": model_name, "viewset": class_name},
+    )
 
 
+@agent_function
 async def add_viewset_action(
     app: str,
     model_name: str,
@@ -89,49 +87,46 @@ async def add_viewset_action(
         detail: Whether the action operates on a single instance (``pk`` in URL).
         methods: HTTP methods (default: ``["get"]``).
     """
-    try:
-        root = require_project_root(project_root)
-        path = _views_file(app, root)
-        if not path.exists():
-            return AgentResult(success=False, message=f"views.py not found at {path}")
+    path = _views_file(app, project_root)
+    if not path.exists():
+        return AgentResult(success=False, message=f"views.py not found at {path}")
 
-        class_name = f"{model_name}ViewSet"
-        action_methods = methods or ["get"]
+    class_name = f"{model_name}ViewSet"
+    action_methods = methods or ["get"]
 
-        def _insert() -> None:
-            content = path.read_text(encoding="utf-8")
-            if not class_exists(content, class_name):
-                raise ValueError(f"'{class_name}' not found in {path}")
+    def _insert() -> None:
+        content = path.read_text(encoding="utf-8")
+        if not class_exists(content, class_name):
+            raise ValueError(f"'{class_name}' not found in {path}")
 
-            methods_repr = ", ".join(f'"{m}"' for m in action_methods)
-            action_code = (
-                f'    @action(detail={detail}, methods=[{methods_repr}])\n'
-                f'    async def {action_name}(self, request, pk=None):\n'
-                f'        pass  # TODO: implement {action_name}\n'
-            )
-
-            # Insert before the last line of the class (before next class or EOF)
-            pattern = re.compile(
-                rf"(class {re.escape(class_name)}\b.*?)(\nclass |\Z)",
-                re.DOTALL,
-            )
-            def _replace(m: re.Match) -> str:
-                return m.group(1) + "\n" + action_code + m.group(2)
-
-            new_content = pattern.sub(_replace, content, count=1)
-            ensure_import(path, "from zeeb_api.viewsets import action")
-            path.write_text(new_content, encoding="utf-8")
-
-        await asyncio.to_thread(_insert)
-        return AgentResult(
-            success=True,
-            message=f"Action '{action_name}' added to '{class_name}'",
-            data={"app": app, "viewset": class_name, "action": action_name},
+        methods_repr = ", ".join(f'"{m}"' for m in action_methods)
+        action_code = (
+            f'    @action(detail={detail}, methods=[{methods_repr}])\n'
+            f'    async def {action_name}(self, request, pk=None):\n'
+            f'        pass  # TODO: implement {action_name}\n'
         )
-    except Exception as exc:
-        return AgentResult(success=False, message=str(exc))
+
+        # Insert before the last line of the class (before next class or EOF)
+        pattern = re.compile(
+            rf"(class {re.escape(class_name)}\b.*?)(\nclass |\Z)",
+            re.DOTALL,
+        )
+        def _replace(m: re.Match) -> str:
+            return m.group(1) + "\n" + action_code + m.group(2)
+
+        new_content = pattern.sub(_replace, content, count=1)
+        ensure_import(path, "from zeeb_api.viewsets import action")
+        path.write_text(new_content, encoding="utf-8")
+
+    await asyncio.to_thread(_insert)
+    return AgentResult(
+        success=True,
+        message=f"Action '{action_name}' added to '{class_name}'",
+        data={"app": app, "viewset": class_name, "action": action_name},
+    )
 
 
+@agent_function
 async def register_route(
     app: str,
     model_name: str,
@@ -139,37 +134,34 @@ async def register_route(
     project_root: Path | None = None,
 ) -> AgentResult:
     """Register a ViewSet with the app's router in ``apps/<app>/urls.py``."""
-    try:
-        root = require_project_root(project_root)
-        path = _urls_file(app, root)
-        if not path.exists():
-            return AgentResult(success=False, message=f"urls.py not found at {path}")
+    path = _urls_file(app, project_root)
+    if not path.exists():
+        return AgentResult(success=False, message=f"urls.py not found at {path}")
 
-        prefix = url_prefix or app
-        viewset_name = f"{model_name}ViewSet"
+    prefix = url_prefix or app
+    viewset_name = f"{model_name}ViewSet"
 
-        def _write() -> None:
-            content = path.read_text(encoding="utf-8")
-            register_line = f'router.register("{prefix}", {viewset_name})'
-            if register_line in content:
-                raise ValueError(f"Route for '{viewset_name}' already registered")
-            ensure_import(path, f"from .views import {viewset_name}")
-            # Append the register call after any existing router.register lines,
-            # or just append to the file
-            content = path.read_text(encoding="utf-8")
-            content = content.rstrip("\n") + f"\n{register_line}\n"
-            path.write_text(content, encoding="utf-8")
+    def _write() -> None:
+        content = path.read_text(encoding="utf-8")
+        register_line = f'router.register("{prefix}", {viewset_name})'
+        if register_line in content:
+            raise ValueError(f"Route for '{viewset_name}' already registered")
+        ensure_import(path, f"from .views import {viewset_name}")
+        # Append the register call after any existing router.register lines,
+        # or just append to the file
+        content = path.read_text(encoding="utf-8")
+        content = content.rstrip("\n") + f"\n{register_line}\n"
+        path.write_text(content, encoding="utf-8")
 
-        await asyncio.to_thread(_write)
-        return AgentResult(
-            success=True,
-            message=f"'{viewset_name}' registered at '{prefix}/'",
-            data={"app": app, "viewset": viewset_name, "prefix": prefix},
-        )
-    except Exception as exc:
-        return AgentResult(success=False, message=str(exc))
+    await asyncio.to_thread(_write)
+    return AgentResult(
+        success=True,
+        message=f"'{viewset_name}' registered at '{prefix}/'",
+        data={"app": app, "viewset": viewset_name, "prefix": prefix},
+    )
 
 
+@agent_function
 async def generate_crud(
     app: str,
     model_name: str,
@@ -196,7 +188,7 @@ async def generate_crud(
     steps: list[str] = []
     errors: list[str] = []
 
-    root = require_project_root(project_root)
+    root = project_root
 
     # 1. Model
     result = await create_model(app, model_name, fields, project_root=root)
@@ -242,32 +234,30 @@ async def generate_crud(
     )
 
 
+@agent_function
 async def list_endpoints(project_root: Path | None = None) -> AgentResult:
     """Return all ``router.register(...)`` calls found across all app ``urls.py`` files."""
-    try:
-        root = require_project_root(project_root)
-        from zeeb_agents._utils.project import list_apps
+    root = project_root
+    from zeeb_agents._utils.project import list_apps
 
-        def _scan() -> list[dict]:
-            endpoints = []
-            for app in list_apps(root):
-                urls_path = _urls_file(app, root)
-                if not urls_path.exists():
-                    continue
-                content = urls_path.read_text(encoding="utf-8")
-                for m in re.finditer(r'router\.register\(["\']([^"\']+)["\'],\s*(\w+)', content):
-                    endpoints.append({
-                        "app": app,
-                        "prefix": m.group(1),
-                        "viewset": m.group(2),
-                    })
-            return endpoints
+    def _scan() -> list[dict]:
+        endpoints = []
+        for app in list_apps(root):
+            urls_path = _urls_file(app, root)
+            if not urls_path.exists():
+                continue
+            content = urls_path.read_text(encoding="utf-8")
+            for m in re.finditer(r'router\.register\(["\']([^"\']+)["\'],\s*(\w+)', content):
+                endpoints.append({
+                    "app": app,
+                    "prefix": m.group(1),
+                    "viewset": m.group(2),
+                })
+        return endpoints
 
-        endpoints = await asyncio.to_thread(_scan)
-        return AgentResult(
-            success=True,
-            message=f"Found {len(endpoints)} registered endpoint(s)",
-            data={"endpoints": endpoints},
-        )
-    except Exception as exc:
-        return AgentResult(success=False, message=str(exc))
+    endpoints = await asyncio.to_thread(_scan)
+    return AgentResult(
+        success=True,
+        message=f"Found {len(endpoints)} registered endpoint(s)",
+        data={"endpoints": endpoints},
+    )

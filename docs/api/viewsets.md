@@ -6,7 +6,7 @@ ViewSets combine related views into a single class, automatically generating URL
 
 ```python
 from zeeb_api.viewsets import ViewSet
-from zeeb_api.responses import Response
+from zeeb_api.response import Response
 
 
 class ArticleViewSet(ViewSet):
@@ -472,8 +472,14 @@ class ArticleViewSet(ModelViewSet):
 
 ## Response Handling
 
+> **Exceptions:** `zeeb_api.exceptions` is the canonical home for all API
+> exceptions (`APIException`, `ValidationError`, `NotFound`,
+> `PermissionDenied`, `AuthenticationFailed`, `MethodNotAllowed`,
+> `Throttled`). Importing them from `zeeb_api.response` is deprecated and
+> emits a `DeprecationWarning`.
+
 ```python
-from zeeb_api.responses import Response
+from zeeb_api.response import Response
 from zeeb_api.exceptions import NotFound, ValidationError
 
 

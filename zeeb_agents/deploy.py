@@ -6,8 +6,8 @@ import asyncio
 from pathlib import Path
 from typing import Any
 
-from zeeb_agents._utils import AgentResult
-from zeeb_agents._utils.project import load_project_settings, require_project_root
+from zeeb_agents._utils import AgentResult, agent_function
+from zeeb_agents._utils.project import load_project_settings
 
 _DOCKERFILE_TEMPLATE = """\
 # syntax=docker/dockerfile:1
@@ -52,6 +52,7 @@ node_modules
 """
 
 
+@agent_function
 async def generate_dockerfile(
     python_version: str = "3.12",
     port: int = 8000,
@@ -72,45 +73,43 @@ async def generate_dockerfile(
 
         await generate_dockerfile(python_version="3.12", port=8080)
     """
-    try:
-        root = require_project_root(project_root)
-        dockerfile = root / "Dockerfile"
-        dockerignore = root / ".dockerignore"
+    root = project_root
+    dockerfile = root / "Dockerfile"
+    dockerignore = root / ".dockerignore"
 
-        if dockerfile.exists():
-            return AgentResult(
-                success=False,
-                message="Dockerfile already exists.  Delete it first to regenerate.",
-                data={"path": "Dockerfile"},
-            )
-
-        def _write() -> list[str]:
-            written = []
-            content = _DOCKERFILE_TEMPLATE.format(
-                python_version=python_version,
-                port=port,
-            )
-            dockerfile.write_text(content, encoding="utf-8")
-            written.append("Dockerfile")
-            if not dockerignore.exists():
-                dockerignore.write_text(_DOCKERIGNORE, encoding="utf-8")
-                written.append(".dockerignore")
-            return written
-
-        written = await asyncio.to_thread(_write)
+    if dockerfile.exists():
         return AgentResult(
-            success=True,
-            message=f"Dockerfile generated (Python {python_version}, port {port}).",
-            data={
-                "files_written": written,
-                "python_version": python_version,
-                "port": port,
-            },
+            success=False,
+            message="Dockerfile already exists.  Delete it first to regenerate.",
+            data={"path": "Dockerfile"},
         )
-    except Exception as exc:
-        return AgentResult(success=False, message=str(exc))
+
+    def _write() -> list[str]:
+        written = []
+        content = _DOCKERFILE_TEMPLATE.format(
+            python_version=python_version,
+            port=port,
+        )
+        dockerfile.write_text(content, encoding="utf-8")
+        written.append("Dockerfile")
+        if not dockerignore.exists():
+            dockerignore.write_text(_DOCKERIGNORE, encoding="utf-8")
+            written.append(".dockerignore")
+        return written
+
+    written = await asyncio.to_thread(_write)
+    return AgentResult(
+        success=True,
+        message=f"Dockerfile generated (Python {python_version}, port {port}).",
+        data={
+            "files_written": written,
+            "python_version": python_version,
+            "port": port,
+        },
+    )
 
 
+@agent_function
 async def generate_requirements(
     output_path: str = "requirements.txt",
     project_root: Path | None = None,
@@ -126,38 +125,36 @@ async def generate_requirements(
             Defaults to ``"requirements.txt"``.
         project_root: Auto-detected if ``None``.
     """
-    try:
-        root = require_project_root(project_root)
+    root = project_root
 
-        proc = await asyncio.create_subprocess_exec(
-            "pip", "freeze",
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        stdout, stderr = await proc.communicate()
-        if proc.returncode != 0:
-            return AgentResult(
-                success=False,
-                message=f"pip freeze failed: {stderr.decode().strip()}",
-            )
-
-        lines = [
-            line for line in stdout.decode().splitlines()
-            if line and not line.startswith(("-e ", "file://"))
-        ]
-        content = "\n".join(lines) + "\n"
-
-        out = root / output_path
-        await asyncio.to_thread(out.write_text, content, "utf-8")
+    proc = await asyncio.create_subprocess_exec(
+        "pip", "freeze",
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    stdout, stderr = await proc.communicate()
+    if proc.returncode != 0:
         return AgentResult(
-            success=True,
-            message=f"requirements.txt written ({len(lines)} package(s)).",
-            data={"path": output_path, "package_count": len(lines)},
+            success=False,
+            message=f"pip freeze failed: {stderr.decode().strip()}",
         )
-    except Exception as exc:
-        return AgentResult(success=False, message=str(exc))
+
+    lines = [
+        line for line in stdout.decode().splitlines()
+        if line and not line.startswith(("-e ", "file://"))
+    ]
+    content = "\n".join(lines) + "\n"
+
+    out = root / output_path
+    await asyncio.to_thread(out.write_text, content, "utf-8")
+    return AgentResult(
+        success=True,
+        message=f"requirements.txt written ({len(lines)} package(s)).",
+        data={"path": output_path, "package_count": len(lines)},
+    )
 
 
+@agent_function
 async def check_production_readiness(
     project_root: Path | None = None,
 ) -> AgentResult:
@@ -178,66 +175,63 @@ async def check_production_readiness(
         ``AgentResult`` with ``issues`` (list of problem strings) and
         ``passed`` (list of passing checks).
     """
-    try:
-        root = require_project_root(project_root)
+    root = project_root
 
-        def _check() -> dict[str, Any]:
-            settings = load_project_settings(root)
-            issues: list[str] = []
-            passed: list[str] = []
+    def _check() -> dict[str, Any]:
+        settings = load_project_settings(root)
+        issues: list[str] = []
+        passed: list[str] = []
 
-            # DEBUG check
-            debug = settings.get("DEBUG", True)
-            if debug:
-                issues.append("DEBUG is True — set DEBUG = False for production.")
-            else:
-                passed.append("DEBUG is False.")
+        # DEBUG check
+        debug = settings.get("DEBUG", True)
+        if debug:
+            issues.append("DEBUG is True — set DEBUG = False for production.")
+        else:
+            passed.append("DEBUG is False.")
 
-            # SECRET_KEY check
-            secret = settings.get("SECRET_KEY", "")
-            placeholders = {"", "change-me", "your-secret-key", "insecure-key", "dev-secret"}
-            if not secret:
-                issues.append("SECRET_KEY is not set.")
-            elif any(p in secret.lower() for p in placeholders):
-                issues.append("SECRET_KEY looks like a placeholder — use a strong random value.")
-            else:
-                passed.append("SECRET_KEY is set.")
+        # SECRET_KEY check
+        secret = settings.get("SECRET_KEY", "")
+        placeholders = {"", "change-me", "your-secret-key", "insecure-key", "dev-secret"}
+        if not secret:
+            issues.append("SECRET_KEY is not set.")
+        elif any(p in secret.lower() for p in placeholders):
+            issues.append("SECRET_KEY looks like a placeholder — use a strong random value.")
+        else:
+            passed.append("SECRET_KEY is set.")
 
-            # Database check
-            db_url = settings.get("DATABASE", {}).get("url", "")
-            if "sqlite" in db_url:
-                issues.append("Database is SQLite — use PostgreSQL or MySQL for production.")
-            elif db_url:
-                passed.append(f"Database driver: {db_url.split('://')[0]}.")
-            else:
-                issues.append("DATABASE URL is not set.")
+        # Database check
+        db_url = settings.get("DATABASE", {}).get("url", "")
+        if "sqlite" in db_url:
+            issues.append("Database is SQLite — use PostgreSQL or MySQL for production.")
+        elif db_url:
+            passed.append(f"Database driver: {db_url.split('://')[0]}.")
+        else:
+            issues.append("DATABASE URL is not set.")
 
-            # requirements.txt check
-            if (root / "requirements.txt").exists():
-                passed.append("requirements.txt exists.")
-            else:
-                issues.append("requirements.txt is missing — run generate_requirements().")
+        # requirements.txt check
+        if (root / "requirements.txt").exists():
+            passed.append("requirements.txt exists.")
+        else:
+            issues.append("requirements.txt is missing — run generate_requirements().")
 
-            # Dockerfile check
-            if (root / "Dockerfile").exists():
-                passed.append("Dockerfile exists.")
-            else:
-                issues.append("Dockerfile is missing — run generate_dockerfile().")
+        # Dockerfile check
+        if (root / "Dockerfile").exists():
+            passed.append("Dockerfile exists.")
+        else:
+            issues.append("Dockerfile is missing — run generate_dockerfile().")
 
-            ready = len(issues) == 0
-            return {"ready": ready, "issues": issues, "passed": passed}
+        ready = len(issues) == 0
+        return {"ready": ready, "issues": issues, "passed": passed}
 
-        result = await asyncio.to_thread(_check)
-        ready = result["ready"]
-        issue_count = len(result["issues"])
-        return AgentResult(
-            success=ready,
-            message=(
-                "Project is production-ready."
-                if ready
-                else f"Project has {issue_count} production issue(s)."
-            ),
-            data=result,
-        )
-    except Exception as exc:
-        return AgentResult(success=False, message=str(exc))
+    result = await asyncio.to_thread(_check)
+    ready = result["ready"]
+    issue_count = len(result["issues"])
+    return AgentResult(
+        success=ready,
+        message=(
+            "Project is production-ready."
+            if ready
+            else f"Project has {issue_count} production issue(s)."
+        ),
+        data=result,
+    )

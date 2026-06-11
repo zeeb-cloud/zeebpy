@@ -66,6 +66,26 @@ serializer = ArticleSerializer(data=data)
 serializer.is_valid(raise_exception=True)  # Raises ValidationError if invalid
 ```
 
+### Error Handling
+
+The canonical import for `ValidationError` is:
+
+```python
+from zeeb_api.exceptions import ValidationError
+```
+
+(Importing it from `zeeb_api.response` still works but is deprecated and
+emits a `DeprecationWarning`.)
+
+`ValidationError` is both a `ZeebException` and a FastAPI `HTTPException`:
+
+- With `install_exception_handlers()` (the default in `create_app()`), it
+  produces the standardized error envelope
+  (`{"success": false, "error": {"code": "VALIDATION_ERROR", ...}}`) with
+  per-field details.
+- Without the handlers, FastAPI/Starlette's built-in `HTTPException`
+  handling applies and returns `{"detail": {...}}` with status 400.
+
 ## Field Types
 
 ### String Fields

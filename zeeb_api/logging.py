@@ -79,6 +79,7 @@ class JsonFormatter(logging.Formatter):
         # Message - safely get formatted message
         try:
             log_data["message"] = record.getMessage()
+        # Broad except: guards %-style log message formatting against bad user-supplied args
         except Exception:
             log_data["message"] = str(record.msg)
         
@@ -137,6 +138,7 @@ class ConsoleFormatter(logging.Formatter):
         # Get the formatted message first (handles %-style formatting)
         try:
             message = record.getMessage()
+        # Broad except: guards %-style log message formatting against bad user-supplied args
         except Exception:
             message = str(record.msg)
         
@@ -446,9 +448,14 @@ def configure_logging_from_settings() -> None:
                         log_file=logging_config.get("log_file"),
                     )
                     return
-            except Exception:
-                pass
-    
+            except Exception as exc:
+                # Logging is not configured yet, so report directly to stderr
+                # before falling back to the default configuration.
+                sys.stderr.write(
+                    f"zeeb_api.logging: failed to load settings from "
+                    f"{item / 'settings.py'}: {exc}; using default logging config\n"
+                )
+
     # Fallback to defaults
     configure_logging()
 

@@ -6,8 +6,8 @@ import asyncio
 import re
 from pathlib import Path
 
-from zeeb_agents._utils import AgentResult
-from zeeb_agents._utils.project import load_project_settings, require_project_root
+from zeeb_agents._utils import AgentResult, agent_function
+from zeeb_agents._utils.project import load_project_settings
 
 _CORS_KEYS = (
     "CORS_ALLOW_ORIGINS",
@@ -39,6 +39,7 @@ def _set_or_append_setting(content: str, key: str, rendered: str) -> str:
     return content.rstrip("\n") + f"\n{new_line}\n"
 
 
+@agent_function
 async def configure_cors(
     origins: list[str],
     methods: list[str] | None = None,
@@ -72,40 +73,38 @@ async def configure_cors(
             methods=["GET", "POST", "PUT", "DELETE"],
         )
     """
-    try:
-        root = require_project_root(project_root)
-        settings_path = await asyncio.to_thread(_find_settings_file, root)
-        if not settings_path:
-            return AgentResult(success=False, message="settings.py not found in project.")
+    root = project_root
+    settings_path = await asyncio.to_thread(_find_settings_file, root)
+    if not settings_path:
+        return AgentResult(success=False, message="settings.py not found in project.")
 
-        def _write() -> dict:
-            content = settings_path.read_text(encoding="utf-8")
+    def _write() -> dict:
+        content = settings_path.read_text(encoding="utf-8")
 
-            updates = {
-                "CORS_ALLOW_ORIGINS": _render_list(origins),
-                "CORS_ALLOW_METHODS": _render_list(methods if methods is not None else ["*"]),
-                "CORS_ALLOW_CREDENTIALS": str(allow_credentials),
-                "CORS_ALLOW_HEADERS": _render_list(allow_headers if allow_headers is not None else ["*"]),
-            }
-            if expose_headers is not None:
-                updates["CORS_EXPOSE_HEADERS"] = _render_list(expose_headers)
+        updates = {
+            "CORS_ALLOW_ORIGINS": _render_list(origins),
+            "CORS_ALLOW_METHODS": _render_list(methods if methods is not None else ["*"]),
+            "CORS_ALLOW_CREDENTIALS": str(allow_credentials),
+            "CORS_ALLOW_HEADERS": _render_list(allow_headers if allow_headers is not None else ["*"]),
+        }
+        if expose_headers is not None:
+            updates["CORS_EXPOSE_HEADERS"] = _render_list(expose_headers)
 
-            for key, value in updates.items():
-                content = _set_or_append_setting(content, key, value)
+        for key, value in updates.items():
+            content = _set_or_append_setting(content, key, value)
 
-            settings_path.write_text(content, encoding="utf-8")
-            return updates
+        settings_path.write_text(content, encoding="utf-8")
+        return updates
 
-        written = await asyncio.to_thread(_write)
-        return AgentResult(
-            success=True,
-            message=f"CORS settings updated in {settings_path.name} ({len(written)} key(s)).",
-            data={"settings_file": str(settings_path.relative_to(root)), "keys_written": list(written.keys())},
-        )
-    except Exception as exc:
-        return AgentResult(success=False, message=str(exc))
+    written = await asyncio.to_thread(_write)
+    return AgentResult(
+        success=True,
+        message=f"CORS settings updated in {settings_path.name} ({len(written)} key(s)).",
+        data={"settings_file": str(settings_path.relative_to(root)), "keys_written": list(written.keys())},
+    )
 
 
+@agent_function
 async def get_cors_config(
     project_root: Path | None = None,
 ) -> AgentResult:
@@ -116,20 +115,16 @@ async def get_cors_config(
     Args:
         project_root: Auto-detected if ``None``.
     """
-    try:
-        root = require_project_root(project_root)
-        settings = await asyncio.to_thread(load_project_settings, root)
-        cors = {k: settings.get(k) for k in _CORS_KEYS if k in settings}
-        if not cors:
-            return AgentResult(
-                success=True,
-                message="No CORS settings configured.",
-                data={"cors": {}},
-            )
+    settings = await asyncio.to_thread(load_project_settings, project_root)
+    cors = {k: settings.get(k) for k in _CORS_KEYS if k in settings}
+    if not cors:
         return AgentResult(
             success=True,
-            message=f"Found {len(cors)} CORS setting(s).",
-            data={"cors": cors},
+            message="No CORS settings configured.",
+            data={"cors": {}},
         )
-    except Exception as exc:
-        return AgentResult(success=False, message=str(exc))
+    return AgentResult(
+        success=True,
+        message=f"Found {len(cors)} CORS setting(s).",
+        data={"cors": cors},
+    )

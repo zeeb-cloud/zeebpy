@@ -96,11 +96,31 @@ class Analytics(Model):
 
 ### PositiveIntegerField
 
-Non-negative integer (0 to 2147483647).
+Non-negative integer (0 to 2147483647). The `>= 0` constraint is enforced by
+validation (no database CHECK constraint).
 
 ```python
 class Order(Model):
     quantity = fields.PositiveIntegerField()
+```
+
+### PositiveSmallIntegerField
+
+Non-negative small integer (0 to 32767). Validation-only `>= 0` constraint.
+
+```python
+class Rating(Model):
+    stars = fields.PositiveSmallIntegerField(default=0)
+```
+
+### PositiveBigIntegerField
+
+Non-negative big integer (0 to 9223372036854775807). Validation-only `>= 0`
+constraint.
+
+```python
+class Analytics(Model):
+    total_bytes = fields.PositiveBigIntegerField(default=0)
 ```
 
 ### FloatField
@@ -229,6 +249,59 @@ await config.save()
 # Access as Python dict
 print(config.settings["theme"])  # "dark"
 ```
+
+## Binary Field
+
+### BinaryField
+
+Raw binary data (`bytes`), stored as BLOB/BYTEA.
+
+```python
+class Upload(Model):
+    data = fields.BinaryField()
+    thumbnail = fields.BinaryField(max_length=65536, null=True)
+```
+
+**Options:**
+- `max_length` - Optional maximum size in bytes (enforced by validation and,
+  where supported, the column type)
+
+## Duration Field
+
+### DurationField
+
+Stores `datetime.timedelta` values.
+
+```python
+import datetime
+
+class Task(Model):
+    estimated = fields.DurationField(null=True)
+
+task = await Task.objects.create(estimated=datetime.timedelta(hours=2, minutes=30))
+```
+
+**Backend note:** PostgreSQL uses a native `INTERVAL` column. SQLite and
+MySQL have no interval type, so SQLAlchemy stores the value as a datetime
+relative to the epoch — precision is limited to microseconds and the
+duration must stay within the representable datetime range (roughly years
+1–9999 from the epoch).
+
+## IP Address Field
+
+### GenericIPAddressField
+
+IPv4/IPv6 address stored as a string (`VARCHAR(39)`), validated on save.
+
+```python
+class AuditLog(Model):
+    client_ip = fields.GenericIPAddressField()                  # IPv4 or IPv6
+    legacy_ip = fields.GenericIPAddressField(protocol="IPv4")   # IPv4 only
+    modern_ip = fields.GenericIPAddressField(protocol="IPv6")   # IPv6 only
+```
+
+**Options:**
+- `protocol` - `"both"` (default), `"IPv4"` or `"IPv6"`
 
 ## Primary Key Fields
 
@@ -438,6 +511,11 @@ print(article.status)  # "draft"
 print(article.get_status_display())  # "Draft"
 ```
 
+**Choices are enforced:** `save()` and `objects.create()` run `full_clean()`
+by default, so a value outside `choices` raises `ValidationError`. Pass
+`validate=False` to opt out per call (see
+[Model Validation](models.md#model-validation)).
+
 ## Custom Validators
 
 ```python
@@ -460,6 +538,18 @@ class Product(Model):
         ],
     )
 ```
+
+Available built-in validators (in `zeeb_orm.validators`):
+`MinValueValidator`, `MaxValueValidator`, `MinLengthValidator`,
+`MaxLengthValidator`, `RegexValidator`, `EmailValidator`, `URLValidator`,
+`validate_slug`, `validate_ipv4_address`, `validate_ipv6_address`,
+`validate_ipv46_address`.
+
+Validators run during `full_clean()` — which `save()` and `create()` call by
+default (`bulk_create()` only with `validate=True`). Several fields ship with
+default validators: `CharField` enforces `max_length`; `EmailField`,
+`URLField` and `SlugField` enforce their formats; `Positive*IntegerField`
+enforce `>= 0`; `GenericIPAddressField` enforces valid addresses.
 
 ## Next Steps
 

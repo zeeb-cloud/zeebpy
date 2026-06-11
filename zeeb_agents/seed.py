@@ -5,9 +5,9 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
-from zeeb_agents._utils import AgentResult
-from zeeb_agents._utils.code_gen import extract_field_names, extract_model_names
-from zeeb_agents._utils.project import get_app_path, require_project_root
+from zeeb_agents._utils import AgentResult, agent_function
+from zeeb_agents._utils.code_gen import extract_model_names
+from zeeb_agents._utils.project import get_app_path
 
 _SEED_HEADER = """\
 \"\"\"Seed script for {app} app.
@@ -111,6 +111,7 @@ def _build_seed_block(
     )
 
 
+@agent_function
 async def generate_seed_script(
     app: str,
     models: list[str] | None = None,
@@ -134,75 +135,72 @@ async def generate_seed_script(
     Returns:
         ``AgentResult`` with ``path`` and ``models_seeded`` in ``data``.
     """
-    try:
-        root = require_project_root(project_root)
-        models_path = get_app_path(app, root) / "models.py"
-        if not models_path.exists():
-            return AgentResult(
-                success=False,
-                message=f"models.py not found at {models_path}",
-            )
-
-        def _generate() -> tuple[str, list[str]]:
-            import re
-
-            source = models_path.read_text(encoding="utf-8")
-            all_models = extract_model_names(source)
-            selected = [m for m in all_models if not models or m in models]
-
-            if not selected:
-                raise ValueError(
-                    f"No models found in {models_path}"
-                    + (f" matching {models}" if models else "")
-                )
-
-            # Build import section
-            imports = "\n".join(f"from apps.{app}.models import {m}" for m in selected)
-            seed_func = _SEED_FUNC_HEADER.format(count=count)
-
-            # Extract per-model source blocks for field introspection
-            blocks = []
-            for model_name in selected:
-                # Extract the class block for this model
-                pattern = re.compile(
-                    rf"^(class {re.escape(model_name)}\b.*?)(?=\nclass |\Z)",
-                    re.MULTILINE | re.DOTALL,
-                )
-                m = pattern.search(source)
-                model_source = m.group(1) if m else ""
-                blocks.append(_build_seed_block(model_name, model_source, count))
-
-            seed_body = "".join(blocks)
-            script = (
-                f'"""Seed script for {app} app.\n\n'
-                f"Run with:\n    python seeds/{app}_seed.py\n\"\"\"\n\n"
-                "from __future__ import annotations\n\n"
-                "import asyncio\n\n"
-                f"{imports}\n\n\n"
-                f"{seed_func}"
-                f"{seed_body}"
-                f"{_SEED_FOOTER}"
-            )
-            return script, selected
-
-        script, seeded_models = await asyncio.to_thread(_generate)
-
-        # Determine output path
-        if output_path:
-            out = root / output_path if not Path(output_path).is_absolute() else Path(output_path)
-        else:
-            seeds_dir = root / "seeds"
-            seeds_dir.mkdir(exist_ok=True)
-            out = seeds_dir / f"{app}_seed.py"
-
-        out.parent.mkdir(parents=True, exist_ok=True)
-        await asyncio.to_thread(out.write_text, script, "utf-8")
-
-        rel = str(out.relative_to(root))
+    root = project_root
+    models_path = get_app_path(app, root) / "models.py"
+    if not models_path.exists():
         return AgentResult(
-            success=True,
-            message=f"Seed script written to {rel} ({len(seeded_models)} model(s))",
-            data={"path": rel, "app": app, "models_seeded": seeded_models, "count": count},
+            success=False,
+            message=f"models.py not found at {models_path}",
         )
-    except Exception as exc:
-        return AgentResult(success=False, message=str(exc))
+
+    def _generate() -> tuple[str, list[str]]:
+        import re
+
+        source = models_path.read_text(encoding="utf-8")
+        all_models = extract_model_names(source)
+        selected = [m for m in all_models if not models or m in models]
+
+        if not selected:
+            raise ValueError(
+                f"No models found in {models_path}"
+                + (f" matching {models}" if models else "")
+            )
+
+        # Build import section
+        imports = "\n".join(f"from apps.{app}.models import {m}" for m in selected)
+        seed_func = _SEED_FUNC_HEADER.format(count=count)
+
+        # Extract per-model source blocks for field introspection
+        blocks = []
+        for model_name in selected:
+            # Extract the class block for this model
+            pattern = re.compile(
+                rf"^(class {re.escape(model_name)}\b.*?)(?=\nclass |\Z)",
+                re.MULTILINE | re.DOTALL,
+            )
+            m = pattern.search(source)
+            model_source = m.group(1) if m else ""
+            blocks.append(_build_seed_block(model_name, model_source, count))
+
+        seed_body = "".join(blocks)
+        script = (
+            f'"""Seed script for {app} app.\n\n'
+            f"Run with:\n    python seeds/{app}_seed.py\n\"\"\"\n\n"
+            "from __future__ import annotations\n\n"
+            "import asyncio\n\n"
+            f"{imports}\n\n\n"
+            f"{seed_func}"
+            f"{seed_body}"
+            f"{_SEED_FOOTER}"
+        )
+        return script, selected
+
+    script, seeded_models = await asyncio.to_thread(_generate)
+
+    # Determine output path
+    if output_path:
+        out = root / output_path if not Path(output_path).is_absolute() else Path(output_path)
+    else:
+        seeds_dir = root / "seeds"
+        seeds_dir.mkdir(exist_ok=True)
+        out = seeds_dir / f"{app}_seed.py"
+
+    out.parent.mkdir(parents=True, exist_ok=True)
+    await asyncio.to_thread(out.write_text, script, "utf-8")
+
+    rel = str(out.relative_to(root))
+    return AgentResult(
+        success=True,
+        message=f"Seed script written to {rel} ({len(seeded_models)} model(s))",
+        data={"path": rel, "app": app, "models_seeded": seeded_models, "count": count},
+    )

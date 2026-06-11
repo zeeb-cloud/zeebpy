@@ -8,8 +8,8 @@ import re
 from pathlib import Path
 from typing import Any
 
-from zeeb_agents._utils import AgentResult
-from zeeb_agents._utils.project import get_app_path, list_apps, require_project_root
+from zeeb_agents._utils import AgentResult, agent_function
+from zeeb_agents._utils.project import get_app_path, list_apps
 
 # Map zeeb_orm field types → JSON Schema types
 _FIELD_TYPE_MAP: dict[str, dict[str, Any]] = {
@@ -78,6 +78,7 @@ def _parse_model_fields(source: str, model_name: str) -> dict[str, Any]:
     return {"properties": properties, "required": required}
 
 
+@agent_function
 async def get_model_json_schema(
     app: str,
     model_name: str,
@@ -98,38 +99,33 @@ async def get_model_json_schema(
         result = await get_model_json_schema("blog", "Post")
         print(result.data["schema"])
     """
-    try:
-        root = require_project_root(project_root)
-        models_path = get_app_path(app, root) / "models.py"
-        if not models_path.exists():
-            return AgentResult(success=False, message=f"models.py not found at {models_path}.")
+    models_path = get_app_path(app, project_root) / "models.py"
+    if not models_path.exists():
+        return AgentResult(success=False, message=f"models.py not found at {models_path}.")
 
-        def _build() -> dict[str, Any]:
-            source = models_path.read_text(encoding="utf-8")
-            fields_info = _parse_model_fields(source, model_name)
-            if not fields_info:
-                raise ValueError(f"Model '{model_name}' not found in apps/{app}/models.py.")
-            schema: dict[str, Any] = {
-                "$schema": "https://json-schema.org/draft/2020-12/schema",
-                "title": model_name,
-                "type": "object",
-                "properties": fields_info.get("properties", {}),
-                "required": fields_info.get("required", []),
-            }
-            return schema
+    def _build() -> dict[str, Any]:
+        source = models_path.read_text(encoding="utf-8")
+        fields_info = _parse_model_fields(source, model_name)
+        if not fields_info:
+            raise ValueError(f"Model '{model_name}' not found in apps/{app}/models.py.")
+        schema: dict[str, Any] = {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "title": model_name,
+            "type": "object",
+            "properties": fields_info.get("properties", {}),
+            "required": fields_info.get("required", []),
+        }
+        return schema
 
-        schema = await asyncio.to_thread(_build)
-        return AgentResult(
-            success=True,
-            message=f"JSON Schema generated for {app}.{model_name}.",
-            data={"app": app, "model": model_name, "schema": schema},
-        )
-    except ValueError as exc:
-        return AgentResult(success=False, message=str(exc))
-    except Exception as exc:
-        return AgentResult(success=False, message=str(exc))
+    schema = await asyncio.to_thread(_build)
+    return AgentResult(
+        success=True,
+        message=f"JSON Schema generated for {app}.{model_name}.",
+        data={"app": app, "model": model_name, "schema": schema},
+    )
 
 
+@agent_function
 async def list_all_routes(
     project_root: Path | None = None,
 ) -> AgentResult:
@@ -147,46 +143,44 @@ async def list_all_routes(
         ``AgentResult`` with a ``routes`` list.  Each item has
         ``app``, ``type`` (``"viewset"`` or ``"route"``), and type-specific fields.
     """
-    try:
-        root = require_project_root(project_root)
+    root = project_root
 
-        def _scan() -> list[dict[str, Any]]:
-            apps = list_apps(root)
-            routes: list[dict[str, Any]] = []
-            for app in apps:
-                for fname in ("views.py", "urls.py"):
-                    fpath = get_app_path(app, root) / fname
-                    if not fpath.exists():
-                        continue
-                    source = fpath.read_text(encoding="utf-8")
-                    for m in _VIEWSET_RE.finditer(source):
-                        routes.append({
-                            "app": app,
-                            "file": fname,
-                            "type": "viewset",
-                            "prefix": m.group(1),
-                            "viewset": m.group(2),
-                        })
-                    for m in _ROUTE_RE.finditer(source):
-                        routes.append({
-                            "app": app,
-                            "file": fname,
-                            "type": "route",
-                            "method": m.group(1).upper(),
-                            "path": m.group(2),
-                        })
-            return routes
+    def _scan() -> list[dict[str, Any]]:
+        apps = list_apps(root)
+        routes: list[dict[str, Any]] = []
+        for app in apps:
+            for fname in ("views.py", "urls.py"):
+                fpath = get_app_path(app, root) / fname
+                if not fpath.exists():
+                    continue
+                source = fpath.read_text(encoding="utf-8")
+                for m in _VIEWSET_RE.finditer(source):
+                    routes.append({
+                        "app": app,
+                        "file": fname,
+                        "type": "viewset",
+                        "prefix": m.group(1),
+                        "viewset": m.group(2),
+                    })
+                for m in _ROUTE_RE.finditer(source):
+                    routes.append({
+                        "app": app,
+                        "file": fname,
+                        "type": "route",
+                        "method": m.group(1).upper(),
+                        "path": m.group(2),
+                    })
+        return routes
 
-        routes = await asyncio.to_thread(_scan)
-        return AgentResult(
-            success=True,
-            message=f"Found {len(routes)} route(s) across all apps.",
-            data={"routes": routes, "count": len(routes)},
-        )
-    except Exception as exc:
-        return AgentResult(success=False, message=str(exc))
+    routes = await asyncio.to_thread(_scan)
+    return AgentResult(
+        success=True,
+        message=f"Found {len(routes)} route(s) across all apps.",
+        data={"routes": routes, "count": len(routes)},
+    )
 
 
+@agent_function
 async def export_openapi(
     output_path: str | None = None,
     port: int = 8000,
@@ -204,40 +198,37 @@ async def export_openapi(
         port: Port the dev server is listening on.  Defaults to ``8000``.
         project_root: Auto-detected if ``None``.
     """
-    try:
-        root = require_project_root(project_root)
+    root = project_root
 
-        async def _fetch() -> dict[str, Any]:
-            try:
-                import httpx
-            except ImportError:
-                raise RuntimeError(
-                    "httpx is required for export_openapi. "
-                    "Install with: pip install httpx"
-                )
-            async with httpx.AsyncClient() as client:
-                resp = await client.get(
-                    f"http://localhost:{port}/openapi.json",
-                    timeout=10.0,
-                )
-                resp.raise_for_status()
-                return resp.json()
+    async def _fetch() -> dict[str, Any]:
+        try:
+            import httpx
+        except ImportError:
+            raise RuntimeError(
+                "httpx is required for export_openapi. "
+                "Install with: pip install httpx"
+            )
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(
+                f"http://localhost:{port}/openapi.json",
+                timeout=10.0,
+            )
+            resp.raise_for_status()
+            return resp.json()
 
-        spec = await _fetch()
+    spec = await _fetch()
 
-        out = (
-            root / output_path if output_path and not Path(output_path).is_absolute()
-            else Path(output_path) if output_path
-            else root / "openapi.json"
-        )
-        await asyncio.to_thread(out.write_text, json.dumps(spec, indent=2), "utf-8")
+    out = (
+        root / output_path if output_path and not Path(output_path).is_absolute()
+        else Path(output_path) if output_path
+        else root / "openapi.json"
+    )
+    await asyncio.to_thread(out.write_text, json.dumps(spec, indent=2), "utf-8")
 
-        rel = str(out.relative_to(root)) if out.is_relative_to(root) else str(out)
-        paths_count = len(spec.get("paths", {}))
-        return AgentResult(
-            success=True,
-            message=f"OpenAPI spec saved to {rel} ({paths_count} path(s)).",
-            data={"path": rel, "paths_count": paths_count, "title": spec.get("info", {}).get("title", "")},
-        )
-    except Exception as exc:
-        return AgentResult(success=False, message=str(exc))
+    rel = str(out.relative_to(root)) if out.is_relative_to(root) else str(out)
+    paths_count = len(spec.get("paths", {}))
+    return AgentResult(
+        success=True,
+        message=f"OpenAPI spec saved to {rel} ({paths_count} path(s)).",
+        data={"path": rel, "paths_count": paths_count, "title": spec.get("info", {}).get("title", "")},
+    )

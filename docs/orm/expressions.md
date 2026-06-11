@@ -514,6 +514,108 @@ products = await Product.objects.annotate(
 )
 ```
 
+## Window Functions
+
+Window functions compute values over a set of rows related to the current
+row, without collapsing them like aggregates do.
+
+> **Database requirements:** SQLite >= 3.25, MySQL >= 8.0, any supported
+> PostgreSQL version. No runtime version check is performed — older
+> databases fail at execution time.
+
+### Window
+
+Wrap a window-function expression in an `OVER (...)` clause with optional
+`partition_by` and `order_by` (single field name, expression, or list;
+`"-"` prefix means descending):
+
+```python
+from zeeb_orm import Window, Rank, RowNumber, DenseRank
+
+posts = await Post.objects.annotate(
+    rank=Window(Rank(), partition_by="author_id", order_by="-score"),
+    rn=Window(RowNumber(), order_by="-score"),
+)
+```
+
+### Available Window Functions
+
+| Expression | SQL |
+|------------|-----|
+| `RowNumber()` | `ROW_NUMBER()` |
+| `Rank()` | `RANK()` |
+| `DenseRank()` | `DENSE_RANK()` |
+| `PercentRank()` | `PERCENT_RANK()` |
+| `CumeDist()` | `CUME_DIST()` |
+| `Lag(expr, offset=1, default=None)` | `LAG(expr, offset, default)` |
+| `Lead(expr, offset=1, default=None)` | `LEAD(expr, offset, default)` |
+| `FirstValue(expr)` | `FIRST_VALUE(expr)` |
+| `LastValue(expr)` | `LAST_VALUE(expr)` |
+| `Ntile(num_buckets)` | `NTILE(n)` |
+
+```python
+from zeeb_orm import Lag, Lead, FirstValue, Ntile
+
+players = await Player.objects.annotate(
+    prev_score=Window(Lag("score"), partition_by="team", order_by="score"),
+    next_score=Window(Lead("score"), partition_by="team", order_by="score"),
+    top_player=Window(FirstValue("name"), partition_by="team", order_by="-score"),
+    quartile=Window(Ntile(4), order_by="-score"),
+)
+```
+
+### Window Annotations in Filters
+
+SQL forbids window functions in `WHERE` clauses. Referencing a `Window`
+annotation in `filter()` or `exclude()` raises `FieldError`:
+
+```python
+# Raises FieldError — filter on a subquery instead
+Post.objects.annotate(rn=Window(RowNumber(), order_by="-score")).filter(rn=1)
+```
+
+## Cast
+
+Convert an expression to another type with SQL `CAST`. The target type is
+given as a zeeb_orm field instance or class:
+
+```python
+from zeeb_orm import Cast, fields
+
+products = await Product.objects.annotate(
+    price_int=Cast("price", fields.IntegerField),
+    score_text=Cast("score", fields.CharField(max_length=20)),
+)
+```
+
+## StringAgg / GroupConcat
+
+Aggregate values into a single delimited string. Compiles to the right
+function per backend: `string_agg(expr, 'd')` on PostgreSQL,
+`GROUP_CONCAT(expr SEPARATOR 'd')` on MySQL and `group_concat(expr, 'd')`
+on SQLite. `GroupConcat` is an alias for `StringAgg`.
+
+```python
+from zeeb_orm import StringAgg
+
+result = await Post.objects.filter(author=author).aggregate(
+    titles=StringAgg("title", delimiter=", ")
+)
+# {"titles": "First Post, Second Post"}
+
+# Deduplicate values first
+result = await Post.objects.aggregate(
+    cats=StringAgg("category", distinct=True)
+)
+```
+
+Notes:
+
+- The delimiter is inlined as an SQL string literal (MySQL's `SEPARATOR`
+  does not accept bind parameters); single quotes are escaped.
+- On SQLite, `distinct=True` falls back to the default `","` delimiter
+  (SQLite forbids a custom delimiter with `DISTINCT`).
+
 ## Next Steps
 
 - [Queries](queries.md) - Basic querying

@@ -46,20 +46,61 @@ class Post(Model):
 
 ### on_delete Options
 
-| Option | Behavior |
-|--------|----------|
-| `"CASCADE"` | Delete related objects when parent is deleted |
-| `"PROTECT"` | Prevent deletion if related objects exist |
-| `"SET_NULL"` | Set to NULL (requires `null=True`) |
-| `"SET_DEFAULT"` | Set to default value |
-| `"DO_NOTHING"` | Do nothing (may cause integrity errors) |
+The constants are importable from `zeeb_orm` (plain strings, so passing
+`on_delete="CASCADE"` keeps working):
+
+```python
+from zeeb_orm import CASCADE, PROTECT, RESTRICT, SET_NULL, SET_DEFAULT, DO_NOTHING
+```
+
+| Option | Behavior on deleting the referenced object |
+|--------|--------------------------------------------|
+| `CASCADE` (default) | Delete the referencing objects too (recursively) |
+| `PROTECT` | Raise `ProtectedError` if referencing objects exist |
+| `RESTRICT` | Raise `RestrictedError`, unless the referencing objects are themselves deleted by the same operation (via another cascade path) |
+| `SET_NULL` | Set the FK column to NULL — requires `null=True` |
+| `SET_DEFAULT` | Set the FK column to the field default — requires a `default` |
+| `DO_NOTHING` | Leave referencing rows untouched (may leave dangling FKs) |
 
 ```python
 class Comment(Model):
-    post = fields.ForeignKey(Post, on_delete="CASCADE")  # Delete with post
-    user = fields.ForeignKey(User, on_delete="SET_NULL", null=True)  # Keep if user deleted
-    category = fields.ForeignKey(Category, on_delete="PROTECT")  # Prevent category deletion
+    post = fields.ForeignKey(Post, on_delete=CASCADE)  # Delete with post
+    user = fields.ForeignKey(User, on_delete=SET_NULL, null=True)  # Keep if user deleted
+    category = fields.ForeignKey(Category, on_delete=PROTECT)  # Prevent category deletion
 ```
+
+Invalid combinations raise `ValueError` at field definition time: unknown
+`on_delete` values, `SET_NULL` without `null=True`, and `SET_DEFAULT`
+without a `default`.
+
+#### How deletion works
+
+`on_delete` is enforced **in Python** by a collector (like Django's), so it
+works regardless of database FK enforcement (e.g. SQLite's `foreign_keys`
+PRAGMA, which is off by default):
+
+```python
+total, per_model = await author.delete()
+# (3, {"Author": 1, "Post": 2}) — counts include cascaded rows
+```
+
+- `PROTECT`/`RESTRICT` are checked **before** any row is deleted.
+  `ProtectedError.protected_objects` / `RestrictedError.restricted_objects`
+  contain the referencing instances.
+- All updates and deletes run in a single transaction (`atomic()` is opened
+  automatically unless one is already active).
+- Cascaded rows are deleted leaf-first, and `pre_delete`/`post_delete`
+  signals fire for **every** affected instance.
+- `QuerySet.delete()` routes through the collector whenever another model
+  references the queryset's model with a non-`DO_NOTHING` FK (its count then
+  includes cascaded rows, and per-instance delete signals fire). Models with
+  no such inbound FKs keep the fast single-statement DELETE (no signals).
+
+At the database level the constants map to standard `ON DELETE` actions in
+the generated DDL: `CASCADE` → `ON DELETE CASCADE`, `SET_NULL` →
+`ON DELETE SET NULL`, `SET_DEFAULT` → `ON DELETE SET DEFAULT`,
+`PROTECT`/`RESTRICT` → `ON DELETE RESTRICT`, and `DO_NOTHING` emits no
+clause.
 
 ### Accessing Related Objects
 
@@ -201,42 +242,75 @@ class Article(Model):
         table_name = "articles"
 ```
 
-This creates an intermediate join table `article_tags` with columns:
-- `article_id`
-- `tag_id`
+This auto-creates an intermediate join table in the shared metadata,
+named `"{source_table}_{field_name}"` (here: `articles_tags`), with:
+
+- An `{source}_id` / `{target}_id` column pair (here: `article_id` /
+  `tag_id`, derived from the lowercased model names), each typed like the
+  referenced model's primary key.
+- `ON DELETE CASCADE` foreign keys on both columns.
+- A unique constraint over the column pair (no duplicate links).
+
+`Database.create_all()` creates the join table along with the model tables,
+and the migration autodetector sees it as a plain new table. Self-referential
+M2M fields use `from_{model}_id` / `to_{model}_id` columns.
+
+If no `related_name` is given, the reverse accessor on the target model
+defaults to `<sourcemodel>_set` (e.g. `tag.article_set`).
 
 ### ManyToMany Options
 
 | Option | Description |
 |--------|-------------|
-| `to` | Related model |
-| `related_name` | Name for reverse relation |
-| `through` | Custom intermediate model |
-| `db_table` | Custom join table name |
+| `to` | Related model (class, registry name, or `"self"`) |
+| `related_name` | Name for reverse relation (default `<model>_set`) |
+| `through` | Custom intermediate model (class or name) |
+| `through_fields` | `(source_fk, target_fk)` field names on the through model |
+| `db_table` | Custom join table name (auto-created tables only) |
 
 ### Managing ManyToMany Relations
+
+Accessing the field on an instance returns a `ManyRelatedManager`:
 
 ```python
 article = await Article.objects.get(pk=1)
 tag = await Tag.objects.get(name="python")
 
-# Add relation
+# Add relations — duplicates are silently ignored, raw pk values work too
 await article.tags.add(tag)
 await article.tags.add(tag1, tag2, tag3)  # Multiple
+await article.tags.add(tag.pk)            # pk value instead of instance
 
-# Remove relation
+# Remove relations (instances or pk values)
 await article.tags.remove(tag)
 
 # Clear all relations
 await article.tags.clear()
 
-# Set specific relations (replaces existing)
+# Set specific relations (diff-based: removes stale links, adds missing)
 await article.tags.set([tag1, tag2])
+await article.tags.set([tag1], clear=True)  # delete all, then re-insert
 
-# Check membership
-if tag in await article.tags.all():
-    print("Has tag")
+# Counting / reading
+n = await article.tags.count()
+tags = await article.tags.all()
+py_tags = await article.tags.filter(name__startswith="py")
+
+# Create-and-link in one call
+tag = await article.tags.create(name="asyncio")
+
+# Reverse side works the same way
+await tag.articles.add(article)
 ```
+
+`add()` and `set()` run inside a transaction (`atomic()`), checking for
+existing pairs first and inserting only the missing ones — portable across
+SQLite, PostgreSQL and MySQL.
+
+The instance must be saved before the relation can be used; accessing the
+manager on an unsaved instance raises
+`ValueError: "..." needs to have a value for field "id" before this
+many-to-many relationship can be used.`
 
 ### Querying ManyToMany
 
@@ -264,6 +338,30 @@ articles = await Article.objects.filter(
 ).annotate(
     tag_count=Count("tags")
 ).filter(tag_count=2)
+```
+
+M2M traversal joins the base table to the join table and on to the target
+table (two hops). As with reverse ForeignKeys, a row can match through
+multiple links and appear more than once — add `.distinct()` to deduplicate:
+
+```python
+articles = await Article.objects.filter(
+    tags__name__in=["python", "django"]
+).distinct()
+```
+
+### Prefetching ManyToMany
+
+`prefetch_related()` works in both directions with one extra IN-query over
+the join table plus one query for the related rows; the result is attached
+as a plain list:
+
+```python
+articles = await Article.objects.prefetch_related("tags")
+for article in articles:
+    print(article.title, [t.name for t in article.tags])  # no extra queries
+
+tags = await Tag.objects.prefetch_related("articles")
 ```
 
 ### Custom Through Model
@@ -302,7 +400,18 @@ class Group(Model):
         table_name = "groups"
 ```
 
-Using custom through model:
+With a custom through model, **reads work normally** (accessors, traversal,
+prefetching) via the through model's table, but the write helpers
+`add()` / `remove()` / `clear()` / `set()` raise `NotSupportedError` —
+create and delete rows on the through model directly (Django parity):
+
+```python
+members = await group.members.all()                      # OK
+groups = await Group.objects.filter(members__name="Bo")  # OK
+await group.members.add(person)                          # NotSupportedError!
+```
+
+Using the custom through model directly:
 
 ```python
 # Add with extra data

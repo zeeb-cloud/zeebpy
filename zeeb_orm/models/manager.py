@@ -24,10 +24,80 @@ class Manager(Generic[ModelT]):
         User.objects.create(name='John')
     """
 
+    #: Set by :meth:`from_queryset` on dynamically built Manager subclasses.
+    _built_with_queryset: type | None = None
+
     def __init__(self) -> None:
         self.model: type[ModelT] | None = None
         self._name: str = "objects"
         self._original_model: type[ModelT] | None = None
+
+    @classmethod
+    def from_queryset(
+        cls, queryset_class: type, class_name: str | None = None
+    ) -> type[Manager[Any]]:
+        """Build a Manager subclass exposing ``queryset_class``'s methods.
+
+        Every public (non-underscore) method of ``queryset_class`` that is
+        not already defined on the Manager class is copied as a proxy that
+        calls the same method on ``self.get_queryset()``.  The generated
+        manager's ``get_queryset()`` returns ``queryset_class(self.model)``.
+
+        The returned class is zero-arg constructible (required for the
+        descriptor rebinding in :meth:`__get__`).
+
+        Usage:
+            class PostQuerySet(QuerySet):
+                def published(self):
+                    return self.filter(published=True)
+
+            class Post(Model):
+                objects = Manager.from_queryset(PostQuerySet)()
+        """
+        if class_name is None:
+            class_name = f"{cls.__name__}From{queryset_class.__name__}"
+
+        def get_queryset(self: Manager[Any]) -> Any:
+            if self.model is None:
+                raise RuntimeError("Manager is not bound to a model")
+            return queryset_class(self.model)
+
+        get_queryset.__doc__ = (
+            f"Return a new {queryset_class.__name__} bound to this "
+            "manager's model."
+        )
+
+        attrs: dict[str, Any] = {
+            "_built_with_queryset": queryset_class,
+            "get_queryset": get_queryset,
+        }
+        attrs.update(cls._get_queryset_methods(queryset_class))
+        return type(class_name, (cls,), attrs)
+
+    @classmethod
+    def _get_queryset_methods(cls, queryset_class: type) -> dict[str, Any]:
+        """Proxy methods for public queryset methods not already on ``cls``."""
+        import inspect
+
+        def create_method(name: str, method: Any) -> Any:
+            def manager_method(self: Manager[Any], *args: Any, **kwargs: Any) -> Any:
+                return getattr(self.get_queryset(), name)(*args, **kwargs)
+
+            manager_method.__name__ = name
+            manager_method.__qualname__ = name
+            manager_method.__doc__ = method.__doc__
+            return manager_method
+
+        new_methods: dict[str, Any] = {}
+        for name, method in inspect.getmembers(
+            queryset_class, predicate=inspect.isfunction
+        ):
+            if name.startswith("_"):
+                continue
+            if hasattr(cls, name):
+                continue
+            new_methods[name] = create_method(name, method)
+        return new_methods
 
     def __set_name__(self, owner: type, name: str) -> None:
         self._name = name
@@ -121,9 +191,19 @@ class Manager(Generic[ModelT]):
         """Check if any objects exist."""
         return await self.get_queryset().exists()
 
-    async def create(self, **kwargs: Any) -> ModelT:
-        """Create and save a new object."""
-        return await self.get_queryset().create(**kwargs)
+    async def create(self, *, validate: bool = True, **kwargs: Any) -> ModelT:
+        """Create and save a new object (validated unless ``validate=False``)."""
+        return await self.get_queryset().create(validate=validate, **kwargs)
+
+    async def in_bulk(
+        self, id_list: list[Any] | None = None, *, field_name: str = "pk"
+    ) -> dict[Any, ModelT]:
+        """Return a ``{field_value: instance}`` mapping for the given values."""
+        return await self.get_queryset().in_bulk(id_list, field_name=field_name)
+
+    def iterator(self, chunk_size: int = 2000) -> Any:
+        """Stream results in chunks without result caching."""
+        return self.get_queryset().iterator(chunk_size=chunk_size)
 
     async def get_or_create(
         self, defaults: dict[str, Any] | None = None, **kwargs: Any
@@ -143,10 +223,14 @@ class Manager(Generic[ModelT]):
         *,
         batch_size: int | None = None,
         ignore_conflicts: bool = False,
+        validate: bool = False,
     ) -> list[ModelT]:
         """Insert multiple objects efficiently."""
         return await self.get_queryset().bulk_create(
-            objs, batch_size=batch_size, ignore_conflicts=ignore_conflicts
+            objs,
+            batch_size=batch_size,
+            ignore_conflicts=ignore_conflicts,
+            validate=validate,
         )
 
     async def bulk_update(
@@ -206,6 +290,34 @@ class Manager(Generic[ModelT]):
     def raw(self, sql: str, params: list[Any] | None = None) -> QuerySet[ModelT]:
         """Execute raw SQL query."""
         return self.get_queryset().raw(sql, params)
+
+    def union(self, *other_qs: Any, all: bool = False) -> QuerySet[ModelT]:
+        """Combine with other querysets using SQL UNION."""
+        return self.get_queryset().union(*other_qs, all=all)
+
+    def intersection(self, *other_qs: Any) -> QuerySet[ModelT]:
+        """Combine with other querysets using SQL INTERSECT."""
+        return self.get_queryset().intersection(*other_qs)
+
+    def difference(self, *other_qs: Any) -> QuerySet[ModelT]:
+        """Combine with other querysets using SQL EXCEPT."""
+        return self.get_queryset().difference(*other_qs)
+
+    def select_for_update(
+        self,
+        *,
+        nowait: bool = False,
+        skip_locked: bool = False,
+        of: tuple[str, ...] | list[str] = (),
+    ) -> QuerySet[ModelT]:
+        """Lock the selected rows with ``SELECT ... FOR UPDATE``."""
+        return self.get_queryset().select_for_update(
+            nowait=nowait, skip_locked=skip_locked, of=of
+        )
+
+    async def explain(self, *, analyze: bool = False) -> str:
+        """Return the database's execution plan for the full-table query."""
+        return await self.get_queryset().explain(analyze=analyze)
 
 
 class RelatedManager(Manager[ModelT]):

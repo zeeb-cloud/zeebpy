@@ -122,7 +122,7 @@ class Field(Generic[T]):
                 errors.append(str(e))
         
         if errors:
-            from zeeb_api.response import ValidationError
+            from zeeb_api.exceptions import ValidationError
             raise ValidationError({self.field_name: errors})
     
     def to_internal_value(self, data: Any) -> T:
@@ -135,7 +135,7 @@ class Field(Generic[T]):
     
     def fail(self, key: str, **kwargs: Any) -> None:
         """Raise validation error with message."""
-        from zeeb_api.response import ValidationError
+        from zeeb_api.exceptions import ValidationError
         message = self.error_messages.get(key, key).format(**kwargs)
         raise ValidationError({self.field_name: [message]})
 

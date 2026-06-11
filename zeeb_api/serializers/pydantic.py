@@ -418,7 +418,7 @@ class Serializer(metaclass=SerializerMetaclass):
                 self._errors = {"non_field_errors": [str(e)]}
             
             if raise_exception:
-                from zeeb_api.response import ValidationError
+                from zeeb_api.exceptions import ValidationError
                 raise ValidationError(self._errors)
             
             return False

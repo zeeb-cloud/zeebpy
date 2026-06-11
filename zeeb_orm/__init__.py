@@ -32,6 +32,16 @@ Usage:
 """
 
 from zeeb_orm.conf.settings import Settings, configure, get_settings
+from zeeb_orm.exceptions import (
+    NON_FIELD_ERRORS,
+    FieldDoesNotExist,
+    FieldError,
+    NotSupportedError,
+    ProtectedError,
+    RestrictedError,
+    TransactionManagementError,
+    ValidationError,
+)
 from zeeb_orm.db.connection import (
     Database,
     atomic,
@@ -47,28 +57,48 @@ from zeeb_orm.migrations.state import (
     get_migration_state,
     require_migrations,
 )
-from zeeb_orm.models.base import Model, metadata
+from zeeb_orm.models.base import (
+    DoesNotExist,
+    Model,
+    MultipleObjectsReturned,
+    metadata,
+)
+from zeeb_orm.models.deletion import (
+    CASCADE,
+    DO_NOTHING,
+    PROTECT,
+    RESTRICT,
+    SET_DEFAULT,
+    SET_NULL,
+    Collector,
+)
+from zeeb_orm.models.relations import RelationInfo, resolve_relation
 from zeeb_orm.models.fields import (
     AutoField,
     BigAutoField,
     BigIntegerField,
+    BinaryField,
     BooleanField,
     CharField,
     DateField,
     DateTimeField,
     DecimalField,
+    DurationField,
     EmailField,
     Field,
     FloatField,
     ForeignKey,
     ForeignKeyField,
+    GenericIPAddressField,
     IntegerField,
     JSONField,
     ManyToMany,
     ManyToManyField,
     OneToOne,
     OneToOneField,
+    PositiveBigIntegerField,
     PositiveIntegerField,
+    PositiveSmallIntegerField,
     SlugField,
     SmallIntegerField,
     TextField,
@@ -121,6 +151,22 @@ from zeeb_orm.query.expressions import (
     Greatest,
     Least,
     Round,
+    # Window functions
+    Window,
+    RowNumber,
+    Rank,
+    DenseRank,
+    PercentRank,
+    CumeDist,
+    Lag,
+    Lead,
+    FirstValue,
+    LastValue,
+    Ntile,
+    # Type conversion & string aggregation
+    Cast,
+    StringAgg,
+    GroupConcat,
 )
 from zeeb_orm.query.q import Q
 from zeeb_orm.query.queryset import Prefetch, QuerySet
@@ -143,6 +189,27 @@ __all__ = [
     "Manager",
     "QuerySet",
     "metadata",
+    "RelationInfo",
+    "resolve_relation",
+    # Exceptions
+    "NON_FIELD_ERRORS",
+    "ValidationError",
+    "NotSupportedError",
+    "ProtectedError",
+    "RestrictedError",
+    "TransactionManagementError",
+    "FieldDoesNotExist",
+    "FieldError",
+    "DoesNotExist",
+    "MultipleObjectsReturned",
+    # on_delete constants & collector
+    "CASCADE",
+    "PROTECT",
+    "RESTRICT",
+    "SET_NULL",
+    "SET_DEFAULT",
+    "DO_NOTHING",
+    "Collector",
     # Fields
     "Field",
     "AutoField",
@@ -157,6 +224,8 @@ __all__ = [
     "SmallIntegerField",
     "BigIntegerField",
     "PositiveIntegerField",
+    "PositiveSmallIntegerField",
+    "PositiveBigIntegerField",
     "FloatField",
     "DecimalField",
     "BooleanField",
@@ -164,6 +233,9 @@ __all__ = [
     "TimeField",
     "DateTimeField",
     "JSONField",
+    "BinaryField",
+    "DurationField",
+    "GenericIPAddressField",
     "UUIDField",
     "ForeignKey",
     "ForeignKeyField",
@@ -213,6 +285,22 @@ __all__ = [
     "Round",
     "Greatest",
     "Least",
+    # Window functions
+    "Window",
+    "RowNumber",
+    "Rank",
+    "DenseRank",
+    "PercentRank",
+    "CumeDist",
+    "Lag",
+    "Lead",
+    "FirstValue",
+    "LastValue",
+    "Ntile",
+    # Type conversion & string aggregation
+    "Cast",
+    "StringAgg",
+    "GroupConcat",
     # Options
     "Options",
     "Index",
@@ -242,7 +330,11 @@ __all__ = [
     "post_save",
     "pre_delete",
     "post_delete",
+    # Namespaces
+    "fields",
+    "validators",
 ]
 
-# Provide a fields namespace like Django
+# Namespaces: zeeb_orm.fields (like Django) and zeeb_orm.validators
+from zeeb_orm import validators
 from zeeb_orm.models import fields

@@ -14,3 +14,8 @@ class AgentResult:
 
     def __bool__(self) -> bool:
         return self.success
+
+
+from zeeb_agents._utils.decorators import agent_function  # noqa: E402
+
+__all__ = ["AgentResult", "agent_function"]
