@@ -64,10 +64,11 @@ def create_app(
         
         app = create_app(lifespan=lifespan)
     """
-    from zeeb_api.conf import settings, configure_settings
-    from zeeb_api.middleware import install_middleware
+    from zeeb_api.auth.jwt import INSECURE_SECRETS, configure_jwt
+    from zeeb_api.conf import configure_settings, settings
     from zeeb_api.exception_handlers import install_exception_handlers
-    from zeeb_api.auth.jwt import configure_jwt
+    from zeeb_api.exceptions import ImproperlyConfigured
+    from zeeb_api.middleware import install_middleware
     from zeeb_api.routers import load_urlconf
     
     # Configure settings
@@ -81,7 +82,14 @@ def create_app(
     # Ensure settings are loaded
     if not settings.is_configured():
         settings._setup()
-    
+
+    # Fail fast on insecure default secrets outside of DEBUG mode
+    if not getattr(settings, 'DEBUG', False) and settings.get_jwt_secret_key() in INSECURE_SECRETS:
+        raise ImproperlyConfigured(
+            "create_app(): SECRET_KEY/JWT_SECRET_KEY is an insecure default. "
+            "Set a strong unique secret or enable DEBUG for local development."
+        )
+
     # Create lifespan if not provided
     if lifespan is None:
         lifespan = _create_default_lifespan(settings)

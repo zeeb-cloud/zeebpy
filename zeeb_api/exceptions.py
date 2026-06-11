@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Any
 
+from fastapi import HTTPException
 from pydantic import BaseModel, Field
 
 
@@ -29,6 +30,7 @@ class ErrorCode(str, Enum):
     AUTH_TOKEN_INVALID = "AUTH_TOKEN_INVALID"
     AUTH_TOKEN_MISSING = "AUTH_TOKEN_MISSING"
     AUTH_SESSION_EXPIRED = "AUTH_SESSION_EXPIRED"
+    AUTH_INSECURE_CONFIG = "AUTH_INSECURE_CONFIG"
     
     # Permission errors
     PERM_DENIED = "PERM_DENIED"
@@ -263,7 +265,11 @@ class ZeebException(Exception):
         self.status_code = status_code
         self.headers = headers
         self.extra_meta = meta or {}
-        super().__init__(message)
+        # NOTE: Call Exception.__init__ directly (not super()) so that the
+        # DRF-compatible subclasses below, which also inherit from
+        # fastapi.HTTPException, don't accidentally invoke
+        # HTTPException.__init__(message) via the cooperative MRO chain.
+        Exception.__init__(self, message)
     
     def to_response(
         self,
@@ -478,6 +484,227 @@ class MethodNotAllowedException(ZeebException):
             message=message,
             status_code=405,
             headers=headers,
+        )
+
+
+# Mapping of HTTP status codes to standardized error codes.
+# Shared by the DRF-compatible exceptions below and the HTTPException handler.
+STATUS_CODE_TO_ERROR_CODE: dict[int, str] = {
+    400: ErrorCode.VALIDATION_ERROR.value,
+    401: ErrorCode.AUTH_TOKEN_MISSING.value,
+    403: ErrorCode.PERM_DENIED.value,
+    404: ErrorCode.RESOURCE_NOT_FOUND.value,
+    405: ErrorCode.METHOD_NOT_ALLOWED.value,
+    409: ErrorCode.RESOURCE_CONFLICT.value,
+    422: ErrorCode.VALIDATION_ERROR.value,
+    429: ErrorCode.RATE_LIMIT_EXCEEDED.value,
+    500: ErrorCode.SERVER_ERROR.value,
+    503: ErrorCode.SERVER_UNAVAILABLE.value,
+}
+
+
+def details_from_field_errors(detail: Any) -> list[ErrorDetail]:
+    """
+    Flatten a DRF-style ``{field: [messages]}`` mapping into ErrorDetail list.
+
+    Non-dict details produce an empty list (the message is carried at the
+    top level of the error envelope instead).
+    """
+    details: list[ErrorDetail] = []
+    if not isinstance(detail, dict):
+        return details
+
+    for field, msgs in detail.items():
+        if isinstance(msgs, (list, tuple)):
+            for msg in msgs:
+                details.append(ErrorDetail(
+                    code=ErrorCode.FIELD_INVALID_VALUE.value,
+                    field=field,
+                    message=str(msg),
+                ))
+        else:
+            details.append(ErrorDetail(
+                code=ErrorCode.FIELD_INVALID_VALUE.value,
+                field=field,
+                message=str(msgs),
+            ))
+    return details
+
+
+# DRF-compatible exception classes (canonical home for the names previously
+# defined in zeeb_api.response).
+#
+# These inherit from BOTH the ZeebException hierarchy and
+# fastapi.HTTPException:
+#
+# - With install_exception_handlers() the ZeebException handler wins (it
+#   appears before HTTPException in the MRO) and produces the standardized
+#   ErrorResponse envelope.
+# - Without handlers installed, Starlette's built-in HTTPException handling
+#   applies and the original status codes / ``detail`` payloads are preserved.
+
+class APIException(ZeebException, HTTPException):
+    """
+    Base API exception (DRF-compatible).
+
+    Usage:
+        raise APIException(detail="Something went wrong", status_code=400)
+    """
+
+    def __init__(
+        self,
+        detail: str | dict[str, Any] = "An error occurred",
+        status_code: int = 500,
+        headers: dict[str, str] | None = None,
+        *,
+        code: str | ErrorCode | None = None,
+    ) -> None:
+        message = detail if isinstance(detail, str) else "Validation failed"
+        # Call ZeebException.__init__ explicitly: the cooperative super()
+        # chain would otherwise pass our kwargs to HTTPException.__init__.
+        ZeebException.__init__(
+            self,
+            code=code or STATUS_CODE_TO_ERROR_CODE.get(status_code, ErrorCode.SERVER_ERROR.value),
+            message=message,
+            details=details_from_field_errors(detail),
+            status_code=status_code,
+            headers=headers,
+        )
+        # Preserve the legacy HTTPException attribute (str or dict).
+        self.detail = detail
+
+
+class ValidationError(ValidationException, APIException):
+    """
+    Validation error exception (DRF-compatible).
+
+    Usage:
+        raise ValidationError({"email": ["Invalid email format"]})
+    """
+
+    def __init__(
+        self,
+        detail: str | dict[str, Any] = "Validation error",
+        headers: dict[str, str] | None = None,
+    ) -> None:
+        APIException.__init__(
+            self,
+            detail=detail,
+            status_code=400,
+            headers=headers,
+            code=ErrorCode.VALIDATION_ERROR,
+        )
+
+
+class NotFound(ResourceNotFoundException, APIException):
+    """Object not found exception (DRF-compatible)."""
+
+    def __init__(
+        self,
+        detail: str = "Not found",
+        headers: dict[str, str] | None = None,
+    ) -> None:
+        APIException.__init__(
+            self,
+            detail=detail,
+            status_code=404,
+            headers=headers,
+            code=ErrorCode.RESOURCE_NOT_FOUND,
+        )
+
+
+class PermissionDenied(PermissionException, APIException):
+    """Permission denied exception (DRF-compatible)."""
+
+    def __init__(
+        self,
+        detail: str = "Permission denied",
+        headers: dict[str, str] | None = None,
+    ) -> None:
+        APIException.__init__(
+            self,
+            detail=detail,
+            status_code=403,
+            headers=headers,
+            code=ErrorCode.PERM_DENIED,
+        )
+
+
+class AuthenticationFailed(AuthenticationException, APIException):
+    """Authentication failed exception (DRF-compatible)."""
+
+    def __init__(
+        self,
+        detail: str = "Authentication credentials were not provided",
+        headers: dict[str, str] | None = None,
+    ) -> None:
+        APIException.__init__(
+            self,
+            detail=detail,
+            status_code=401,
+            headers=headers,
+            code=ErrorCode.AUTH_TOKEN_MISSING,
+        )
+
+
+class MethodNotAllowed(MethodNotAllowedException, APIException):
+    """Method not allowed exception (DRF-compatible)."""
+
+    def __init__(
+        self,
+        detail: str = "Method not allowed",
+        headers: dict[str, str] | None = None,
+    ) -> None:
+        APIException.__init__(
+            self,
+            detail=detail,
+            status_code=405,
+            headers=headers,
+            code=ErrorCode.METHOD_NOT_ALLOWED,
+        )
+
+
+class Throttled(RateLimitException, APIException):
+    """Rate limit exceeded exception (DRF-compatible)."""
+
+    def __init__(
+        self,
+        detail: str = "Request was throttled",
+        wait: int | None = None,
+        headers: dict[str, str] | None = None,
+    ) -> None:
+        if wait:
+            detail = f"{detail}. Expected available in {wait} seconds."
+        APIException.__init__(
+            self,
+            detail=detail,
+            status_code=429,
+            headers=headers,
+            code=ErrorCode.RATE_LIMIT_EXCEEDED,
+        )
+
+
+# Configuration errors
+
+class ImproperlyConfigured(Exception):
+    """The application is somehow improperly configured (Django-style)."""
+
+
+class InsecureSecretError(ZeebException):
+    """Raised when an insecure default secret key is used outside DEBUG mode."""
+
+    def __init__(
+        self,
+        message: str = (
+            "JWT secret key is set to an insecure default value. "
+            "Set SECRET_KEY (or JWT_SECRET_KEY) to a strong, unique secret "
+            "before running with DEBUG=False."
+        ),
+    ) -> None:
+        super().__init__(
+            code=ErrorCode.AUTH_INSECURE_CONFIG,
+            message=message,
+            status_code=500,
         )
 
 

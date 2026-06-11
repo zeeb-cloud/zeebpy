@@ -5,7 +5,8 @@ from __future__ import annotations
 from typing import Any
 from fastapi import Request
 
-from zeeb_api.response import Response, ValidationError
+from zeeb_api.exceptions import ValidationError
+from zeeb_api.response import Response
 
 
 class CreateModelMixin:

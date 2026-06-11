@@ -52,8 +52,17 @@ from zeeb_api.query import (
     parse_q_filter,
     QFilterError,
 )
-from zeeb_api.response import Response, APIException, ValidationError
+from zeeb_api.response import Response
 from zeeb_api.exceptions import (
+    APIException,
+    ValidationError,
+    NotFound,
+    PermissionDenied,
+    AuthenticationFailed,
+    MethodNotAllowed,
+    Throttled,
+    ImproperlyConfigured,
+    InsecureSecretError,
     ErrorCode,
     ErrorDetail,
     ErrorMeta,
@@ -178,10 +187,19 @@ __all__ = [
     "create_query_response_model",
     "parse_q_filter",
     "QFilterError",
-    # Response (legacy)
+    # Response
     "Response",
+    # DRF-compatible exceptions (canonical home: zeeb_api.exceptions)
     "APIException",
     "ValidationError",
+    "NotFound",
+    "PermissionDenied",
+    "AuthenticationFailed",
+    "MethodNotAllowed",
+    "Throttled",
+    # Configuration errors
+    "ImproperlyConfigured",
+    "InsecureSecretError",
     # Exceptions (new standardized)
     "ErrorCode",
     "ErrorDetail",

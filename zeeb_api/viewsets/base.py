@@ -75,7 +75,7 @@ class ViewSet(metaclass=ViewSetMeta):
         """Check if the request should be permitted."""
         for permission in self.get_permissions():
             if not await permission.has_permission(request, self):
-                from zeeb_api.response import PermissionDenied
+                from zeeb_api.exceptions import PermissionDenied
                 raise PermissionDenied(
                     getattr(permission, "message", "Permission denied")
                 )
@@ -84,7 +84,7 @@ class ViewSet(metaclass=ViewSetMeta):
         """Check if the request should be permitted for a specific object."""
         for permission in self.get_permissions():
             if not await permission.has_object_permission(request, self, obj):
-                from zeeb_api.response import PermissionDenied
+                from zeeb_api.exceptions import PermissionDenied
                 raise PermissionDenied(
                     getattr(permission, "message", "Permission denied")
                 )
@@ -248,7 +248,7 @@ class GenericViewSet(ViewSet):
         lookup_value = self.kwargs.get(lookup_url_kwarg)
         
         if lookup_value is None:
-            from zeeb_api.response import NotFound
+            from zeeb_api.exceptions import NotFound
             raise NotFound("Object not found")
         
         # Build filter
@@ -261,7 +261,7 @@ class GenericViewSet(ViewSet):
             obj = None
         
         if obj is None:
-            from zeeb_api.response import NotFound
+            from zeeb_api.exceptions import NotFound
             raise NotFound("Object not found")
         
         # Check object permissions
@@ -279,7 +279,7 @@ class GenericViewSet(ViewSet):
         # Check class-level permissions
         for permission in self.get_permissions():
             if not await permission.has_object_permission(request, self, obj):
-                from zeeb_api.response import PermissionDenied
+                from zeeb_api.exceptions import PermissionDenied
                 raise PermissionDenied(
                     getattr(permission, "message", "Permission denied")
                 )
@@ -307,7 +307,7 @@ class GenericViewSet(ViewSet):
         has_permission = await check_method(user)
         
         if not has_permission:
-            from zeeb_api.response import PermissionDenied
+            from zeeb_api.exceptions import PermissionDenied
             raise PermissionDenied(f"You do not have {permission_type} permission for this object")
     
     async def check_add_permission(self) -> None:
@@ -332,7 +332,7 @@ class GenericViewSet(ViewSet):
         has_permission = await model_class.check_add_permission(user)
         
         if not has_permission:
-            from zeeb_api.response import PermissionDenied
+            from zeeb_api.exceptions import PermissionDenied
             raise PermissionDenied("You do not have permission to create this object")
     
     def get_pagination_class(self) -> type[BasePagination] | None:

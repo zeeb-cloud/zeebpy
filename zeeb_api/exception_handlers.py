@@ -18,17 +18,14 @@ from pydantic import ValidationError as PydanticValidationError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from zeeb_api.exceptions import (
+    STATUS_CODE_TO_ERROR_CODE,
     ErrorBody,
     ErrorCode,
     ErrorDetail,
     ErrorMeta,
     ErrorResponse,
     ZeebException,
-    AuthenticationException,
-    PermissionException,
-    ResourceNotFoundException,
-    ValidationException,
-    ServerException,
+    details_from_field_errors,
 )
 
 logger = logging.getLogger(__name__)
@@ -250,42 +247,14 @@ async def http_exception_handler(
     exc: StarletteHTTPException,
 ) -> JSONResponse:
     """Handle Starlette/FastAPI HTTPException."""
-    # Map status codes to error codes
-    status_to_code: dict[int, str] = {
-        400: ErrorCode.VALIDATION_ERROR.value,
-        401: ErrorCode.AUTH_TOKEN_MISSING.value,
-        403: ErrorCode.PERM_DENIED.value,
-        404: ErrorCode.RESOURCE_NOT_FOUND.value,
-        405: ErrorCode.METHOD_NOT_ALLOWED.value,
-        409: ErrorCode.RESOURCE_CONFLICT.value,
-        422: ErrorCode.VALIDATION_ERROR.value,
-        429: ErrorCode.RATE_LIMIT_EXCEEDED.value,
-        500: ErrorCode.SERVER_ERROR.value,
-        503: ErrorCode.SERVER_UNAVAILABLE.value,
-    }
-    
-    code = status_to_code.get(exc.status_code, ErrorCode.SERVER_ERROR.value)
+    code = STATUS_CODE_TO_ERROR_CODE.get(exc.status_code, ErrorCode.SERVER_ERROR.value)
     message = exc.detail if isinstance(exc.detail, str) else "An error occurred"
-    
+
     # Parse detail if it's a dict with field errors
-    details: list[ErrorDetail] = []
+    details = details_from_field_errors(exc.detail)
     if isinstance(exc.detail, dict):
-        for field, msgs in exc.detail.items():
-            if isinstance(msgs, list):
-                for msg in msgs:
-                    details.append(ErrorDetail(
-                        code=ErrorCode.FIELD_INVALID_VALUE.value,
-                        field=field,
-                        message=str(msg),
-                    ))
-            else:
-                details.append(ErrorDetail(
-                    code=ErrorCode.FIELD_INVALID_VALUE.value,
-                    field=field,
-                    message=str(msgs),
-                ))
         message = "Validation failed"
-    
+
     headers = getattr(exc, "headers", None)
     
     return _create_error_response(

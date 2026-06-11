@@ -32,6 +32,15 @@ Usage:
 """
 
 from zeeb_orm.conf.settings import Settings, configure, get_settings
+from zeeb_orm.exceptions import (
+    NON_FIELD_ERRORS,
+    FieldDoesNotExist,
+    FieldError,
+    NotSupportedError,
+    ProtectedError,
+    RestrictedError,
+    ValidationError,
+)
 from zeeb_orm.db.connection import (
     Database,
     atomic,
@@ -47,7 +56,13 @@ from zeeb_orm.migrations.state import (
     get_migration_state,
     require_migrations,
 )
-from zeeb_orm.models.base import Model, metadata
+from zeeb_orm.models.base import (
+    DoesNotExist,
+    Model,
+    MultipleObjectsReturned,
+    metadata,
+)
+from zeeb_orm.models.relations import RelationInfo, resolve_relation
 from zeeb_orm.models.fields import (
     AutoField,
     BigAutoField,
@@ -143,6 +158,18 @@ __all__ = [
     "Manager",
     "QuerySet",
     "metadata",
+    "RelationInfo",
+    "resolve_relation",
+    # Exceptions
+    "NON_FIELD_ERRORS",
+    "ValidationError",
+    "NotSupportedError",
+    "ProtectedError",
+    "RestrictedError",
+    "FieldDoesNotExist",
+    "FieldError",
+    "DoesNotExist",
+    "MultipleObjectsReturned",
     # Fields
     "Field",
     "AutoField",

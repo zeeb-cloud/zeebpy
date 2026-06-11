@@ -1,19 +1,30 @@
-"""Response utilities and exceptions."""
+"""
+Response utilities.
 
+.. deprecated::
+    The exception classes that used to live here (``APIException``,
+    ``ValidationError``, ``NotFound``, ``PermissionDenied``,
+    ``AuthenticationFailed``, ``MethodNotAllowed``, ``Throttled``) have moved
+    to :mod:`zeeb_api.exceptions`, which is now the canonical location.
+    Importing them from ``zeeb_api.response`` still works but emits a
+    ``DeprecationWarning``.
+"""
+
+import warnings
 from typing import Any
-from fastapi import HTTPException
+
 from fastapi.responses import JSONResponse
 
 
 class Response(JSONResponse):
     """
     DRF-style Response wrapper.
-    
+
     Usage:
         return Response({"id": 1, "name": "Alice"})
         return Response({"id": 1}, status_code=201)
     """
-    
+
     def __init__(
         self,
         data: Any = None,
@@ -24,92 +35,29 @@ class Response(JSONResponse):
         super().__init__(content=data, status_code=status_code, headers=headers, **kwargs)
 
 
-class APIException(HTTPException):
-    """
-    Base API exception.
-    
-    Usage:
-        raise APIException(detail="Something went wrong", status_code=400)
-    """
-    
-    def __init__(
-        self,
-        detail: str | dict[str, Any] = "An error occurred",
-        status_code: int = 500,
-        headers: dict[str, str] | None = None,
-    ) -> None:
-        super().__init__(status_code=status_code, detail=detail, headers=headers)
+# Backward-compatible re-exports of the exception classes that moved to
+# zeeb_api.exceptions. Resolved lazily so a DeprecationWarning is emitted
+# at the import site.
+_MOVED_EXCEPTIONS = frozenset({
+    "APIException",
+    "ValidationError",
+    "NotFound",
+    "PermissionDenied",
+    "AuthenticationFailed",
+    "MethodNotAllowed",
+    "Throttled",
+})
 
 
-class ValidationError(APIException):
-    """
-    Validation error exception.
-    
-    Usage:
-        raise ValidationError({"email": ["Invalid email format"]})
-    """
-    
-    def __init__(
-        self,
-        detail: str | dict[str, Any] = "Validation error",
-        headers: dict[str, str] | None = None,
-    ) -> None:
-        super().__init__(detail=detail, status_code=400, headers=headers)
+def __getattr__(name: str) -> Any:
+    if name in _MOVED_EXCEPTIONS:
+        warnings.warn(
+            f"Importing {name} from zeeb_api.response is deprecated; "
+            f"import it from zeeb_api.exceptions instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        from zeeb_api import exceptions
 
-
-class NotFound(APIException):
-    """Object not found exception."""
-    
-    def __init__(
-        self,
-        detail: str = "Not found",
-        headers: dict[str, str] | None = None,
-    ) -> None:
-        super().__init__(detail=detail, status_code=404, headers=headers)
-
-
-class PermissionDenied(APIException):
-    """Permission denied exception."""
-    
-    def __init__(
-        self,
-        detail: str = "Permission denied",
-        headers: dict[str, str] | None = None,
-    ) -> None:
-        super().__init__(detail=detail, status_code=403, headers=headers)
-
-
-class AuthenticationFailed(APIException):
-    """Authentication failed exception."""
-    
-    def __init__(
-        self,
-        detail: str = "Authentication credentials were not provided",
-        headers: dict[str, str] | None = None,
-    ) -> None:
-        super().__init__(detail=detail, status_code=401, headers=headers)
-
-
-class MethodNotAllowed(APIException):
-    """Method not allowed exception."""
-    
-    def __init__(
-        self,
-        detail: str = "Method not allowed",
-        headers: dict[str, str] | None = None,
-    ) -> None:
-        super().__init__(detail=detail, status_code=405, headers=headers)
-
-
-class Throttled(APIException):
-    """Rate limit exceeded exception."""
-    
-    def __init__(
-        self,
-        detail: str = "Request was throttled",
-        wait: int | None = None,
-        headers: dict[str, str] | None = None,
-    ) -> None:
-        if wait:
-            detail = f"{detail}. Expected available in {wait} seconds."
-        super().__init__(detail=detail, status_code=429, headers=headers)
+        return getattr(exceptions, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

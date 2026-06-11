@@ -79,6 +79,15 @@ SECRET_KEY = "your-secret-key-change-in-production"
 
 **Important:** Always use a strong, random secret key in production.
 
+Known insecure defaults (such as the startproject template value above) are
+actively refused outside of debug mode:
+
+- With `DEBUG = False`, `create_app()` raises
+  `zeeb_api.exceptions.ImproperlyConfigured`, and JWT token
+  creation/verification raises `zeeb_api.exceptions.InsecureSecretError`.
+- With `DEBUG = True`, the insecure default is tolerated for local
+  development, but a warning is logged once per process.
+
 ### ROOT_URLCONF
 
 Path to your URL configuration module:
@@ -219,6 +228,11 @@ JWT_REFRESH_TOKEN_EXPIRE_DAYS = 7
 JWT_ISSUER = None  # Optional: token issuer
 JWT_AUDIENCE = None  # Optional: token audience
 ```
+
+`JWT_SECRET_KEY` falls back to `SECRET_KEY` when unset. Insecure default
+values are refused when `DEBUG = False` (token operations raise
+`InsecureSecretError` and `create_app()` raises `ImproperlyConfigured`);
+with `DEBUG = True` they only trigger a one-time warning.
 
 ## CORS
 
@@ -361,14 +375,14 @@ All available settings with their defaults:
 | Setting | Default | Description |
 |---------|---------|-------------|
 | `DEBUG` | `False` | Debug mode |
-| `SECRET_KEY` | (unsafe default) | Secret key for JWT |
+| `SECRET_KEY` | (unsafe default; refused when `DEBUG=False`) | Secret key for JWT |
 | `DATABASE` | SQLite | Database configuration |
 | `ROOT_URLCONF` | `None` | URL configuration module |
 | `MIDDLEWARE` | JWT + CORS | Middleware classes |
 | `INSTALLED_APPS` | `[]` | Installed applications |
 | `AUTH_USER_MODEL` | `None` | Custom user model |
 | `AUTH_LOAD_USER_FROM_DB` | `True` | Load user from database |
-| `JWT_SECRET_KEY` | `SECRET_KEY` | JWT signing key |
+| `JWT_SECRET_KEY` | `SECRET_KEY` | JWT signing key (insecure defaults refused when `DEBUG=False`) |
 | `JWT_ALGORITHM` | `"HS256"` | JWT algorithm |
 | `JWT_ACCESS_TOKEN_EXPIRE_MINUTES` | `60` | Access token lifetime |
 | `JWT_REFRESH_TOKEN_EXPIRE_DAYS` | `7` | Refresh token lifetime |

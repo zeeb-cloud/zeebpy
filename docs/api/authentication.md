@@ -321,6 +321,23 @@ payload = decode_access_token(token)
 # {"user_id": "uuid", "username": "john", ...}
 ```
 
+### JWT Secret Hardening
+
+Zeeb refuses to sign or verify JWTs with a known insecure default secret
+(e.g. `"change-me-in-production"` or the startproject template default):
+
+- **`DEBUG = False`** (the default): `create_access_token()`,
+  `create_refresh_token()` and `decode_token()` raise
+  `zeeb_api.exceptions.InsecureSecretError`.
+- **`DEBUG = True`**: the calls work, but a warning is logged once per
+  process reminding you to set a real secret.
+- **`create_app()`** fails fast with
+  `zeeb_api.exceptions.ImproperlyConfigured` when `DEBUG` is off and
+  `SECRET_KEY`/`JWT_SECRET_KEY` is an insecure default.
+
+Always set a strong, unique `SECRET_KEY` (or `JWT_SECRET_KEY`) in
+production, e.g. from an environment variable.
+
 ### Token in ViewSet
 
 ```python

@@ -2,25 +2,31 @@
 
 from __future__ import annotations
 
-import copy
+from collections.abc import AsyncIterator, Iterator
 from typing import (
     TYPE_CHECKING,
     Any,
-    AsyncIterator,
     Generic,
-    Iterator,
-    Sequence,
     TypeVar,
-    overload,
 )
 
-from sqlalchemy import Delete, Select, Update, and_, delete, func, not_, or_, select, update, literal_column
-from sqlalchemy.orm import selectinload, joinedload
+from sqlalchemy import (
+    Select,
+    and_,
+    delete,
+    func,
+    literal_column,
+    not_,
+    or_,
+    select,
+    update,
+)
 
-from zeeb_orm.query.q import Q, QOperator, parse_lookup
+from zeeb_orm.query.q import Q, QOperator, parse_path
 
 if TYPE_CHECKING:
     from zeeb_orm.models.base import Model
+    from zeeb_orm.query.joins import JoinContext
 
 ModelT = TypeVar("ModelT", bound="Model")
 
@@ -135,25 +141,25 @@ class QuerySet(Generic[ModelT]):
     def with_permission(self, user: Any, action: str) -> QuerySet[ModelT]:
         """
         Filter queryset by permission for a given action.
-        
+
         Uses the model's permission rules to generate appropriate filters.
-        
+
         Args:
             user: User to check permissions for (can be None for anonymous)
             action: Permission action ('read', 'change', 'delete')
-        
+
         Usage:
             Post.objects.with_permission(user, 'read')
             Post.objects.with_permission(user, 'change').filter(status='draft')
         """
         permission_attr = f"{action}_permission"
         filter_method = f"get_{action}_filter"
-        
+
         # Check if model has the filter method
         if hasattr(self.model, filter_method):
             q_filter = getattr(self.model, filter_method)(user)
             return self.filter(q_filter)
-        
+
         # Check if model has the permission rule
         if hasattr(self.model, "_permission_rules"):
             rules = getattr(self.model, "_permission_rules", {})
@@ -161,16 +167,16 @@ class QuerySet(Generic[ModelT]):
                 rule = rules[permission_attr]
                 q_filter = rule.to_q(user, self.model)
                 return self.filter(q_filter)
-        
+
         # No permission defined - return unfiltered
         return self._clone()
 
     def readable_by(self, user: Any) -> QuerySet[ModelT]:
         """
         Filter queryset to objects readable by the given user.
-        
+
         Shortcut for .with_permission(user, 'read')
-        
+
         Usage:
             Post.objects.readable_by(user)
             Post.objects.readable_by(request.user).filter(featured=True)
@@ -180,9 +186,9 @@ class QuerySet(Generic[ModelT]):
     def changeable_by(self, user: Any) -> QuerySet[ModelT]:
         """
         Filter queryset to objects changeable by the given user.
-        
+
         Shortcut for .with_permission(user, 'change')
-        
+
         Usage:
             Post.objects.changeable_by(user)
         """
@@ -191,9 +197,9 @@ class QuerySet(Generic[ModelT]):
     def deletable_by(self, user: Any) -> QuerySet[ModelT]:
         """
         Filter queryset to objects deletable by the given user.
-        
+
         Shortcut for .with_permission(user, 'delete')
-        
+
         Usage:
             Post.objects.deletable_by(user)
         """
@@ -323,16 +329,19 @@ class QuerySet(Generic[ModelT]):
 
         db = await get_connection(self._db_alias)
         table = self.model._get_table()
+        joins = self._make_join_context()
 
         select_exprs = []
         for alias, agg in kwargs.items():
             if hasattr(agg, "resolve"):
                 select_exprs.append(agg.resolve(self.model).label(alias))
 
-        stmt = select(*select_exprs).select_from(table)
+        # Apply filters (may register traversal JOINs)
+        where_clause = self._build_where_clause(joins)
 
-        # Apply filters
-        where_clause = self._build_where_clause()
+        stmt = select(*select_exprs).select_from(
+            joins.apply(table) if joins.has_joins else table
+        )
         if where_clause is not None:
             stmt = stmt.where(where_clause)
 
@@ -362,17 +371,38 @@ class QuerySet(Generic[ModelT]):
 
     # Query building
 
-    def _build_where_clause(self) -> Any:
+    def _make_join_context(self) -> JoinContext:
+        """Create a fresh per-statement JoinContext (never stored on self)."""
+        from zeeb_orm.query.joins import JoinContext
+
+        return JoinContext(self.model, self.model._get_table())
+
+    def _pk_in_join_subquery(
+        self, table: Any, joins: JoinContext, where_clause: Any
+    ) -> Any:
+        """``pk IN (SELECT pk FROM <joined tables> WHERE ...)`` condition.
+
+        Used to rewrite UPDATE/DELETE statements whose filters traverse
+        relations (UPDATE/DELETE cannot use JOINs portably).
+        """
+        pk_col_name = self.model._meta.pk.db_column or self.model._meta.pk_name
+        pk_col = table.c[pk_col_name]
+        subq = select(pk_col).select_from(joins.apply(table))
+        if where_clause is not None:
+            subq = subq.where(where_clause)
+        return pk_col.in_(subq)
+
+    def _build_where_clause(self, joins: JoinContext | None = None) -> Any:
         """Build SQLAlchemy WHERE clause from filters and excludes."""
         conditions = []
 
         for q in self._filters:
-            condition = self._q_to_condition(q)
+            condition = self._q_to_condition(q, joins)
             if condition is not None:
                 conditions.append(condition)
 
         for q in self._excludes:
-            condition = self._q_to_condition(q)
+            condition = self._q_to_condition(q, joins)
             if condition is not None:
                 conditions.append(not_(condition))
 
@@ -382,20 +412,20 @@ class QuerySet(Generic[ModelT]):
             return conditions[0]
         return and_(*conditions)
 
-    def _q_to_condition(self, q: Q) -> Any:
+    def _q_to_condition(self, q: Q, joins: JoinContext | None = None) -> Any:
         """Convert a Q object to SQLAlchemy condition."""
         connector, negated, children = q.resolve()
 
         sub_conditions = []
         for child in children:
             if isinstance(child, Q):
-                cond = self._q_to_condition(child)
+                cond = self._q_to_condition(child, joins)
                 if cond is not None:
                     sub_conditions.append(cond)
             else:
                 # It's a (field_lookup, value) tuple
                 field_lookup, value = child
-                cond = self._lookup_to_condition(field_lookup, value)
+                cond = self._lookup_to_condition(field_lookup, value, joins)
                 if cond is not None:
                     sub_conditions.append(cond)
 
@@ -412,20 +442,49 @@ class QuerySet(Generic[ModelT]):
 
         return result
 
-    def _lookup_to_condition(self, lookup_string: str, value: Any) -> Any:
+    def _lookup_to_condition(
+        self, lookup_string: str, value: Any, joins: JoinContext | None = None
+    ) -> Any:
         """Convert a Django-style lookup to SQLAlchemy condition."""
+        from zeeb_orm.exceptions import FieldError
         from zeeb_orm.query.expressions import Expression
+        from zeeb_orm.query.transforms import apply_transform
 
-        field_path, lookup = parse_lookup(lookup_string)
+        relation_parts, field_name, transform, lookup = parse_path(
+            self.model, lookup_string
+        )
 
         # Handle F expressions in value
         if isinstance(value, Expression):
             value = value.resolve(self.model)
 
         # Get the column
-        column = self._resolve_field_path(field_path)
+        if relation_parts:
+            if joins is None:
+                raise FieldError(
+                    f"Related-field traversal ({lookup_string!r}) is not "
+                    "supported in this context."
+                )
+            column = joins.column(relation_parts, field_name)
+        else:
+            column = self._resolve_field_path(field_name)
         if column is None:
-            raise ValueError(f"Unknown field: {field_path}")
+            raise ValueError(f"Unknown field: {field_name}")
+
+        # Apply datetime transform (e.g. created_at__year) before the lookup
+        if transform is not None:
+            column = apply_transform(column, transform)
+
+        # Coerce model instances to their primary keys
+        def _coerce(v: Any) -> Any:
+            if hasattr(v, "_state") and hasattr(v, "pk"):
+                return v.pk
+            return v
+
+        if lookup == "in" and isinstance(value, (list, tuple, set, frozenset)):
+            value = [_coerce(v) for v in value]
+        else:
+            value = _coerce(value)
 
         # Apply lookup
         if lookup == "exact":
@@ -488,13 +547,13 @@ class QuerySet(Generic[ModelT]):
 
         column = getattr(table.c, field_name, None)
 
-        # NOTE: Related field traversal (e.g., 'author__name') requires JOINs
-        # and is handled via select_related(). Direct traversal is not supported
-        # in this method - use select_related() for cross-table queries.
+        # NOTE: Related field traversal (e.g., 'author__name') is handled by
+        # parse_path() + JoinContext (zeeb_orm.query.joins); this method only
+        # resolves plain columns and annotations on the base table.
 
         return column
 
-    def _build_order_by(self) -> list[Any]:
+    def _build_order_by(self, joins: JoinContext | None = None) -> list[Any]:
         """Build SQLAlchemy ORDER BY clause."""
         from sqlalchemy import asc, desc
 
@@ -504,7 +563,7 @@ class QuerySet(Generic[ModelT]):
         for field in self._order_by:
             descending = field.startswith("-")
             field_name = field[1:] if descending else field
-            
+
             # Check if it's an annotation
             if field_name in self._annotations:
                 expr = self._annotations[field_name]
@@ -512,9 +571,11 @@ class QuerySet(Generic[ModelT]):
                     column = expr.resolve(self.model)
                 else:
                     column = literal_column(field_name)
+            elif "__" in field_name:
+                column = self._resolve_path_expression(field_name, joins)
             else:
                 column = getattr(table.c, field_name, None)
-            
+
             if column is not None:
                 if descending:
                     order_clauses.append(desc(column))
@@ -523,60 +584,71 @@ class QuerySet(Generic[ModelT]):
 
         return order_clauses
 
-    def _apply_select_related(self, stmt: Select[Any], table: Any) -> Select[Any]:
-        """Add LEFT JOINs and columns for select_related fields."""
-        from sqlalchemy import outerjoin
-        from zeeb_orm.models.fields import ForeignKeyField
+    def _resolve_path_expression(
+        self, path: str, joins: JoinContext | None
+    ) -> Any:
+        """Resolve a ``__`` path (relations and/or datetime transform) to a
+        SQLAlchemy expression, registering JOINs on ``joins`` as needed."""
+        from zeeb_orm.query.transforms import apply_transform
 
-        join_target = table
+        relation_parts, field_name, transform, _lookup = parse_path(
+            self.model, path
+        )
+        if relation_parts:
+            if joins is None:
+                return None
+            column = joins.column(relation_parts, field_name)
+        else:
+            column = self._resolve_field_path(field_name)
+        if column is not None and transform is not None:
+            column = apply_transform(column, transform)
+        return column
+
+    def _select_related_columns(self, joins: JoinContext) -> list[Any]:
+        """Register select_related JOINs and return their labeled columns.
+
+        Every cumulative prefix of each select_related path gets its own
+        JOIN (shared with filter/order traversal via ``joins``) and its
+        columns labeled ``_sr_{prefix}_{col}`` for hydration.
+        """
+        prefixes: list[tuple[str, ...]] = []
         for field_path in self._select_related:
             parts = field_path.split("__")
-            current_model = self.model
-            current_table = table
+            for i in range(1, len(parts) + 1):
+                prefix = tuple(parts[:i])
+                if prefix not in prefixes:
+                    prefixes.append(prefix)
 
-            for part in parts:
-                # Find the FK field on the current model
-                fk_field = None
-                for f in current_model._fk_fields:
-                    if f.name == part:
-                        fk_field = f
-                        break
+        columns: list[Any] = []
+        for prefix in prefixes:
+            info = joins.ensure_join(list(prefix))
+            if info.relation.kind not in ("fk", "o2o"):
+                raise ValueError(
+                    f"select_related: '{prefix[-1]}' is not a ForeignKey "
+                    f"field on {info.relation.source_model.__name__}"
+                )
+            label_prefix = "_".join(prefix)
+            for col in info.alias.c:
+                columns.append(col.label(f"_sr_{label_prefix}_{col.name}"))
+        return columns
 
-                if fk_field is None:
-                    raise ValueError(
-                        f"select_related: '{part}' is not a ForeignKey field on {current_model.__name__}"
-                    )
+    def _values_path_columns(self, joins: JoinContext) -> list[Any]:
+        """Labeled columns for ``__`` paths in values()/values_list()."""
+        path_fields: list[str] = []
+        for f in (self._values_fields or []) + (self._values_list_fields or []):
+            if "__" in f and f not in self._annotations and f not in path_fields:
+                path_fields.append(f)
 
-                target_model = fk_field.get_target_model()
-                target_table = target_model._get_table()
-
-                # Alias the target table to avoid collisions with repeated joins
-                alias_name = f"_sr_{field_path.replace('__', '_')}_{part}"
-                aliased_table = target_table.alias(alias_name)
-
-                # Add the aliased columns to the select with prefixed labels
-                prefix = field_path.replace("__", "_")
-                for col in aliased_table.c:
-                    stmt = stmt.add_columns(col.label(f"_sr_{prefix}_{col.name}"))
-
-                # JOIN condition: current_table.fk_col = aliased_table.pk
-                fk_col_name = fk_field.db_column or f"{part}_id"
-                fk_col = getattr(current_table.c, fk_col_name, None)
-                pk_col_name = target_model._meta.pk.db_column or target_model._meta.pk_name
-                pk_col = getattr(aliased_table.c, pk_col_name, None)
-
-                if fk_col is not None and pk_col is not None:
-                    join_target = outerjoin(join_target, aliased_table, fk_col == pk_col)
-
-                current_model = target_model
-                current_table = aliased_table
-
-        stmt = stmt.select_from(join_target)
-        return stmt
+        columns = []
+        for f in path_fields:
+            column = self._resolve_path_expression(f, joins)
+            if column is None:
+                raise ValueError(f"Unknown field: {f}")
+            columns.append(column.label(f))
+        return columns
 
     def _get_select_columns(self, table: Any) -> list[Any]:
         """Get columns to select based on only/defer fields."""
-        from zeeb_orm.models.fields import ForeignKeyField
 
         if self._only_fields is not None:
             # Select only specified columns (always include PK)
@@ -611,28 +683,35 @@ class QuerySet(Generic[ModelT]):
     def _build_select(self) -> Select[Any]:
         """Build the complete SELECT statement."""
         table = self.model._get_table()
+        joins = self._make_join_context()
 
         # Build select columns
-        base_columns = self._get_select_columns(table)
+        columns = list(self._get_select_columns(table))
+
+        # select_related paths register their JOINs FIRST so filter/order
+        # traversal of the same path reuses the same aliases (single JOIN).
+        if self._select_related:
+            columns.extend(self._select_related_columns(joins))
+
+        # Labeled columns for values()/values_list() "__" paths
+        columns.extend(self._values_path_columns(joins))
 
         if self._annotations:
-            columns = list(base_columns)
             for alias, expr in self._annotations.items():
                 if hasattr(expr, 'resolve'):
                     columns.append(expr.resolve(self.model).label(alias))
                 else:
                     columns.append(literal_column(str(expr)).label(alias))
-            stmt = select(*columns)
-        else:
-            stmt = select(*base_columns)
 
-        # Apply filters
-        where_clause = self._build_where_clause()
+        # Apply filters (registers traversal JOINs on the shared context)
+        where_clause = self._build_where_clause(joins)
+
+        stmt = select(*columns)
         if where_clause is not None:
             stmt = stmt.where(where_clause)
 
-        # Apply ordering - can also order by annotations
-        order_clauses = self._build_order_by()
+        # Apply ordering - can also order by annotations and "__" paths
+        order_clauses = self._build_order_by(joins)
         if order_clauses:
             stmt = stmt.order_by(*order_clauses)
         elif self.model._meta.ordering:
@@ -647,9 +726,9 @@ class QuerySet(Generic[ModelT]):
                     if col is not None:
                         stmt = stmt.order_by(col.asc())
 
-        # Apply select_related JOINs
-        if self._select_related:
-            stmt = self._apply_select_related(stmt, table)
+        # One FROM clause containing all registered JOINs
+        if joins.has_joins:
+            stmt = stmt.select_from(joins.apply(table))
 
         # Apply distinct
         if self._distinct_fields:
@@ -711,7 +790,7 @@ class QuerySet(Generic[ModelT]):
                         values = tuple(row._mapping.get(f) for f in fields)
                     else:
                         values = tuple(row[i] for i in range(len(fields)) if i < len(row))
-                    
+
                     if self._flat and len(fields) == 1:
                         instances.append(values[0])
                     else:
@@ -819,7 +898,6 @@ class QuerySet(Generic[ModelT]):
 
     async def _do_prefetch_related(self, instances: list[Any], db: Any) -> None:
         """Execute separate queries for prefetch_related lookups."""
-        from zeeb_orm.models.fields import ForeignKeyField
 
         for lookup in self._prefetch_related:
             if isinstance(lookup, Prefetch):
@@ -868,26 +946,14 @@ class QuerySet(Generic[ModelT]):
                         setattr(inst, f"_cache_{field_name}", related_map[fk_id])
             else:
                 # Reverse relation prefetch: find which model has FK pointing to us
-                from zeeb_orm.models.base import _model_registry
+                from zeeb_orm.models.relations import resolve_relation
 
-                related_model = None
-                reverse_fk_name = None
-
-                # Check if field_name matches a related_name or {model}_set pattern
-                for model_cls in _model_registry.values():
-                    for fk in getattr(model_cls, '_fk_fields', []):
-                        target = fk.get_target_model()
-                        if target is self.model:
-                            rel_name = fk.related_name or f"{model_cls.__name__.lower()}_set"
-                            if rel_name == field_name:
-                                related_model = model_cls
-                                reverse_fk_name = fk.db_column or f"{fk.name}_id"
-                                break
-                    if related_model is not None:
-                        break
-
-                if related_model is None:
+                relation = resolve_relation(self.model, field_name)
+                if relation is None or relation.kind not in ("reverse_fk", "reverse_o2o"):
                     continue
+
+                related_model = relation.target_model
+                reverse_fk_name = relation.fk_column
 
                 pk_name = self.model._meta.pk_name
                 parent_pks = [getattr(inst, pk_name) for inst in instances]
@@ -927,7 +993,7 @@ class QuerySet(Generic[ModelT]):
         import asyncio
 
         try:
-            loop = asyncio.get_running_loop()
+            asyncio.get_running_loop()
             raise RuntimeError(
                 "Cannot use sync iteration inside an async context. Use 'async for' instead."
             )
@@ -996,10 +1062,13 @@ class QuerySet(Generic[ModelT]):
 
         db = await get_connection(self._db_alias)
         table = self.model._get_table()
+        joins = self._make_join_context()
 
-        stmt = select(func.count()).select_from(table)
+        where_clause = self._build_where_clause(joins)
 
-        where_clause = self._build_where_clause()
+        stmt = select(func.count()).select_from(
+            joins.apply(table) if joins.has_joins else table
+        )
         if where_clause is not None:
             stmt = stmt.where(where_clause)
 
@@ -1018,8 +1087,11 @@ class QuerySet(Generic[ModelT]):
 
     async def create(self, **kwargs: Any) -> ModelT:
         """Create and save a new object."""
-        from datetime import datetime as dt, timezone
+        from datetime import datetime as dt
+        from datetime import timezone
+
         from sqlalchemy import insert
+
         from zeeb_orm.db.connection import get_session
         from zeeb_orm.models.fields import ForeignKeyField
 
@@ -1039,13 +1111,13 @@ class QuerySet(Generic[ModelT]):
         values = {}
         for field in self.model._meta.local_fields:
             value = None
-            
+
             # For FK fields, get the _id value
             if isinstance(field, ForeignKeyField):
                 value = getattr(instance, f"{field.name}_id", None)
             else:
                 value = getattr(instance, field.name, None)
-            
+
             # Handle primary key with callable default (e.g., UUIDAutoField)
             if field.primary_key and value is None:
                 if hasattr(field, 'default') and field.default is not None:
@@ -1073,7 +1145,7 @@ class QuerySet(Generic[ModelT]):
                     from datetime import date
                     value = date.today()
                 setattr(instance, field.name, value)
-            
+
             # Handle non-PK callable defaults
             if value is None and hasattr(field, 'default') and field.default is not None:
                 if callable(field.default):
@@ -1093,7 +1165,6 @@ class QuerySet(Generic[ModelT]):
 
             # Get the inserted PK
             pk_name = self.model._meta.pk_name
-            pk_col = self.model._meta.pk.db_column or pk_name
             if result.inserted_primary_key:
                 setattr(instance, pk_name, result.inserted_primary_key[0])
 
@@ -1158,8 +1229,13 @@ class QuerySet(Generic[ModelT]):
 
         stmt = update(table).values(**resolved_kwargs)
 
-        where_clause = self._build_where_clause()
-        if where_clause is not None:
+        joins = self._make_join_context()
+        where_clause = self._build_where_clause(joins)
+
+        if joins.has_joins:
+            # UPDATE cannot join: rewrite as pk IN (SELECT pk FROM <joins> ...)
+            stmt = stmt.where(self._pk_in_join_subquery(table, joins, where_clause))
+        elif where_clause is not None:
             stmt = stmt.where(where_clause)
 
         async with get_session(self._db_alias) as (session, should_commit):
@@ -1180,8 +1256,13 @@ class QuerySet(Generic[ModelT]):
 
         stmt = delete(table)
 
-        where_clause = self._build_where_clause()
-        if where_clause is not None:
+        joins = self._make_join_context()
+        where_clause = self._build_where_clause(joins)
+
+        if joins.has_joins:
+            # DELETE cannot join: rewrite as pk IN (SELECT pk FROM <joins> ...)
+            stmt = stmt.where(self._pk_in_join_subquery(table, joins, where_clause))
+        elif where_clause is not None:
             stmt = stmt.where(where_clause)
 
         async with get_session(self._db_alias) as (session, should_commit):
@@ -1199,6 +1280,7 @@ class QuerySet(Generic[ModelT]):
     ) -> list[ModelT]:
         """Insert multiple objects efficiently."""
         from sqlalchemy import insert as _sa_insert
+
         from zeeb_orm.db.connection import get_session
 
         if not objs:
