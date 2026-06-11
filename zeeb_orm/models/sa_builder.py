@@ -61,7 +61,68 @@ def build_table(model: type[Model]) -> Table:
 
         model._sa_table = Table(model._meta.db_table, metadata, *columns)
 
+    # Ensure auto-created M2M join tables exist in the shared metadata.
+    # Done lazily (not at class definition) so importing model modules does
+    # not pollute the global metadata; Database.create_all() and the Alembic
+    # autodetector both pick the tables up once the model table is built.
+    for m2m_field in getattr(model, "_m2m_fields", []):
+        if m2m_field.through is None:
+            try:
+                build_m2m_through_table(m2m_field)
+            except (KeyError, AttributeError):
+                # Target model not registered yet — built on first use.
+                pass
+
     return model._sa_table
+
+
+def build_m2m_through_table(m2m_field: Any) -> Table:
+    """Get or create the auto-generated join Table for ``m2m_field``.
+
+    The table lives in the shared metadata under
+    ``m2m_field.get_through_table_name()`` and has a ``{source}_id`` and a
+    ``{target}_id`` column (types copied from each side's primary key), both
+    with ``ON DELETE CASCADE`` foreign keys, plus a unique constraint over
+    the pair.
+    """
+    from sqlalchemy import ForeignKey, Integer, UniqueConstraint
+
+    name = m2m_field.get_through_table_name()
+    existing = metadata.tables.get(name)
+    if existing is not None:
+        return existing
+
+    source = m2m_field.model
+    target = m2m_field.get_target_model()
+    source_col = m2m_field.get_source_column()
+    target_col = m2m_field.get_target_column()
+
+    def _pk_type(model: Any) -> Any:
+        pk = model._meta.pk
+        return pk.get_column_type() if pk is not None else Integer()
+
+    source_pk = source._meta.pk.db_column or source._meta.pk_name
+    target_pk = target._meta.pk.db_column or target._meta.pk_name
+
+    return Table(
+        name,
+        metadata,
+        Column(
+            source_col,
+            _pk_type(source),
+            ForeignKey(f"{source._meta.db_table}.{source_pk}", ondelete="CASCADE"),
+            nullable=False,
+        ),
+        Column(
+            target_col,
+            _pk_type(target),
+            ForeignKey(f"{target._meta.db_table}.{target_pk}", ondelete="CASCADE"),
+            nullable=False,
+        ),
+        UniqueConstraint(
+            source_col, target_col, name=f"uq_{name}_{source_col}_{target_col}"
+        ),
+    )
 
 
 def build_sa_model(model: type[Model]) -> type[Any]:
@@ -156,4 +217,10 @@ def to_sa_instance(instance: Model) -> Any:
     return sa_model(**kwargs)
 
 
-__all__ = ["metadata", "build_table", "build_sa_model", "to_sa_instance"]
+__all__ = [
+    "metadata",
+    "build_table",
+    "build_m2m_through_table",
+    "build_sa_model",
+    "to_sa_instance",
+]

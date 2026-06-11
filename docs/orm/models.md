@@ -309,6 +309,63 @@ class Article(Model):
 published = await Article.published_objects.all()
 ```
 
+### Custom QuerySet Methods (from_queryset / as_manager)
+
+Define reusable query logic on a `QuerySet` subclass and expose it on a
+manager. All public methods of the QuerySet class become manager methods,
+and they keep chaining after `filter()` etc. because clones preserve the
+QuerySet subclass:
+
+```python
+from zeeb_orm import Manager, Model, QuerySet, fields
+
+class ArticleQuerySet(QuerySet):
+    def published(self):
+        return self.filter(published=True)
+
+    def by_views(self):
+        return self.order_by("-views")
+
+class Article(Model):
+    title = fields.CharField(max_length=200)
+    published = fields.BooleanField(default=False)
+    views = fields.IntegerField(default=0)
+
+    # Option 1: build a Manager class from the QuerySet
+    objects = Manager.from_queryset(ArticleQuerySet)()
+
+    # Option 2: shortcut — same thing
+    # objects = ArticleQuerySet.as_manager()
+
+# Custom methods work on the manager and chain on querysets
+hot = await Article.objects.published().by_views()
+hot = await Article.objects.filter(views__gt=10).published()
+```
+
+`Manager.from_queryset(queryset_class, class_name=None)` returns a new
+Manager subclass whose `get_queryset()` returns
+`queryset_class(self.model)`; the originating QuerySet class is recorded
+as `_built_with_queryset`. The generated class can be subclassed to
+override `get_queryset()` — proxied methods pick the override up:
+
+```python
+class PublishedManager(Manager.from_queryset(ArticleQuerySet)):
+    def get_queryset(self):
+        return super().get_queryset().filter(published=True)
+
+class Article(Model):
+    ...
+    published_objects = PublishedManager()
+
+# by_views() now only sees published articles
+top = await Article.published_objects.by_views()
+```
+
+Note: QuerySet subclasses used this way must be constructible as
+`queryset_class(model)` (no extra required `__init__` arguments), and
+generated manager classes are zero-arg constructible — both requirements
+of the manager rebinding machinery.
+
 ## Model Validation
 
 ### Field-level Validation

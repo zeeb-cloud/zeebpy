@@ -42,6 +42,32 @@ JWT_AUDIENCE = None
 # Auth settings
 AUTH_LOAD_USER_FROM_DB = True  # Load full user from database vs just token claims
 
+# OAuth2 / OIDC settings (requires the "oauth" extra: pip install zeebpy[oauth])
+# Provider registry, e.g.
+#   OAUTH_PROVIDERS = {
+#       "azure": {"tenant": "common", "client_id": "...", "client_secret": "..."},
+#       "google": {"client_id": "...", "client_secret": "..."},
+#       "custom": {"class": "myapp.oauth.MyProvider", "client_id": "..."},
+#   }
+# The provider class is inferred for the well-known names azure/google/github;
+# any other name requires an explicit "class" dotted path.
+OAUTH_PROVIDERS = {}
+# Auto-create a local user on first OAuth login (when the provider supplies an email)
+OAUTH_AUTO_CREATE_USERS = True
+# Link an OAuth identity to an existing local user with the same email address.
+# SECURITY: only enable when all configured providers verify email ownership.
+OAUTH_LINK_BY_EMAIL = True
+# Lifetime of the signed OAuth state token (seconds)
+OAUTH_STATE_TTL_SECONDS = 600
+# Explicit redirect URI (defaults to the callback route URL derived from the request)
+OAUTH_REDIRECT_URI = None
+# Where to redirect after a successful browser login (tokens are appended in the
+# URL fragment). None returns a JSON TokenResponse instead.
+OAUTH_SUCCESS_REDIRECT = None
+# Provider names whose externally-issued JWTs (e.g. Azure AD access/ID tokens)
+# are accepted as Bearer tokens by JWTAuthMiddleware.
+OAUTH_ACCEPT_EXTERNAL_TOKENS = []
+
 # CORS settings
 CORS_ALLOW_ORIGINS = []
 CORS_ALLOW_CREDENTIALS = True

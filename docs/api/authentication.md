@@ -418,6 +418,32 @@ async def auth_middleware(request, call_next):
     return await call_next(request)
 ```
 
+## OAuth2 / OIDC Single Sign-On
+
+Zeeb includes an OAuth2/OpenID Connect layer with presets for Azure AD
+(Microsoft Entra ID), Google and GitHub. Users authenticate at the identity
+provider; Zeeb links or provisions a local user and issues its own JWT
+access/refresh tokens. The middleware can also accept IdP-issued tokens
+directly (SPA bearer mode).
+
+```python
+# settings.py
+OAUTH_PROVIDERS = {
+    "azure": {"tenant": "common", "client_id": "...", "client_secret": "..."},
+}
+```
+
+```python
+from zeeb_api.auth.oauth import create_oauth_router
+
+app.include_router(create_oauth_router())
+```
+
+Requires the optional extra: `pip install zeebpy[oauth]`.
+
+See [OAuth2 / OIDC Authentication](oauth.md) for the full guide (Azure AD
+walkthrough, tenant modes, SPA flow, external bearer mode, security notes).
+
 ## Anonymous User
 
 ```python
@@ -482,6 +508,7 @@ class AuthViewSet(ViewSet):
 
 ## Next Steps
 
+- [OAuth2 / OIDC](oauth.md) - Single sign-on with Azure AD, Google, GitHub
 - [Permissions](permissions.md) - Access control
 - [ViewSets](viewsets.md) - Protected endpoints
 - [Settings](../configuration/settings.md) - Auth configuration

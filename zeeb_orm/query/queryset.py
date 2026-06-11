@@ -72,9 +72,29 @@ class QuerySet(Generic[ModelT]):
         self._for_update: dict[str, Any] | None = None
         self._result_cache: list[ModelT] | None = None
 
+    @classmethod
+    def as_manager(cls) -> Any:
+        """Return a Manager instance built from this QuerySet class.
+
+        Equivalent to ``Manager.from_queryset(cls)()`` — the manager's
+        ``get_queryset()`` returns instances of this QuerySet class and all
+        public custom methods are proxied onto the manager.
+
+        Usage:
+            class PostQuerySet(QuerySet):
+                def published(self):
+                    return self.filter(published=True)
+
+            class Post(Model):
+                objects = PostQuerySet.as_manager()
+        """
+        from zeeb_orm.models.manager import Manager
+
+        return Manager.from_queryset(cls)()
+
     def _clone(self) -> QuerySet[ModelT]:
-        """Create a copy of this QuerySet."""
-        clone = QuerySet(self.model)
+        """Create a copy of this QuerySet (preserving the QuerySet subclass)."""
+        clone = self.__class__(self.model)
         clone._filters = self._filters.copy()
         clone._excludes = self._excludes.copy()
         clone._order_by = self._order_by.copy()
@@ -411,7 +431,7 @@ class QuerySet(Generic[ModelT]):
                 )
         # The combined queryset is a fresh wrapper holding all components
         # (including self).  This makes chained combinations nest naturally.
-        clone: QuerySet[ModelT] = QuerySet(self.model)
+        clone: QuerySet[ModelT] = self.__class__(self.model)
         clone._db_alias = self._db_alias
         clone._combinator = combinator
         clone._combined_querysets = [self._clone(), *others]
@@ -665,6 +685,18 @@ class QuerySet(Generic[ModelT]):
         relation_parts, field_name, transform, lookup = parse_path(
             self.model, lookup_string
         )
+
+        # SQL forbids window functions in WHERE clauses — referencing a
+        # Window annotation in filter()/exclude() must fail loudly.
+        if not relation_parts and field_name in self._annotations:
+            from zeeb_orm.query.expressions import Window
+
+            if isinstance(self._annotations[field_name], Window):
+                raise FieldError(
+                    f"Window annotation {field_name!r} is disallowed in the "
+                    "filter clause: window functions cannot be used in a "
+                    "WHERE clause. Filter on a subquery instead."
+                )
 
         # Handle F expressions in value
         if isinstance(value, Expression):
@@ -1186,7 +1218,14 @@ class QuerySet(Generic[ModelT]):
                 from zeeb_orm.models.relations import resolve_relation
 
                 relation = resolve_relation(self.model, field_name)
-                if relation is None or relation.kind not in ("reverse_fk", "reverse_o2o"):
+                if relation is None:
+                    continue
+                if relation.kind in ("m2m", "reverse_m2m"):
+                    await self._prefetch_m2m(
+                        instances, relation, custom_qs, attr_name, db
+                    )
+                    continue
+                if relation.kind not in ("reverse_fk", "reverse_o2o"):
                     continue
 
                 related_model = relation.target_model
@@ -1218,6 +1257,65 @@ class QuerySet(Generic[ModelT]):
                 for inst in instances:
                     pk_val = getattr(inst, pk_name)
                     setattr(inst, attr_name, grouped.get(pk_val, []))
+
+    async def _prefetch_m2m(
+        self,
+        instances: list[Any],
+        relation: Any,
+        custom_qs: QuerySet[Any] | None,
+        attr_name: str,
+        db: Any,
+    ) -> None:
+        """Prefetch an m2m relation: one IN-query over the through table.
+
+        The (source pk, target pk) pairs are read from the join table, the
+        related objects are fetched with a single ``pk__in`` query and each
+        instance gets the grouped list of related objects as ``attr_name``.
+        """
+        m2m_field = relation.fk_field
+        through = m2m_field.get_through_table()
+        if relation.kind == "m2m":
+            my_col = m2m_field.get_source_column()
+            other_col = m2m_field.get_target_column()
+        else:  # reverse_m2m
+            my_col = m2m_field.get_target_column()
+            other_col = m2m_field.get_source_column()
+        related_model = relation.target_model
+
+        pk_name = self.model._meta.pk_name
+        parent_pks = [getattr(inst, pk_name) for inst in instances]
+
+        stmt = select(through.c[my_col], through.c[other_col]).where(
+            through.c[my_col].in_(parent_pks)
+        )
+        async with db.session() as session:
+            result = await session.execute(stmt)
+            pairs = result.fetchall()
+
+        grouped: dict[Any, list[Any]] = {}
+        related_pks: list[Any] = []
+        for mine, other in pairs:
+            grouped.setdefault(mine, []).append(other)
+            if other not in related_pks:
+                related_pks.append(other)
+
+        related_map: dict[Any, Any] = {}
+        if related_pks:
+            related_qs = custom_qs if custom_qs is not None else QuerySet(related_model)
+            related_qs = related_qs.filter(pk__in=related_pks)
+            related_qs._db_alias = self._db_alias
+            related_objects = await related_qs._fetch_all()
+            target_pk = related_model._meta.pk_name
+            related_map = {getattr(obj, target_pk): obj for obj in related_objects}
+
+        for inst in instances:
+            pk_val = getattr(inst, pk_name)
+            objs = [
+                related_map[other]
+                for other in grouped.get(pk_val, [])
+                if other in related_map
+            ]
+            setattr(inst, attr_name, objs)
 
     async def __aiter__(self) -> AsyncIterator[Any]:
         """Async iteration support."""

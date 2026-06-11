@@ -27,6 +27,7 @@ from zeeb_orm.models.permissions_gen import (  # noqa: F401
     _setup_permissions,
 )
 from zeeb_orm.models.relations import (  # noqa: F401
+    _pending_m2m,
     _pending_relations,
     _process_pending_relations,
 )
@@ -146,6 +147,10 @@ class ModelBase(type):
         # Set up reverse relations for ForeignKey fields
         for fk_field in fk_fields:
             _pending_relations.append((new_class, fk_field))
+
+        # Set up reverse accessors for ManyToMany fields
+        for m2m_field in m2m_fields:
+            _pending_m2m.append((new_class, m2m_field))
 
         # Process any pending relations that point to us
         _process_pending_relations()

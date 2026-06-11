@@ -151,6 +151,22 @@ from zeeb_orm.query.expressions import (
     Greatest,
     Least,
     Round,
+    # Window functions
+    Window,
+    RowNumber,
+    Rank,
+    DenseRank,
+    PercentRank,
+    CumeDist,
+    Lag,
+    Lead,
+    FirstValue,
+    LastValue,
+    Ntile,
+    # Type conversion & string aggregation
+    Cast,
+    StringAgg,
+    GroupConcat,
 )
 from zeeb_orm.query.q import Q
 from zeeb_orm.query.queryset import Prefetch, QuerySet
@@ -269,6 +285,22 @@ __all__ = [
     "Round",
     "Greatest",
     "Least",
+    # Window functions
+    "Window",
+    "RowNumber",
+    "Rank",
+    "DenseRank",
+    "PercentRank",
+    "CumeDist",
+    "Lag",
+    "Lead",
+    "FirstValue",
+    "LastValue",
+    "Ntile",
+    # Type conversion & string aggregation
+    "Cast",
+    "StringAgg",
+    "GroupConcat",
     # Options
     "Options",
     "Index",

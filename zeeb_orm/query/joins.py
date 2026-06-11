@@ -109,6 +109,41 @@ class JoinContext:
                 src_pk_name = src_meta.pk.db_column or src_meta.pk_name
                 onclause = current_table.c[src_pk_name] == alias.c[relation.fk_column]
                 is_multi = relation.kind == "reverse_fk"
+            elif relation.kind in ("m2m", "reverse_m2m"):
+                # Two hops: src.pk -> through.near_col / through.far_col -> alias.pk
+                m2m_field = relation.fk_field
+                through = m2m_field.get_through_table()
+                through_alias = through.alias(
+                    f"_sr_{path.replace('__', '_')}_through"
+                )
+                if relation.kind == "m2m":
+                    near_col = m2m_field.get_source_column()
+                    far_col = m2m_field.get_target_column()
+                else:
+                    near_col = m2m_field.get_target_column()
+                    far_col = m2m_field.get_source_column()
+
+                src_meta = current_model._meta  # type: ignore[attr-defined]
+                src_pk_name = src_meta.pk.db_column or src_meta.pk_name
+
+                # Register the intermediate hop under a synthetic key
+                # ("#" never appears in parsed paths) so apply() chains
+                # base -> through -> target in insertion order.
+                through_path = f"{path}__#through"
+                self.joins[through_path] = JoinInfo(
+                    path=through_path,
+                    alias=through_alias,
+                    target_model=target_model,
+                    relation=relation,
+                    is_multi=True,
+                    onclause=(
+                        current_table.c[src_pk_name] == through_alias.c[near_col]
+                    ),
+                )
+
+                pk_col_name = meta.pk.db_column or meta.pk_name
+                onclause = through_alias.c[far_col] == alias.c[pk_col_name]
+                is_multi = True
             else:
                 raise FieldError(
                     f"Traversal across {relation.kind!r} relations is not "

@@ -624,7 +624,29 @@ class OneToOneField(ForeignKeyField[ModelT]):
 
 
 class ManyToManyField(Generic[ModelT]):
-    """Many-to-many relationship field."""
+    """Many-to-many relationship field.
+
+    Without ``through``, a join table is auto-created in the shared metadata
+    (named ``db_table`` or ``"{source_table}_{field_name}"``) with
+    ``{source}_id`` / ``{target}_id`` columns, ON DELETE CASCADE foreign
+    keys and a unique constraint on the pair.
+
+    With a custom ``through`` model, reads work through that model's table
+    but ``add()``/``remove()``/``clear()``/``set()`` raise
+    :class:`~zeeb_orm.exceptions.NotSupportedError` — create/delete rows on
+    the through model directly (Django parity).
+
+    Usage:
+        class Post(Model):
+            tags = fields.ManyToMany("Tag", related_name="posts")
+
+        await post.tags.add(tag)
+        await post.tags.all()
+        Post.objects.filter(tags__name="python")
+    """
+
+    is_relation = True
+    many_to_many = True
 
     def __init__(
         self,
@@ -650,6 +672,117 @@ class ManyToManyField(Generic[ModelT]):
         """Add M2M relationship to model."""
         self.name = name
         self.model = model
+
+    # Descriptor protocol — instance access returns a ManyRelatedManager
+
+    def __get__(self, obj: object | None, objtype: type | None = None) -> Any:
+        if obj is None:
+            return self
+        from zeeb_orm.models.related_m2m import ManyRelatedManager
+
+        return ManyRelatedManager(field=self, instance=obj, reverse=False)
+
+    # Target / through resolution
+
+    def get_target_model(self) -> type[Model]:
+        """Resolve the target model class (class, registry name or 'self')."""
+        if isinstance(self.to, str):
+            if self.to == "self":
+                assert self.model is not None
+                return self.model
+            from zeeb_orm.models.base import _model_registry
+
+            return _model_registry[self.to]
+        return self.to
+
+    @property
+    def has_custom_through(self) -> bool:
+        """True when an explicit ``through=`` model was given."""
+        return self.through is not None
+
+    def get_through_model(self) -> type[Model] | None:
+        """Resolve the custom through model (None for auto-created tables)."""
+        if self.through is None:
+            return None
+        if isinstance(self.through, str):
+            from zeeb_orm.models.base import _model_registry
+
+            return _model_registry[self.through]
+        return self.through
+
+    def get_through_table_name(self) -> str:
+        """Name of the join table (custom through table or auto name)."""
+        through_model = self.get_through_model()
+        if through_model is not None:
+            return through_model._meta.db_table
+        if self.db_table:
+            return self.db_table
+        assert self.model is not None
+        return f"{self.model._meta.db_table}_{self.name}"
+
+    def get_through_table(self) -> Any:
+        """Return (creating if needed) the SQLAlchemy Table of the join table."""
+        through_model = self.get_through_model()
+        if through_model is not None:
+            return through_model._get_table()
+        from zeeb_orm.models.sa_builder import build_m2m_through_table
+
+        return build_m2m_through_table(self)
+
+    def _auto_column_names(self) -> tuple[str, str]:
+        """(source_column, target_column) for the auto-created join table."""
+        assert self.model is not None
+        source = f"{self.model.__name__.lower()}_id"
+        target = f"{self.get_target_model().__name__.lower()}_id"
+        if source == target:  # self-referential M2M
+            return f"from_{source}", f"to_{target}"
+        return source, target
+
+    def get_source_column(self) -> str:
+        """Join-table column referencing the model owning this field."""
+        if self.through is not None:
+            fk = self._through_fk(to_source=True)
+            return fk.db_column or f"{fk.name}_id"
+        return self._auto_column_names()[0]
+
+    def get_target_column(self) -> str:
+        """Join-table column referencing the target model."""
+        if self.through is not None:
+            fk = self._through_fk(to_source=False)
+            return fk.db_column or f"{fk.name}_id"
+        return self._auto_column_names()[1]
+
+    def _through_fk(self, *, to_source: bool) -> ForeignKeyField[Any]:
+        """The FK field on the custom through model for one side."""
+        through_model = self.get_through_model()
+        assert through_model is not None
+        wanted = self.model if to_source else self.get_target_model()
+
+        if self.through_fields:
+            fk_name = self.through_fields[0] if to_source else self.through_fields[1]
+            for fk in through_model._fk_fields:
+                if fk.name == fk_name:
+                    return fk
+            raise ValueError(
+                f"through_fields: {through_model.__name__} has no "
+                f"ForeignKey named {fk_name!r}."
+            )
+
+        for fk in through_model._fk_fields:
+            try:
+                if fk.get_target_model() is wanted:
+                    return fk
+            except (KeyError, AttributeError):
+                continue
+        assert wanted is not None
+        raise ValueError(
+            f"Could not find a ForeignKey to {wanted.__name__} on through "
+            f"model {through_model.__name__}."
+        )
+
+    def __repr__(self) -> str:
+        to_name = self.to if isinstance(self.to, str) else self.to.__name__
+        return f"<ManyToManyField: {self.name or '?'} -> {to_name}>"
 
 
 # Convenience aliases

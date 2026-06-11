@@ -23,7 +23,7 @@ class ErrorCode(str, Enum):
     Frontends should translate these codes to localized messages.
     Format: CATEGORY_SPECIFIC_ERROR
     """
-    
+
     # Authentication errors
     AUTH_INVALID_CREDENTIALS = "AUTH_INVALID_CREDENTIALS"
     AUTH_TOKEN_EXPIRED = "AUTH_TOKEN_EXPIRED"
@@ -31,16 +31,23 @@ class ErrorCode(str, Enum):
     AUTH_TOKEN_MISSING = "AUTH_TOKEN_MISSING"
     AUTH_SESSION_EXPIRED = "AUTH_SESSION_EXPIRED"
     AUTH_INSECURE_CONFIG = "AUTH_INSECURE_CONFIG"
-    
+
+    # OAuth2 / OIDC errors
+    AUTH_OAUTH_STATE_INVALID = "AUTH_OAUTH_STATE_INVALID"
+    AUTH_OAUTH_EXCHANGE_FAILED = "AUTH_OAUTH_EXCHANGE_FAILED"
+    AUTH_OAUTH_ID_TOKEN_INVALID = "AUTH_OAUTH_ID_TOKEN_INVALID"
+    AUTH_OAUTH_PROVIDER_NOT_FOUND = "AUTH_OAUTH_PROVIDER_NOT_FOUND"
+    AUTH_OAUTH_USER_NOT_PROVISIONED = "AUTH_OAUTH_USER_NOT_PROVISIONED"
+
     # Permission errors
     PERM_DENIED = "PERM_DENIED"
     PERM_INSUFFICIENT_ROLE = "PERM_INSUFFICIENT_ROLE"
     PERM_RESOURCE_FORBIDDEN = "PERM_RESOURCE_FORBIDDEN"
-    
+
     # Validation errors (top-level)
     VALIDATION_ERROR = "VALIDATION_ERROR"
     VALIDATION_FAILED = "VALIDATION_FAILED"
-    
+
     # Field-specific errors
     FIELD_REQUIRED = "FIELD_REQUIRED"
     FIELD_INVALID_TYPE = "FIELD_INVALID_TYPE"
@@ -61,38 +68,38 @@ class ErrorCode(str, Enum):
     FIELD_INVALID_DATE = "FIELD_INVALID_DATE"
     FIELD_INVALID_DATETIME = "FIELD_INVALID_DATETIME"
     FIELD_INVALID_JSON = "FIELD_INVALID_JSON"
-    
+
     # Serializer errors
     SERIALIZER_INVALID_DATA = "SERIALIZER_INVALID_DATA"
     SERIALIZER_MISSING_FIELDS = "SERIALIZER_MISSING_FIELDS"
     SERIALIZER_READ_ONLY_FIELD = "SERIALIZER_READ_ONLY_FIELD"
-    
+
     # Resource errors
     RESOURCE_NOT_FOUND = "RESOURCE_NOT_FOUND"
     RESOURCE_ALREADY_EXISTS = "RESOURCE_ALREADY_EXISTS"
     RESOURCE_CONFLICT = "RESOURCE_CONFLICT"
     RESOURCE_GONE = "RESOURCE_GONE"
-    
+
     # Query/Filter errors
     QUERY_INVALID_FILTER = "QUERY_INVALID_FILTER"
     QUERY_INVALID_FIELD = "QUERY_INVALID_FIELD"
     QUERY_SYNTAX_ERROR = "QUERY_SYNTAX_ERROR"
     QUERY_INVALID_OPERATOR = "QUERY_INVALID_OPERATOR"
     QUERY_INVALID_VALUE = "QUERY_INVALID_VALUE"
-    
+
     # Rate limiting
     RATE_LIMIT_EXCEEDED = "RATE_LIMIT_EXCEEDED"
     RATE_LIMIT_QUOTA_EXCEEDED = "RATE_LIMIT_QUOTA_EXCEEDED"
 
     # API versioning
     API_VERSION_INVALID = "API_VERSION_INVALID"
-    
+
     # Server errors
     SERVER_ERROR = "SERVER_ERROR"
     SERVER_MAINTENANCE = "SERVER_MAINTENANCE"
     SERVER_UNAVAILABLE = "SERVER_UNAVAILABLE"
     SERVER_TIMEOUT = "SERVER_TIMEOUT"
-    
+
     # Method errors
     METHOD_NOT_ALLOWED = "METHOD_NOT_ALLOWED"
 
@@ -109,7 +116,7 @@ class ErrorDetail(BaseModel):
             "meta": {"input": null}
         }
     """
-    
+
     code: str = Field(
         ...,
         description="Error code for this specific field error (e.g., FIELD_REQUIRED)"
@@ -132,7 +139,7 @@ class ErrorMeta(BaseModel):
     """
     Error metadata for debugging and tracking.
     """
-    
+
     request_id: str = Field(
         default_factory=lambda: str(uuid.uuid4()),
         description="Unique request identifier for debugging"
@@ -155,7 +162,7 @@ class ErrorBody(BaseModel):
     """
     Main error object structure.
     """
-    
+
     code: str = Field(
         ...,
         description="Primary error code (e.g., VALIDATION_ERROR, RESOURCE_NOT_FOUND)"
@@ -200,7 +207,7 @@ class ErrorResponse(BaseModel):
             }
         }
     """
-    
+
     success: bool = Field(
         default=False,
         description="Always false for error responses"
@@ -209,7 +216,7 @@ class ErrorResponse(BaseModel):
         ...,
         description="Error details"
     )
-    
+
     model_config = {
         "json_schema_extra": {
             "examples": [
@@ -252,7 +259,7 @@ class ZeebException(Exception):
             status_code=400
         )
     """
-    
+
     def __init__(
         self,
         code: str | ErrorCode = ErrorCode.SERVER_ERROR,
@@ -273,7 +280,7 @@ class ZeebException(Exception):
         # fastapi.HTTPException, don't accidentally invoke
         # HTTPException.__init__(message) via the cooperative MRO chain.
         Exception.__init__(self, message)
-    
+
     def to_response(
         self,
         request_id: str | None = None,
@@ -291,7 +298,7 @@ class ZeebException(Exception):
             meta_dict = meta.model_dump()
             meta_dict.update(self.extra_meta)
             meta = ErrorMeta(**{k: v for k, v in meta_dict.items() if k in ErrorMeta.model_fields})
-        
+
         return ErrorResponse(
             success=False,
             error=ErrorBody(
@@ -307,7 +314,7 @@ class ZeebException(Exception):
 
 class ValidationException(ZeebException):
     """Validation error exception."""
-    
+
     def __init__(
         self,
         message: str = "Validation failed",
@@ -325,7 +332,7 @@ class ValidationException(ZeebException):
 
 class AuthenticationException(ZeebException):
     """Authentication failed exception."""
-    
+
     def __init__(
         self,
         code: str | ErrorCode = ErrorCode.AUTH_TOKEN_MISSING,
@@ -344,7 +351,7 @@ class AuthenticationException(ZeebException):
 
 class PermissionException(ZeebException):
     """Permission denied exception."""
-    
+
     def __init__(
         self,
         code: str | ErrorCode = ErrorCode.PERM_DENIED,
@@ -363,7 +370,7 @@ class PermissionException(ZeebException):
 
 class ResourceNotFoundException(ZeebException):
     """Resource not found exception."""
-    
+
     def __init__(
         self,
         message: str = "Resource not found",
@@ -377,7 +384,7 @@ class ResourceNotFoundException(ZeebException):
             meta["resource_type"] = resource_type
         if resource_id is not None:
             meta["resource_id"] = str(resource_id)
-        
+
         super().__init__(
             code=ErrorCode.RESOURCE_NOT_FOUND,
             message=message,
@@ -390,7 +397,7 @@ class ResourceNotFoundException(ZeebException):
 
 class ResourceConflictException(ZeebException):
     """Resource conflict exception (e.g., duplicate)."""
-    
+
     def __init__(
         self,
         code: str | ErrorCode = ErrorCode.RESOURCE_CONFLICT,
@@ -409,7 +416,7 @@ class ResourceConflictException(ZeebException):
 
 class QueryException(ZeebException):
     """Query/filter parsing exception."""
-    
+
     def __init__(
         self,
         code: str | ErrorCode = ErrorCode.QUERY_SYNTAX_ERROR,
@@ -428,7 +435,7 @@ class QueryException(ZeebException):
 
 class RateLimitException(ZeebException):
     """Rate limit exceeded exception."""
-    
+
     def __init__(
         self,
         message: str = "Rate limit exceeded",
@@ -440,7 +447,7 @@ class RateLimitException(ZeebException):
         if retry_after:
             headers["Retry-After"] = str(retry_after)
             meta["retry_after"] = retry_after
-        
+
         super().__init__(
             code=ErrorCode.RATE_LIMIT_EXCEEDED,
             message=message,
@@ -452,7 +459,7 @@ class RateLimitException(ZeebException):
 
 class ServerException(ZeebException):
     """Internal server error exception."""
-    
+
     def __init__(
         self,
         code: str | ErrorCode = ErrorCode.SERVER_ERROR,
@@ -471,7 +478,7 @@ class ServerException(ZeebException):
 
 class MethodNotAllowedException(ZeebException):
     """Method not allowed exception."""
-    
+
     def __init__(
         self,
         message: str = "Method not allowed",
@@ -481,7 +488,7 @@ class MethodNotAllowedException(ZeebException):
         headers = headers or {}
         if allowed_methods:
             headers["Allow"] = ", ".join(allowed_methods)
-        
+
         super().__init__(
             code=ErrorCode.METHOD_NOT_ALLOWED,
             message=message,

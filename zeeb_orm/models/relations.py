@@ -11,6 +11,10 @@ if TYPE_CHECKING:
 # Pending relations to set up (for forward references)
 _pending_relations: list[tuple[type, Any]] = []
 
+# Pending many-to-many fields awaiting reverse-accessor installation
+# (mirrors _pending_relations — the target may not be registered yet).
+_pending_m2m: list[tuple[type, Any]] = []
+
 
 def _process_pending_relations(resolve_callables: bool = False) -> None:
     """Process pending reverse relations.
@@ -60,6 +64,36 @@ def _process_pending_relations(resolve_callables: bool = False) -> None:
     _pending_relations.clear()
     _pending_relations.extend(still_pending)
 
+    # Many-to-many reverse accessors (no table creation here — the join
+    # table is built lazily by build_table()/get_through_table() so model
+    # imports never pollute the shared metadata).
+    from zeeb_orm.models.related_m2m import ManyToManyDescriptor
+
+    still_pending_m2m = []
+    for source_model, m2m_field in _pending_m2m:
+        try:
+            target_model = m2m_field.get_target_model()
+
+            related_name = m2m_field.related_name
+            if related_name is None:
+                related_name = f"{source_model.__name__.lower()}_set"
+
+            # Skip if already set
+            if hasattr(target_model, related_name):
+                continue
+
+            setattr(
+                target_model,
+                related_name,
+                ManyToManyDescriptor(m2m_field, reverse=True),
+            )
+        except (KeyError, AttributeError):
+            # Target model not yet registered
+            still_pending_m2m.append((source_model, m2m_field))
+
+    _pending_m2m.clear()
+    _pending_m2m.extend(still_pending_m2m)
+
 
 RelationKind = Literal["fk", "o2o", "reverse_fk", "reverse_o2o", "m2m", "reverse_m2m"]
 
@@ -94,9 +128,12 @@ class RelationInfo:
 def resolve_relation(model: type, name: str) -> RelationInfo | None:
     """Resolve ``name`` as a relation accessor on ``model``.
 
-    Handles forward FK/O2O fields and reverse FK/O2O accessors
-    (``related_name`` or the default ``<modelname>_set``).
-    Many-to-many relations are not yet supported (returns None).
+    Handles forward FK/O2O fields, reverse FK/O2O accessors
+    (``related_name`` or the default ``<modelname>_set``), forward M2M
+    fields and reverse M2M accessors.
+
+    For M2M relations ``fk_column`` holds the through-table column
+    referencing ``source_model`` (the side traversal starts from).
 
     Returns None when ``name`` is not a relation on ``model``.
     """
@@ -118,6 +155,23 @@ def resolve_relation(model: type, name: str) -> RelationInfo | None:
             fk_field=fk_field,
             accessor_name=name,
             fk_column=fk_field.db_column or f"{name}_id",
+        )
+
+    # 1b. Forward M2M
+    for m2m_field in getattr(model, "_m2m_fields", []):
+        if m2m_field.name != name:
+            continue
+        try:
+            target_model = m2m_field.get_target_model()
+        except (KeyError, AttributeError):
+            return None
+        return RelationInfo(
+            kind="m2m",
+            source_model=model,
+            target_model=target_model,
+            fk_field=m2m_field,
+            accessor_name=name,
+            fk_column=m2m_field.get_source_column(),
         )
 
     # 2. Reverse FK / O2O: scan the registry for FKs targeting `model`
@@ -144,7 +198,27 @@ def resolve_relation(model: type, name: str) -> RelationInfo | None:
                 fk_column=fk_field.db_column or f"{fk_field.name}_id",
             )
 
-    # 3. M2M relations: not yet implemented
+    # 3. Reverse M2M: scan the registry for M2M fields targeting `model`
+    for model_cls in _model_registry.values():
+        for m2m_field in getattr(model_cls, "_m2m_fields", []):
+            try:
+                target = m2m_field.get_target_model()
+            except (KeyError, AttributeError):
+                continue
+            if target is not model:
+                continue
+            rel_name = m2m_field.related_name or f"{model_cls.__name__.lower()}_set"
+            if rel_name != name:
+                continue
+            return RelationInfo(
+                kind="reverse_m2m",
+                source_model=model,
+                target_model=model_cls,
+                fk_field=m2m_field,
+                accessor_name=name,
+                fk_column=m2m_field.get_target_column(),
+            )
+
     return None
 
 
@@ -153,5 +227,6 @@ __all__ = [
     "RelationKind",
     "resolve_relation",
     "_pending_relations",
+    "_pending_m2m",
     "_process_pending_relations",
 ]
