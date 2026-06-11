@@ -4,6 +4,9 @@ from __future__ import annotations
 
 from typing import Any
 
+from sqlalchemy.ext.compiler import compiles
+from sqlalchemy.sql.expression import FunctionElement
+
 
 class Expression:
     """Base class for SQL expressions."""
@@ -743,16 +746,318 @@ class Greatest(Expression):
 
 class Least(Expression):
     """Return the least value among arguments."""
-    
+
     def __init__(self, *expressions: str | Expression) -> None:
         super().__init__()
         self.expressions = [
             e if isinstance(e, Expression) else F(e) if isinstance(e, str) else Value(e)
             for e in expressions
         ]
-    
+
     def resolve(self, model: Any) -> Any:
         from sqlalchemy import func
-        
+
         resolved = [e.resolve(model) for e in self.expressions]
         return func.least(*resolved)
+
+
+# Window functions
+#
+# Requires database support for SQL window functions:
+# SQLite >= 3.25, MySQL >= 8.0, any supported PostgreSQL.
+# No runtime version check is performed.
+
+
+def _as_expression(value: str | Expression) -> Expression:
+    """Coerce a field name or Expression into an Expression."""
+    return value if isinstance(value, Expression) else F(value)
+
+
+class Window(Expression):
+    """
+    Wrap an expression in an SQL ``OVER (...)`` window clause.
+
+    ``partition_by`` and ``order_by`` accept a field name, an Expression,
+    or a list of either.  Order fields support the ``"-"`` prefix for
+    descending order.
+
+    Usage:
+        Post.objects.annotate(
+            rank=Window(Rank(), partition_by="author_id", order_by="-score")
+        )
+
+    Note: window annotations may not be referenced in ``filter()`` /
+    ``exclude()`` — SQL forbids window functions in WHERE clauses.
+
+    Requires SQLite >= 3.25 or MySQL >= 8.0 (PostgreSQL: any version).
+    """
+
+    def __init__(
+        self,
+        expression: str | Expression,
+        partition_by: Any = None,
+        order_by: Any = None,
+    ) -> None:
+        super().__init__()
+        self.expression = _as_expression(expression)
+        self.partition_by = self._as_list(partition_by)
+        self.order_by = self._as_list(order_by)
+
+    @staticmethod
+    def _as_list(value: Any) -> list[Any]:
+        if value is None:
+            return []
+        if isinstance(value, (list, tuple)):
+            return list(value)
+        return [value]
+
+    def _resolve_order_item(self, item: Any, model: Any) -> Any:
+        from sqlalchemy import asc, desc
+
+        if isinstance(item, str):
+            if item.startswith("-"):
+                return desc(F(item[1:]).resolve(model))
+            return asc(F(item).resolve(model))
+        if isinstance(item, Expression):
+            return item.resolve(model)
+        return item
+
+    def resolve(self, model: Any) -> Any:
+        inner = self.expression.resolve(model)
+        over_kwargs: dict[str, Any] = {}
+        if self.partition_by:
+            over_kwargs["partition_by"] = [
+                _as_expression(p).resolve(model) if isinstance(p, (str, Expression)) else p
+                for p in self.partition_by
+            ]
+        if self.order_by:
+            over_kwargs["order_by"] = [
+                self._resolve_order_item(o, model) for o in self.order_by
+            ]
+        return inner.over(**over_kwargs)
+
+    def __repr__(self) -> str:
+        return (
+            f"Window({self.expression!r}, partition_by={self.partition_by!r}, "
+            f"order_by={self.order_by!r})"
+        )
+
+
+class _SimpleWindowFunction(Expression):
+    """Base for argument-less window functions (ROW_NUMBER, RANK, ...)."""
+
+    function: str = ""
+
+    def resolve(self, model: Any) -> Any:
+        from sqlalchemy import func
+
+        return getattr(func, self.function)()
+
+    def __repr__(self) -> str:
+        return f"{type(self).__name__}()"
+
+
+class RowNumber(_SimpleWindowFunction):
+    """``ROW_NUMBER()`` window function."""
+
+    function = "row_number"
+
+
+class Rank(_SimpleWindowFunction):
+    """``RANK()`` window function."""
+
+    function = "rank"
+
+
+class DenseRank(_SimpleWindowFunction):
+    """``DENSE_RANK()`` window function."""
+
+    function = "dense_rank"
+
+
+class PercentRank(_SimpleWindowFunction):
+    """``PERCENT_RANK()`` window function."""
+
+    function = "percent_rank"
+
+
+class CumeDist(_SimpleWindowFunction):
+    """``CUME_DIST()`` window function."""
+
+    function = "cume_dist"
+
+
+class Lag(Expression):
+    """``LAG(expr, offset, default)`` window function."""
+
+    function = "lag"
+
+    def __init__(
+        self,
+        expression: str | Expression,
+        offset: int = 1,
+        default: Any = None,
+    ) -> None:
+        super().__init__()
+        self.expression = _as_expression(expression)
+        self.offset = offset
+        self.default = default
+
+    def resolve(self, model: Any) -> Any:
+        from sqlalchemy import func, literal
+
+        args = [self.expression.resolve(model), self.offset]
+        if self.default is not None:
+            args.append(literal(self.default))
+        return getattr(func, self.function)(*args)
+
+
+class Lead(Lag):
+    """``LEAD(expr, offset, default)`` window function."""
+
+    function = "lead"
+
+
+class FirstValue(Expression):
+    """``FIRST_VALUE(expr)`` window function."""
+
+    function = "first_value"
+
+    def __init__(self, expression: str | Expression) -> None:
+        super().__init__()
+        self.expression = _as_expression(expression)
+
+    def resolve(self, model: Any) -> Any:
+        from sqlalchemy import func
+
+        return getattr(func, self.function)(self.expression.resolve(model))
+
+
+class LastValue(FirstValue):
+    """``LAST_VALUE(expr)`` window function."""
+
+    function = "last_value"
+
+
+class Ntile(Expression):
+    """``NTILE(num_buckets)`` window function."""
+
+    def __init__(self, num_buckets: int) -> None:
+        super().__init__()
+        self.num_buckets = num_buckets
+
+    def resolve(self, model: Any) -> Any:
+        from sqlalchemy import func
+
+        return func.ntile(self.num_buckets)
+
+
+class Cast(Expression):
+    """
+    ``CAST(expr AS type)`` — convert an expression to another type.
+
+    ``output_field`` is a zeeb_orm Field instance or class, e.g.
+    ``Cast("price", fields.IntegerField)`` or
+    ``Cast("score", fields.CharField(max_length=20))``.
+    """
+
+    def __init__(self, expression: str | Expression, output_field: Any) -> None:
+        super().__init__()
+        self.expression = _as_expression(expression)
+        if isinstance(output_field, type):
+            output_field = output_field()
+        self.output_field = output_field
+
+    def resolve(self, model: Any) -> Any:
+        from sqlalchemy import cast as sa_cast
+
+        return sa_cast(
+            self.expression.resolve(model), self.output_field.get_column_type()
+        )
+
+
+# String aggregation
+
+
+class _StringAggFunction(FunctionElement):  # type: ignore[type-arg]
+    """Portable string-aggregation SQL element (see :class:`StringAgg`)."""
+
+    name = "string_agg"
+    inherit_cache = False
+
+    def __init__(self, expr: Any, delimiter: str, distinct: bool = False) -> None:
+        self.delimiter = delimiter
+        self.distinct_agg = distinct
+        super().__init__(expr)
+
+
+def _quoted_delimiter(delimiter: str) -> str:
+    """Render the delimiter as an SQL string literal.
+
+    MySQL's ``GROUP_CONCAT ... SEPARATOR`` does not accept bind parameters,
+    so the delimiter is inlined (with single quotes escaped) on all backends.
+    """
+    return "'" + delimiter.replace("'", "''") + "'"
+
+
+@compiles(_StringAggFunction)
+def _compile_string_agg_default(element: Any, compiler: Any, **kw: Any) -> str:
+    # SQLite (and other backends): group_concat(expr, 'delimiter').
+    # SQLite forbids a second argument with DISTINCT, so the delimiter
+    # falls back to the default "," in that case.
+    expr = compiler.process(list(element.clauses)[0], **kw)
+    if element.distinct_agg:
+        return f"group_concat(DISTINCT {expr})"
+    return f"group_concat({expr}, {_quoted_delimiter(element.delimiter)})"
+
+
+@compiles(_StringAggFunction, "postgresql")
+def _compile_string_agg_postgresql(element: Any, compiler: Any, **kw: Any) -> str:
+    expr = compiler.process(list(element.clauses)[0], **kw)
+    distinct = "DISTINCT " if element.distinct_agg else ""
+    return f"string_agg({distinct}{expr}, {_quoted_delimiter(element.delimiter)})"
+
+
+@compiles(_StringAggFunction, "mysql")
+def _compile_string_agg_mysql(element: Any, compiler: Any, **kw: Any) -> str:
+    expr = compiler.process(list(element.clauses)[0], **kw)
+    distinct = "DISTINCT " if element.distinct_agg else ""
+    return (
+        f"GROUP_CONCAT({distinct}{expr} "
+        f"SEPARATOR {_quoted_delimiter(element.delimiter)})"
+    )
+
+
+class StringAgg(Aggregate):
+    """
+    Concatenate values into a single delimited string (aggregate).
+
+    Compiles to ``string_agg`` on PostgreSQL, ``GROUP_CONCAT`` on MySQL and
+    ``group_concat`` on SQLite/other backends.  With ``distinct=True`` on
+    SQLite the delimiter falls back to ``","`` (SQLite limitation).
+
+    Usage:
+        await Post.objects.aggregate(titles=StringAgg("title", delimiter=", "))
+    """
+
+    function = "STRING_AGG"
+    allow_distinct = True
+
+    def __init__(
+        self,
+        expression: str | Expression,
+        delimiter: str = ", ",
+        *,
+        distinct: bool = False,
+        **kwargs: Any,
+    ) -> None:
+        super().__init__(expression, distinct=distinct, **kwargs)
+        self.delimiter = delimiter
+
+    def resolve(self, model: Any) -> Any:
+        expr = self.expression.resolve(model)
+        return _StringAggFunction(expr, self.delimiter, distinct=self.distinct)
+
+
+# Django parity alias (MySQL naming)
+GroupConcat = StringAgg

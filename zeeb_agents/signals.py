@@ -6,8 +6,8 @@ import asyncio
 import re
 from pathlib import Path
 
-from zeeb_agents._utils import AgentResult
-from zeeb_agents._utils.project import get_app_path, require_project_root
+from zeeb_agents._utils import AgentResult, agent_function
+from zeeb_agents._utils.project import get_app_path
 
 _VALID_SIGNALS = frozenset({"pre_save", "post_save", "pre_delete", "post_delete"})
 
@@ -37,8 +37,8 @@ async def {func}(sender, instance, **kwargs):
 
 
 def _signals_path(root: Path, app: str) -> Path | None:
-    app_path = get_app_path(root, app)
-    if app_path is None:
+    app_path = get_app_path(app, root)
+    if not app_path.is_dir():
         return None
     return app_path / "signals.py"
 
@@ -102,6 +102,7 @@ def _parse_receivers(source: str) -> list[dict]:
     return receivers
 
 
+@agent_function
 async def create_signal_receiver(
     app: str,
     signal_name: str,
@@ -125,53 +126,49 @@ async def create_signal_receiver(
             success=False,
             message=f"Invalid signal '{signal_name}'. Must be one of: {', '.join(sorted(_VALID_SIGNALS))}",
         )
-    try:
-        root = require_project_root(project_root)
+    root = project_root
 
-        def _write() -> tuple[str, bool]:
-            path = _signals_path(root, app)
-            if path is None:
-                raise FileNotFoundError(f"App '{app}' not found in project")
-            existed = path.exists()
-            if existed:
-                source = path.read_text()
-                # Check for duplicate function name
-                if re.search(rf"\bdef\s+{re.escape(function_name)}\b", source):
-                    raise ValueError(f"Receiver '{function_name}' already exists in {path.name}")
-                # Append to existing file
-                block = _ADDITIONAL_TEMPLATE.format(
-                    signal=signal_name, model=model_name, func=function_name
-                )
-                path.write_text(source.rstrip() + "\n" + block)
-            else:
-                content = _SIGNALS_HEADER.format(
-                    app=app, signal=signal_name, model=model_name
-                ) + _RECEIVER_TEMPLATE.format(
-                    signal=signal_name, model=model_name, func=function_name
-                )
-                path.write_text(content)
-            return str(path.relative_to(root)), existed
+    def _write() -> tuple[str, bool]:
+        path = _signals_path(root, app)
+        if path is None:
+            raise FileNotFoundError(f"App '{app}' not found in project")
+        existed = path.exists()
+        if existed:
+            source = path.read_text()
+            # Check for duplicate function name
+            if re.search(rf"\bdef\s+{re.escape(function_name)}\b", source):
+                raise ValueError(f"Receiver '{function_name}' already exists in {path.name}")
+            # Append to existing file
+            block = _ADDITIONAL_TEMPLATE.format(
+                signal=signal_name, model=model_name, func=function_name
+            )
+            path.write_text(source.rstrip() + "\n" + block)
+        else:
+            content = _SIGNALS_HEADER.format(
+                app=app, signal=signal_name, model=model_name
+            ) + _RECEIVER_TEMPLATE.format(
+                signal=signal_name, model=model_name, func=function_name
+            )
+            path.write_text(content)
+        return str(path.relative_to(root)), existed
 
-        rel_path, existed = await asyncio.to_thread(_write)
-        action = "Updated" if existed else "Created"
-        return AgentResult(
-            success=True,
-            message=f"{action} {rel_path} with receiver '{function_name}'",
-            data={
-                "path": rel_path,
-                "app": app,
-                "signal": signal_name,
-                "model": model_name,
-                "function": function_name,
-                "action": action.lower(),
-            },
-        )
-    except (FileNotFoundError, ValueError) as exc:
-        return AgentResult(success=False, message=str(exc))
-    except Exception as exc:
-        return AgentResult(success=False, message=str(exc))
+    rel_path, existed = await asyncio.to_thread(_write)
+    action = "Updated" if existed else "Created"
+    return AgentResult(
+        success=True,
+        message=f"{action} {rel_path} with receiver '{function_name}'",
+        data={
+            "path": rel_path,
+            "app": app,
+            "signal": signal_name,
+            "model": model_name,
+            "function": function_name,
+            "action": action.lower(),
+        },
+    )
 
 
+@agent_function
 async def list_signal_receivers(
     app: str,
     project_root: Path | None = None,
@@ -182,33 +179,29 @@ async def list_signal_receivers(
         app: App name.
         project_root: Auto-detected if ``None``.
     """
-    try:
-        root = require_project_root(project_root)
+    root = project_root
 
-        def _read() -> list[dict]:
-            path = _signals_path(root, app)
-            if path is None:
-                raise FileNotFoundError(f"App '{app}' not found in project")
-            if not path.exists():
-                return []
-            source = path.read_text()
-            return [
-                {k: v for k, v in r.items() if k not in ("decorator_line", "func_start", "func_end")}
-                for r in _parse_receivers(source)
-            ]
+    def _read() -> list[dict]:
+        path = _signals_path(root, app)
+        if path is None:
+            raise FileNotFoundError(f"App '{app}' not found in project")
+        if not path.exists():
+            return []
+        source = path.read_text()
+        return [
+            {k: v for k, v in r.items() if k not in ("decorator_line", "func_start", "func_end")}
+            for r in _parse_receivers(source)
+        ]
 
-        receivers = await asyncio.to_thread(_read)
-        return AgentResult(
-            success=True,
-            message=f"Found {len(receivers)} receiver(s) in {app}/signals.py",
-            data={"app": app, "receivers": receivers, "count": len(receivers)},
-        )
-    except FileNotFoundError as exc:
-        return AgentResult(success=False, message=str(exc))
-    except Exception as exc:
-        return AgentResult(success=False, message=str(exc))
+    receivers = await asyncio.to_thread(_read)
+    return AgentResult(
+        success=True,
+        message=f"Found {len(receivers)} receiver(s) in {app}/signals.py",
+        data={"app": app, "receivers": receivers, "count": len(receivers)},
+    )
 
 
+@agent_function
 async def read_signal_receiver(
     app: str,
     function_name: str,
@@ -221,40 +214,36 @@ async def read_signal_receiver(
         function_name: Name of the receiver function.
         project_root: Auto-detected if ``None``.
     """
-    try:
-        root = require_project_root(project_root)
+    root = project_root
 
-        def _read() -> dict:
-            path = _signals_path(root, app)
-            if path is None:
-                raise FileNotFoundError(f"App '{app}' not found in project")
-            if not path.exists():
-                raise FileNotFoundError(f"{app}/signals.py does not exist")
-            source = path.read_text()
-            lines = source.splitlines()
-            for r in _parse_receivers(source):
-                if r["func_name"] == function_name:
-                    chunk = "\n".join(lines[r["decorator_line"]:r["func_end"]])
-                    return {**r, "source": chunk}
-            raise ValueError(f"Receiver '{function_name}' not found in {app}/signals.py")
+    def _read() -> dict:
+        path = _signals_path(root, app)
+        if path is None:
+            raise FileNotFoundError(f"App '{app}' not found in project")
+        if not path.exists():
+            raise FileNotFoundError(f"{app}/signals.py does not exist")
+        source = path.read_text()
+        lines = source.splitlines()
+        for r in _parse_receivers(source):
+            if r["func_name"] == function_name:
+                chunk = "\n".join(lines[r["decorator_line"]:r["func_end"]])
+                return {**r, "source": chunk}
+        raise ValueError(f"Receiver '{function_name}' not found in {app}/signals.py")
 
-        result = await asyncio.to_thread(_read)
-        return AgentResult(
-            success=True,
-            message=f"Found receiver '{function_name}' in {app}/signals.py",
-            data={
-                "func_name": result["func_name"],
-                "signal": result["signal"],
-                "sender": result["sender"],
-                "source": result["source"],
-            },
-        )
-    except (FileNotFoundError, ValueError) as exc:
-        return AgentResult(success=False, message=str(exc))
-    except Exception as exc:
-        return AgentResult(success=False, message=str(exc))
+    result = await asyncio.to_thread(_read)
+    return AgentResult(
+        success=True,
+        message=f"Found receiver '{function_name}' in {app}/signals.py",
+        data={
+            "func_name": result["func_name"],
+            "signal": result["signal"],
+            "sender": result["sender"],
+            "source": result["source"],
+        },
+    )
 
 
+@agent_function
 async def edit_signal_receiver(
     app: str,
     function_name: str,
@@ -271,50 +260,46 @@ async def edit_signal_receiver(
         new_body: New function body (indented with 4 spaces).
         project_root: Auto-detected if ``None``.
     """
-    try:
-        root = require_project_root(project_root)
+    root = project_root
 
-        def _edit() -> str:
-            path = _signals_path(root, app)
-            if path is None:
-                raise FileNotFoundError(f"App '{app}' not found in project")
-            if not path.exists():
-                raise FileNotFoundError(f"{app}/signals.py does not exist")
-            source = path.read_text()
-            lines = source.splitlines(keepends=True)
-            for r in _parse_receivers(source):
-                if r["func_name"] != function_name:
-                    continue
-                # Preserve decorator + def line(s), replace body
-                func_def_line = r["func_start"]
-                # Ensure new_body is properly indented
-                body_lines = []
-                for line in new_body.splitlines():
-                    stripped = line.lstrip()
-                    body_lines.append(f"    {stripped}\n" if stripped else "    pass\n")
-                if not body_lines:
-                    body_lines = ["    pass\n"]
-                new_lines = (
-                    lines[: func_def_line + 1]  # up to and including def line
-                    + body_lines
-                    + (lines[r["func_end"]:] if r["func_end"] < len(lines) else [])
-                )
-                path.write_text("".join(new_lines))
-                return str(path.relative_to(root))
-            raise ValueError(f"Receiver '{function_name}' not found in {app}/signals.py")
+    def _edit() -> str:
+        path = _signals_path(root, app)
+        if path is None:
+            raise FileNotFoundError(f"App '{app}' not found in project")
+        if not path.exists():
+            raise FileNotFoundError(f"{app}/signals.py does not exist")
+        source = path.read_text()
+        lines = source.splitlines(keepends=True)
+        for r in _parse_receivers(source):
+            if r["func_name"] != function_name:
+                continue
+            # Preserve decorator + def line(s), replace body
+            func_def_line = r["func_start"]
+            # Ensure new_body is properly indented
+            body_lines = []
+            for line in new_body.splitlines():
+                stripped = line.lstrip()
+                body_lines.append(f"    {stripped}\n" if stripped else "    pass\n")
+            if not body_lines:
+                body_lines = ["    pass\n"]
+            new_lines = (
+                lines[: func_def_line + 1]  # up to and including def line
+                + body_lines
+                + (lines[r["func_end"]:] if r["func_end"] < len(lines) else [])
+            )
+            path.write_text("".join(new_lines))
+            return str(path.relative_to(root))
+        raise ValueError(f"Receiver '{function_name}' not found in {app}/signals.py")
 
-        rel_path = await asyncio.to_thread(_edit)
-        return AgentResult(
-            success=True,
-            message=f"Updated body of '{function_name}' in {rel_path}",
-            data={"path": rel_path, "func_name": function_name},
-        )
-    except (FileNotFoundError, ValueError) as exc:
-        return AgentResult(success=False, message=str(exc))
-    except Exception as exc:
-        return AgentResult(success=False, message=str(exc))
+    rel_path = await asyncio.to_thread(_edit)
+    return AgentResult(
+        success=True,
+        message=f"Updated body of '{function_name}' in {rel_path}",
+        data={"path": rel_path, "func_name": function_name},
+    )
 
 
+@agent_function
 async def delete_signal_receiver(
     app: str,
     function_name: str,
@@ -327,37 +312,33 @@ async def delete_signal_receiver(
         function_name: Name of the receiver function to remove.
         project_root: Auto-detected if ``None``.
     """
-    try:
-        root = require_project_root(project_root)
+    root = project_root
 
-        def _delete() -> str:
-            path = _signals_path(root, app)
-            if path is None:
-                raise FileNotFoundError(f"App '{app}' not found in project")
-            if not path.exists():
-                raise FileNotFoundError(f"{app}/signals.py does not exist")
-            source = path.read_text()
-            lines = source.splitlines(keepends=True)
-            for r in _parse_receivers(source):
-                if r["func_name"] != function_name:
-                    continue
-                new_lines = lines[: r["decorator_line"]] + lines[r["func_end"]:]
-                path.write_text("".join(new_lines))
-                return str(path.relative_to(root))
-            raise ValueError(f"Receiver '{function_name}' not found in {app}/signals.py")
+    def _delete() -> str:
+        path = _signals_path(root, app)
+        if path is None:
+            raise FileNotFoundError(f"App '{app}' not found in project")
+        if not path.exists():
+            raise FileNotFoundError(f"{app}/signals.py does not exist")
+        source = path.read_text()
+        lines = source.splitlines(keepends=True)
+        for r in _parse_receivers(source):
+            if r["func_name"] != function_name:
+                continue
+            new_lines = lines[: r["decorator_line"]] + lines[r["func_end"]:]
+            path.write_text("".join(new_lines))
+            return str(path.relative_to(root))
+        raise ValueError(f"Receiver '{function_name}' not found in {app}/signals.py")
 
-        rel_path = await asyncio.to_thread(_delete)
-        return AgentResult(
-            success=True,
-            message=f"Deleted receiver '{function_name}' from {rel_path}",
-            data={"path": rel_path, "func_name": function_name},
-        )
-    except (FileNotFoundError, ValueError) as exc:
-        return AgentResult(success=False, message=str(exc))
-    except Exception as exc:
-        return AgentResult(success=False, message=str(exc))
+    rel_path = await asyncio.to_thread(_delete)
+    return AgentResult(
+        success=True,
+        message=f"Deleted receiver '{function_name}' from {rel_path}",
+        data={"path": rel_path, "func_name": function_name},
+    )
 
 
+@agent_function
 async def list_model_signals(
     app: str,
     model_name: str,
@@ -372,29 +353,24 @@ async def list_model_signals(
         model_name: Model class name to filter by.
         project_root: Auto-detected if ``None``.
     """
-    try:
-        root = require_project_root(project_root)
+    root = project_root
 
-        def _read() -> list[dict]:
-            path = _signals_path(root, app)
-            if path is None:
-                raise FileNotFoundError(f"App '{app}' not found in project")
-            if not path.exists():
-                return []
-            source = path.read_text()
-            return [
-                {"func_name": r["func_name"], "signal": r["signal"]}
-                for r in _parse_receivers(source)
-                if r["sender"] == model_name
-            ]
+    def _read() -> list[dict]:
+        path = _signals_path(root, app)
+        if path is None:
+            raise FileNotFoundError(f"App '{app}' not found in project")
+        if not path.exists():
+            return []
+        source = path.read_text()
+        return [
+            {"func_name": r["func_name"], "signal": r["signal"]}
+            for r in _parse_receivers(source)
+            if r["sender"] == model_name
+        ]
 
-        receivers = await asyncio.to_thread(_read)
-        return AgentResult(
-            success=True,
-            message=f"Found {len(receivers)} receiver(s) for model '{model_name}' in {app}/signals.py",
-            data={"app": app, "model": model_name, "receivers": receivers, "count": len(receivers)},
-        )
-    except FileNotFoundError as exc:
-        return AgentResult(success=False, message=str(exc))
-    except Exception as exc:
-        return AgentResult(success=False, message=str(exc))
+    receivers = await asyncio.to_thread(_read)
+    return AgentResult(
+        success=True,
+        message=f"Found {len(receivers)} receiver(s) for model '{model_name}' in {app}/signals.py",
+        data={"app": app, "model": model_name, "receivers": receivers, "count": len(receivers)},
+    )

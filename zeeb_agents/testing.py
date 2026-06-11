@@ -8,8 +8,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from zeeb_agents._utils import AgentResult
-from zeeb_agents._utils.project import require_project_root
+from zeeb_agents._utils import AgentResult, agent_function
 
 _RESULT_RE = re.compile(
     r"(?P<passed>\d+) passed"
@@ -34,6 +33,7 @@ def _parse_pytest_output(output: str) -> dict:
     return {"passed": 0, "failed": 0, "errors": 0, "skipped": 0}
 
 
+@agent_function
 async def run_tests(
     path: str | None = None,
     verbose: bool = False,
@@ -47,40 +47,37 @@ async def run_tests(
         verbose: Pass ``-v`` to pytest for detailed output.
         project_root: Auto-detected if ``None``.
     """
-    try:
-        root = require_project_root(project_root)
+    root = project_root
 
-        def _run() -> tuple[int, str, str]:
-            cmd = [sys.executable, "-m", "pytest"]
-            if verbose:
-                cmd.append("-v")
-            else:
-                cmd.append("-q")
-            if path:
-                cmd.append(path)
-            proc = subprocess.run(
-                cmd,
-                cwd=str(root),
-                capture_output=True,
-                text=True,
-            )
-            return proc.returncode, proc.stdout, proc.stderr
-
-        returncode, stdout, stderr = await asyncio.to_thread(_run)
-        output = stdout + (f"\n{stderr}" if stderr.strip() else "")
-        counts = _parse_pytest_output(output)
-        success = returncode == 0
-        parts = [f"{counts['passed']} passed"]
-        if counts["failed"]:
-            parts.append(f"{counts['failed']} failed")
-        if counts["errors"]:
-            parts.append(f"{counts['errors']} error(s)")
-        if counts["skipped"]:
-            parts.append(f"{counts['skipped']} skipped")
-        return AgentResult(
-            success=success,
-            message=", ".join(parts),
-            data={**counts, "output": output, "returncode": returncode},
+    def _run() -> tuple[int, str, str]:
+        cmd = [sys.executable, "-m", "pytest"]
+        if verbose:
+            cmd.append("-v")
+        else:
+            cmd.append("-q")
+        if path:
+            cmd.append(path)
+        proc = subprocess.run(
+            cmd,
+            cwd=str(root),
+            capture_output=True,
+            text=True,
         )
-    except Exception as exc:
-        return AgentResult(success=False, message=str(exc))
+        return proc.returncode, proc.stdout, proc.stderr
+
+    returncode, stdout, stderr = await asyncio.to_thread(_run)
+    output = stdout + (f"\n{stderr}" if stderr.strip() else "")
+    counts = _parse_pytest_output(output)
+    success = returncode == 0
+    parts = [f"{counts['passed']} passed"]
+    if counts["failed"]:
+        parts.append(f"{counts['failed']} failed")
+    if counts["errors"]:
+        parts.append(f"{counts['errors']} error(s)")
+    if counts["skipped"]:
+        parts.append(f"{counts['skipped']} skipped")
+    return AgentResult(
+        success=success,
+        message=", ".join(parts),
+        data={**counts, "output": output, "returncode": returncode},
+    )

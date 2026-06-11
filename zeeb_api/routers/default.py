@@ -378,7 +378,9 @@ class SimpleRouter:
                         viewset._action_permission_classes = permission_classes
                     
                     await viewset.check_permissions(request)
-                    
+                    viewset.version = getattr(request.state, "version", None)
+                    await viewset.check_throttles(request)
+
                     # Store body data for action
                     viewset._request_body = body.model_dump()
                     
@@ -409,7 +411,9 @@ class SimpleRouter:
                         viewset._action_permission_classes = permission_classes
                     
                     await viewset.check_permissions(request)
-                    
+                    viewset.version = getattr(request.state, "version", None)
+                    await viewset.check_throttles(request)
+
                     action = getattr(viewset, action_name)
                     result = await action(request, **path_params)
                     
@@ -440,7 +444,9 @@ class SimpleRouter:
                         viewset._action_permission_classes = permission_classes
                     
                     await viewset.check_permissions(request)
-                    
+                    viewset.version = getattr(request.state, "version", None)
+                    await viewset.check_throttles(request)
+
                     # Store body data for serializer/query
                     viewset._request_body = body.model_dump()
                     
@@ -469,7 +475,9 @@ class SimpleRouter:
                         viewset._action_permission_classes = permission_classes
                     
                     await viewset.check_permissions(request)
-                    
+                    viewset.version = getattr(request.state, "version", None)
+                    await viewset.check_throttles(request)
+
                     action = getattr(viewset, action_name)
                     result = await action(request)
                     

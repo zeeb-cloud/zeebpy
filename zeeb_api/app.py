@@ -64,10 +64,11 @@ def create_app(
         
         app = create_app(lifespan=lifespan)
     """
-    from zeeb_api.conf import settings, configure_settings
-    from zeeb_api.middleware import install_middleware
+    from zeeb_api.auth.jwt import INSECURE_SECRETS, configure_jwt
+    from zeeb_api.conf import configure_settings, settings
     from zeeb_api.exception_handlers import install_exception_handlers
-    from zeeb_api.auth.jwt import configure_jwt
+    from zeeb_api.exceptions import ImproperlyConfigured
+    from zeeb_api.middleware import install_middleware
     from zeeb_api.routers import load_urlconf
     
     # Configure settings
@@ -81,7 +82,14 @@ def create_app(
     # Ensure settings are loaded
     if not settings.is_configured():
         settings._setup()
-    
+
+    # Fail fast on insecure default secrets outside of DEBUG mode
+    if not getattr(settings, 'DEBUG', False) and settings.get_jwt_secret_key() in INSECURE_SECRETS:
+        raise ImproperlyConfigured(
+            "create_app(): SECRET_KEY/JWT_SECRET_KEY is an insecure default. "
+            "Set a strong unique secret or enable DEBUG for local development."
+        )
+
     # Create lifespan if not provided
     if lifespan is None:
         lifespan = _create_default_lifespan(settings)
@@ -136,12 +144,19 @@ def _create_default_lifespan(settings: "Settings"):
         # Try to setup database if configured
         database_config = getattr(settings, 'DATABASE', None)
         db = None
-        
+
         if database_config and database_config.get('url'):
             try:
-                from zeeb_orm import setup_database, close_all_connections
-                db_url = database_config['url']
-                db = await setup_database(db_url)
+                from zeeb_orm import setup_database
+
+                from zeeb_api.conf.orm import apply_orm_settings, database_kwargs
+
+                # Hand the project settings down to the ORM layer so
+                # zeeb_orm.get_settings() reflects them (migrations etc.).
+                apply_orm_settings(settings)
+                db = await setup_database(
+                    database_config['url'], **database_kwargs(database_config)
+                )
             except ImportError:
                 # zeeb_orm not installed, skip database setup
                 pass

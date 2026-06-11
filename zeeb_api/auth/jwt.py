@@ -7,6 +7,7 @@ access/refresh token pattern.
 
 from __future__ import annotations
 
+import logging
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -14,10 +15,21 @@ from typing import Any
 import jwt
 from pydantic import BaseModel, Field
 
+from zeeb_api.exceptions import InsecureSecretError
+
+logger = logging.getLogger(__name__)
+
+# Known insecure default secret keys that must never be used in production.
+INSECURE_SECRETS = frozenset({
+    "change-me-in-production",
+    "INSECURE-DEFAULT-KEY-CHANGE-IN-PRODUCTION",
+    "your-secret-key-change-in-production",
+})
+
 
 class JWTConfig(BaseModel):
     """JWT configuration settings."""
-    
+
     secret_key: str = Field(
         default="change-me-in-production",
         description="Secret key for signing tokens"
@@ -43,9 +55,48 @@ class JWTConfig(BaseModel):
         description="Token audience (aud claim)"
     )
 
+    @property
+    def is_insecure(self) -> bool:
+        """True when the secret key is a known insecure default."""
+        return self.secret_key in INSECURE_SECRETS
+
 
 # Global config instance
 _jwt_config: JWTConfig | None = None
+
+# Module-level flag so the insecure-secret DEBUG warning is only logged once.
+_insecure_secret_warned = False
+
+
+def _ensure_secure_secret(config: JWTConfig) -> None:
+    """
+    Refuse to operate with a known insecure default secret key.
+
+    - DEBUG falsy (or settings unavailable): raise InsecureSecretError.
+    - DEBUG truthy: log a warning once per process and continue.
+    """
+    global _insecure_secret_warned
+
+    if not config.is_insecure:
+        return
+
+    try:
+        from zeeb_api.conf import settings
+        debug = bool(getattr(settings, "DEBUG", False))
+    except Exception:
+        debug = False
+
+    if not debug:
+        raise InsecureSecretError()
+
+    if not _insecure_secret_warned:
+        logger.warning(
+            "JWT secret key is an insecure default value. This is allowed "
+            "because DEBUG is enabled, but tokens signed with this key are "
+            "NOT safe for production. Set SECRET_KEY (or JWT_SECRET_KEY) to "
+            "a strong, unique secret."
+        )
+        _insecure_secret_warned = True
 
 
 def configure_jwt(
@@ -129,6 +180,7 @@ def create_access_token(
         Encoded JWT access token
     """
     config = config or get_jwt_config()
+    _ensure_secure_secret(config)
     now = datetime.now(timezone.utc)
     
     payload = {
@@ -164,6 +216,7 @@ def create_refresh_token(
         Encoded JWT refresh token
     """
     config = config or get_jwt_config()
+    _ensure_secure_secret(config)
     now = datetime.now(timezone.utc)
     
     payload = {
@@ -248,7 +301,8 @@ def decode_token(
         TokenInvalidError: If token is invalid or wrong type
     """
     config = config or get_jwt_config()
-    
+    _ensure_secure_secret(config)
+
     try:
         # Decode with verification
         options = {}

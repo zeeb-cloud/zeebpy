@@ -321,6 +321,23 @@ payload = decode_access_token(token)
 # {"user_id": "uuid", "username": "john", ...}
 ```
 
+### JWT Secret Hardening
+
+Zeeb refuses to sign or verify JWTs with a known insecure default secret
+(e.g. `"change-me-in-production"` or the startproject template default):
+
+- **`DEBUG = False`** (the default): `create_access_token()`,
+  `create_refresh_token()` and `decode_token()` raise
+  `zeeb_api.exceptions.InsecureSecretError`.
+- **`DEBUG = True`**: the calls work, but a warning is logged once per
+  process reminding you to set a real secret.
+- **`create_app()`** fails fast with
+  `zeeb_api.exceptions.ImproperlyConfigured` when `DEBUG` is off and
+  `SECRET_KEY`/`JWT_SECRET_KEY` is an insecure default.
+
+Always set a strong, unique `SECRET_KEY` (or `JWT_SECRET_KEY`) in
+production, e.g. from an environment variable.
+
 ### Token in ViewSet
 
 ```python
@@ -401,6 +418,32 @@ async def auth_middleware(request, call_next):
     return await call_next(request)
 ```
 
+## OAuth2 / OIDC Single Sign-On
+
+Zeeb includes an OAuth2/OpenID Connect layer with presets for Azure AD
+(Microsoft Entra ID), Google and GitHub. Users authenticate at the identity
+provider; Zeeb links or provisions a local user and issues its own JWT
+access/refresh tokens. The middleware can also accept IdP-issued tokens
+directly (SPA bearer mode).
+
+```python
+# settings.py
+OAUTH_PROVIDERS = {
+    "azure": {"tenant": "common", "client_id": "...", "client_secret": "..."},
+}
+```
+
+```python
+from zeeb_api.auth.oauth import create_oauth_router
+
+app.include_router(create_oauth_router())
+```
+
+Requires the optional extra: `pip install zeebpy[oauth]`.
+
+See [OAuth2 / OIDC Authentication](oauth.md) for the full guide (Azure AD
+walkthrough, tenant modes, SPA flow, external bearer mode, security notes).
+
 ## Anonymous User
 
 ```python
@@ -465,6 +508,7 @@ class AuthViewSet(ViewSet):
 
 ## Next Steps
 
+- [OAuth2 / OIDC](oauth.md) - Single sign-on with Azure AD, Google, GitHub
 - [Permissions](permissions.md) - Access control
 - [ViewSets](viewsets.md) - Protected endpoints
 - [Settings](../configuration/settings.md) - Auth configuration

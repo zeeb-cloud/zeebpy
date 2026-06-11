@@ -89,7 +89,10 @@ python manage.py runserver
 - [Serializers](api/serializers.md) - Serialize and validate data
 - [ViewSets](api/viewsets.md) - Create API endpoints
 - [Authentication](api/authentication.md) - User authentication
+- [OAuth2 / OIDC](api/oauth.md) - Single sign-on (Azure AD, Google, GitHub)
 - [Permissions](api/permissions.md) - Access control
+- [Throttling](api/throttling.md) - Rate limiting
+- [Versioning](api/versioning.md) - API versioning
 
 ### CLI & Tools
 - [Commands](cli/commands.md) - Management commands

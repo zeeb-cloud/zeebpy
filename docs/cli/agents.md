@@ -41,6 +41,19 @@ if result:   # AgentResult is truthy on success
     print(result.message)
 ```
 
+### Error handling & logging
+
+Agent functions **never raise** — any unexpected exception is caught and
+returned as `AgentResult(success=False, message="ExceptionType: details")`.
+Full tracebacks are logged via the `"zeeb_agents"` logger
+(`logging.getLogger("zeeb_agents")`); attach a handler or raise the level to
+see/silence them:
+
+```python
+import logging
+logging.getLogger("zeeb_agents").setLevel(logging.ERROR)
+```
+
 ---
 
 ## Project & App Management
@@ -293,6 +306,12 @@ Remove a key from `.env`.
 
 ## File System
 
+> **Safety**: file paths (relative or absolute) must resolve to a location
+> **inside the project root**.  Paths that escape it (e.g. `../secret.txt` or
+> an absolute path outside the project) return
+> `AgentResult(success=False, message="...outside the project root")` without
+> touching the file.
+
 ### `read_file(path, project_root=None)`
 Read any project file and return its content.
 
@@ -352,7 +371,23 @@ result = await run_query("SELECT id, title FROM post_post LIMIT 5")
 # result.data == {"rows": [{"id": 1, "title": "Hello World"}], "count": 1}
 ```
 
-> **Safety**: Only `SELECT`, `WITH`, and `EXPLAIN` statements are allowed.  Any other statement type returns an error without executing.
+> **Safety**: `run_query` is gated to read-only queries:
+>
+> - SQL comments (`-- ...` and `/* ... */`) are stripped before validation, so
+>   comment-prefixed statements cannot sneak past the check.
+> - Exactly **one** statement is allowed (a single trailing `;` is tolerated;
+>   `SELECT 1; DROP TABLE x` is rejected).
+> - The first keyword must be `SELECT`, `WITH`, or `EXPLAIN`.
+> - The mutating keywords `INSERT`, `UPDATE`, `DELETE`, `DROP`, `ALTER`,
+>   `CREATE`, `TRUNCATE`, `REPLACE`, `GRANT`, `ATTACH`, `PRAGMA`, and `VACUUM`
+>   are rejected **anywhere** in the statement (so `WITH ... DELETE` or
+>   `EXPLAIN ANALYZE DELETE` bypasses fail too).  The check uses word
+>   boundaries, so column names like `created_at` / `updated_at` are fine —
+>   but a bare `REPLACE(...)` string function call will be rejected; rename or
+>   avoid it in ad-hoc queries.
+> - Defense in depth: the query runs inside an explicit transaction that is
+>   **always rolled back**, so even a statement that slipped through could
+>   never be committed.
 
 ---
 

@@ -100,19 +100,101 @@ Article.objects.filter(published_at__isnull=True)
 Article.objects.filter(published_at__isnull=False)
 ```
 
-### Date Lookups
+### Date and Time Lookups
+
+`DateTimeField`, `DateField` and `TimeField` columns support Django-style
+datetime *transforms* between the field name and the (optional) lookup:
 
 ```python
-from datetime import date, datetime
+from datetime import date, time
 
-# Exact date
-Article.objects.filter(created_at__date=date(2024, 1, 15))
-
-# Date parts
+# Exact date part (implicit __exact)
 Article.objects.filter(created_at__year=2024)
-Article.objects.filter(created_at__month=1)
-Article.objects.filter(created_at__day=15)
-Article.objects.filter(created_at__hour=10)
+Article.objects.filter(created_at__quarter=2)
+Article.objects.filter(created_at__week_day=1)       # Sunday
+
+# Transform combined with any lookup
+Article.objects.filter(created_at__year__gte=2024)
+Article.objects.filter(created_at__date__range=(date(2024, 1, 1), date(2024, 12, 31)))
+Article.objects.filter(created_at__time__gte=time(9, 0))
+
+# Transforms work across relations too
+Article.objects.filter(author__joined_at__year=2023)
+```
+
+#### Datetime Transform Reference
+
+| Transform | Result | Example |
+|-----------|--------|---------|
+| `year` | Calendar year | `created_at__year=2024` |
+| `iso_year` | ISO-8601 week-numbering year | `created_at__iso_year=2024` |
+| `month` | Month (1-12) | `created_at__month=5` |
+| `day` | Day of month (1-31) | `created_at__day=15` |
+| `week` | ISO-8601 week number (1-53) | `created_at__week=20` |
+| `week_day` | Day of week, Sunday=1 .. Saturday=7 | `created_at__week_day=1` |
+| `iso_week_day` | Day of week, Monday=1 .. Sunday=7 | `created_at__iso_week_day=7` |
+| `quarter` | Quarter (1-4) | `created_at__quarter=2` |
+| `hour` | Hour (0-23) | `created_at__hour=10` |
+| `minute` | Minute (0-59) | `created_at__minute=30` |
+| `second` | Second (0-59) | `created_at__second=45` |
+| `date` | Date part (compare with `datetime.date`) | `created_at__date=date(2024, 5, 15)` |
+| `time` | Time part (compare with `datetime.time`) | `created_at__time__gte=time(9, 0)` |
+
+All transforms compile to dialect-specific SQL for SQLite, PostgreSQL and
+MySQL (e.g. `strftime` on SQLite, `EXTRACT` on PostgreSQL) and follow
+Django semantics (`week_day` counts Sunday as 1).
+
+### Related Field Lookups
+
+Filters, excludes, `order_by()`, `values()`/`values_list()`, `count()`,
+`aggregate()`, `update()` and `delete()` can traverse relations with the
+`__` separator — each hop adds a single LEFT JOIN:
+
+```python
+# Forward ForeignKey / OneToOne traversal
+posts = await Post.objects.filter(author__name="Alice")
+posts = await Post.objects.filter(author__age__gte=30)
+
+# Multiple hops (forward and reverse mixed)
+posts = await Post.objects.filter(author__profile__bio__contains="rust")
+
+# Reverse traversal (related_name or default <model>_set)
+authors = await Author.objects.filter(posts__views__gt=100)
+
+# Reverse joins can yield one row per matching related object —
+# use .distinct() to deduplicate (Django parity)
+authors = await Author.objects.filter(posts__published=True).distinct()
+
+# Compare a relation directly with an instance (no JOIN, uses the FK column)
+posts = await Post.objects.filter(author=alice)
+
+# Ordering and values across relations
+posts = await Post.objects.order_by("author__name", "-views")
+rows = await Post.objects.values("title", "author__name")
+names = await Post.objects.values_list("author__name", flat=True)
+
+# Updates and deletes with traversed filters are rewritten as
+# `pk IN (SELECT pk FROM ... JOIN ...)` automatically
+await Post.objects.filter(author__name="Alice").update(published=True)
+await Post.objects.filter(author__name="Bob").delete()
+```
+
+A path that is used by both `select_related()` and a filter shares one JOIN:
+
+```python
+# Single LEFT OUTER JOIN, author objects hydrated on the results
+posts = await Post.objects.select_related("author").filter(author__name="Alice")
+```
+
+Invalid paths raise `zeeb_orm.FieldError` with the available choices:
+
+```python
+from zeeb_orm import FieldError
+
+try:
+    await Post.objects.filter(author__bogus="x")
+except FieldError as e:
+    print(e)  # Cannot resolve keyword 'bogus' into field on Author. Choices are: ...
 ```
 
 ### Lookup Reference
@@ -485,6 +567,139 @@ for article in articles:
     article.status = "review"
 
 await Article.objects.bulk_update(articles, ["status"])
+```
+
+### in_bulk()
+
+Fetch many objects at once as a `{key: instance}` mapping:
+
+```python
+# By primary key (default)
+articles = await Article.objects.in_bulk([1, 2, 3])
+# {1: <Article: 1>, 2: <Article: 2>, 3: <Article: 3>}
+
+# All objects, keyed by pk
+all_articles = await Article.objects.in_bulk()
+
+# By any UNIQUE field
+by_slug = await Article.objects.in_bulk(["intro", "faq"], field_name="slug")
+
+# An empty id_list returns {}
+assert await Article.objects.in_bulk([]) == {}
+```
+
+`field_name` must be the primary key or a `unique=True` field — otherwise
+`ValueError` is raised.
+
+## Streaming Large Result Sets — iterator()
+
+`iterator()` streams rows from the database in chunks instead of loading
+(and caching) the whole result set. Use it for large tables:
+
+```python
+async for article in Article.objects.filter(published=True).iterator():
+    await process(article)
+
+# Tune the fetch size (default 2000 rows per round-trip)
+async for article in Article.objects.iterator(chunk_size=500):
+    ...
+```
+
+Notes:
+
+- Results are **not cached** on the QuerySet; iterating twice queries twice.
+- The database session stays open for the lifetime of the iteration.
+- `iterator()` cannot be combined with `prefetch_related()` (raises
+  `NotSupportedError`), since prefetching needs the full result set.
+
+## Combining QuerySets — union() / intersection() / difference()
+
+Combine querysets of the same model with SQL set operations:
+
+```python
+cheap = Product.objects.filter(price__lt=10)
+popular = Product.objects.filter(orders__gte=100)
+
+# UNION (duplicates removed)
+results = await cheap.union(popular)
+
+# UNION ALL (duplicates kept)
+results = await cheap.union(popular, all=True)
+
+# INTERSECT — rows in both
+results = await cheap.intersection(popular)
+
+# EXCEPT — rows in the first but not the second
+results = await cheap.difference(popular)
+
+# Multiple querysets at once
+results = await qs1.union(qs2, qs3)
+```
+
+After combining, only these operations may be applied (Django parity):
+
+```python
+combined = cheap.union(popular)
+
+await combined.order_by("-price")        # OK — applies to the compound
+await combined[:10]                      # OK — limit/offset
+await combined.values("name", "price")   # OK
+await combined.count()                   # OK
+
+combined.filter(name="x")                # raises NotSupportedError
+combined.annotate(...)                   # raises NotSupportedError
+await combined.update(...)               # raises NotSupportedError
+await combined.delete()                  # raises NotSupportedError
+```
+
+Each side of the set operation selects an explicit, identical column list in
+model field order, so rows map back to model instances deterministically.
+
+> **MySQL note:** `INTERSECT` and `EXCEPT` require MySQL **8.0.31+**.
+> Older MySQL versions only support `UNION` / `UNION ALL`.
+
+## Row Locking — select_for_update()
+
+Lock the selected rows until the end of the transaction
+(`SELECT ... FOR UPDATE`):
+
+```python
+from zeeb_orm import atomic
+
+async with atomic():
+    account = await Account.objects.select_for_update().get(pk=account_id)
+    account.balance -= 100
+    await account.save()
+
+# Don't wait for locks held by other transactions
+Account.objects.select_for_update(nowait=True)
+
+# Skip rows that are already locked
+Account.objects.select_for_update(skip_locked=True)
+
+# Lock only specific tables of the query ("self" = the queryset's model)
+Account.objects.select_related("owner").select_for_update(of=("self",))
+```
+
+Requirements and limitations:
+
+- Must be evaluated **inside `atomic()`** — otherwise
+  `TransactionManagementError` is raised.
+- **Not supported on SQLite** — raises `NotSupportedError`.
+
+## Query Plans — explain()
+
+Return the database's execution plan for a query as a string:
+
+```python
+plan = await Article.objects.filter(slug="intro").explain()
+print(plan)
+# SQLite:    EXPLAIN QUERY PLAN — e.g. "SEARCH articles USING INDEX ..."
+# PostgreSQL: EXPLAIN
+# MySQL:      EXPLAIN
+
+# PostgreSQL only: actually execute the query and include real timings
+plan = await Article.objects.filter(slug="intro").explain(analyze=True)
 ```
 
 ## Raw SQL

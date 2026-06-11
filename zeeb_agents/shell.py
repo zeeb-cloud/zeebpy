@@ -7,10 +7,10 @@ import subprocess
 import sys
 from pathlib import Path
 
-from zeeb_agents._utils import AgentResult
-from zeeb_agents._utils.project import require_project_root
+from zeeb_agents._utils import AgentResult, agent_function
 
 
+@agent_function
 async def run_management_command(
     command: str,
     args: list[str] | None = None,
@@ -27,42 +27,39 @@ async def run_management_command(
         args: Optional list of additional arguments/flags.
         project_root: Auto-detected if ``None``.
     """
-    try:
-        root = require_project_root(project_root)
-        manage_py = root / "manage.py"
-        if not manage_py.exists():
-            return AgentResult(
-                success=False,
-                message=f"manage.py not found at {root}",
-            )
-
-        cmd = [sys.executable, str(manage_py), command] + (args or [])
-
-        def _run() -> tuple[int, str, str]:
-            proc = subprocess.run(
-                cmd,
-                cwd=str(root),
-                capture_output=True,
-                text=True,
-            )
-            return proc.returncode, proc.stdout, proc.stderr
-
-        returncode, stdout, stderr = await asyncio.to_thread(_run)
-        output = stdout + (f"\n{stderr}" if stderr.strip() else "")
-        success = returncode == 0
+    root = project_root
+    manage_py = root / "manage.py"
+    if not manage_py.exists():
         return AgentResult(
-            success=success,
-            message=(
-                f"Command '{command}' completed successfully"
-                if success
-                else f"Command '{command}' exited with code {returncode}"
-            ),
-            data={
-                "command": command,
-                "args": args or [],
-                "returncode": returncode,
-                "output": output,
-            },
+            success=False,
+            message=f"manage.py not found at {root}",
         )
-    except Exception as exc:
-        return AgentResult(success=False, message=str(exc))
+
+    cmd = [sys.executable, str(manage_py), command] + (args or [])
+
+    def _run() -> tuple[int, str, str]:
+        proc = subprocess.run(
+            cmd,
+            cwd=str(root),
+            capture_output=True,
+            text=True,
+        )
+        return proc.returncode, proc.stdout, proc.stderr
+
+    returncode, stdout, stderr = await asyncio.to_thread(_run)
+    output = stdout + (f"\n{stderr}" if stderr.strip() else "")
+    success = returncode == 0
+    return AgentResult(
+        success=success,
+        message=(
+            f"Command '{command}' completed successfully"
+            if success
+            else f"Command '{command}' exited with code {returncode}"
+        ),
+        data={
+            "command": command,
+            "args": args or [],
+            "returncode": returncode,
+            "output": output,
+        },
+    )
