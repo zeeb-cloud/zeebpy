@@ -144,12 +144,19 @@ def _create_default_lifespan(settings: "Settings"):
         # Try to setup database if configured
         database_config = getattr(settings, 'DATABASE', None)
         db = None
-        
+
         if database_config and database_config.get('url'):
             try:
-                from zeeb_orm import setup_database, close_all_connections
-                db_url = database_config['url']
-                db = await setup_database(db_url)
+                from zeeb_orm import setup_database
+
+                from zeeb_api.conf.orm import apply_orm_settings, database_kwargs
+
+                # Hand the project settings down to the ORM layer so
+                # zeeb_orm.get_settings() reflects them (migrations etc.).
+                apply_orm_settings(settings)
+                db = await setup_database(
+                    database_config['url'], **database_kwargs(database_config)
+                )
             except ImportError:
                 # zeeb_orm not installed, skip database setup
                 pass

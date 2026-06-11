@@ -156,6 +156,33 @@ MIDDLEWARE = [
 ]
 ```
 
+## Settings Layering
+
+zeebpy has three settings layers with a defined hand-off:
+
+1. **`zeeb_api.conf.settings` (LazySettings)** — the canonical in-process reader
+   of your project's `settings.py`. `create_app()` consumes it.
+2. **`zeeb_orm.conf.settings`** — the low-level library sink
+   (`zeeb_orm.configure()` / `get_settings()`). `create_app()`'s default
+   lifespan calls `zeeb_api.conf.orm.apply_orm_settings()` to feed it from
+   layer 1 (including the full `DATABASE` dict: `echo`, `pool_size`, …).
+   Library-only users (no project) configure it directly or via
+   `DATABASE_*` environment variables.
+3. **`zeeb_agents`** — reads a *target* project's settings off disk by path
+   (`load_project_settings`); intentionally independent of the current process.
+
+If you build your own lifespan, call `apply_orm_settings()` yourself:
+
+```python
+from zeeb_api.conf import apply_orm_settings
+
+@asynccontextmanager
+async def lifespan(app):
+    apply_orm_settings()
+    db = await setup_database(...)
+    yield
+```
+
 ## Database
 
 ### SQLite (Development)

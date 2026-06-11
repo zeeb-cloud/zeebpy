@@ -59,7 +59,8 @@ def build_table(model: type[Model]) -> Table:
             else:
                 columns.append(Column(field.db_column or field.name, col_type, **col_kwargs))
 
-        model._sa_table = Table(model._meta.db_table, metadata, *columns)
+        table_args = _build_table_args(model)
+        model._sa_table = Table(model._meta.db_table, metadata, *columns, *table_args)
 
     # Ensure auto-created M2M join tables exist in the shared metadata.
     # Done lazily (not at class definition) so importing model modules does
@@ -74,6 +75,77 @@ def build_table(model: type[Model]) -> Table:
                 pass
 
     return model._sa_table
+
+
+def _column_name(model: type[Model], field_name: str) -> str:
+    """Map a Meta-level field name to its database column name."""
+    for field in model._meta.local_fields:
+        if field.name == field_name:
+            return field.db_column or field.name
+    # Allow referencing raw column names (e.g. "author_id") directly.
+    return field_name
+
+
+def _build_table_args(model: type[Model]) -> list[Any]:
+    """Translate Meta.indexes / constraints / unique_together / index_together
+    into SQLAlchemy schema items.
+
+    Partial conditions (``condition=...``) are emitted as partial *indexes*
+    (``sqlite_where`` / ``postgresql_where``); MySQL does not support partial
+    indexes and ignores the condition.
+    """
+    from sqlalchemy import CheckConstraint as SACheckConstraint
+    from sqlalchemy import Index as SAIndex
+    from sqlalchemy import UniqueConstraint as SAUniqueConstraint
+    from sqlalchemy import text
+
+    from zeeb_orm.models.options import CheckConstraint, Index, UniqueConstraint
+
+    meta = model._meta
+    table = meta.db_table
+    args: list[Any] = []
+
+    for fields_tuple in meta.unique_together:
+        cols = [_column_name(model, f) for f in fields_tuple]
+        args.append(SAUniqueConstraint(*cols, name=f"uq_{table}_{'_'.join(cols)}"))
+
+    for fields_tuple in meta.index_together:
+        cols = [_column_name(model, f) for f in fields_tuple]
+        args.append(SAIndex(f"ix_{table}_{'_'.join(cols)}", *cols))
+
+    for index in meta.indexes:
+        if not isinstance(index, Index):
+            continue
+        cols = [_column_name(model, f) for f in index.fields]
+        name = index.name or f"ix_{table}_{'_'.join(cols)}"
+        kwargs: dict[str, Any] = {"unique": index.unique}
+        if index.condition:
+            kwargs["sqlite_where"] = text(index.condition)
+            kwargs["postgresql_where"] = text(index.condition)
+        args.append(SAIndex(name, *cols, **kwargs))
+
+    for constraint in meta.constraints:
+        if isinstance(constraint, UniqueConstraint):
+            cols = [_column_name(model, f) for f in constraint.fields]
+            name = constraint.name or f"uq_{table}_{'_'.join(cols)}"
+            if constraint.condition:
+                # Partial unique constraints are only expressible as
+                # partial unique indexes.
+                args.append(
+                    SAIndex(
+                        name,
+                        *cols,
+                        unique=True,
+                        sqlite_where=text(constraint.condition),
+                        postgresql_where=text(constraint.condition),
+                    )
+                )
+            else:
+                args.append(SAUniqueConstraint(*cols, name=name))
+        elif isinstance(constraint, CheckConstraint):
+            args.append(SACheckConstraint(text(constraint.check), name=constraint.name))
+
+    return args
 
 
 def build_m2m_through_table(m2m_field: Any) -> Table:

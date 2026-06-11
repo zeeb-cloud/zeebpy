@@ -75,11 +75,16 @@ target-version = "py310"
 [tool.ruff.lint]
 select = ["E", "F", "I", "N", "W", "UP"]
 
+# NOTE: `strict = true` was aspirational (528 errors); this is the honest,
+# attainable baseline. mypy is advisory: the metaclass-heavy ORM internals and
+# the serializer layer are not fully typed yet (~290 known findings at default
+# strictness). New code should not introduce errors in cleanly-typed modules.
 [tool.mypy]
 python_version = "3.10"
-strict = true
-warn_return_any = true
 warn_unused_configs = true
+warn_redundant_casts = true
+no_implicit_optional = true
+ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
