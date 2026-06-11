@@ -5,8 +5,8 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
-from zeeb_agents._utils import AgentResult
-from zeeb_agents._utils.project import load_project_settings, require_project_root
+from zeeb_agents._utils import AgentResult, agent_function
+from zeeb_agents._utils.project import load_project_settings
 
 _SCALAR_TYPES = (str, int, float, bool, type(None))
 
@@ -58,6 +58,7 @@ def _write_env_file(path: Path, data: dict[str, str]) -> None:
     )
 
 
+@agent_function
 async def get_settings(project_root: Path | None = None) -> AgentResult:
     """Return the parsed project settings as a dictionary.
 
@@ -67,47 +68,43 @@ async def get_settings(project_root: Path | None = None) -> AgentResult:
     Args:
         project_root: Auto-detected if ``None``.
     """
-    try:
-        root = require_project_root(project_root)
-        settings = await asyncio.to_thread(load_project_settings, root)
-        return AgentResult(
-            success=True,
-            message=f"Loaded settings from {root}",
-            data={"settings": settings},
-        )
-    except Exception as exc:
-        return AgentResult(success=False, message=str(exc))
+    root = project_root
+    settings = await asyncio.to_thread(load_project_settings, root)
+    return AgentResult(
+        success=True,
+        message=f"Loaded settings from {root}",
+        data={"settings": settings},
+    )
 
 
+@agent_function
 async def get_env(project_root: Path | None = None) -> AgentResult:
     """Read the project ``.env`` file and return it as a key-value dict.
 
     Args:
         project_root: Auto-detected if ``None``.
     """
-    try:
-        root = require_project_root(project_root)
-        env_path = _find_env_file(root)
+    root = project_root
+    env_path = _find_env_file(root)
 
-        def _read() -> dict[str, str]:
-            return _parse_env_file(env_path)
+    def _read() -> dict[str, str]:
+        return _parse_env_file(env_path)
 
-        data = await asyncio.to_thread(_read)
-        if not env_path.exists():
-            return AgentResult(
-                success=False,
-                message=f"No .env file found at {env_path}",
-                data={"path": str(env_path), "env": {}},
-            )
+    data = await asyncio.to_thread(_read)
+    if not env_path.exists():
         return AgentResult(
-            success=True,
-            message=f"Read {len(data)} variable(s) from .env",
-            data={"path": str(env_path.relative_to(root)), "env": data},
+            success=False,
+            message=f"No .env file found at {env_path}",
+            data={"path": str(env_path), "env": {}},
         )
-    except Exception as exc:
-        return AgentResult(success=False, message=str(exc))
+    return AgentResult(
+        success=True,
+        message=f"Read {len(data)} variable(s) from .env",
+        data={"path": str(env_path.relative_to(root)), "env": data},
+    )
 
 
+@agent_function
 async def set_env(
     key: str,
     value: str,
@@ -122,28 +119,25 @@ async def set_env(
         value: Variable value.
         project_root: Auto-detected if ``None``.
     """
-    try:
-        root = require_project_root(project_root)
-        env_path = _find_env_file(root)
+    env_path = _find_env_file(project_root)
 
-        def _write() -> bool:
-            data = _parse_env_file(env_path)
-            existed = key in data
-            data[key] = value
-            _write_env_file(env_path, data)
-            return existed
+    def _write() -> bool:
+        data = _parse_env_file(env_path)
+        existed = key in data
+        data[key] = value
+        _write_env_file(env_path, data)
+        return existed
 
-        existed = await asyncio.to_thread(_write)
-        action = "Updated" if existed else "Added"
-        return AgentResult(
-            success=True,
-            message=f"{action} {key} in .env",
-            data={"key": key, "action": action.lower()},
-        )
-    except Exception as exc:
-        return AgentResult(success=False, message=str(exc))
+    existed = await asyncio.to_thread(_write)
+    action = "Updated" if existed else "Added"
+    return AgentResult(
+        success=True,
+        message=f"{action} {key} in .env",
+        data={"key": key, "action": action.lower()},
+    )
 
 
+@agent_function
 async def delete_env(
     key: str,
     project_root: Path | None = None,
@@ -154,41 +148,38 @@ async def delete_env(
         key: Variable name to remove.
         project_root: Auto-detected if ``None``.
     """
-    try:
-        root = require_project_root(project_root)
-        env_path = _find_env_file(root)
+    env_path = _find_env_file(project_root)
 
-        def _remove() -> bool:
-            data = _parse_env_file(env_path)
-            if key not in data:
-                return False
-            del data[key]
-            _write_env_file(env_path, data)
-            return True
+    def _remove() -> bool:
+        data = _parse_env_file(env_path)
+        if key not in data:
+            return False
+        del data[key]
+        _write_env_file(env_path, data)
+        return True
 
-        removed = await asyncio.to_thread(_remove)
-        if not removed:
-            return AgentResult(
-                success=False,
-                message=f"Key '{key}' not found in .env",
-                data={"key": key},
-            )
+    removed = await asyncio.to_thread(_remove)
+    if not removed:
         return AgentResult(
-            success=True,
-            message=f"Removed '{key}' from .env",
+            success=False,
+            message=f"Key '{key}' not found in .env",
             data={"key": key},
         )
-    except Exception as exc:
-        return AgentResult(success=False, message=str(exc))
+    return AgentResult(
+        success=True,
+        message=f"Removed '{key}' from .env",
+        data={"key": key},
+    )
 
 
+@agent_function
 async def manage_settings(
     key: str,
     value: object = None,
     *,
     read_only: bool = False,
-    project_root: "Path | None" = None,
-) -> "AgentResult":
+    project_root: Path | None = None,
+) -> AgentResult:
     """Read or update a top-level setting in ``settings.py``.
 
     **Read mode** — pass only ``key`` (or ``read_only=True``)::
@@ -215,62 +206,59 @@ async def manage_settings(
     """
     import re
 
-    try:
-        root = require_project_root(project_root)
-        is_read = read_only or (value is None and not read_only)
+    root = project_root
+    is_read = read_only or (value is None and not read_only)
 
-        if is_read:
-            settings = await asyncio.to_thread(load_project_settings, root)
-            if key not in settings:
-                return AgentResult(
-                    success=False,
-                    message=f"Setting '{key}' not found in settings.py",
-                    data={"key": key},
-                )
-            return AgentResult(
-                success=True,
-                message=f"Read setting '{key}'",
-                data={"key": key, "value": settings[key]},
-            )
-
-        # Write mode
-        if not isinstance(value, _SCALAR_TYPES):
+    if is_read:
+        settings = await asyncio.to_thread(load_project_settings, root)
+        if key not in settings:
             return AgentResult(
                 success=False,
-                message=(
-                    f"manage_settings only supports scalar values "
-                    f"(str, int, float, bool, None). "
-                    f"Got {type(value).__name__}. "
-                    f"Use read_file/write_file to edit settings.py directly."
-                ),
-            )
-
-        def _write() -> bool:
-            settings_file = _find_settings_file(root)
-            if settings_file is None:
-                raise FileNotFoundError("settings.py not found in project")
-            content = settings_file.read_text(encoding="utf-8")
-            rendered = _render_value(value)
-            pattern = re.compile(
-                rf"^({re.escape(key)}\s*=\s*).*$", re.MULTILINE
-            )
-            if not pattern.search(content):
-                return False  # key not present
-            new_content = pattern.sub(rf"\g<1>{rendered}", content)
-            settings_file.write_text(new_content, encoding="utf-8")
-            return True
-
-        found = await asyncio.to_thread(_write)
-        if not found:
-            return AgentResult(
-                success=False,
-                message=f"Setting '{key}' not found in settings.py (key must already exist to update it)",
+                message=f"Setting '{key}' not found in settings.py",
                 data={"key": key},
             )
         return AgentResult(
             success=True,
-            message=f"Updated setting '{key}' in settings.py",
-            data={"key": key, "value": value},
+            message=f"Read setting '{key}'",
+            data={"key": key, "value": settings[key]},
         )
-    except Exception as exc:
-        return AgentResult(success=False, message=str(exc))
+
+    # Write mode
+    if not isinstance(value, _SCALAR_TYPES):
+        return AgentResult(
+            success=False,
+            message=(
+                f"manage_settings only supports scalar values "
+                f"(str, int, float, bool, None). "
+                f"Got {type(value).__name__}. "
+                f"Use read_file/write_file to edit settings.py directly."
+            ),
+        )
+
+    def _write() -> bool:
+        settings_file = _find_settings_file(root)
+        if settings_file is None:
+            raise FileNotFoundError("settings.py not found in project")
+        content = settings_file.read_text(encoding="utf-8")
+        rendered = _render_value(value)
+        pattern = re.compile(
+            rf"^({re.escape(key)}\s*=\s*).*$", re.MULTILINE
+        )
+        if not pattern.search(content):
+            return False  # key not present
+        new_content = pattern.sub(rf"\g<1>{rendered}", content)
+        settings_file.write_text(new_content, encoding="utf-8")
+        return True
+
+    found = await asyncio.to_thread(_write)
+    if not found:
+        return AgentResult(
+            success=False,
+            message=f"Setting '{key}' not found in settings.py (key must already exist to update it)",
+            data={"key": key},
+        )
+    return AgentResult(
+        success=True,
+        message=f"Updated setting '{key}' in settings.py",
+        data={"key": key, "value": value},
+    )

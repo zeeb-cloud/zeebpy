@@ -379,17 +379,97 @@ class Model(metaclass=ModelBase):
         instance._state.persisted = True
         return instance
 
-    async def save(self, update_fields: list[str] | None = None) -> None:
+    # Validation (Django-style full_clean / clean_fields / clean)
+
+    def clean_fields(self, exclude: list[str] | None = None) -> None:
+        """Validate every field value, collecting per-field errors.
+
+        Raises:
+            ValidationError: with a ``message_dict`` mapping field names to
+                their error messages.
+        """
+        from zeeb_orm.exceptions import ValidationError
+
+        excluded = set(exclude or ())
+        errors: dict[str, list[str]] = {}
+
+        for field in self._meta.local_fields:
+            if field.name in excluded:
+                continue
+            if isinstance(field, ForeignKeyField):
+                value = getattr(self, f"{field.name}_id", None)
+            else:
+                value = getattr(self, field.name, None)
+            try:
+                field.validate(value, self)
+            except ValidationError as exc:
+                errors[field.name] = exc.messages
+
+        if errors:
+            raise ValidationError(errors)
+
+    async def clean(self) -> None:
+        """Hook for custom model-level validation.
+
+        Override to implement cross-field checks; raise
+        :class:`~zeeb_orm.exceptions.ValidationError` on failure.
+        Called by :meth:`full_clean` after field validation.
+        """
+
+    async def full_clean(self, exclude: list[str] | None = None) -> None:
+        """Run :meth:`clean_fields` and :meth:`clean`, merging all errors.
+
+        Raises:
+            ValidationError: with a combined ``message_dict``.
+        """
+        from zeeb_orm.exceptions import ValidationError
+
+        errors: dict[str, list[str]] = {}
+
+        try:
+            self.clean_fields(exclude=exclude)
+        except ValidationError as exc:
+            errors.update(exc.message_dict)
+
+        try:
+            await self.clean()
+        except ValidationError as exc:
+            for key, messages in exc.message_dict.items():
+                errors.setdefault(key, []).extend(messages)
+
+        if errors:
+            raise ValidationError(errors)
+
+    async def save(
+        self,
+        update_fields: list[str] | None = None,
+        *,
+        validate: bool = True,
+    ) -> None:
         """
         Save the model instance to the database.
 
         If update_fields is provided, only those fields will be updated.
+
+        Unless ``validate=False``, :meth:`full_clean` runs first (when
+        ``update_fields`` is given, fields not being updated are excluded
+        from validation).
 
         Fires :data:`~zeeb_orm.signals.pre_save` before the DB write and
         :data:`~zeeb_orm.signals.post_save` after the commit.
         """
         from zeeb_orm.db.connection import get_connection
         from zeeb_orm.signals import post_save, pre_save
+
+        if validate:
+            exclude = None
+            if update_fields:
+                exclude = [
+                    f.name
+                    for f in self._meta.local_fields
+                    if f.name not in update_fields
+                ]
+            await self.full_clean(exclude=exclude)
 
         db = await get_connection()
         created = not self._state.persisted
@@ -465,37 +545,44 @@ class Model(metaclass=ModelBase):
             update_fields=update_fields,
         )
 
-    async def delete(self) -> None:
-        """Delete this model instance from the database.
+    async def delete(self) -> tuple[int, dict[str, int]]:
+        """Delete this model instance, honoring ``on_delete`` rules.
 
-        Fires :data:`~zeeb_orm.signals.pre_delete` before the DB delete and
+        Related rows are collected via :class:`~zeeb_orm.models.deletion.Collector`
+        (CASCADE recursion, PROTECT/RESTRICT checks, SET_NULL/SET_DEFAULT
+        updates) and all writes run in a single transaction (``atomic()``,
+        unless one is already active).
+
+        Fires :data:`~zeeb_orm.signals.pre_delete` for every affected
+        instance before its row is deleted and
         :data:`~zeeb_orm.signals.post_delete` after the commit.
-        """
-        from sqlalchemy import delete
 
-        from zeeb_orm.db.connection import get_connection
-        from zeeb_orm.signals import post_delete, pre_delete
+        Returns:
+            ``(total_deleted, {model_name: count})``.
+
+        Raises:
+            ProtectedError: when PROTECT-related rows reference this object.
+            RestrictedError: when RESTRICT-related rows reference this object
+                and are not themselves deleted by the same operation.
+        """
+        from zeeb_orm.db.connection import atomic, get_active_session
+        from zeeb_orm.models.deletion import Collector
 
         if not self._state.persisted:
-            return
+            return 0, {}
 
-        db = await get_connection()
-        table = self._get_table()
-        pk_col = getattr(table.c, self._meta.pk_name)
-        pk_value = getattr(self, self._meta.pk_name)
+        collector = Collector()
+        # PROTECT / RESTRICT are checked here, BEFORE any delete runs.
+        await collector.collect([self])
 
-        # pre_delete fires BEFORE the session opens — exceptions abort the delete
-        await pre_delete.send(sender=type(self), instance=self)
-
-        async with db.session() as session:
-            stmt = delete(table).where(pk_col == pk_value)
-            await session.execute(stmt)
-            await session.commit()
+        if get_active_session() is not None:
+            result = await collector.delete()
+        else:
+            async with atomic():
+                result = await collector.delete()
 
         self._state.persisted = False
-
-        # post_delete fires AFTER commit — instance pk is still set for reference
-        await post_delete.send(sender=type(self), instance=self)
+        return result
 
     async def refresh_from_db(self, fields: list[str] | None = None) -> None:
         """Reload the model from the database."""

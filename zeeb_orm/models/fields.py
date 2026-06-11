@@ -16,6 +16,8 @@ from sqlalchemy import (
     Float,
     ForeignKey as SAForeignKey,
     Integer,
+    Interval,
+    LargeBinary,
     Numeric,
     SmallInteger,
     String,
@@ -24,6 +26,9 @@ from sqlalchemy import (
     Uuid,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
+
+from zeeb_orm import validators as orm_validators
+from zeeb_orm.models import deletion
 
 if TYPE_CHECKING:
     from sqlalchemy.orm import RelationshipProperty
@@ -95,6 +100,49 @@ class Field(Generic[T]):
     def get_column_type(self) -> Any:
         """Return the SQLAlchemy column type."""
         return self._column_type
+
+    def validate(self, value: Any, instance: Any = None) -> None:
+        """Validate ``value`` for this field, raising ``ValidationError``.
+
+        Checks performed:
+
+        - ``null=False`` + ``None`` raises (skipped for primary keys,
+          ``auto_now``/``auto_now_add`` fields and fields with a ``default``,
+          since their values are filled in at insert time).
+        - ``choices`` membership.
+        - All callables in ``self.validators`` (each may raise
+          :class:`~zeeb_orm.exceptions.ValidationError`).
+        """
+        from zeeb_orm.exceptions import ValidationError
+
+        if value is None:
+            if (
+                self.null
+                or self.primary_key
+                or self.default is not None
+                or getattr(self, "auto_now", False)
+                or getattr(self, "auto_now_add", False)
+            ):
+                return
+            raise ValidationError("This field cannot be null.", code="null")
+
+        errors: list[str] = []
+
+        if self.choices:
+            valid_choices = [
+                c[0] if isinstance(c, (list, tuple)) else c for c in self.choices
+            ]
+            if value not in valid_choices:
+                errors.append(f"Value {value!r} is not a valid choice.")
+
+        for validator in self.validators:
+            try:
+                validator(value)
+            except ValidationError as exc:
+                errors.extend(exc.messages)
+
+        if errors:
+            raise ValidationError(errors)
 
     def contribute_to_class(self, model: type[Model], name: str) -> None:
         """Called when field is added to a model class."""
@@ -188,6 +236,8 @@ class CharField(Field[str]):
     def __init__(self, *, max_length: int = 255, **kwargs: Any) -> None:
         self.max_length = max_length
         super().__init__(**kwargs)
+        if max_length is not None:
+            self.validators.append(orm_validators.MaxLengthValidator(max_length))
 
     def get_column_type(self) -> Any:
         return String(self.max_length)
@@ -205,6 +255,7 @@ class EmailField(CharField):
 
     def __init__(self, *, max_length: int = 254, **kwargs: Any) -> None:
         super().__init__(max_length=max_length, **kwargs)
+        self.validators.append(orm_validators.EmailValidator())
 
 
 class SlugField(CharField):
@@ -212,6 +263,7 @@ class SlugField(CharField):
 
     def __init__(self, *, max_length: int = 50, **kwargs: Any) -> None:
         super().__init__(max_length=max_length, **kwargs)
+        self.validators.append(orm_validators.validate_slug)
 
 
 class URLField(CharField):
@@ -219,6 +271,7 @@ class URLField(CharField):
 
     def __init__(self, *, max_length: int = 200, **kwargs: Any) -> None:
         super().__init__(max_length=max_length, **kwargs)
+        self.validators.append(orm_validators.URLValidator())
 
 
 class IntegerField(Field[int]):
@@ -243,9 +296,27 @@ class BigIntegerField(Field[int]):
 
 
 class PositiveIntegerField(IntegerField):
-    """Positive integer field (validation only, no DB constraint)."""
+    """Positive integer field (>= 0; validation only, no DB constraint)."""
 
-    pass
+    def __init__(self, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self.validators.append(orm_validators.MinValueValidator(0))
+
+
+class PositiveSmallIntegerField(SmallIntegerField):
+    """Positive small integer field (>= 0; validation only, no DB constraint)."""
+
+    def __init__(self, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self.validators.append(orm_validators.MinValueValidator(0))
+
+
+class PositiveBigIntegerField(BigIntegerField):
+    """Positive big integer field (>= 0; validation only, no DB constraint)."""
+
+    def __init__(self, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self.validators.append(orm_validators.MinValueValidator(0))
 
 
 class FloatField(Field[float]):
@@ -330,6 +401,69 @@ class JSONField(Field[dict[str, Any] | list[Any]]):
     _python_type = dict
 
 
+class BinaryField(Field[bytes]):
+    """Raw binary data field (``bytes``), stored as BLOB/BYTEA.
+
+    Args:
+        max_length: Optional maximum size in bytes (enforced by validation
+            and, where the backend supports it, the column type).
+    """
+
+    _python_type = bytes
+
+    def __init__(self, *, max_length: int | None = None, **kwargs: Any) -> None:
+        self.max_length = max_length
+        super().__init__(**kwargs)
+        if max_length is not None:
+            self.validators.append(orm_validators.MaxLengthValidator(max_length))
+
+    def get_column_type(self) -> Any:
+        return LargeBinary(length=self.max_length)
+
+
+class DurationField(Field[datetime.timedelta]):
+    """Duration field storing :class:`datetime.timedelta` values.
+
+    Uses a native ``INTERVAL`` column on PostgreSQL.  SQLite and MySQL have
+    no interval type, so SQLAlchemy stores the value as a datetime relative
+    to the epoch — precision is limited to microseconds and durations must
+    stay within the representable datetime range (roughly years 1-9999).
+    """
+
+    _column_type = Interval
+    _python_type = datetime.timedelta
+
+
+class GenericIPAddressField(Field[str]):
+    """IPv4/IPv6 address field stored as a string.
+
+    Args:
+        protocol: ``"both"`` (default), ``"IPv4"`` or ``"IPv6"``.
+            Determines which addresses validate.
+    """
+
+    _python_type = str
+
+    def __init__(self, *, protocol: str = "both", **kwargs: Any) -> None:
+        protocol_lower = protocol.lower()
+        if protocol_lower not in ("both", "ipv4", "ipv6"):
+            raise ValueError(
+                f"Invalid protocol {protocol!r}: expected 'both', 'IPv4' or 'IPv6'."
+            )
+        self.protocol = protocol
+        super().__init__(**kwargs)
+        if protocol_lower == "ipv4":
+            self.validators.append(orm_validators.validate_ipv4_address)
+        elif protocol_lower == "ipv6":
+            self.validators.append(orm_validators.validate_ipv6_address)
+        else:
+            self.validators.append(orm_validators.validate_ipv46_address)
+
+    def get_column_type(self) -> Any:
+        # 39 characters fits the longest textual IPv6 address.
+        return String(39)
+
+
 class ForeignKeyField(Field[ModelT]):
     """Foreign key relationship field."""
 
@@ -337,12 +471,25 @@ class ForeignKeyField(Field[ModelT]):
         self,
         to: type[ModelT] | str | Callable[[], type[ModelT]],
         *,
-        on_delete: str = "CASCADE",
+        on_delete: str = deletion.CASCADE,
         related_name: str | None = None,
         db_column: str | None = None,
         null: bool = False,
         **kwargs: Any,
     ) -> None:
+        if on_delete not in deletion.ON_DELETE_VALUES:
+            raise ValueError(
+                f"Unknown on_delete value {on_delete!r}. Valid values are: "
+                f"{', '.join(sorted(deletion.ON_DELETE_VALUES))}."
+            )
+        if on_delete == deletion.SET_NULL and not null:
+            raise ValueError(
+                "ForeignKey with on_delete=SET_NULL requires null=True."
+            )
+        if on_delete == deletion.SET_DEFAULT and kwargs.get("default") is None:
+            raise ValueError(
+                "ForeignKey with on_delete=SET_DEFAULT requires a default."
+            )
         self.to = to
         self.on_delete = on_delete
         self.related_name = related_name

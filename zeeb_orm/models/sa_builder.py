@@ -19,6 +19,7 @@ def build_table(model: type[Model]) -> Table:
     if model._sa_table is None:
         from sqlalchemy import ForeignKey, Integer
 
+        from zeeb_orm.models.deletion import to_db_ondelete
         from zeeb_orm.models.fields import ForeignKeyField
 
         columns = []
@@ -47,9 +48,12 @@ def build_table(model: type[Model]) -> Table:
                 else:
                     col_type = Integer()  # Fallback
                 col_kwargs["nullable"] = field.null
+                # Map the on_delete constant to a valid SQL ON DELETE action
+                # (e.g. SET_NULL -> "SET NULL"; DO_NOTHING -> no clause).
+                db_ondelete = to_db_ondelete(field.on_delete)
                 fk = ForeignKey(
                     f"{target_table}.{target_pk}",
-                    ondelete=field.on_delete,
+                    ondelete=db_ondelete,
                 )
                 columns.append(Column(field.db_column, col_type, fk, **col_kwargs))
             else:
@@ -66,6 +70,7 @@ def build_sa_model(model: type[Model]) -> type[Any]:
         from sqlalchemy import ForeignKey as SAForeignKey
         from sqlalchemy.orm import DeclarativeBase, mapped_column
 
+        from zeeb_orm.models.deletion import to_db_ondelete
         from zeeb_orm.models.fields import ForeignKeyField
 
         # Create a unique base for this model
@@ -85,7 +90,10 @@ def build_sa_model(model: type[Model]) -> type[Any]:
                 target_table = target_model._meta.db_table
                 target_pk = target_model._meta.pk_name
                 attrs[field.db_column] = mapped_column(
-                    SAForeignKey(f"{target_table}.{target_pk}", ondelete=field.on_delete),
+                    SAForeignKey(
+                        f"{target_table}.{target_pk}",
+                        ondelete=to_db_ondelete(field.on_delete),
+                    ),
                     nullable=field.null,
                 )
             else:

@@ -90,6 +90,8 @@ python manage.py runserver
 - [ViewSets](api/viewsets.md) - Create API endpoints
 - [Authentication](api/authentication.md) - User authentication
 - [Permissions](api/permissions.md) - Access control
+- [Throttling](api/throttling.md) - Rate limiting
+- [Versioning](api/versioning.md) - API versioning
 
 ### CLI & Tools
 - [Commands](cli/commands.md) - Management commands

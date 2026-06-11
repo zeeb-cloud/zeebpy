@@ -46,20 +46,61 @@ class Post(Model):
 
 ### on_delete Options
 
-| Option | Behavior |
-|--------|----------|
-| `"CASCADE"` | Delete related objects when parent is deleted |
-| `"PROTECT"` | Prevent deletion if related objects exist |
-| `"SET_NULL"` | Set to NULL (requires `null=True`) |
-| `"SET_DEFAULT"` | Set to default value |
-| `"DO_NOTHING"` | Do nothing (may cause integrity errors) |
+The constants are importable from `zeeb_orm` (plain strings, so passing
+`on_delete="CASCADE"` keeps working):
+
+```python
+from zeeb_orm import CASCADE, PROTECT, RESTRICT, SET_NULL, SET_DEFAULT, DO_NOTHING
+```
+
+| Option | Behavior on deleting the referenced object |
+|--------|--------------------------------------------|
+| `CASCADE` (default) | Delete the referencing objects too (recursively) |
+| `PROTECT` | Raise `ProtectedError` if referencing objects exist |
+| `RESTRICT` | Raise `RestrictedError`, unless the referencing objects are themselves deleted by the same operation (via another cascade path) |
+| `SET_NULL` | Set the FK column to NULL — requires `null=True` |
+| `SET_DEFAULT` | Set the FK column to the field default — requires a `default` |
+| `DO_NOTHING` | Leave referencing rows untouched (may leave dangling FKs) |
 
 ```python
 class Comment(Model):
-    post = fields.ForeignKey(Post, on_delete="CASCADE")  # Delete with post
-    user = fields.ForeignKey(User, on_delete="SET_NULL", null=True)  # Keep if user deleted
-    category = fields.ForeignKey(Category, on_delete="PROTECT")  # Prevent category deletion
+    post = fields.ForeignKey(Post, on_delete=CASCADE)  # Delete with post
+    user = fields.ForeignKey(User, on_delete=SET_NULL, null=True)  # Keep if user deleted
+    category = fields.ForeignKey(Category, on_delete=PROTECT)  # Prevent category deletion
 ```
+
+Invalid combinations raise `ValueError` at field definition time: unknown
+`on_delete` values, `SET_NULL` without `null=True`, and `SET_DEFAULT`
+without a `default`.
+
+#### How deletion works
+
+`on_delete` is enforced **in Python** by a collector (like Django's), so it
+works regardless of database FK enforcement (e.g. SQLite's `foreign_keys`
+PRAGMA, which is off by default):
+
+```python
+total, per_model = await author.delete()
+# (3, {"Author": 1, "Post": 2}) — counts include cascaded rows
+```
+
+- `PROTECT`/`RESTRICT` are checked **before** any row is deleted.
+  `ProtectedError.protected_objects` / `RestrictedError.restricted_objects`
+  contain the referencing instances.
+- All updates and deletes run in a single transaction (`atomic()` is opened
+  automatically unless one is already active).
+- Cascaded rows are deleted leaf-first, and `pre_delete`/`post_delete`
+  signals fire for **every** affected instance.
+- `QuerySet.delete()` routes through the collector whenever another model
+  references the queryset's model with a non-`DO_NOTHING` FK (its count then
+  includes cascaded rows, and per-instance delete signals fire). Models with
+  no such inbound FKs keep the fast single-statement DELETE (no signals).
+
+At the database level the constants map to standard `ON DELETE` actions in
+the generated DDL: `CASCADE` → `ON DELETE CASCADE`, `SET_NULL` →
+`ON DELETE SET NULL`, `SET_DEFAULT` → `ON DELETE SET DEFAULT`,
+`PROTECT`/`RESTRICT` → `ON DELETE RESTRICT`, and `DO_NOTHING` emits no
+clause.
 
 ### Accessing Related Objects
 

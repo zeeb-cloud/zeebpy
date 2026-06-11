@@ -39,6 +39,7 @@ from zeeb_orm.exceptions import (
     NotSupportedError,
     ProtectedError,
     RestrictedError,
+    TransactionManagementError,
     ValidationError,
 )
 from zeeb_orm.db.connection import (
@@ -62,28 +63,42 @@ from zeeb_orm.models.base import (
     MultipleObjectsReturned,
     metadata,
 )
+from zeeb_orm.models.deletion import (
+    CASCADE,
+    DO_NOTHING,
+    PROTECT,
+    RESTRICT,
+    SET_DEFAULT,
+    SET_NULL,
+    Collector,
+)
 from zeeb_orm.models.relations import RelationInfo, resolve_relation
 from zeeb_orm.models.fields import (
     AutoField,
     BigAutoField,
     BigIntegerField,
+    BinaryField,
     BooleanField,
     CharField,
     DateField,
     DateTimeField,
     DecimalField,
+    DurationField,
     EmailField,
     Field,
     FloatField,
     ForeignKey,
     ForeignKeyField,
+    GenericIPAddressField,
     IntegerField,
     JSONField,
     ManyToMany,
     ManyToManyField,
     OneToOne,
     OneToOneField,
+    PositiveBigIntegerField,
     PositiveIntegerField,
+    PositiveSmallIntegerField,
     SlugField,
     SmallIntegerField,
     TextField,
@@ -166,10 +181,19 @@ __all__ = [
     "NotSupportedError",
     "ProtectedError",
     "RestrictedError",
+    "TransactionManagementError",
     "FieldDoesNotExist",
     "FieldError",
     "DoesNotExist",
     "MultipleObjectsReturned",
+    # on_delete constants & collector
+    "CASCADE",
+    "PROTECT",
+    "RESTRICT",
+    "SET_NULL",
+    "SET_DEFAULT",
+    "DO_NOTHING",
+    "Collector",
     # Fields
     "Field",
     "AutoField",
@@ -184,6 +208,8 @@ __all__ = [
     "SmallIntegerField",
     "BigIntegerField",
     "PositiveIntegerField",
+    "PositiveSmallIntegerField",
+    "PositiveBigIntegerField",
     "FloatField",
     "DecimalField",
     "BooleanField",
@@ -191,6 +217,9 @@ __all__ = [
     "TimeField",
     "DateTimeField",
     "JSONField",
+    "BinaryField",
+    "DurationField",
+    "GenericIPAddressField",
     "UUIDField",
     "ForeignKey",
     "ForeignKeyField",
@@ -269,7 +298,11 @@ __all__ = [
     "post_save",
     "pre_delete",
     "post_delete",
+    # Namespaces
+    "fields",
+    "validators",
 ]
 
-# Provide a fields namespace like Django
+# Namespaces: zeeb_orm.fields (like Django) and zeeb_orm.validators
+from zeeb_orm import validators
 from zeeb_orm.models import fields

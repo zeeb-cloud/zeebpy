@@ -131,6 +131,24 @@ from zeeb_api.middleware import (
     install_middleware,
     CORSMiddleware,
 )
+from zeeb_api.throttling import (
+    BaseThrottle,
+    SimpleRateThrottle,
+    AnonRateThrottle,
+    UserRateThrottle,
+    ScopedRateThrottle,
+    set_throttle_cache,
+    throttle,
+)
+from zeeb_api.versioning import (
+    BaseVersioning,
+    QueryParameterVersioning,
+    HeaderVersioning,
+    AcceptHeaderVersioning,
+    URLPathVersioning,
+    VersioningMiddleware,
+    get_api_version,
+)
 from zeeb_api.app import create_app, get_asgi_application
 
 __version__ = "0.1.0"
@@ -146,6 +164,22 @@ __all__ = [
     # Middleware
     "install_middleware",
     "CORSMiddleware",
+    # Throttling
+    "BaseThrottle",
+    "SimpleRateThrottle",
+    "AnonRateThrottle",
+    "UserRateThrottle",
+    "ScopedRateThrottle",
+    "set_throttle_cache",
+    "throttle",
+    # Versioning
+    "BaseVersioning",
+    "QueryParameterVersioning",
+    "HeaderVersioning",
+    "AcceptHeaderVersioning",
+    "URLPathVersioning",
+    "VersioningMiddleware",
+    "get_api_version",
     # Serializers
     "Serializer",
     "ModelSerializer",

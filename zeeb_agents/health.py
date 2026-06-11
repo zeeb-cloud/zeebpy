@@ -6,8 +6,8 @@ import asyncio
 from pathlib import Path
 from typing import Any
 
-from zeeb_agents._utils import AgentResult
-from zeeb_agents._utils.project import load_project_settings, require_project_root
+from zeeb_agents._utils import AgentResult, agent_function
+from zeeb_agents._utils.project import load_project_settings
 
 _HEALTH_MODULE = '''\
 """Health check endpoints.
@@ -73,6 +73,7 @@ def _project_slug(root: Path) -> str:
     return "config"
 
 
+@agent_function
 async def create_health_endpoint(
     project_root: Path | None = None,
 ) -> AgentResult:
@@ -91,42 +92,40 @@ async def create_health_endpoint(
     Args:
         project_root: Auto-detected if ``None``.
     """
-    try:
-        root = require_project_root(project_root)
-        health_file = root / "health.py"
+    root = project_root
+    health_file = root / "health.py"
 
-        if health_file.exists():
-            return AgentResult(
-                success=False,
-                message="health.py already exists. Edit it manually or delete it first.",
-                data={"path": "health.py"},
-            )
-
-        slug = await asyncio.to_thread(_project_slug, root)
-        # NOTE: .replace() instead of .format() — the template contains literal
-        # braces (dicts/JSON) that .format() would choke on with a KeyError.
-        content = _HEALTH_MODULE.replace("{project_slug}", slug)
-        await asyncio.to_thread(health_file.write_text, content, "utf-8")
-
+    if health_file.exists():
         return AgentResult(
-            success=True,
-            message="health.py created with /health and /ready endpoints.",
-            data={
-                "path": "health.py",
-                "endpoints": [
-                    {"method": "GET", "path": "/health", "description": "Liveness probe"},
-                    {
-                        "method": "GET",
-                        "path": "/ready",
-                        "description": "Readiness probe (DB check)",
-                    },
-                ],
-            },
+            success=False,
+            message="health.py already exists. Edit it manually or delete it first.",
+            data={"path": "health.py"},
         )
-    except Exception as exc:
-        return AgentResult(success=False, message=str(exc))
+
+    slug = await asyncio.to_thread(_project_slug, root)
+    # NOTE: .replace() instead of .format() — the template contains literal
+    # braces (dicts/JSON) that .format() would choke on with a KeyError.
+    content = _HEALTH_MODULE.replace("{project_slug}", slug)
+    await asyncio.to_thread(health_file.write_text, content, "utf-8")
+
+    return AgentResult(
+        success=True,
+        message="health.py created with /health and /ready endpoints.",
+        data={
+            "path": "health.py",
+            "endpoints": [
+                {"method": "GET", "path": "/health", "description": "Liveness probe"},
+                {
+                    "method": "GET",
+                    "path": "/ready",
+                    "description": "Readiness probe (DB check)",
+                },
+            ],
+        },
+    )
 
 
+@agent_function
 async def check_system_health(
     project_root: Path | None = None,
 ) -> AgentResult:
@@ -144,50 +143,47 @@ async def check_system_health(
     Returns:
         ``AgentResult`` with a ``checks`` dict mapping check name → status string.
     """
-    try:
-        root = require_project_root(project_root)
+    root = project_root
 
-        def _run() -> dict[str, Any]:
-            from sqlalchemy import create_engine, text
-            from sqlalchemy import inspect as sa_inspect
+    def _run() -> dict[str, Any]:
+        from sqlalchemy import create_engine, text
+        from sqlalchemy import inspect as sa_inspect
 
-            results: dict[str, Any] = {}
+        results: dict[str, Any] = {}
 
-            # Settings check
-            try:
-                settings = load_project_settings(root)
-                results["settings"] = "ok"
-                db_url = settings.get("DATABASE", {}).get("url", "")
-                results["db_driver"] = db_url.split("://")[0] if "://" in db_url else "unknown"
-            except Exception as exc:
-                results["settings"] = f"error: {exc}"
+        # Settings check
+        try:
+            settings = load_project_settings(root)
+            results["settings"] = "ok"
+            db_url = settings.get("DATABASE", {}).get("url", "")
+            results["db_driver"] = db_url.split("://")[0] if "://" in db_url else "unknown"
+        except Exception as exc:
+            results["settings"] = f"error: {exc}"
 
-            # DB connectivity
-            try:
-                engine = create_engine(_sync_db_url(root))
-                with engine.connect() as conn:
-                    conn.execute(text("SELECT 1"))
-                results["db"] = "ok"
-                inspector = sa_inspect(engine)
-                results["tables"] = sorted(inspector.get_table_names())
-                results["table_count"] = len(results["tables"])
-            except Exception as exc:
-                results["db"] = f"error: {exc}"
-                results["tables"] = []
-                results["table_count"] = 0
+        # DB connectivity
+        try:
+            engine = create_engine(_sync_db_url(root))
+            with engine.connect() as conn:
+                conn.execute(text("SELECT 1"))
+            results["db"] = "ok"
+            inspector = sa_inspect(engine)
+            results["tables"] = sorted(inspector.get_table_names())
+            results["table_count"] = len(results["tables"])
+        except Exception as exc:
+            results["db"] = f"error: {exc}"
+            results["tables"] = []
+            results["table_count"] = 0
 
-            core_ok = all(
-                v == "ok" for k, v in results.items() if k in ("settings", "db")
-            )
-            results["overall"] = "healthy" if core_ok else "degraded"
-            return results
-
-        checks = await asyncio.to_thread(_run)
-        overall = checks.get("overall", "unknown")
-        return AgentResult(
-            success=overall == "healthy",
-            message=f"System health: {overall}.",
-            data={"checks": checks},
+        core_ok = all(
+            v == "ok" for k, v in results.items() if k in ("settings", "db")
         )
-    except Exception as exc:
-        return AgentResult(success=False, message=str(exc))
+        results["overall"] = "healthy" if core_ok else "degraded"
+        return results
+
+    checks = await asyncio.to_thread(_run)
+    overall = checks.get("overall", "unknown")
+    return AgentResult(
+        success=overall == "healthy",
+        message=f"System health: {overall}.",
+        data={"checks": checks},
+    )

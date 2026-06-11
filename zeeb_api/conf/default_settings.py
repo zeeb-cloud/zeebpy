@@ -58,6 +58,28 @@ API_PREFIX = ""
 DEFAULT_LIMIT = 20
 MAX_LIMIT = 100
 
+# Throttling settings
+# Dotted paths to throttle classes applied to all viewsets, e.g.
+# ["zeeb_api.throttling.AnonRateThrottle"]
+DEFAULT_THROTTLE_CLASSES = []
+# Rates per throttle scope, e.g. {"anon": "100/min", "user": "1000/min"}.
+# None disables the throttle for that scope.
+DEFAULT_THROTTLE_RATES = {
+    "anon": None,
+    "user": None,
+}
+# Number of trusted proxies in front of the app. When set, throttles
+# identify clients by the first hop of X-Forwarded-For.
+THROTTLE_NUM_PROXIES = None
+
+# API versioning settings
+# Dotted path to a versioning scheme, e.g. "zeeb_api.versioning.HeaderVersioning"
+DEFAULT_VERSIONING_CLASS = None
+DEFAULT_VERSION = None
+ALLOWED_VERSIONS = None
+VERSION_PARAM = "version"
+VERSION_HEADER = "X-API-Version"
+
 # Logging configuration
 LOGGING = {
     "level": "INFO",

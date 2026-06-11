@@ -39,7 +39,7 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
-from zeeb_agents._utils import AgentResult
+from zeeb_agents._utils import AgentResult, agent_function
 
 # ---------------------------------------------------------------------------
 # URI registry
@@ -79,8 +79,9 @@ def _read_doc(key: str) -> str:
 
 async def _build_project_context(project_root: Path) -> str:
     """Return a markdown section with live project state."""
-    from zeeb_agents.project import list_apps as _list_apps, get_project_info
     from zeeb_agents.migrations import get_migration_status
+    from zeeb_agents.project import get_project_info
+    from zeeb_agents.project import list_apps as _list_apps
 
     lines: list[str] = ["\n---\n\n## Current Project Context\n"]
 
@@ -137,6 +138,7 @@ async def _build_deployment_context(project_root: Path) -> str:
 # Public resource functions
 # ---------------------------------------------------------------------------
 
+@agent_function(resolve_project_root=False)
 async def get_capabilities_doc(
     project_root: Path | None = None,
     tool_prefix: str = "",
@@ -167,6 +169,7 @@ async def get_capabilities_doc(
     )
 
 
+@agent_function(resolve_project_root=False)
 async def get_project_lifecycle_doc(
     project_root: Path | None = None,
     tool_prefix: str = "",
@@ -196,6 +199,7 @@ async def get_project_lifecycle_doc(
     )
 
 
+@agent_function(resolve_project_root=False)
 async def get_backend_generation_doc(
     project_root: Path | None = None,
     tool_prefix: str = "",
@@ -224,6 +228,7 @@ async def get_backend_generation_doc(
     )
 
 
+@agent_function(resolve_project_root=False)
 async def get_frontend_generation_doc(
     project_root: Path | None = None,
     tool_prefix: str = "",
@@ -272,6 +277,7 @@ async def get_frontend_generation_doc(
     )
 
 
+@agent_function(resolve_project_root=False)
 async def get_deployment_doc(
     project_root: Path | None = None,
     tool_prefix: str = "",
@@ -314,6 +320,7 @@ _URI_MAP = {
 }
 
 
+@agent_function(resolve_project_root=False)
 async def get_resource(
     uri: str,
     project_root: Path | None = None,

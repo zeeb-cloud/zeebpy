@@ -8,6 +8,7 @@ and ``current`` without any subprocess calls or Alembic config files.
 from __future__ import annotations
 
 import sys
+import warnings
 from pathlib import Path
 from typing import Any
 
@@ -61,8 +62,13 @@ def _register_models(project_root: Path | None = None) -> None:
             if not auth_user_model:
                 from zeeb_api.auth.models import User
                 User._get_table()
-        except Exception:
-            pass
+        except ImportError:
+            pass  # zeeb_api is optional — no auth models to register
+        except Exception as exc:
+            warnings.warn(
+                f"Could not register zeeb_api auth models: {exc}",
+                stacklevel=2,
+            )
 
         # Register models from installed apps (including custom user models)
         for app in installed_apps:
@@ -70,7 +76,6 @@ def _register_models(project_root: Path | None = None) -> None:
                 continue
             clean_name = app.replace("apps.", "")
             import importlib
-            import warnings
 
             # Try multiple import paths for flexibility
             import_paths = [f"apps.{clean_name}.models"]
@@ -106,24 +111,37 @@ def _register_models(project_root: Path | None = None) -> None:
         try:
             from zeeb_api.auth.backends import clear_user_model_cache
             clear_user_model_cache()
-        except Exception:
-            pass
+        except ImportError:
+            pass  # zeeb_api is optional
+        except Exception as exc:
+            warnings.warn(
+                f"Could not clear cached user model: {exc}",
+                stacklevel=2,
+            )
 
         # Register UserPermission after app models so that the user FK
         # target (default User or custom user model) is already available
         try:
             from zeeb_api.auth.models import UserPermission
             UserPermission._get_table()
-        except Exception:
-            pass
+        except ImportError:
+            pass  # zeeb_api is optional
+        except Exception as exc:
+            warnings.warn(
+                f"Could not register UserPermission model: {exc}",
+                stacklevel=2,
+            )
 
         # Resolve any pending reverse relations (callable FK targets that
         # were deferred during import are now resolvable)
         try:
             from zeeb_orm.models.base import _process_pending_relations
             _process_pending_relations(resolve_callables=True)
-        except Exception:
-            pass
+        except Exception as exc:
+            warnings.warn(
+                f"Could not resolve pending model relations: {exc}",
+                stacklevel=2,
+            )
     finally:
         if str(project_root) in sys.path:
             sys.path.remove(str(project_root))

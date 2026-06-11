@@ -328,19 +328,62 @@ class User(Model):
 
 ### Model-level Validation
 
+Override the async `clean()` hook for cross-field checks; it is called by
+`full_clean()` after field validation:
+
 ```python
+from zeeb_orm import ValidationError
+
 class Event(Model):
     start_date = fields.DateTimeField()
     end_date = fields.DateTimeField()
 
-    def clean(self):
+    async def clean(self):
         """Validate the model."""
         if self.end_date <= self.start_date:
-            raise ValidationError("End date must be after start date")
+            raise ValidationError({"end_date": "End date must be after start date"})
+```
 
-    async def save(self, **kwargs):
-        self.clean()
-        await super().save(**kwargs)
+### full_clean() / clean_fields()
+
+```python
+event = Event(start_date=later, end_date=earlier)
+
+# Validate one layer at a time
+event.clean_fields()                  # per-field checks (sync)
+await event.clean()                   # custom hook (async)
+
+# Or everything at once — errors are merged into one ValidationError
+try:
+    await event.full_clean()
+except ValidationError as exc:
+    print(exc.message_dict)           # {"end_date": ["End date must be ..."]}
+
+# Skip specific fields
+await event.full_clean(exclude=["start_date"])
+```
+
+Field checks cover `null=False` (skipped for primary keys, `auto_now`/
+`auto_now_add` fields and fields with a `default`, since those values are
+filled in at insert time), `choices` membership, and all field `validators`
+(including built-ins like `CharField.max_length`).
+
+### Validation on save
+
+Validation is **enforced by default** when writing:
+
+```python
+await event.save()                    # runs full_clean() first
+await event.save(validate=False)      # opt out
+
+# update_fields excludes non-updated fields from validation
+await event.save(update_fields=["end_date"])
+
+await Event.objects.create(...)                  # validates by default
+await Event.objects.create(..., validate=False)  # opt out
+
+# bulk_create skips validation by default (performance); opt in:
+await Event.objects.bulk_create(events, validate=True)
 ```
 
 ## Signals (Hooks)

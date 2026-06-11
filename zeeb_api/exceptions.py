@@ -83,6 +83,9 @@ class ErrorCode(str, Enum):
     # Rate limiting
     RATE_LIMIT_EXCEEDED = "RATE_LIMIT_EXCEEDED"
     RATE_LIMIT_QUOTA_EXCEEDED = "RATE_LIMIT_QUOTA_EXCEEDED"
+
+    # API versioning
+    API_VERSION_INVALID = "API_VERSION_INVALID"
     
     # Server errors
     SERVER_ERROR = "SERVER_ERROR"

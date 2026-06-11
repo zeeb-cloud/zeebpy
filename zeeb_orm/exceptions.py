@@ -79,6 +79,18 @@ class ProtectedError(Exception):
 class RestrictedError(Exception):
     """Raised when deleting an object restricted by an on_delete=RESTRICT relation."""
 
+    def __init__(self, msg: str, restricted_objects: Any = None):
+        super().__init__(msg, restricted_objects)
+        self.restricted_objects = restricted_objects
+
+
+class TransactionManagementError(Exception):
+    """Raised for invalid transaction usage.
+
+    For example when ``select_for_update()`` is evaluated outside of an
+    ``atomic()`` block.
+    """
+
     pass
 
 
@@ -108,6 +120,7 @@ __all__ = [
     "NotSupportedError",
     "ProtectedError",
     "RestrictedError",
+    "TransactionManagementError",
     "FieldDoesNotExist",
     "FieldError",
     "DoesNotExist",

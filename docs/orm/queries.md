@@ -569,6 +569,139 @@ for article in articles:
 await Article.objects.bulk_update(articles, ["status"])
 ```
 
+### in_bulk()
+
+Fetch many objects at once as a `{key: instance}` mapping:
+
+```python
+# By primary key (default)
+articles = await Article.objects.in_bulk([1, 2, 3])
+# {1: <Article: 1>, 2: <Article: 2>, 3: <Article: 3>}
+
+# All objects, keyed by pk
+all_articles = await Article.objects.in_bulk()
+
+# By any UNIQUE field
+by_slug = await Article.objects.in_bulk(["intro", "faq"], field_name="slug")
+
+# An empty id_list returns {}
+assert await Article.objects.in_bulk([]) == {}
+```
+
+`field_name` must be the primary key or a `unique=True` field — otherwise
+`ValueError` is raised.
+
+## Streaming Large Result Sets — iterator()
+
+`iterator()` streams rows from the database in chunks instead of loading
+(and caching) the whole result set. Use it for large tables:
+
+```python
+async for article in Article.objects.filter(published=True).iterator():
+    await process(article)
+
+# Tune the fetch size (default 2000 rows per round-trip)
+async for article in Article.objects.iterator(chunk_size=500):
+    ...
+```
+
+Notes:
+
+- Results are **not cached** on the QuerySet; iterating twice queries twice.
+- The database session stays open for the lifetime of the iteration.
+- `iterator()` cannot be combined with `prefetch_related()` (raises
+  `NotSupportedError`), since prefetching needs the full result set.
+
+## Combining QuerySets — union() / intersection() / difference()
+
+Combine querysets of the same model with SQL set operations:
+
+```python
+cheap = Product.objects.filter(price__lt=10)
+popular = Product.objects.filter(orders__gte=100)
+
+# UNION (duplicates removed)
+results = await cheap.union(popular)
+
+# UNION ALL (duplicates kept)
+results = await cheap.union(popular, all=True)
+
+# INTERSECT — rows in both
+results = await cheap.intersection(popular)
+
+# EXCEPT — rows in the first but not the second
+results = await cheap.difference(popular)
+
+# Multiple querysets at once
+results = await qs1.union(qs2, qs3)
+```
+
+After combining, only these operations may be applied (Django parity):
+
+```python
+combined = cheap.union(popular)
+
+await combined.order_by("-price")        # OK — applies to the compound
+await combined[:10]                      # OK — limit/offset
+await combined.values("name", "price")   # OK
+await combined.count()                   # OK
+
+combined.filter(name="x")                # raises NotSupportedError
+combined.annotate(...)                   # raises NotSupportedError
+await combined.update(...)               # raises NotSupportedError
+await combined.delete()                  # raises NotSupportedError
+```
+
+Each side of the set operation selects an explicit, identical column list in
+model field order, so rows map back to model instances deterministically.
+
+> **MySQL note:** `INTERSECT` and `EXCEPT` require MySQL **8.0.31+**.
+> Older MySQL versions only support `UNION` / `UNION ALL`.
+
+## Row Locking — select_for_update()
+
+Lock the selected rows until the end of the transaction
+(`SELECT ... FOR UPDATE`):
+
+```python
+from zeeb_orm import atomic
+
+async with atomic():
+    account = await Account.objects.select_for_update().get(pk=account_id)
+    account.balance -= 100
+    await account.save()
+
+# Don't wait for locks held by other transactions
+Account.objects.select_for_update(nowait=True)
+
+# Skip rows that are already locked
+Account.objects.select_for_update(skip_locked=True)
+
+# Lock only specific tables of the query ("self" = the queryset's model)
+Account.objects.select_related("owner").select_for_update(of=("self",))
+```
+
+Requirements and limitations:
+
+- Must be evaluated **inside `atomic()`** — otherwise
+  `TransactionManagementError` is raised.
+- **Not supported on SQLite** — raises `NotSupportedError`.
+
+## Query Plans — explain()
+
+Return the database's execution plan for a query as a string:
+
+```python
+plan = await Article.objects.filter(slug="intro").explain()
+print(plan)
+# SQLite:    EXPLAIN QUERY PLAN — e.g. "SEARCH articles USING INDEX ..."
+# PostgreSQL: EXPLAIN
+# MySQL:      EXPLAIN
+
+# PostgreSQL only: actually execute the query and include real timings
+plan = await Article.objects.filter(slug="intro").explain(analyze=True)
+```
+
 ## Raw SQL
 
 ```python

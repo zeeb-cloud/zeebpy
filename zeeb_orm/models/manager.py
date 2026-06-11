@@ -121,9 +121,19 @@ class Manager(Generic[ModelT]):
         """Check if any objects exist."""
         return await self.get_queryset().exists()
 
-    async def create(self, **kwargs: Any) -> ModelT:
-        """Create and save a new object."""
-        return await self.get_queryset().create(**kwargs)
+    async def create(self, *, validate: bool = True, **kwargs: Any) -> ModelT:
+        """Create and save a new object (validated unless ``validate=False``)."""
+        return await self.get_queryset().create(validate=validate, **kwargs)
+
+    async def in_bulk(
+        self, id_list: list[Any] | None = None, *, field_name: str = "pk"
+    ) -> dict[Any, ModelT]:
+        """Return a ``{field_value: instance}`` mapping for the given values."""
+        return await self.get_queryset().in_bulk(id_list, field_name=field_name)
+
+    def iterator(self, chunk_size: int = 2000) -> Any:
+        """Stream results in chunks without result caching."""
+        return self.get_queryset().iterator(chunk_size=chunk_size)
 
     async def get_or_create(
         self, defaults: dict[str, Any] | None = None, **kwargs: Any
@@ -143,10 +153,14 @@ class Manager(Generic[ModelT]):
         *,
         batch_size: int | None = None,
         ignore_conflicts: bool = False,
+        validate: bool = False,
     ) -> list[ModelT]:
         """Insert multiple objects efficiently."""
         return await self.get_queryset().bulk_create(
-            objs, batch_size=batch_size, ignore_conflicts=ignore_conflicts
+            objs,
+            batch_size=batch_size,
+            ignore_conflicts=ignore_conflicts,
+            validate=validate,
         )
 
     async def bulk_update(
@@ -206,6 +220,34 @@ class Manager(Generic[ModelT]):
     def raw(self, sql: str, params: list[Any] | None = None) -> QuerySet[ModelT]:
         """Execute raw SQL query."""
         return self.get_queryset().raw(sql, params)
+
+    def union(self, *other_qs: Any, all: bool = False) -> QuerySet[ModelT]:
+        """Combine with other querysets using SQL UNION."""
+        return self.get_queryset().union(*other_qs, all=all)
+
+    def intersection(self, *other_qs: Any) -> QuerySet[ModelT]:
+        """Combine with other querysets using SQL INTERSECT."""
+        return self.get_queryset().intersection(*other_qs)
+
+    def difference(self, *other_qs: Any) -> QuerySet[ModelT]:
+        """Combine with other querysets using SQL EXCEPT."""
+        return self.get_queryset().difference(*other_qs)
+
+    def select_for_update(
+        self,
+        *,
+        nowait: bool = False,
+        skip_locked: bool = False,
+        of: tuple[str, ...] | list[str] = (),
+    ) -> QuerySet[ModelT]:
+        """Lock the selected rows with ``SELECT ... FOR UPDATE``."""
+        return self.get_queryset().select_for_update(
+            nowait=nowait, skip_locked=skip_locked, of=of
+        )
+
+    async def explain(self, *, analyze: bool = False) -> str:
+        """Return the database's execution plan for the full-table query."""
+        return await self.get_queryset().explain(analyze=analyze)
 
 
 class RelatedManager(Manager[ModelT]):

@@ -558,6 +558,22 @@ python manage.py migrate --fake-initial
 This skips the initial migration's schema operations (tables already exist) but
 records it as applied so future migrations can build on it.
 
+### Changing on_delete on an existing ForeignKey
+
+New tables get the correct `ON DELETE` clause in their DDL automatically
+(`CASCADE` → `ON DELETE CASCADE`, `SET_NULL` → `ON DELETE SET NULL`, etc.).
+However, **changing `on_delete` on an existing ForeignKey is not autodetected**
+and requires a manual migration: foreign key constraints can only be replaced
+by dropping and re-adding them, and SQLite cannot alter constraints at all
+(the table must be rebuilt — create a new table, copy the data, drop the old
+one, rename).
+
+In practice this matters less than it seems: `on_delete` behavior is enforced
+in Python by the deletion collector, so updating the model definition changes
+runtime behavior immediately. The database-level clause only acts as a backstop
+for writes that bypass the ORM (and is not enforced on SQLite unless the
+`foreign_keys` PRAGMA is enabled).
+
 ## Best Practices
 
 ### 1. Always Review Generated Migrations
