@@ -42,6 +42,15 @@ async def create_serializer(
         await create_serializer("blog", "Post",
             fields=["id", "title", "body", "created_at"],
             read_only_fields=["id", "created_at"])
+
+    Returns data (on success):
+        app (str): the app directory name
+        model (str): the model name passed in
+        serializer (str): the generated class name (``"<ModelName>Serializer"``)
+
+    Notes:
+        - On failure (missing ``serializers.py``, or the class already exists)
+          ``data`` is ``None``.
     """
     path = _serializers_file(app, project_root)
     if not path.exists():
@@ -78,6 +87,18 @@ async def update_serializer(
     """Update the ``fields`` and/or ``read_only_fields`` of an existing serializer.
 
     Replaces the ``class Meta`` ``fields`` / ``read_only_fields`` lines in place.
+
+    Returns data (on success):
+        app (str): the app directory name
+        serializer (str): the class name (``"<ModelName>Serializer"``)
+        changes (list[str]): human-readable change descriptions applied, e.g.
+            ``["fields updated", "read_only_fields updated"]``
+
+    Notes:
+        - On failure (missing ``serializers.py``, or the class is not found)
+          ``data`` is ``None``.
+        - If neither ``fields`` nor ``read_only_fields`` is given, ``changes``
+          is empty and the file is rewritten unchanged.
     """
     path = _serializers_file(app, project_root)
     if not path.exists():

@@ -55,6 +55,15 @@ async def create_model(
             {"name": "published", "type": "BooleanField", "default": False},
             {"name": "author", "type": "ForeignKey", "to": "User", "on_delete": "CASCADE"},
         ]
+
+    Returns data (on success):
+        app (str): the app name.
+        model (str): the model class name.
+        fields (list[str]): the ``"name"`` of each field that was added.
+
+    Notes:
+        - ``data`` is ``None`` on failure (missing ``models.py`` or a model of
+          the same name already exists).
     """
     path = _models_file(app, project_root)
     if not path.exists():
@@ -84,7 +93,16 @@ async def delete_model(
     model_name: str,
     project_root: Path | None = None,
 ) -> AgentResult:
-    """Remove a ``Model`` subclass from ``apps/<app>/models.py``."""
+    """Remove a ``Model`` subclass from ``apps/<app>/models.py``.
+
+    Returns data (on success):
+        app (str): the app name.
+        model (str): the removed model class name.
+
+    Notes:
+        - ``data`` is ``None`` on failure (missing ``models.py`` or the model
+          was not found).
+    """
     path = _models_file(app, project_root)
     if not path.exists():
         return AgentResult(success=False, message=f"models.py not found at {path}")
@@ -111,7 +129,13 @@ async def delete_model(
 
 @agent_function
 async def list_models(project_root: Path | None = None) -> AgentResult:
-    """Return all models defined across all apps."""
+    """Return all models defined across all apps.
+
+    Returns data (on success):
+        models (list[dict]): each ``{"app": str, "model": str,
+            "fields": list[str]}``.
+        count (int): len(models).
+    """
     root = project_root
 
     def _scan() -> list[dict]:
@@ -133,7 +157,7 @@ async def list_models(project_root: Path | None = None) -> AgentResult:
     return AgentResult(
         success=True,
         message=f"Found {len(models)} model(s)",
-        data={"models": models},
+        data={"models": models, "count": len(models)},
     )
 
 
@@ -148,6 +172,15 @@ async def add_field(
 
     Args:
         field: Field spec dict with ``"name"`` and ``"type"`` keys.
+
+    Returns data (on success):
+        app (str): the app name.
+        model (str): the model class name.
+        field (str): the ``"name"`` of the field that was added.
+
+    Notes:
+        - ``data`` is ``None`` on failure (missing ``models.py`` or the model
+          was not found).
     """
     path = _models_file(app, project_root)
     if not path.exists():
@@ -176,7 +209,17 @@ async def remove_field(
     field_name: str,
     project_root: Path | None = None,
 ) -> AgentResult:
-    """Remove a field from an existing model."""
+    """Remove a field from an existing model.
+
+    Returns data (on success):
+        app (str): the app name.
+        model (str): the model class name.
+        field (str): the name of the field that was removed.
+
+    Notes:
+        - ``data`` is ``None`` on failure (missing ``models.py`` or the field
+          was not found in the model).
+    """
     path = _models_file(app, project_root)
     if not path.exists():
         return AgentResult(success=False, message=f"models.py not found at {path}")
@@ -220,6 +263,16 @@ async def add_relationship(
             "to": "User",
             "on_delete": "CASCADE",
         })
+
+    Returns data (on success):
+        app (str): the app name.
+        model (str): the model class name.
+        field (str): the ``"name"`` of the relationship field that was added.
+
+    Notes:
+        - Delegates to :func:`add_field`, so the data shape matches it; ``data``
+          is ``None`` on failure (missing ``models.py`` or the model was not
+          found).
     """
     rel = dict(rel)
     rel.setdefault("on_delete", "CASCADE")
@@ -245,6 +298,16 @@ async def replace_model_fields(
         model_name: PascalCase model class name.
         fields: New list of field spec dicts (same format as :func:`create_model`).
         project_root: Auto-detected if ``None``.
+
+    Returns data (on success):
+        app (str): the app name.
+        model (str): the model class name.
+        fields (list[str]): the ``"name"`` of each new field (empty list when
+            *fields* was empty and the body was replaced with ``pass``).
+
+    Notes:
+        - ``data`` is ``None`` on failure (missing ``models.py`` or the model
+          was not found).
     """
     path = _models_file(app, project_root)
     if not path.exists():
@@ -336,6 +399,19 @@ async def update_model(
     """Rename a model class and/or update its ``class Meta`` attributes.
 
     Use :func:`add_field` / :func:`remove_field` to manage individual fields.
+
+    Returns data (on success):
+        app (str): the app name.
+        model (str): the post-update model name (``rename_to`` if given, else
+            the original ``model_name``).
+        changes (list[str]): human-readable descriptions of each change applied
+            (e.g. ``"renamed to 'X'"``, ``"meta.ordering updated"``,
+            ``"meta.X not found (add manually)"``); empty if nothing changed.
+
+    Notes:
+        - ``data`` is ``None`` on failure (missing ``models.py``).
+        - A meta key that is not already present in the class is reported in
+          ``changes`` (``"... not found (add manually)"``) rather than added.
     """
     path = _models_file(app, project_root)
     if not path.exists():

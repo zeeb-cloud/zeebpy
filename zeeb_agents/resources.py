@@ -4,6 +4,7 @@ Provides callable functions that return rich markdown documentation
 suitable for serving as MCP resource content.  Each function corresponds
 to one MCP resource URI:
 
+    mcp://docs/principles           → get_principles_doc()
     mcp://docs/capabilities         → get_capabilities_doc()
     mcp://docs/project-lifecycle    → get_project_lifecycle_doc()
     mcp://docs/backend-generation   → get_backend_generation_doc()
@@ -46,6 +47,7 @@ from zeeb_agents._utils import AgentResult, agent_function
 # ---------------------------------------------------------------------------
 
 RESOURCE_URIS = {
+    "principles":          "mcp://docs/principles",
     "capabilities":        "mcp://docs/capabilities",
     "project-lifecycle":   "mcp://docs/project-lifecycle",
     "backend-generation":  "mcp://docs/backend-generation",
@@ -59,6 +61,7 @@ _MIME = "text/markdown"
 _DOCS_DIR = Path(__file__).parent / "agent_docs"
 
 _DOC_FILES = {
+    "principles":          _DOCS_DIR / "principles.md",
     "capabilities":        _DOCS_DIR / "capabilities.md",
     "project-lifecycle":   _DOCS_DIR / "project-lifecycle.md",
     "backend-generation":  _DOCS_DIR / "backend-generation.md",
@@ -137,6 +140,39 @@ async def _build_deployment_context(project_root: Path) -> str:
 # ---------------------------------------------------------------------------
 # Public resource functions
 # ---------------------------------------------------------------------------
+
+@agent_function(resolve_project_root=False)
+async def get_principles_doc(
+    project_root: Path | None = None,
+    tool_prefix: str = "",
+) -> AgentResult:
+    """Return the operating-principles and special-cases guide.
+
+    Reads ``zeeb_agents/agent_docs/principles.md``.
+    The single most useful document to read first: it explains the
+    ``AgentResult`` contract, the ``@agent_function`` semantics (functions
+    never raise, ``project_root`` auto-detection), the return-shape
+    conventions, the security model (read-only SQL gate, path boundary),
+    the documented gotchas, and the framework concepts a coding agent needs
+    (how auth works, how URLs get registered, the generation flow).
+
+    Maps to MCP resource ``mcp://docs/principles``.
+
+    Args:
+        project_root: When provided, a live project context section is appended.
+        tool_prefix: String prepended to every ``{prefix}`` placeholder in the
+            markdown.  Defaults to ``""`` (no prefix).
+    """
+    content = await asyncio.to_thread(_read_doc, "principles")
+    content = content.replace("{prefix}", tool_prefix)
+    if project_root is not None:
+        content += await _build_project_context(project_root)
+    return AgentResult(
+        success=True,
+        message="Principles documentation ready.",
+        data={"content": content, "uri": RESOURCE_URIS["principles"], "mime_type": _MIME},
+    )
+
 
 @agent_function(resolve_project_root=False)
 async def get_capabilities_doc(
@@ -312,6 +348,7 @@ async def get_deployment_doc(
 # ---------------------------------------------------------------------------
 
 _URI_MAP = {
+    RESOURCE_URIS["principles"]:          get_principles_doc,
     RESOURCE_URIS["capabilities"]:        get_capabilities_doc,
     RESOURCE_URIS["project-lifecycle"]:   get_project_lifecycle_doc,
     RESOURCE_URIS["backend-generation"]:  get_backend_generation_doc,

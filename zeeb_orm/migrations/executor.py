@@ -11,7 +11,7 @@ import importlib.util
 import re
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 from zeeb_orm.migrations.migration import Migration
 
@@ -155,6 +155,177 @@ def unrecord_migration(connection, name: str) -> None:
 # Executing migrations
 # ---------------------------------------------------------------------------
 
+class _PlanItem(NamedTuple):
+    """One step in a migration plan."""
+
+    name: str
+    migration: Migration
+    backward: bool = False
+    # Forward-only flags that skip running operations:
+    fake_initial: bool = False        # initial migration whose tables already exist
+    replaces_satisfied: bool = False  # squash whose replaced migrations are all applied
+
+
+def _load_all(migrations_dir: Path) -> list[tuple[str, Path, Migration]]:
+    """Load every migration file once, in filename order."""
+    return [
+        (name, path, load_migration(path))
+        for name, path in list_migration_files(migrations_dir)
+    ]
+
+
+def _build_plan(
+    conn,
+    loaded: list[tuple[str, Path, Migration]],
+    applied: set[str],
+    target: str | None,
+    fake_initial: bool,
+) -> list[_PlanItem]:
+    """Compute the ordered list of steps to reach *target*.
+
+    - ``target == "zero"``  → unapply all applied migrations (reverse order).
+    - ``target`` is a known migration name → move forward or backward to it.
+    - otherwise (``None`` or an unknown name) → apply all pending migrations.
+    """
+    names = [name for name, _, _ in loaded]
+
+    # Migrations superseded by a squash file present in the directory — never
+    # applied directly while their replacement exists.
+    replaced_by_squash: set[str] = set()
+    for _name, _path, mig in loaded:
+        if mig.replaces:
+            replaced_by_squash.update(mig.replaces)
+
+    def _forward(name: str, mig: Migration) -> _PlanItem:
+        if fake_initial and mig.initial and _tables_exist(conn, mig):
+            return _PlanItem(name=name, migration=mig, fake_initial=True)
+        # A squash whose replaced migrations are all already applied must not
+        # re-run its operations on an existing database — only record itself.
+        if mig.replaces and all(r in applied for r in mig.replaces):
+            return _PlanItem(name=name, migration=mig, replaces_satisfied=True)
+        return _PlanItem(name=name, migration=mig)
+
+    if target == "zero":
+        # Migrations replaced by a present squash are unapplied via that squash
+        # (which also unrecords their tracking rows), so skip them here to avoid
+        # dropping the same table twice.
+        return [
+            _PlanItem(name=name, migration=mig, backward=True)
+            for name, _path, mig in reversed(loaded)
+            if name in applied and name not in replaced_by_squash
+        ]
+
+    if target in names:
+        target_idx = names.index(target)
+        current_idx = -1
+        for i, name in enumerate(names):
+            if name in applied:
+                current_idx = i
+
+        if target_idx > current_idx:
+            return [
+                _forward(name, mig)
+                for name, _path, mig in loaded[current_idx + 1: target_idx + 1]
+                if name not in applied and name not in replaced_by_squash
+            ]
+        return [
+            _PlanItem(name=name, migration=mig, backward=True)
+            for name, _path, mig in reversed(loaded[target_idx + 1: current_idx + 1])
+            if name in applied and name not in replaced_by_squash
+        ]
+
+    # Apply all pending (target is None or an unknown name).
+    return [
+        _forward(name, mig)
+        for name, _path, mig in loaded
+        if name not in applied and name not in replaced_by_squash
+    ]
+
+
+def _validate_dependencies(
+    plan: list[_PlanItem],
+    loaded: list[tuple[str, Path, Migration]],
+    applied: set[str],
+) -> None:
+    """Ensure each forward migration's declared dependencies are met first.
+
+    A dependency is satisfied if it is already applied, covered by a squash's
+    ``replaces``, or scheduled earlier in this plan. An unmet dependency that
+    names a *known* migration is an error (out-of-order history); one that names
+    an *unknown* migration only warns (e.g. a squashed original was deleted).
+    """
+    import warnings
+
+    from zeeb_orm.migrations.state import MigrationError
+
+    known = {name for name, _, _ in loaded}
+    replaced_by_squash: set[str] = set()
+    for _name, _path, mig in loaded:
+        replaced_by_squash.update(mig.replaces)
+
+    satisfied = set(applied) | replaced_by_squash
+    for item in plan:
+        if item.backward:
+            continue
+        for dep in item.migration.dependencies:
+            if dep in satisfied:
+                continue
+            if dep in known:
+                raise MigrationError(
+                    f"Migration '{item.name}' depends on '{dep}', which is not "
+                    f"applied and not scheduled to run before it."
+                )
+            warnings.warn(
+                f"Migration '{item.name}' depends on unknown migration "
+                f"'{dep}' (file missing and not covered by a squash); continuing.",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+        satisfied.add(item.name)
+
+
+def _apply_plan(
+    conn,
+    plan: list[_PlanItem],
+    applied: set[str],
+    fake: bool,
+) -> list[str]:
+    """Execute a plan, recording each step. Returns the names processed."""
+    processed: list[str] = []
+
+    for item in plan:
+        mig = item.migration
+        if item.backward:
+            if not fake:
+                _execute(conn, mig, backward=True)
+            unrecord_migration(conn, item.name)
+            # A squash recorded its replaced migrations as applied at apply
+            # time; unrecord them together so tracking stays consistent.
+            for replaced_name in mig.replaces:
+                unrecord_migration(conn, replaced_name)
+            conn.commit()
+            processed.append(item.name)
+            continue
+
+        # Forward. Skip running operations when faking, faking the initial
+        # (tables exist), or when a squash's replaced migrations are all applied.
+        skip_run = fake or item.fake_initial or item.replaces_satisfied
+        if not skip_run:
+            _execute(conn, mig, backward=False)
+        record_migration(conn, item.name)
+        conn.commit()
+        processed.append(item.name)
+
+        # A squash marks its replaced migrations applied too.
+        if mig.replaces:
+            for replaced_name in mig.replaces:
+                if replaced_name not in applied and replaced_name not in processed:
+                    record_migration(conn, replaced_name)
+                    conn.commit()
+
+    return processed
+
+
 def migrate(
     target: str | None = None,
     database_url: str | None = None,
@@ -191,174 +362,41 @@ def migrate(
     engine = create_engine(sync_url)
 
     migrations_dir = get_migrations_dir(project_root)
-    all_migrations = list_migration_files(migrations_dir)
-
-    applied_names: list[str] = []
 
     try:
         with engine.connect() as conn:
             applied = get_applied_migrations(conn)
-            
-            # Build a set of migrations that are replaced by squashed migrations
-            # (both already-applied and unapplied squashed migrations)
-            replaced_by_applied = set()
-            for name, path in all_migrations:
-                mig = load_migration(path)
-                if hasattr(mig, 'replaces') and mig.replaces:
-                    # If this squashed migration is already applied OR exists in the list,
-                    # mark its replaced migrations as superseded
-                    replaced_by_applied.update(mig.replaces)
+            loaded = _load_all(migrations_dir)
+            plan_items = _build_plan(conn, loaded, applied, target, fake_initial)
+            _validate_dependencies(plan_items, loaded, applied)
 
-            if target == "zero":
-                # Rollback all applied migrations in reverse order
-                to_unapply = [
-                    (name, path) for name, path in reversed(all_migrations) if name in applied
-                ]
-                if plan:
-                    return [name for name, _ in to_unapply]
-                for name, path in to_unapply:
-                    mig = load_migration(path)
-                    if not fake:
-                        _run_backward(conn, mig)
-                    unrecord_migration(conn, name)
-                    conn.commit()
-                    applied_names.append(name)
+            if plan:
+                # A faked-initial migration runs nothing, so it is omitted from
+                # the plan output (matching the historical behavior).
+                return [item.name for item in plan_items if not item.fake_initial]
 
-            elif target and target in {name for name, _ in all_migrations}:
-                # Migrate to specific target (forward or backward)
-                target_idx = next(
-                    i for i, (name, _) in enumerate(all_migrations) if name == target
-                )
-                current_idx = -1
-                for i, (name, _) in enumerate(all_migrations):
-                    if name in applied:
-                        current_idx = i
-
-                if target_idx > current_idx:
-                    # Forward to target
-                    to_apply = [
-                        (name, path)
-                        for name, path in all_migrations[current_idx + 1: target_idx + 1]
-                        if name not in applied and name not in replaced_by_applied
-                    ]
-                    if plan:
-                        # Filter out initial migrations when fake_initial=True and tables exist
-                        if fake_initial:
-                            filtered = []
-                            for name, path in to_apply:
-                                mig = load_migration(path)
-                                if mig.initial and _tables_exist(conn, mig):
-                                    continue  # Skip this migration in the plan
-                                filtered.append(name)
-                            return filtered
-                        return [name for name, _ in to_apply]
-                    for name, path in to_apply:
-                        mig = load_migration(path)
-                        if not fake:
-                            if fake_initial and mig.initial:
-                                if _tables_exist(conn, mig):
-                                    record_migration(conn, name)
-                                    conn.commit()
-                                    applied_names.append(name)
-                                    continue
-                            _run_forward(conn, mig)
-                        record_migration(conn, name)
-                        conn.commit()
-                        applied_names.append(name)
-                        
-                        # If this migration replaces others, mark them as applied too
-                        if hasattr(mig, 'replaces') and mig.replaces:
-                            for replaced_name in mig.replaces:
-                                if replaced_name not in applied and replaced_name not in applied_names:
-                                    record_migration(conn, replaced_name)
-                                    conn.commit()
-                else:
-                    # Backward to target
-                    to_unapply = [
-                        (name, path)
-                        for name, path in reversed(all_migrations[target_idx + 1: current_idx + 1])
-                        if name in applied
-                    ]
-                    if plan:
-                        return [name for name, _ in to_unapply]
-                    for name, path in to_unapply:
-                        mig = load_migration(path)
-                        if not fake:
-                            _run_backward(conn, mig)
-                        unrecord_migration(conn, name)
-                        conn.commit()
-                        applied_names.append(name)
-
-            else:
-                # Apply all pending
-                to_apply = [
-                    (name, path)
-                    for name, path in all_migrations
-                    if name not in applied and name not in replaced_by_applied
-                ]
-                if plan:
-                    planned_names: list[str] = []
-                    for name, path in to_apply:
-                        mig = load_migration(path)
-                        if fake_initial and mig.initial and _tables_exist(conn, mig):
-                            continue
-                        planned_names.append(name)
-                    return planned_names
-                for name, path in to_apply:
-                    mig = load_migration(path)
-                    if not fake:
-                        if fake_initial and mig.initial:
-                            if _tables_exist(conn, mig):
-                                record_migration(conn, name)
-                                conn.commit()
-                                applied_names.append(name)
-                                continue
-                        _run_forward(conn, mig)
-                    record_migration(conn, name)
-                    conn.commit()
-                    applied_names.append(name)
-                    
-                    # If this migration replaces others, mark them as applied too
-                    if hasattr(mig, 'replaces') and mig.replaces:
-                        for replaced_name in mig.replaces:
-                            if replaced_name not in applied and replaced_name not in applied_names:
-                                record_migration(conn, replaced_name)
-                                conn.commit()
-
+            return _apply_plan(conn, plan_items, applied, fake)
     finally:
         engine.dispose()
 
-    return applied_names
 
-
-def _run_forward(conn, mig) -> None:
-    """Run a migration's forward operations, respecting atomic setting."""
-    if mig.atomic:
-        with conn.begin_nested():
-            mig.pre_migrate(conn)
-            for op in mig.operations:
-                op.forward(conn)
-            mig.post_migrate(conn)
-    else:
+def _execute(conn, mig, backward: bool = False) -> None:
+    """Run a migration's operations forward or backward, respecting ``atomic``."""
+    def _body() -> None:
         mig.pre_migrate(conn)
-        for op in mig.operations:
-            op.forward(conn)
-        mig.post_migrate(conn)
-
-
-def _run_backward(conn, mig) -> None:
-    """Run a migration's backward operations, respecting atomic setting."""
-    if mig.atomic:
-        with conn.begin_nested():
-            mig.pre_migrate(conn)
-            for op in reversed(mig.operations):
+        ops = list(reversed(mig.operations)) if backward else list(mig.operations)
+        for op in ops:
+            if backward:
                 op.backward(conn)
-            mig.post_migrate(conn)
-    else:
-        mig.pre_migrate(conn)
-        for op in reversed(mig.operations):
-            op.backward(conn)
+            else:
+                op.forward(conn)
         mig.post_migrate(conn)
+
+    if mig.atomic:
+        with conn.begin_nested():
+            _body()
+    else:
+        _body()
 
 
 def _tables_exist(conn, mig) -> bool:

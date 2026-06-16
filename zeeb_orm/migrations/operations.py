@@ -10,33 +10,29 @@ from __future__ import annotations
 from typing import Any
 
 
+def _quote(connection, identifier: str) -> str:
+    """Quote a SQL identifier (table/column name) for the active dialect."""
+    return connection.dialect.identifier_preparer.quote(identifier)
+
+
 class Operation:
-    """Base class for migration operations."""
+    """Base class for migration operations.
+
+    Subclasses must implement ``describe``, ``forward`` and ``backward``.
+    """
 
     reversible = True
 
     def describe(self) -> str:
         raise NotImplementedError
 
-    def forward_sql(self, engine) -> list[str]:
-        """Return SQL statements for the forward migration."""
-        raise NotImplementedError
-
-    def backward_sql(self, engine) -> list[str]:
-        """Return SQL statements for the backward migration."""
-        raise NotImplementedError
-
     def forward(self, connection) -> None:
         """Execute forward migration."""
-        from sqlalchemy import text
-        for sql in self.forward_sql(connection.engine):
-            connection.execute(text(sql))
+        raise NotImplementedError
 
     def backward(self, connection) -> None:
         """Execute backward migration."""
-        from sqlalchemy import text
-        for sql in self.backward_sql(connection.engine):
-            connection.execute(text(sql))
+        raise NotImplementedError
 
 
 class CreateModel(Operation):
@@ -73,17 +69,6 @@ class CreateModel(Operation):
     def describe(self) -> str:
         return f"Create model {self.name}"
 
-    def forward_sql(self, engine) -> list[str]:
-        from sqlalchemy import MetaData, PrimaryKeyConstraint, Table
-        tmp_meta = MetaData()
-        cols = list(self.columns)
-        if self.primary_key:
-            cols.append(PrimaryKeyConstraint(*self.primary_key))
-        for c in self.constraints:
-            cols.append(c)
-        t = Table(self.table, tmp_meta, *cols)
-        return [str(t.compile(engine)).strip() for t in [t.to_metadata(tmp_meta)]]
-
     def forward(self, connection) -> None:
         from sqlalchemy import MetaData, PrimaryKeyConstraint, Table
         from sqlalchemy.schema import CreateTable
@@ -98,7 +83,7 @@ class CreateModel(Operation):
 
     def backward(self, connection) -> None:
         from sqlalchemy import text
-        connection.execute(text(f"DROP TABLE IF EXISTS {self.table}"))
+        connection.execute(text(f"DROP TABLE IF EXISTS {_quote(connection, self.table)}"))
 
     def __repr__(self) -> str:
         parts = [
@@ -112,6 +97,11 @@ class CreateModel(Operation):
         parts.append(f"        ],\n")
         if self.primary_key:
             parts.append(f"        primary_key={self.primary_key!r},\n")
+        if self.constraints:
+            parts.append(f"        constraints=[\n")
+            for c in self.constraints:
+                parts.append(f"            {_repr_constraint(c)},\n")
+            parts.append(f"        ],\n")
         parts.append(f"    )")
         return "".join(parts)
 
@@ -128,7 +118,7 @@ class DeleteModel(Operation):
 
     def forward(self, connection) -> None:
         from sqlalchemy import text
-        connection.execute(text(f"DROP TABLE IF EXISTS {self.table}"))
+        connection.execute(text(f"DROP TABLE IF EXISTS {_quote(connection, self.table)}"))
 
     def backward(self, connection) -> None:
         pass  # Cannot recreate without column info
@@ -236,6 +226,8 @@ class AlterField(Operation):
         nullable: bool | None = None,
         old_column_type: Any = None,
         old_nullable: bool | None = None,
+        server_default: Any = None,
+        old_server_default: Any = None,
         **kwargs,
     ):
         self.model_name = model_name
@@ -245,41 +237,59 @@ class AlterField(Operation):
         self.nullable = nullable
         self.old_column_type = old_column_type
         self.old_nullable = old_nullable
+        self.server_default = server_default
+        self.old_server_default = old_server_default
         self.kwargs = kwargs
 
     @property
     def reversible(self):
-        return self.old_column_type is not None or self.old_nullable is not None
+        return (
+            self.old_column_type is not None
+            or self.old_nullable is not None
+            or self.old_server_default is not None
+        )
 
     def describe(self) -> str:
         return f"Alter field {self.name} on {self.model_name}"
 
-    def forward(self, connection) -> None:
+    def _apply_alter(self, connection, alter_kwargs: dict[str, Any]) -> None:
+        """Run ``alter_column`` with the given kwargs, using batch mode on SQLite.
+
+        Plain SQLite has no ``ALTER COLUMN``; Alembic's ``batch_alter_table``
+        emulates it via copy-and-swap. Other dialects alter in place.
+        """
+        if not alter_kwargs:
+            return
         from alembic.operations import Operations
         from alembic.runtime.migration import MigrationContext
         ctx = MigrationContext.configure(connection)
         op = Operations(ctx)
+        if connection.dialect.name == "sqlite":
+            with op.batch_alter_table(self.table) as batch_op:
+                batch_op.alter_column(self.name, **alter_kwargs)
+        else:
+            op.alter_column(self.table, self.name, **alter_kwargs)
+
+    def forward(self, connection) -> None:
         alter_kwargs: dict[str, Any] = {}
         if self.column_type is not None:
             alter_kwargs["type_"] = self.column_type
         if self.nullable is not None:
             alter_kwargs["nullable"] = self.nullable
+        if self.server_default is not None:
+            alter_kwargs["server_default"] = self.server_default
         alter_kwargs.update(self.kwargs)
-        if alter_kwargs:
-            op.alter_column(self.table, self.name, **alter_kwargs)
+        self._apply_alter(connection, alter_kwargs)
 
     def backward(self, connection) -> None:
-        from alembic.operations import Operations
-        from alembic.runtime.migration import MigrationContext
-        ctx = MigrationContext.configure(connection)
-        op = Operations(ctx)
         alter_kwargs: dict[str, Any] = {}
         if self.old_column_type is not None:
             alter_kwargs["type_"] = self.old_column_type
         if self.old_nullable is not None:
             alter_kwargs["nullable"] = self.old_nullable
-        if alter_kwargs:
-            op.alter_column(self.table, self.name, **alter_kwargs)
+        if self.old_server_default is not None:
+            alter_kwargs["server_default"] = self.old_server_default
+        self._apply_alter(connection, alter_kwargs)
 
     def __repr__(self) -> str:
         parts = [
@@ -292,10 +302,14 @@ class AlterField(Operation):
             parts.append(f"        column_type={_repr_sa_type(self.column_type)},\n")
         if self.nullable is not None:
             parts.append(f"        nullable={self.nullable!r},\n")
+        if self.server_default is not None:
+            parts.append(f"        server_default={self.server_default!r},\n")
         if self.old_column_type is not None:
             parts.append(f"        old_column_type={_repr_sa_type(self.old_column_type)},\n")
         if self.old_nullable is not None:
             parts.append(f"        old_nullable={self.old_nullable!r},\n")
+        if self.old_server_default is not None:
+            parts.append(f"        old_server_default={self.old_server_default!r},\n")
         parts.append(f"    )")
         return "".join(parts)
 
@@ -405,8 +419,6 @@ class RunSQL(Operation):
 
 class RunPython(Operation):
     """Execute a Python callable."""
-
-    reversible = False
 
     def __init__(self, code: Any, reverse_code: Any = None):
         self.code = code
@@ -560,21 +572,32 @@ class AddConstraint(Operation):
 
         ctx = MigrationContext.configure(connection)
         op = Operations(ctx)
+        is_sqlite = connection.dialect.name == "sqlite"
+        name = str(self.constraint.name)  # __init__ guarantees a non-empty name
 
         if isinstance(self.constraint, UniqueConstraint):
-            op.create_unique_constraint(
-                self.constraint.name,
-                self.table,
-                self._unique_column_names(),
-            )
+            # SQLite cannot ALTER TABLE ADD CONSTRAINT; use Alembic batch mode.
+            if is_sqlite:
+                with op.batch_alter_table(self.table) as batch_op:
+                    batch_op.create_unique_constraint(
+                        name, self._unique_column_names()
+                    )
+            else:
+                op.create_unique_constraint(
+                    name, self.table, self._unique_column_names()
+                )
             return
 
         if isinstance(self.constraint, CheckConstraint):
-            op.create_check_constraint(
-                self.constraint.name,
-                self.table,
-                str(self.constraint.sqltext),
-            )
+            if is_sqlite:
+                with op.batch_alter_table(self.table) as batch_op:
+                    batch_op.create_check_constraint(
+                        name, str(self.constraint.sqltext)
+                    )
+            else:
+                op.create_check_constraint(
+                    name, self.table, str(self.constraint.sqltext)
+                )
             return
 
         constraint = self._get_bound_constraint(connection)
@@ -588,45 +611,27 @@ class AddConstraint(Operation):
 
         ctx = MigrationContext.configure(connection)
         op = Operations(ctx)
+        is_sqlite = connection.dialect.name == "sqlite"
+        name = str(self.constraint.name)  # __init__ guarantees a non-empty name
 
-        if isinstance(self.constraint, UniqueConstraint):
-            op.drop_constraint(self.constraint.name, self.table, type_="unique")
-            return
-
-        if isinstance(self.constraint, CheckConstraint):
-            op.drop_constraint(self.constraint.name, self.table, type_="check")
+        if isinstance(self.constraint, (UniqueConstraint, CheckConstraint)):
+            type_ = "unique" if isinstance(self.constraint, UniqueConstraint) else "check"
+            if is_sqlite:
+                with op.batch_alter_table(self.table) as batch_op:
+                    batch_op.drop_constraint(name, type_=type_)
+            else:
+                op.drop_constraint(name, self.table, type_=type_)
             return
 
         constraint = self._get_bound_constraint(connection)
         connection.execute(DropConstraint(constraint))
 
     def __repr__(self) -> str:
-        from sqlalchemy import UniqueConstraint, CheckConstraint
-        c = self.constraint
-        if isinstance(c, UniqueConstraint):
-            cols = self._unique_column_names()
-            constraint_repr = ", ".join(repr(col) for col in cols)
-            return (
-                f"    operations.AddConstraint(\n"
-                f"        model_name={self.model_name!r},\n"
-                f"        table={self.table!r},\n"
-                "        constraint=sa.UniqueConstraint("
-                f"{constraint_repr}, name={c.name!r}),\n"
-                f"    )"
-            )
-        if isinstance(c, CheckConstraint):
-            return (
-                f"    operations.AddConstraint(\n"
-                f"        model_name={self.model_name!r},\n"
-                f"        table={self.table!r},\n"
-                f"        constraint=sa.CheckConstraint({str(c.sqltext)!r}, name={c.name!r}),\n"
-                f"    )"
-            )
         return (
             f"    operations.AddConstraint(\n"
             f"        model_name={self.model_name!r},\n"
             f"        table={self.table!r},\n"
-            f"        constraint={c!r},\n"
+            f"        constraint={_repr_constraint(self.constraint)},\n"
             f"    )"
         )
 
@@ -658,7 +663,12 @@ class RemoveConstraint(Operation):
         from alembic.runtime.migration import MigrationContext
         ctx = MigrationContext.configure(connection)
         op = Operations(ctx)
-        op.drop_constraint(self.name, self.table, type_=self.constraint_type)
+        # SQLite cannot ALTER TABLE DROP CONSTRAINT; use Alembic batch mode.
+        if connection.dialect.name == "sqlite":
+            with op.batch_alter_table(self.table) as batch_op:
+                batch_op.drop_constraint(self.name, type_=self.constraint_type)
+        else:
+            op.drop_constraint(self.name, self.table, type_=self.constraint_type)
 
     def backward(self, connection) -> None:
         pass  # Cannot recreate without constraint definition
@@ -675,6 +685,25 @@ class RemoveConstraint(Operation):
 
 
 # --- Helpers for repr ---
+
+def _repr_constraint(constraint) -> str:
+    """Render a UniqueConstraint/CheckConstraint as an ``sa.*`` constructor."""
+    from sqlalchemy import CheckConstraint, UniqueConstraint
+
+    if isinstance(constraint, UniqueConstraint):
+        cols = [
+            col.key if hasattr(col, "key") else str(col)
+            for col in constraint.columns
+        ]
+        if not cols:
+            pending = getattr(constraint, "_pending_colargs", ())
+            cols = [c.name if hasattr(c, "name") else str(c) for c in pending]
+        col_repr = ", ".join(repr(c) for c in cols)
+        return f"sa.UniqueConstraint({col_repr}, name={constraint.name!r})"
+    if isinstance(constraint, CheckConstraint):
+        return f"sa.CheckConstraint({str(constraint.sqltext)!r}, name={constraint.name!r})"
+    return repr(constraint)
+
 
 def _repr_column(col) -> str:
     """Generate repr for a SQLAlchemy Column."""

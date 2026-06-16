@@ -5,7 +5,6 @@ Tracks applied/pending migrations using the ``zeeb_migrations`` table
 and provides utilities for checking migration status.
 """
 
-import sys
 from pathlib import Path
 from typing import NamedTuple
 
@@ -73,23 +72,8 @@ def get_migration_state(project_root: Path | None = None, db_url: str | None = N
 
     # Get database URL from settings if not provided
     if db_url is None:
-        db_url = "sqlite:///db.sqlite3"
-        sys.path.insert(0, str(project_root))
-        try:
-            for item in project_root.iterdir():
-                if item.is_dir() and (item / "settings.py").exists():
-                    import importlib.util
-                    spec = importlib.util.spec_from_file_location("settings", item / "settings.py")
-                    if spec and spec.loader:
-                        settings = importlib.util.module_from_spec(spec)
-                        spec.loader.exec_module(settings)
-                        db_url = getattr(settings, "DATABASE", {}).get("url", db_url)
-                    break
-        except Exception:
-            pass
-        finally:
-            if str(project_root) in sys.path:
-                sys.path.remove(str(project_root))
+        from zeeb_orm.migrations._settings import get_database_url
+        db_url = get_database_url(project_root)
 
     try:
         status = executor.showmigrations(database_url=db_url, project_root=project_root)

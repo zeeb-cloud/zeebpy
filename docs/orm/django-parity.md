@@ -19,7 +19,7 @@ documented in detail in the other files under `docs/orm/`.
 | Transactions | `atomic` (nesting via savepoints), `on_commit`, `TransactionManagementError` |
 | Signals | `pre_save`/`post_save`/`pre_delete`/`post_delete`, `@receiver`, `send_robust` |
 | Multi-DB | `register_database`, `.using(alias)`, `atomic(using=...)` |
-| Migrations | Alembic-based autodetection (tables, columns, type/nullable, indexes, M2M through tables), `RunSQL`/`RunPython`, rename operations (manual) |
+| Migrations | Alembic-based autodetection (tables, columns, type/nullable, server defaults, indexes, named unique constraints, M2M through tables — all reversible), `RunSQL`/`RunPython`, rename operations (manual), squashing with `replaces`, dependency validation |
 
 ## Deliberately not implemented (and why)
 
@@ -37,7 +37,12 @@ documented in detail in the other files under `docs/orm/`.
 - `ArrayField`/`HStoreField`/range fields (PostgreSQL-only types)
 - `QuerySet.explain(format=...)` options beyond `analyze`
 - Compound date lookups on the autodetector side (no impact on queries)
-- Altering `on_delete` of an existing FK requires a manual migration
-  (Alembic does not diff FK `ondelete`; SQLite cannot alter constraints)
+- Foreign-key constraint changes (adding/removing an FK, altering `on_delete`)
+  are **not** auto-detected — write a manual migration. Column, unique-constraint
+  and type/nullable/default changes are auto-detected and applied via SQLite
+  batch mode (`batch_alter_table`, a copy-and-swap table rebuild) on SQLite and
+  in place on other dialects.
+- Only **named** unique constraints are auto-migrated; unnamed/check constraints
+  need a manual `AddConstraint`/`RemoveConstraint`.
 - Window functions require SQLite ≥ 3.25 / MySQL ≥ 8; `intersection`/`difference`
   require MySQL ≥ 8.0.31

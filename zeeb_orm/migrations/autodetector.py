@@ -7,18 +7,32 @@ Django-style Operation objects.
 
 from __future__ import annotations
 
+import warnings
 from typing import Any
 
 from zeeb_orm.migrations.operations import (
+    AddConstraint,
     AddField,
     AddIndex,
     AlterField,
     CreateModel,
     DeleteModel,
+    RemoveConstraint,
     RemoveField,
     RemoveIndex,
     Operation,
 )
+
+
+def _server_default_value(default) -> str | None:
+    """Extract a usable server-default value from an Alembic ``DefaultClause``."""
+    if default is None:
+        return None
+    arg = getattr(default, "arg", default)
+    if arg is None:
+        return None
+    text = getattr(arg, "text", None)  # TextClause -> its SQL text
+    return text if text is not None else str(arg)
 
 
 def _table_name_to_model_name(table_name: str) -> str:
@@ -83,14 +97,27 @@ def detect_changes(
                     for op in mig.operations:
                         try:
                             op.forward(conn)
-                        except Exception:
-                            # Skip operations that fail in SQLite (e.g. unsupported types)
-                            pass
+                        except Exception as exc:
+                            # Skip operations that fail in SQLite (e.g. unsupported
+                            # types or dialect-specific RunSQL), but warn — a
+                            # swallowed replay failure means the comparison state
+                            # is incomplete and change detection may be wrong.
+                            warnings.warn(
+                                f"makemigrations: skipping operation "
+                                f"{op.describe()!r} from {path.name} during state "
+                                f"replay: {exc}; change detection may be incomplete",
+                                RuntimeWarning,
+                                stacklevel=2,
+                            )
                     conn.commit()
 
-        # Compare model metadata against the in-memory migration state
+        # Compare model metadata against the in-memory migration state.
+        # ``compare_server_default`` surfaces DB-default changes as
+        # ``modify_default`` diffs (matching the Alembic env template).
         with mem_engine.connect() as conn:
-            migration_ctx = MigrationContext.configure(conn)
+            migration_ctx = MigrationContext.configure(
+                conn, opts={"compare_server_default": True}
+            )
             diffs = compare_metadata(migration_ctx, metadata)
     finally:
         mem_engine.dispose()
@@ -103,12 +130,19 @@ def _convert_diffs(diffs: list) -> list[Operation]:
     operations: list[Operation] = []
 
     for diff in diffs:
-        op = _convert_single_diff(diff)
-        if op is not None:
-            if isinstance(op, list):
-                operations.extend(op)
-            else:
-                operations.append(op)
+        # Alembic wraps *column-level* diffs (``modify_type``,
+        # ``modify_nullable``, ``modify_default``) in a list of tuples, while
+        # *table-level* diffs (``add_table``, ``add_column``, ...) are bare
+        # tuples. Flatten so each individual diff tuple reaches the dispatcher
+        # — otherwise list-wrapped diffs never match and are silently dropped.
+        inner_diffs = diff if isinstance(diff, list) else [diff]
+        for inner in inner_diffs:
+            op = _convert_single_diff(inner)
+            if op is not None:
+                if isinstance(op, list):
+                    operations.extend(op)
+                else:
+                    operations.append(op)
 
     return operations
 
@@ -120,15 +154,23 @@ def _convert_single_diff(diff: tuple) -> Operation | list[Operation] | None:
     diff_type = diff[0]
 
     if diff_type == "add_table":
+        from sqlalchemy import UniqueConstraint
         table = diff[1]
         model_name = _table_name_to_model_name(table.name)
         columns = [col.copy() for col in table.columns]
         pk_cols = [col.name for col in table.primary_key.columns]
+        # Preserve named table-level unique constraints so the written migration
+        # round-trips (otherwise the constraint is re-detected forever).
+        constraints = [
+            c for c in table.constraints
+            if isinstance(c, UniqueConstraint) and c.name and len(c.columns) > 0
+        ]
         return CreateModel(
             name=model_name,
             table=table.name,
             columns=columns,
             primary_key=pk_cols,
+            constraints=constraints or None,
         )
 
     elif diff_type == "remove_table":
@@ -153,6 +195,8 @@ def _convert_single_diff(diff: tuple) -> Operation | list[Operation] | None:
             model_name=model_name,
             table=table_name,
             name=column.name,
+            # Keep a copy of the dropped column so the operation is reversible.
+            field=column.copy(),
         )
 
     elif diff_type == "modify_type":
@@ -164,6 +208,7 @@ def _convert_single_diff(diff: tuple) -> Operation | list[Operation] | None:
             table=table_name,
             name=col_name,
             column_type=new_type,
+            old_column_type=old_type,
         )
 
     elif diff_type == "modify_nullable":
@@ -175,6 +220,40 @@ def _convert_single_diff(diff: tuple) -> Operation | list[Operation] | None:
             table=table_name,
             name=col_name,
             nullable=new_nullable,
+            old_nullable=old_nullable,
+        )
+
+    elif diff_type == "modify_default":
+        schema, table_name, col_name = diff[1], diff[2], diff[3]
+        old_default, new_default = diff[5], diff[6]
+        model_name = _table_name_to_model_name(table_name)
+        return AlterField(
+            model_name=model_name,
+            table=table_name,
+            name=col_name,
+            server_default=_server_default_value(new_default),
+            old_server_default=_server_default_value(old_default),
+        )
+
+    elif diff_type in ("add_constraint", "remove_constraint"):
+        from sqlalchemy import UniqueConstraint
+        constraint = diff[1]
+        # Only *named unique* constraints are auto-migrated; unnamed and
+        # non-unique (check/fk) constraints are silently skipped — on SQLite
+        # they surface as perpetual reflection noise and cannot be ALTERed in
+        # place anyway, so a manual migration is required.
+        if not isinstance(constraint, UniqueConstraint) or not constraint.name:
+            return None
+        table = constraint.table
+        table_name = table.name if table is not None else ""
+        model_name = _table_name_to_model_name(table_name)
+        if diff_type == "add_constraint":
+            return AddConstraint(
+                model_name=model_name, table=table_name, constraint=constraint,
+            )
+        return RemoveConstraint(
+            model_name=model_name, table=table_name,
+            name=str(constraint.name), constraint_type="unique",
         )
 
     elif diff_type == "add_index":

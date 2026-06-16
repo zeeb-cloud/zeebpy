@@ -6,6 +6,7 @@ Migration files subclass this to define dependencies and operations.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -35,15 +36,16 @@ class Migration:
     # If True, this is the initial migration (creates all tables from scratch)
     initial: bool = False
 
-    # List of migration names this depends on (e.g. ['0001_initial'])
-    dependencies: list[str] = []
+    # List of migration names this depends on (e.g. ['0001_initial']).
+    # Immutable default — subclasses assign their own list.
+    dependencies: Sequence[str] = ()
 
-    # List of migration names this squashed migration replaces (e.g. ['0001_initial', '0002_add_field'])
-    # Used by squashmigrations to indicate which migrations are superseded by this one
-    replaces: list[str] = []
+    # List of migration names this squashed migration replaces (e.g. ['0001_initial', '0002_add_field']).
+    # Used by squashmigrations to indicate which migrations are superseded by this one.
+    replaces: Sequence[str] = ()
 
     # List of Operation instances
-    operations: list[Operation] = []
+    operations: Sequence[Operation] = ()
 
     # If True (default), all operations in this migration run inside a single
     # database transaction. Set to False for migrations that cannot run inside

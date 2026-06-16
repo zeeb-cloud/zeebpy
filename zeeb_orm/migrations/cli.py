@@ -42,18 +42,16 @@ def _register_models(project_root: Path | None = None) -> None:
     sys.path.insert(0, str(project_root))
     try:
         # Load settings to get INSTALLED_APPS and AUTH_USER_MODEL
-        installed_apps: list[str] = []
-        auth_user_model: str | None = None
-        for item in project_root.iterdir():
-            if item.is_dir() and (item / "settings.py").exists():
-                import importlib.util
-                spec = importlib.util.spec_from_file_location("settings", item / "settings.py")
-                if spec and spec.loader:
-                    settings_module = importlib.util.module_from_spec(spec)
-                    spec.loader.exec_module(settings_module)
-                    installed_apps = list(getattr(settings_module, "INSTALLED_APPS", []))
-                    auth_user_model = getattr(settings_module, "AUTH_USER_MODEL", None)
-                break
+        from zeeb_orm.migrations._settings import load_settings_module
+        settings_module = load_settings_module(project_root)
+        installed_apps: list[str] = (
+            list(getattr(settings_module, "INSTALLED_APPS", []))
+            if settings_module is not None else []
+        )
+        auth_user_model: str | None = (
+            getattr(settings_module, "AUTH_USER_MODEL", None)
+            if settings_module is not None else None
+        )
 
         # Register auth models — Permission first (no FK dependencies)
         try:
@@ -441,15 +439,14 @@ def squashmigrations(
     """
     Squash migrations from *start* through *end* into a single file.
 
-    Similar to Django's ``python manage.py squashmigrations``, but this
-    command only generates a consolidated migration file. It does not record
-    Django-style ``replaces`` metadata and does not make the executor skip
-    the original migrations automatically.
+    Like Django's ``python manage.py squashmigrations``. The generated file
+    records the squashed migrations in its ``replaces`` attribute, so the
+    executor treats the originals as superseded: it skips them when applying
+    and marks them applied automatically when the squashed migration runs.
 
-    After generating the squashed migration, delete or archive the superseded
-    migration files before running a fresh ``migrate`` against an empty
-    database. Leaving both the squashed file and the original files in place
-    can cause both sets of operations to be applied.
+    The squashed file and the original files can therefore coexist safely —
+    operations are not applied twice. Once the squashed migration has been
+    deployed everywhere, the original migration files may be deleted.
 
     Args:
         start: Name of the first migration in the range (inclusive).
@@ -490,7 +487,7 @@ def squashmigrations(
     squash_range = all_migrations[start_idx: end_idx + 1]
 
     # Collect all operations in order
-    all_ops = []
+    all_ops: list[Any] = []
     for _name, path in squash_range:
         mig = load_migration(path)
         all_ops.extend(mig.operations)

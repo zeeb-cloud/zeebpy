@@ -50,6 +50,19 @@ async def create_route(
             (e.g. ``"ItemResponse"``).  Adds ``response_model=<name>`` to the decorator.
         project_root: Auto-detected if ``None``.
 
+    Returns data (on success):
+        app (str), path (str), method (str), function_name (str),
+        response_model (str | None): the registered route's details.
+
+    Notes:
+        - ``{name}`` segments in *path* (e.g. ``"/items/{item_id}"``) are
+          auto-extracted and added to the generated handler as ``str``
+          parameters (``async def handler(item_id: str): ...``).
+        - A ``router = Router()`` instance and its import are created in
+          ``views.py`` if not already present.
+        - Fails if *method* is invalid, ``views.py`` is missing, or a function
+          named *function_name* already exists.
+
     Example::
 
         await create_route("blog", "/posts/featured", "get", "get_featured_posts")

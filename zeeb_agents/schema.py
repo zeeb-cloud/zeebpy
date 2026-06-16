@@ -98,6 +98,20 @@ async def get_model_json_schema(
 
         result = await get_model_json_schema("blog", "Post")
         print(result.data["schema"])
+
+    Returns data (on success):
+        app (str): echoes *app*
+        model (str): echoes *model_name*
+        schema (dict): a JSON Schema object (``$schema``, ``title``, ``type``,
+            ``properties``, ``required``)
+
+    Notes:
+        - If ``models.py`` is missing, returns ``success=False`` with
+          ``data=None``.
+        - If the model is not found in the source, the underlying ``ValueError``
+          is wrapped by the decorator into ``success=False`` with ``data=None``.
+        - Fields are parsed statically from source text, not by importing the
+          model; an ``id`` integer property is always added.
     """
     models_path = get_app_path(app, project_root) / "models.py"
     if not models_path.exists():
@@ -142,6 +156,12 @@ async def list_all_routes(
     Returns:
         ``AgentResult`` with a ``routes`` list.  Each item has
         ``app``, ``type`` (``"viewset"`` or ``"route"``), and type-specific fields.
+
+    Returns data (on success):
+        routes (list[dict]): each has ``app``, ``file`` (``"views.py"`` or
+            ``"urls.py"``), ``type``; viewset items add ``prefix`` and
+            ``viewset``, route items add ``method`` and ``path``
+        count (int): len(routes)
     """
     root = project_root
 
@@ -197,6 +217,16 @@ async def export_openapi(
         output_path: Override output file path.  Relative to project root.
         port: Port the dev server is listening on.  Defaults to ``8000``.
         project_root: Auto-detected if ``None``.
+
+    Returns data (on success):
+        path (str): output path, relative to root when inside it, else absolute
+        paths_count (int): number of entries in the spec's ``paths`` object
+        title (str): the spec's ``info.title`` (``""`` if absent)
+
+    Notes:
+        - Requires ``httpx`` and a running dev server; a missing dependency,
+          connection error, or non-2xx response is wrapped by the decorator
+          into ``success=False`` with ``data=None``.
     """
     root = project_root
 

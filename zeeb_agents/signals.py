@@ -120,6 +120,20 @@ async def create_signal_receiver(
         model_name: Model class name the receiver listens on.
         function_name: Name for the new receiver function.
         project_root: Auto-detected if ``None``.
+
+    Returns data (on success):
+        path (str): signals.py path relative to the project root
+        app (str): the app name
+        signal (str): the signal the receiver is bound to
+        model (str): the sender model class name
+        function (str): the new receiver function name
+        action (str): ``"created"`` (new file) or ``"updated"`` (appended)
+
+    Notes:
+        - An invalid ``signal_name`` returns ``success=False`` with
+          ``data=None``.
+        - A missing app or a duplicate function name raises internally and is
+          wrapped into ``success=False`` with ``data=None`` by the decorator.
     """
     if signal_name not in _VALID_SIGNALS:
         return AgentResult(
@@ -178,6 +192,17 @@ async def list_signal_receivers(
     Args:
         app: App name.
         project_root: Auto-detected if ``None``.
+
+    Returns data (on success):
+        app (str): the app name
+        receivers (list[dict]): each has ``func_name``, ``signal``, ``sender``
+        count (int): len(receivers)
+
+    Notes:
+        - If ``signals.py`` is absent, ``receivers`` is ``[]`` and
+          ``count`` is ``0`` (still ``success=True``).
+        - A missing app raises internally and is wrapped into
+          ``success=False`` with ``data=None``.
     """
     root = project_root
 
@@ -213,6 +238,17 @@ async def read_signal_receiver(
         app: App name.
         function_name: Name of the receiver function.
         project_root: Auto-detected if ``None``.
+
+    Returns data (on success):
+        func_name (str): the receiver function name
+        signal (str): the signal the receiver is bound to
+        sender (str): the sender model class name
+        source (str): full source text (decorator + function body)
+
+    Notes:
+        - A missing app, a missing ``signals.py``, or an unknown
+          ``function_name`` raises internally and is wrapped into
+          ``success=False`` with ``data=None``.
     """
     root = project_root
 
@@ -259,6 +295,15 @@ async def edit_signal_receiver(
         function_name: Name of the receiver function to edit.
         new_body: New function body (indented with 4 spaces).
         project_root: Auto-detected if ``None``.
+
+    Returns data (on success):
+        path (str): signals.py path relative to the project root
+        func_name (str): the edited receiver function name
+
+    Notes:
+        - A missing app, a missing ``signals.py``, or an unknown
+          ``function_name`` raises internally and is wrapped into
+          ``success=False`` with ``data=None``.
     """
     root = project_root
 
@@ -311,6 +356,15 @@ async def delete_signal_receiver(
         app: App name.
         function_name: Name of the receiver function to remove.
         project_root: Auto-detected if ``None``.
+
+    Returns data (on success):
+        path (str): signals.py path relative to the project root
+        func_name (str): the removed receiver function name
+
+    Notes:
+        - A missing app, a missing ``signals.py``, or an unknown
+          ``function_name`` raises internally and is wrapped into
+          ``success=False`` with ``data=None``.
     """
     root = project_root
 
@@ -352,6 +406,18 @@ async def list_model_signals(
         app: App name.
         model_name: Model class name to filter by.
         project_root: Auto-detected if ``None``.
+
+    Returns data (on success):
+        app (str): the app name
+        model (str): the model class name filtered on
+        receivers (list[dict]): each has ``func_name`` and ``signal``
+        count (int): len(receivers)
+
+    Notes:
+        - If ``signals.py`` is absent, ``receivers`` is ``[]`` and
+          ``count`` is ``0`` (still ``success=True``).
+        - A missing app raises internally and is wrapped into
+          ``success=False`` with ``data=None``.
     """
     root = project_root
 

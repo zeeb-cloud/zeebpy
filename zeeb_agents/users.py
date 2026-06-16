@@ -59,6 +59,18 @@ async def create_user(
         is_staff: Grant staff privileges.
         is_superuser: Grant superuser privileges.
         project_root: Auto-detected if ``None``.
+
+    Returns data (on success):
+        <columns> (Any): every column of the created row, keyed by name, with
+            ``password`` removed
+        table (str): the user table the row was inserted into
+
+    Notes:
+        - The user table is detected by scanning for one with both ``email`` and
+          ``password`` columns; if none is found the error is wrapped by the
+          decorator into ``success=False`` with ``data=None``.
+        - Only the ``email``/``password``/``is_active``/``is_staff``/
+          ``is_superuser`` columns that actually exist on the table are inserted.
     """
     root = project_root
     hashed_pw = await asyncio.to_thread(_hash_password, password)
@@ -113,6 +125,16 @@ async def list_users(
         limit: Maximum number of users to return.
         offset: Number of users to skip.
         project_root: Auto-detected if ``None``.
+
+    Returns data (on success):
+        users (list[dict]): each row keyed by column name, ``password`` removed
+        total (int): total user count in the table (ignores limit/offset)
+        limit (int): echoes *limit*
+        offset (int): echoes *offset*
+
+    Notes:
+        - If no user table is found the error is wrapped by the decorator into
+          ``success=False`` with ``data=None``.
     """
     root = project_root
 
@@ -149,6 +171,14 @@ async def get_user(
     Args:
         email_or_id: Email address (``str``) or integer primary key.
         project_root: Auto-detected if ``None``.
+
+    Returns data (on success):
+        <columns> (Any): the matched row keyed by column name, ``password``
+            removed
+
+    Notes:
+        - A missing user table or a not-found user raises, and the decorator
+          wraps it into ``success=False`` with ``data=None``.
     """
     root = project_root
 
@@ -188,6 +218,16 @@ async def update_user(
         email_or_id: Email address (``str``) or integer primary key.
         changes: Dict of column → new value.  ``password`` is silently removed.
         project_root: Auto-detected if ``None``.
+
+    Returns data (on success):
+        <columns> (Any): the updated row keyed by column name, ``password``
+            removed
+
+    Notes:
+        - If *changes* contains only ``password`` (or is empty), returns
+          ``success=False`` with ``data=None`` and nothing is updated.
+        - A missing user table, or *changes* with no columns that exist on the
+          table, raises and is wrapped into ``success=False`` with ``data=None``.
     """
     root = project_root
     safe_changes = {k: v for k, v in changes.items() if k != "password"}
@@ -232,6 +272,15 @@ async def delete_user(
     Args:
         email_or_id: Email address (``str``) or integer primary key.
         project_root: Auto-detected if ``None``.
+
+    Returns data (on success):
+        deleted (int): number of rows deleted (always ``>= 1`` on success)
+
+    Notes:
+        - If no row matched (rowcount 0), returns ``success=False`` with
+          ``data=None``.
+        - A missing user table raises and is wrapped into ``success=False``
+          with ``data=None``.
     """
     root = project_root
 
@@ -272,6 +321,14 @@ async def set_user_password(
         email_or_id: Email address (``str``) or integer primary key.
         new_password: New plain-text password.
         project_root: Auto-detected if ``None``.
+
+    Returns data (always):
+        None — this function carries its result only in ``success``/``message``.
+
+    Notes:
+        - If no row matched, returns ``success=False``.
+        - A missing user table raises and is wrapped into ``success=False``
+          with ``data=None``.
     """
     root = project_root
     hashed_pw = await asyncio.to_thread(_hash_password, new_password)

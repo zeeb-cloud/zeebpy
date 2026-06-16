@@ -46,6 +46,17 @@ async def run_tests(
               in the project if ``None``.
         verbose: Pass ``-v`` to pytest for detailed output.
         project_root: Auto-detected if ``None``.
+
+    Returns data (always):
+        passed (int), failed (int), errors (int), skipped (int): counts parsed
+            from pytest's summary line.
+        output (str): full combined pytest stdout + stderr.
+        returncode (int): pytest's exit code.
+
+    Notes:
+        - ``success`` mirrors ``returncode == 0``.
+        - Counts are best-effort, scraped from pytest's summary line; if pytest
+          fails before producing a summary they default to ``0``.
     """
     root = project_root
 

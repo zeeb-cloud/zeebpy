@@ -67,6 +67,9 @@ async def get_settings(project_root: Path | None = None) -> AgentResult:
 
     Args:
         project_root: Auto-detected if ``None``.
+
+    Returns data (on success):
+        settings (dict): the parsed top-level settings as a dictionary.
     """
     root = project_root
     settings = await asyncio.to_thread(load_project_settings, root)
@@ -83,6 +86,15 @@ async def get_env(project_root: Path | None = None) -> AgentResult:
 
     Args:
         project_root: Auto-detected if ``None``.
+
+    Returns data (always):
+        path (str): the ``.env`` path (relative to root on success, absolute
+            on failure).
+        env (dict[str, str]): parsed variables (empty dict when missing).
+
+    Notes:
+        - A **missing** ``.env`` file is reported as ``success=False`` (with an
+          empty ``env`` dict), not as an empty success.
     """
     root = project_root
     env_path = _find_env_file(root)
@@ -118,6 +130,11 @@ async def set_env(
         key: Variable name (e.g. ``"SECRET_KEY"``).
         value: Variable value.
         project_root: Auto-detected if ``None``.
+
+    Returns data (on success):
+        key (str): the variable name that was set.
+        action (str): ``"added"`` if the key was new, ``"updated"`` if it
+            already existed.
     """
     env_path = _find_env_file(project_root)
 
@@ -147,6 +164,13 @@ async def delete_env(
     Args:
         key: Variable name to remove.
         project_root: Auto-detected if ``None``.
+
+    Returns data (always):
+        key (str): the variable name that was targeted.
+
+    Notes:
+        - A key that is not present in ``.env`` is reported as
+          ``success=False`` (still with ``data={"key": key}``).
     """
     env_path = _find_env_file(project_root)
 
@@ -203,6 +227,18 @@ async def manage_settings(
             to explicitly read a ``None``-valued setting.
         read_only: Force read mode even when ``value`` is ``None``.
         project_root: Auto-detected if ``None``.
+
+    Returns data:
+        Both modes return ``{"key": str, "value": <value>}`` on success
+        (read mode → the current value, write mode → the value just written).
+        When the key is missing, ``success=False`` and ``data={"key": key}``.
+
+    Notes:
+        - Mode is chosen by arguments, not a flag: only ``key`` (or
+          ``read_only=True``) → **read**; ``key`` + a non-``None`` ``value`` →
+          **write**.
+        - Write mode only updates a setting that **already exists** in
+          ``settings.py``; it never creates new keys.
     """
     import re
 

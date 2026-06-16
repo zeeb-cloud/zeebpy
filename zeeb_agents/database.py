@@ -79,6 +79,10 @@ async def list_tables(project_root: Path | None = None) -> AgentResult:
 
     Args:
         project_root: Auto-detected if ``None``.
+
+    Returns data (on success):
+        tables (list[str]): sorted table names.
+        count (int): len(tables).
     """
     root = project_root
 
@@ -93,7 +97,7 @@ async def list_tables(project_root: Path | None = None) -> AgentResult:
     return AgentResult(
         success=True,
         message=f"Found {len(tables)} table(s)",
-        data={"tables": sorted(tables)},
+        data={"tables": sorted(tables), "count": len(tables)},
     )
 
 
@@ -107,6 +111,15 @@ async def describe_table(
     Args:
         table_name: Exact table name as stored in the database.
         project_root: Auto-detected if ``None``.
+
+    Returns data (on success):
+        table (str): the table name that was inspected.
+        columns (list[dict]): each ``{"name": str, "type": str,
+            "nullable": bool, "default": str | None}``.
+
+    Notes:
+        - ``data`` is ``None`` on failure (e.g. the table does not exist or the
+          database cannot be reached).
     """
     root = project_root
 
@@ -146,6 +159,16 @@ async def run_query(
     Args:
         sql: A SQL query string.
         project_root: Auto-detected if ``None``.
+
+    Returns data (on success):
+        rows (list[dict]): result rows, each mapping column name to value.
+        count (int): len(rows).
+
+    Notes:
+        - The query is rejected (``success=False``, ``data=None``) when it is
+          not a single read-only ``SELECT`` / ``WITH`` / ``EXPLAIN`` statement.
+        - Execution always runs inside a transaction that is rolled back, so
+          nothing is ever committed even if a mutation slipped past the gate.
     """
     error = _validate_read_only_sql(sql)
     if error:

@@ -168,6 +168,297 @@ class TestDetectChanges:
         assert "test_things" not in create_tables
 
 
+class TestAutodetectorAlterField:
+    """Column-level diffs (type/nullable/remove) are detected and reversible.
+
+    Regression guard: Alembic wraps these diffs in a list, which the converter
+    used to drop silently — so AlterField autogeneration never fired.
+    """
+
+    def _write_initial(self, mig_dir, table, columns):
+        write_migration(
+            mig_dir,
+            operations=[CreateModel(
+                name="T", table=table,
+                columns=columns, primary_key=["id"],
+            )],
+            name="initial",
+            initial=True,
+        )
+
+    def test_detects_type_change(self, tmp_migrations_dir):
+        self._write_initial(tmp_migrations_dir, "test_alt_type", [
+            sa.Column("id", sa.Integer(), primary_key=True),
+            sa.Column("name", sa.String(50), nullable=False),
+        ])
+        _register_test_model("test_alt_type", [
+            sa.Column("id", sa.Integer(), primary_key=True),
+            sa.Column("name", sa.Text(), nullable=False),
+        ])
+
+        ops = detect_changes(migrations_dir=str(tmp_migrations_dir))
+
+        alters = [o for o in ops if isinstance(o, AlterField) and o.column_type is not None]
+        assert len(alters) == 1
+        assert alters[0].old_column_type is not None
+        assert alters[0].reversible is True
+
+    def test_detects_nullable_change(self, tmp_migrations_dir):
+        self._write_initial(tmp_migrations_dir, "test_alt_null", [
+            sa.Column("id", sa.Integer(), primary_key=True),
+            sa.Column("name", sa.String(50), nullable=False),
+        ])
+        _register_test_model("test_alt_null", [
+            sa.Column("id", sa.Integer(), primary_key=True),
+            sa.Column("name", sa.String(50), nullable=True),
+        ])
+
+        ops = detect_changes(migrations_dir=str(tmp_migrations_dir))
+
+        alters = [o for o in ops if isinstance(o, AlterField) and o.nullable is not None]
+        assert len(alters) == 1
+        assert alters[0].nullable is True
+        assert alters[0].old_nullable is False
+        assert alters[0].reversible is True
+
+    def test_detects_removed_column_reversible(self, tmp_migrations_dir):
+        self._write_initial(tmp_migrations_dir, "test_alt_rm", [
+            sa.Column("id", sa.Integer(), primary_key=True),
+            sa.Column("title", sa.String(200), nullable=False),
+            sa.Column("body", sa.Text(), nullable=True),
+        ])
+        _register_test_model("test_alt_rm", [
+            sa.Column("id", sa.Integer(), primary_key=True),
+            sa.Column("title", sa.String(200), nullable=False),
+        ])
+
+        ops = detect_changes(migrations_dir=str(tmp_migrations_dir))
+
+        removes = [o for o in ops if isinstance(o, RemoveField)]
+        assert len(removes) == 1
+        assert removes[0].name == "body"
+        assert removes[0].field is not None
+        assert removes[0].reversible is True
+
+    def test_alter_field_converges(self, tmp_migrations_dir):
+        """detect -> write -> detect returns no further changes (F3 guard)."""
+        self._write_initial(tmp_migrations_dir, "test_alt_conv", [
+            sa.Column("id", sa.Integer(), primary_key=True),
+            sa.Column("name", sa.String(50), nullable=False),
+        ])
+        _register_test_model("test_alt_conv", [
+            sa.Column("id", sa.Integer(), primary_key=True),
+            sa.Column("name", sa.Text(), nullable=True),
+        ])
+
+        ops = detect_changes(migrations_dir=str(tmp_migrations_dir))
+        assert ops, "expected an AlterField on first detect"
+        write_migration(tmp_migrations_dir, operations=ops, name="alter")
+
+        ops_again = detect_changes(migrations_dir=str(tmp_migrations_dir))
+        assert ops_again == []
+
+    def test_replay_failure_warns(self, tmp_migrations_dir):
+        """A migration whose operation fails on SQLite replay emits a warning."""
+        from zeeb_orm.migrations.operations import RunSQL
+
+        write_migration(
+            tmp_migrations_dir,
+            operations=[RunSQL("THIS IS NOT VALID SQL")],
+            name="bad",
+            initial=True,
+        )
+        _register_test_model("test_replay_warn", [
+            sa.Column("id", sa.Integer(), primary_key=True),
+        ])
+
+        with pytest.warns(RuntimeWarning, match="change detection may be incomplete"):
+            detect_changes(migrations_dir=str(tmp_migrations_dir))
+
+    def test_alter_field_forward_changes_type_on_sqlite(self, tmp_path):
+        """AlterField.forward actually alters the column type via batch mode."""
+        from sqlalchemy import create_engine, inspect as sa_inspect
+
+        db = tmp_path / "alter.sqlite3"
+        engine = create_engine(f"sqlite:///{db}")
+        with engine.begin() as conn:
+            conn.execute(sa.text(
+                "CREATE TABLE widget (id INTEGER PRIMARY KEY, qty VARCHAR(10))"
+            ))
+
+        op = AlterField(
+            model_name="Widget", table="widget", name="qty",
+            column_type=sa.Integer(), old_column_type=sa.String(10),
+        )
+        with engine.begin() as conn:
+            op.forward(conn)
+
+        with engine.connect() as conn:
+            cols = {c["name"]: c["type"] for c in sa_inspect(conn).get_columns("widget")}
+        assert isinstance(cols["qty"], sa.Integer)
+        engine.dispose()
+
+
+class TestMigrationDefaults:
+    """The Migration base class uses immutable (shared-safe) defaults."""
+
+    def test_base_defaults_are_empty(self):
+        from zeeb_orm.migrations.migration import Migration
+        assert tuple(Migration.dependencies) == ()
+        assert tuple(Migration.replaces) == ()
+        assert tuple(Migration.operations) == ()
+
+    def test_subclass_list_does_not_leak_into_base(self):
+        from zeeb_orm.migrations.migration import Migration
+
+        class M(Migration):
+            dependencies = ["0001_initial"]
+
+        assert list(M.dependencies) == ["0001_initial"]
+        assert tuple(Migration.dependencies) == ()  # base unchanged
+
+
+class TestConstraintAndDefaultAutodetection:
+    """Autodetect named unique constraints and server_default changes."""
+
+    def _write_initial(self, mig_dir, table, columns, constraints=None):
+        write_migration(
+            mig_dir,
+            operations=[CreateModel(
+                name="T", table=table, columns=columns,
+                primary_key=["id"], constraints=constraints,
+            )],
+            name="initial", initial=True,
+        )
+
+    def test_detects_added_unique_constraint(self, tmp_migrations_dir):
+        self._write_initial(tmp_migrations_dir, "cad_a", [
+            sa.Column("id", sa.Integer(), primary_key=True),
+            sa.Column("email", sa.String(100), nullable=False),
+        ])
+        _register_test_model("cad_a", [
+            sa.Column("id", sa.Integer(), primary_key=True),
+            sa.Column("email", sa.String(100), nullable=False),
+            sa.UniqueConstraint("email", name="uq_cad_a_email"),
+        ])
+
+        ops = detect_changes(migrations_dir=str(tmp_migrations_dir))
+        adds = [o for o in ops if isinstance(o, AddConstraint)]
+        assert len(adds) == 1
+        assert adds[0].constraint.name == "uq_cad_a_email"
+
+    def test_detects_removed_unique_constraint(self, tmp_migrations_dir):
+        self._write_initial(
+            tmp_migrations_dir, "cad_r",
+            [
+                sa.Column("id", sa.Integer(), primary_key=True),
+                sa.Column("email", sa.String(100), nullable=False),
+            ],
+            constraints=[sa.UniqueConstraint("email", name="uq_cad_r_email")],
+        )
+        _register_test_model("cad_r", [
+            sa.Column("id", sa.Integer(), primary_key=True),
+            sa.Column("email", sa.String(100), nullable=False),
+        ])
+
+        ops = detect_changes(migrations_dir=str(tmp_migrations_dir))
+        removes = [o for o in ops if isinstance(o, RemoveConstraint)]
+        assert len(removes) == 1
+        assert removes[0].name == "uq_cad_r_email"
+
+    def test_unique_constraint_converges(self, tmp_migrations_dir):
+        """New model with a table-level unique constraint round-trips to []."""
+        self._write_initial(
+            tmp_migrations_dir, "cad_c",
+            [
+                sa.Column("id", sa.Integer(), primary_key=True),
+                sa.Column("sku", sa.String(50), nullable=False),
+            ],
+            constraints=[sa.UniqueConstraint("sku", name="uq_cad_c_sku")],
+        )
+        # Model matches the migration exactly.
+        _register_test_model("cad_c", [
+            sa.Column("id", sa.Integer(), primary_key=True),
+            sa.Column("sku", sa.String(50), nullable=False),
+            sa.UniqueConstraint("sku", name="uq_cad_c_sku"),
+        ])
+
+        ops = detect_changes(migrations_dir=str(tmp_migrations_dir))
+        assert ops == []
+
+    def test_detects_server_default_change_reversible(self, tmp_migrations_dir):
+        self._write_initial(tmp_migrations_dir, "cad_sd", [
+            sa.Column("id", sa.Integer(), primary_key=True),
+            sa.Column("n", sa.Integer(), nullable=False, server_default="0"),
+        ])
+        _register_test_model("cad_sd", [
+            sa.Column("id", sa.Integer(), primary_key=True),
+            sa.Column("n", sa.Integer(), nullable=False, server_default="5"),
+        ])
+
+        ops = detect_changes(migrations_dir=str(tmp_migrations_dir))
+        alters = [o for o in ops if isinstance(o, AlterField) and o.server_default is not None]
+        assert len(alters) == 1
+        assert alters[0].old_server_default is not None
+        assert alters[0].reversible is True
+
+    def test_add_constraint_detection_converges(self, tmp_migrations_dir):
+        """detect -> write -> detect for an added unique constraint yields []."""
+        self._write_initial(tmp_migrations_dir, "cad_cv", [
+            sa.Column("id", sa.Integer(), primary_key=True),
+            sa.Column("email", sa.String(100), nullable=False),
+        ])
+        _register_test_model("cad_cv", [
+            sa.Column("id", sa.Integer(), primary_key=True),
+            sa.Column("email", sa.String(100), nullable=False),
+            sa.UniqueConstraint("email", name="uq_cad_cv_email"),
+        ])
+
+        ops = detect_changes(migrations_dir=str(tmp_migrations_dir))
+        assert any(isinstance(o, AddConstraint) for o in ops)
+        write_migration(tmp_migrations_dir, operations=ops, name="add_uq")
+
+        ops_again = detect_changes(migrations_dir=str(tmp_migrations_dir))
+        assert ops_again == []
+
+
+class TestOperationsCleanup:
+    """RunPython reversibility property and identifier quoting in DDL."""
+
+    def test_run_python_not_reversible_without_reverse(self):
+        from zeeb_orm.migrations.operations import RunPython
+        assert RunPython(lambda c: None).reversible is False
+
+    def test_run_python_reversible_with_reverse(self):
+        from zeeb_orm.migrations.operations import RunPython
+        assert RunPython(lambda c: None, reverse_code=lambda c: None).reversible is True
+
+    def test_create_model_roundtrip_reserved_word_table(self, tmp_path):
+        """A table named like a reserved word survives create + drop via quoting."""
+        from sqlalchemy import create_engine, inspect as sa_inspect
+
+        db = tmp_path / "reserved.sqlite3"
+        engine = create_engine(f"sqlite:///{db}")
+
+        op = CreateModel(
+            name="Order", table="order",
+            columns=[
+                sa.Column("id", sa.Integer(), primary_key=True),
+                sa.Column("total", sa.Integer(), nullable=False),
+            ],
+            primary_key=["id"],
+        )
+        with engine.begin() as conn:
+            op.forward(conn)
+        with engine.connect() as conn:
+            assert "order" in sa_inspect(conn).get_table_names()
+        with engine.begin() as conn:
+            op.backward(conn)
+        with engine.connect() as conn:
+            assert "order" not in sa_inspect(conn).get_table_names()
+        engine.dispose()
+
+
 # ---------------------------------------------------------------------------
 # New operations
 # ---------------------------------------------------------------------------
@@ -279,69 +570,66 @@ class TestNewOperations:
         assert "RemoveConstraint" in r
         assert "constraint_type='unique'" in r
 
-    def test_add_constraint_forward_unique_uses_alembic_operations(self):
-        from alembic.operations import Operations
+    def test_add_constraint_forward_unique_real_sqlite(self, tmp_path):
+        """AddConstraint.forward actually creates the constraint via batch mode."""
+        from sqlalchemy import create_engine, inspect as sa_inspect
 
-        engine = sa.create_engine("sqlite:///:memory:")
-        with engine.begin() as conn, patch.object(
-            Operations,
-            "create_unique_constraint",
-            autospec=True,
-        ) as create_unique_constraint:
-            op = AddConstraint(
-                model_name="Post",
-                table="posts",
+        engine = create_engine(f"sqlite:///{tmp_path / 'ac.sqlite3'}")
+        with engine.begin() as conn:
+            conn.execute(sa.text(
+                "CREATE TABLE posts (id INTEGER PRIMARY KEY, slug VARCHAR(50) NOT NULL)"
+            ))
+            AddConstraint(
+                model_name="Post", table="posts",
                 constraint=sa.UniqueConstraint("slug", name="uq_posts_slug"),
-            )
+            ).forward(conn)
+
+        with engine.connect() as conn:
+            uniques = sa_inspect(conn).get_unique_constraints("posts")
+        names = {u["name"] for u in uniques}
+        assert "uq_posts_slug" in names
+        engine.dispose()
+
+    def test_add_constraint_roundtrip_real_sqlite(self, tmp_path):
+        """forward then backward leaves the table without the constraint."""
+        from sqlalchemy import create_engine, inspect as sa_inspect
+
+        engine = create_engine(f"sqlite:///{tmp_path / 'acr.sqlite3'}")
+        op = AddConstraint(
+            model_name="Post", table="posts",
+            constraint=sa.UniqueConstraint("slug", name="uq_posts_slug"),
+        )
+        with engine.begin() as conn:
+            conn.execute(sa.text(
+                "CREATE TABLE posts (id INTEGER PRIMARY KEY, slug VARCHAR(50) NOT NULL)"
+            ))
             op.forward(conn)
-
-        _, name, table, columns = create_unique_constraint.call_args.args
-        assert name == "uq_posts_slug"
-        assert table == "posts"
-        assert columns == ["slug"]
-
-    def test_add_constraint_backward_check_uses_alembic_operations(self):
-        from alembic.operations import Operations
-
-        engine = sa.create_engine("sqlite:///:memory:")
-        with engine.begin() as conn, patch.object(
-            Operations,
-            "drop_constraint",
-            autospec=True,
-        ) as drop_constraint:
-            op = AddConstraint(
-                model_name="Post",
-                table="posts",
-                constraint=sa.CheckConstraint("length(slug) > 1", name="ck_posts_slug_len"),
-            )
+        with engine.begin() as conn:
             op.backward(conn)
+        with engine.connect() as conn:
+            uniques = sa_inspect(conn).get_unique_constraints("posts")
+        assert "uq_posts_slug" not in {u["name"] for u in uniques}
+        engine.dispose()
 
-        _, name, table = drop_constraint.call_args.args
-        assert name == "ck_posts_slug_len"
-        assert table == "posts"
-        assert drop_constraint.call_args.kwargs == {"type_": "check"}
+    def test_remove_constraint_forward_real_sqlite(self, tmp_path):
+        """RemoveConstraint.forward drops an existing unique constraint."""
+        from sqlalchemy import create_engine, inspect as sa_inspect
 
-    def test_remove_constraint_forward_uses_alembic_operations(self):
-        from alembic.operations import Operations
+        engine = create_engine(f"sqlite:///{tmp_path / 'rc.sqlite3'}")
+        with engine.begin() as conn:
+            conn.execute(sa.text(
+                "CREATE TABLE posts (id INTEGER PRIMARY KEY, "
+                "slug VARCHAR(50) NOT NULL, CONSTRAINT uq_posts_slug UNIQUE (slug))"
+            ))
+            RemoveConstraint(
+                model_name="Post", table="posts",
+                name="uq_posts_slug", constraint_type="unique",
+            ).forward(conn)
 
-        engine = sa.create_engine("sqlite:///:memory:")
-        with engine.begin() as conn, patch.object(
-            Operations,
-            "drop_constraint",
-            autospec=True,
-        ) as drop_constraint:
-            op = RemoveConstraint(
-                model_name="Post",
-                table="posts",
-                name="uq_posts_slug",
-                constraint_type="unique",
-            )
-            op.forward(conn)
-
-        _, name, table = drop_constraint.call_args.args
-        assert name == "uq_posts_slug"
-        assert table == "posts"
-        assert drop_constraint.call_args.kwargs == {"type_": "unique"}
+        with engine.connect() as conn:
+            uniques = sa_inspect(conn).get_unique_constraints("posts")
+        assert "uq_posts_slug" not in {u["name"] for u in uniques}
+        engine.dispose()
 
 
 # ---------------------------------------------------------------------------
@@ -762,6 +1050,166 @@ class TestSquashMigrations:
                 os.unlink(db_path)
 
 
+class TestSettingsDiscovery:
+    """Shared settings.py discovery helper."""
+
+    def _make_project(self, tmp_path, body):
+        proj = tmp_path / "myproj"
+        proj.mkdir()
+        (proj / "settings.py").write_text(textwrap.dedent(body))
+        return tmp_path
+
+    def test_loads_module_and_restores_sys_path(self, tmp_path):
+        import sys
+        from zeeb_orm.migrations._settings import (
+            load_settings_module, get_database_url, get_installed_apps,
+        )
+        root = self._make_project(tmp_path, """
+            DATABASE = {"url": "sqlite:///custom.db"}
+            INSTALLED_APPS = ["apps.blog", "apps.shop"]
+        """)
+        before = list(sys.path)
+
+        module = load_settings_module(root)
+        assert module is not None
+        assert get_database_url(root) == "sqlite:///custom.db"
+        assert get_installed_apps(root) == ["apps.blog", "apps.shop"]
+        assert sys.path == before  # sys.path restored
+
+    def test_missing_settings_returns_defaults(self, tmp_path):
+        from zeeb_orm.migrations._settings import (
+            load_settings_module, get_database_url, get_installed_apps,
+        )
+        assert load_settings_module(tmp_path) is None
+        assert get_installed_apps(tmp_path) == []
+        assert get_database_url(tmp_path) == "sqlite:///db.sqlite3"
+
+
+class TestDependencyValidation:
+    """The executor validates declared dependencies before applying."""
+
+    def _write_raw(self, mig_dir, filename, body):
+        (mig_dir / filename).write_text(textwrap.dedent(body))
+
+    def test_unmet_known_dependency_raises(self, tmp_migrations_dir, tmp_path):
+        from zeeb_orm.migrations import executor
+        from zeeb_orm.migrations.state import MigrationError
+
+        # 0001 declares a dependency on the *later* 0002 — an impossible order.
+        self._write_raw(tmp_migrations_dir, "0001_first.py", """
+            from zeeb_orm.migrations import Migration, operations
+
+            class Migration(Migration):
+                initial = True
+                dependencies = ['0002_second']
+                operations = []
+        """)
+        self._write_raw(tmp_migrations_dir, "0002_second.py", """
+            from zeeb_orm.migrations import Migration, operations
+
+            class Migration(Migration):
+                dependencies = []
+                operations = []
+        """)
+
+        db = f"sqlite:///{tmp_path / 'dep.sqlite3'}"
+        with pytest.raises(MigrationError, match="depends on '0002_second'"):
+            executor.migrate(database_url=db, project_root=tmp_migrations_dir.parent)
+
+    def test_normal_chain_passes(self, tmp_migrations_dir, tmp_path):
+        from zeeb_orm.migrations import executor
+        names = _write_chain(tmp_migrations_dir, 3)
+        db = f"sqlite:///{tmp_path / 'dep_ok.sqlite3'}"
+        applied = executor.migrate(database_url=db, project_root=tmp_migrations_dir.parent)
+        assert applied == names
+
+    def test_unknown_dependency_warns(self, tmp_migrations_dir, tmp_path):
+        from zeeb_orm.migrations import executor
+
+        self._write_raw(tmp_migrations_dir, "0001_only.py", """
+            from zeeb_orm.migrations import Migration, operations
+
+            class Migration(Migration):
+                initial = True
+                dependencies = ['0000_deleted_original']
+                operations = []
+        """)
+        db = f"sqlite:///{tmp_path / 'dep_warn.sqlite3'}"
+        with pytest.warns(RuntimeWarning, match="depends on unknown migration"):
+            executor.migrate(database_url=db, project_root=tmp_migrations_dir.parent)
+
+
+class TestSquashTrackingConsistency:
+    """Squash apply/rollback keeps the tracking table consistent."""
+
+    def _write_squash_pair(self, mig_dir):
+        write_migration(
+            mig_dir,
+            operations=[CreateModel(
+                name="Item", table="sqc_items",
+                columns=[sa.Column("id", sa.Integer(), primary_key=True)],
+                primary_key=["id"],
+            )],
+            name="initial", initial=True,
+        )
+        write_migration(
+            mig_dir,
+            operations=[AddField(
+                model_name="Item", table="sqc_items", name="name",
+                column=sa.Column("name", sa.String(100), nullable=True),
+            )],
+            name="add_name",
+        )
+
+    def test_rollback_squash_unrecords_replaced(self, tmp_migrations_dir, tmp_path):
+        from zeeb_orm.migrations.cli import squashmigrations
+        from zeeb_orm.migrations import executor
+        from sqlalchemy import create_engine
+        from zeeb_orm.migrations.executor import get_applied_migrations
+
+        self._write_squash_pair(tmp_migrations_dir)
+        names = [n for n, _ in list_migration_files(tmp_migrations_dir)]
+        squashmigrations(start=names[0], end=names[1],
+                         migrations_dir=str(tmp_migrations_dir))
+
+        db = f"sqlite:///{tmp_path / 'sqc.sqlite3'}"
+        root = tmp_migrations_dir.parent
+
+        executor.migrate(database_url=db, project_root=root)
+        executor.migrate(target="zero", database_url=db, project_root=root)
+
+        engine = create_engine(db)
+        with engine.connect() as conn:
+            remaining = get_applied_migrations(conn)
+        engine.dispose()
+        # Neither the squash nor the replaced originals stay marked applied.
+        assert remaining == set()
+
+    def test_squash_added_after_originals_applied_does_not_rerun(self, tmp_migrations_dir, tmp_path):
+        """If originals are already applied, a later squash only records itself."""
+        from zeeb_orm.migrations.cli import squashmigrations
+        from zeeb_orm.migrations import executor
+
+        self._write_squash_pair(tmp_migrations_dir)
+        names = [n for n, _ in list_migration_files(tmp_migrations_dir)]
+        db = f"sqlite:///{tmp_path / 'sqc2.sqlite3'}"
+        root = tmp_migrations_dir.parent
+
+        # Apply the originals normally first.
+        executor.migrate(database_url=db, project_root=root)
+
+        # Now create the squash and migrate again — its ops (which would
+        # re-create the table / re-add the column) must NOT run.
+        squashmigrations(start=names[0], end=names[1],
+                         migrations_dir=str(tmp_migrations_dir))
+        applied = executor.migrate(database_url=db, project_root=root)
+
+        # The squash is recorded (no crash from re-running AddField on an
+        # existing column), and only the squash name is returned.
+        assert len(applied) == 1
+        assert "squashed" in applied[0]
+
+
 # ---------------------------------------------------------------------------
 # makemigrations --check / --dry-run
 # ---------------------------------------------------------------------------
@@ -811,6 +1259,129 @@ class TestMakemigrationsFlags:
         py_files = list(tmp_migrations_dir.glob("*.py"))
         assert py_files == []
         assert result is None
+
+
+# ---------------------------------------------------------------------------
+# executor.migrate — end-to-end behavior (pinning tests for the refactor)
+# ---------------------------------------------------------------------------
+
+
+def _write_chain(mig_dir, n):
+    """Write n simple migrations: 0001 creates a table, 0002.. add columns."""
+    write_migration(
+        mig_dir,
+        operations=[CreateModel(
+            name="Row", table="exec_rows",
+            columns=[sa.Column("id", sa.Integer(), primary_key=True)],
+            primary_key=["id"],
+        )],
+        name="initial", initial=True,
+    )
+    for i in range(2, n + 1):
+        write_migration(
+            mig_dir,
+            operations=[AddField(
+                model_name="Row", table="exec_rows", name=f"c{i}",
+                column=sa.Column(f"c{i}", sa.Integer(), nullable=True),
+            )],
+            name=f"add_c{i}",
+        )
+    return [name for name, _ in list_migration_files(mig_dir)]
+
+
+def _table_names(db_url):
+    from sqlalchemy import create_engine, inspect as sa_inspect
+    engine = create_engine(db_url)
+    try:
+        with engine.connect() as conn:
+            return set(sa_inspect(conn).get_table_names())
+    finally:
+        engine.dispose()
+
+
+class TestExecutorMigrate:
+    """Pin executor.migrate behavior before/through the plan/apply refactor."""
+
+    def _db(self, tmp_path):
+        return f"sqlite:///{tmp_path / 'exec.sqlite3'}"
+
+    def test_migrate_all_then_zero(self, tmp_migrations_dir, tmp_path):
+        from zeeb_orm.migrations import executor
+        names = _write_chain(tmp_migrations_dir, 3)
+        db = self._db(tmp_path)
+        root = tmp_migrations_dir.parent
+
+        applied = executor.migrate(database_url=db, project_root=root)
+        assert applied == names
+        assert "exec_rows" in _table_names(db)
+
+        unapplied = executor.migrate(target="zero", database_url=db, project_root=root)
+        assert unapplied == list(reversed(names))
+        assert "exec_rows" not in _table_names(db)
+
+    def test_migrate_to_target_forward_then_backward(self, tmp_migrations_dir, tmp_path):
+        from zeeb_orm.migrations import executor
+        names = _write_chain(tmp_migrations_dir, 4)
+        db = self._db(tmp_path)
+        root = tmp_migrations_dir.parent
+
+        fwd = executor.migrate(target=names[2], database_url=db, project_root=root)
+        assert fwd == names[:3]
+
+        back = executor.migrate(target=names[0], database_url=db, project_root=root)
+        assert back == [names[2], names[1]]
+
+        status = executor.showmigrations(database_url=db, project_root=root)
+        applied_now = [n for n, ok in status if ok]
+        assert applied_now == [names[0]]
+
+    def test_fake_records_without_creating_tables(self, tmp_migrations_dir, tmp_path):
+        from zeeb_orm.migrations import executor
+        names = _write_chain(tmp_migrations_dir, 2)
+        db = self._db(tmp_path)
+        root = tmp_migrations_dir.parent
+
+        applied = executor.migrate(database_url=db, project_root=root, fake=True)
+        assert applied == names
+        assert "exec_rows" not in _table_names(db)  # nothing actually ran
+
+    def test_fake_initial_with_existing_tables(self, tmp_migrations_dir, tmp_path):
+        from zeeb_orm.migrations import executor
+        from sqlalchemy import create_engine, text
+        names = _write_chain(tmp_migrations_dir, 2)
+        db = self._db(tmp_path)
+        root = tmp_migrations_dir.parent
+
+        # Pre-create the table the initial migration would create.
+        engine = create_engine(db)
+        with engine.begin() as conn:
+            conn.execute(text("CREATE TABLE exec_rows (id INTEGER PRIMARY KEY)"))
+        engine.dispose()
+
+        applied = executor.migrate(
+            database_url=db, project_root=root, fake_initial=True,
+        )
+        # Initial is recorded (faked); the column add runs for real.
+        assert names[0] in applied
+        status = executor.showmigrations(database_url=db, project_root=root)
+        assert all(ok for _, ok in status)
+
+    def test_plan_leaves_db_untouched(self, tmp_migrations_dir, tmp_path):
+        from zeeb_orm.migrations import executor
+        from sqlalchemy import create_engine
+        from zeeb_orm.migrations.executor import get_applied_migrations
+        names = _write_chain(tmp_migrations_dir, 2)
+        db = self._db(tmp_path)
+        root = tmp_migrations_dir.parent
+
+        planned = executor.migrate(database_url=db, project_root=root, plan=True)
+        assert planned == names
+
+        engine = create_engine(db)
+        with engine.connect() as conn:
+            assert get_applied_migrations(conn) == set()
+        engine.dispose()
+        assert "exec_rows" not in _table_names(db)
 
 
 # ---------------------------------------------------------------------------

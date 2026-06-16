@@ -43,8 +43,11 @@ def load_project_settings(project_root: Path) -> dict[str, Any]:
                 try:
                     module = importlib.util.module_from_spec(spec)
                     spec.loader.exec_module(module)  # type: ignore[union-attr]
-                    for attr in ("DATABASE", "INSTALLED_APPS", "AUTH_USER_MODEL"):
-                        if hasattr(module, attr):
+                    # Capture every top-level setting by Django convention:
+                    # UPPERCASE, non-dunder module attributes (DATABASE,
+                    # INSTALLED_APPS, CORS_*, SECRET_KEY, DEBUG, …).
+                    for attr in dir(module):
+                        if attr.isupper() and not attr.startswith("_"):
                             settings[attr] = getattr(module, attr)
                 except Exception:
                     pass
