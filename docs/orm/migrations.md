@@ -155,8 +155,12 @@ python manage.py squashmigrations 0001_initial 0005_add_views --no-optimize
 | `-n, --name` | Name for the squashed migration file |
 | `--no-optimize` | Disable the optimizer — keep all operations |
 
-The squashed file includes a comment listing which migrations it replaces.
-After deploying the squashed migration everywhere, the original files may be deleted.
+The squashed file records the replaced migrations in its `replaces` attribute
+(and a header comment lists them). The executor treats those originals as
+superseded — it skips them when applying and marks them applied automatically
+when the squashed migration runs — so the squashed file and the originals can
+coexist safely without applying any operation twice. After the squashed
+migration has been deployed everywhere, the original files may be deleted.
 
 ## Migration File Format
 
@@ -350,12 +354,19 @@ Zeeb compares your current model definitions against the **state described by ex
 - You don't need to apply migrations before generating new ones
 - Changes are detected reliably regardless of the database state
 
-Zeeb auto-detects these changes:
+Zeeb auto-detects these changes (all generated operations are reversible):
 
 - **Tables**: Create, drop
 - **Columns**: Add, drop, alter type
-- **Indexes**: Create, drop
 - **Nullability**: Changes to nullable
+- **Server defaults**: Changes to a column's `server_default`
+- **Indexes**: Create, drop
+- **Unique constraints**: Add, drop (named constraints only)
+
+Foreign-key constraint changes (adding/removing an FK, altering `on_delete`)
+are **not** auto-detected — write a manual migration for those. On SQLite,
+column and constraint alterations are applied via Alembic batch mode
+(`batch_alter_table`), which rebuilds the table via copy-and-swap.
 
 ### ManyToMany Through Tables
 
@@ -577,9 +588,9 @@ New tables get the correct `ON DELETE` clause in their DDL automatically
 (`CASCADE` → `ON DELETE CASCADE`, `SET_NULL` → `ON DELETE SET NULL`, etc.).
 However, **changing `on_delete` on an existing ForeignKey is not autodetected**
 and requires a manual migration: foreign key constraints can only be replaced
-by dropping and re-adding them, and SQLite cannot alter constraints at all
-(the table must be rebuilt — create a new table, copy the data, drop the old
-one, rename).
+by dropping and re-adding them. (Unique-constraint and column changes *are*
+auto-detected and applied via SQLite batch mode, but FK rebuilds across a
+relation graph are left manual on purpose.)
 
 In practice this matters less than it seems: `on_delete` behavior is enforced
 in Python by the deletion collector, so updating the model definition changes

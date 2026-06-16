@@ -140,8 +140,20 @@ async def check_system_health(
     Args:
         project_root: Auto-detected if ``None``.
 
-    Returns:
-        ``AgentResult`` with a ``checks`` dict mapping check name → status string.
+    Returns data (always):
+        checks (dict): with these keys —
+            settings (str): ``"ok"`` or ``"error: ..."``
+            db (str): ``"ok"`` or ``"error: ..."``
+            db_driver (str): driver scheme from the DB url (e.g.
+                ``"postgresql"``, ``"sqlite+aiosqlite"``); only present when
+                settings loaded.
+            tables (list[str]): sorted table names found in the DB.
+            table_count (int): len(tables).
+            overall (str): ``"healthy"`` if both settings and db are ``"ok"``,
+                else ``"degraded"``.
+
+    Notes:
+        - ``success`` mirrors ``checks["overall"] == "healthy"``.
     """
     root = project_root
 

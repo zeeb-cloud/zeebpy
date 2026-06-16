@@ -31,6 +31,16 @@ async def start_server(
     Args:
         addrport: ``"host:port"`` string (default ``"127.0.0.1:9000"``).
         project_root: Auto-detected if ``None``.
+
+    Returns data (on success):
+        pid (int): PID of the spawned server process
+        addrport (str): the ``"host:port"`` the server was started on
+
+    Notes:
+        - If a server is already running, returns ``success=False`` with
+          ``data={"pid": <existing pid>}``.
+        - If the process exits within ~1.5s of launch, returns
+          ``success=False`` with ``data=None`` (stale PID file removed).
     """
     root = project_root
     pid_path = _pid_file(root)
@@ -73,7 +83,16 @@ async def start_server(
 
 @agent_function
 async def stop_server(project_root: Path | None = None) -> AgentResult:
-    """Stop the development server started by :func:`start_server`."""
+    """Stop the development server started by :func:`start_server`.
+
+    Returns data (on success):
+        pid (int): PID of the process that was signalled/stopped
+
+    Notes:
+        - When no PID file exists, returns ``success=False`` with ``data=None``.
+        - Sends ``SIGTERM`` then escalates to ``SIGKILL`` if still alive; the
+          PID file is always removed.
+    """
     pid_path = _pid_file(project_root)
 
     if not pid_path.exists():
@@ -103,7 +122,18 @@ async def stop_server(project_root: Path | None = None) -> AgentResult:
 
 @agent_function
 async def get_server_status(project_root: Path | None = None) -> AgentResult:
-    """Check whether the development server is currently running."""
+    """Check whether the development server is currently running.
+
+    Returns data (always):
+        running (bool): whether a live server process was found
+        pid (int): PID of the running process; present only when
+            ``running`` is ``True``
+
+    Notes:
+        - Always returns ``success=True``.
+        - A PID file pointing at a dead process is treated as not running and
+          removed (``data={"running": False}``).
+    """
     pid_path = _pid_file(project_root)
 
     if not pid_path.exists():

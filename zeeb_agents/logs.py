@@ -40,10 +40,25 @@ async def read_logs(
 
     Args:
         lines: Number of tail lines to return (default 200).
-        level: If set, only return lines that contain this log level
+        level: If set, only return lines whose text contains this log level
                (DEBUG, INFO, WARNING, ERROR, CRITICAL).
         log_file: Path to a specific log file.  Auto-detected if ``None``.
         project_root: Auto-detected if ``None``.
+
+    Returns data (on success):
+        path (str): log file path relative to the project root
+        lines (list[str]): the tail lines (after any ``level`` filter)
+        total_lines (int): total matching lines before the tail was applied
+
+    On failure (no log file found) ``data`` is
+    ``{"searched_in": "<project root>"}``.
+
+    Notes:
+        - ``level`` is matched as a whole token (word boundaries), so
+          ``level="ERROR"`` matches ``"[ERROR]"`` / ``" ERROR "`` but not
+          ``"NOTANERROR"`` or ``"ERRORCODE"``.
+        - The ``level`` filter is applied first, then the last *lines* of the
+          filtered result are returned.
     """
     root = project_root
 
@@ -54,8 +69,8 @@ async def read_logs(
 
         content = path.read_text(errors="replace").splitlines()
         if level:
-            lvl = level.upper()
-            content = [ln for ln in content if lvl in ln]
+            level_re = re.compile(rf"\b{re.escape(level.upper())}\b")
+            content = [ln for ln in content if level_re.search(ln)]
 
         tail = content[-lines:] if len(content) > lines else content
         return {
@@ -87,9 +102,16 @@ async def search_logs(
     """Search log file(s) for lines matching *pattern* (regex).
 
     Args:
-        pattern: Regular expression pattern to search for.
+        pattern: Regular expression pattern to search for (case-insensitive).
         log_file: Path to a specific log file.  Searches all log files if ``None``.
         project_root: Auto-detected if ``None``.
+
+    Returns data (on success):
+        matches (list[dict]): each ``{"file": <rel path>, "line_no": int,
+            "content": str}``
+        count (int): len(matches)
+
+    An invalid regex returns ``success=False`` with ``data=None``.
     """
     root = project_root
     try:
@@ -131,6 +153,11 @@ async def clear_logs(
     Args:
         log_file: Path to a specific log file.  Clears all log files if ``None``.
         project_root: Auto-detected if ``None``.
+
+    Returns data (on success):
+        cleared (list[str]): paths (relative to root) of the truncated files
+
+    Returns ``success=False`` with ``data=None`` when no log files exist.
     """
     root = project_root
 

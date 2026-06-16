@@ -72,6 +72,18 @@ async def generate_dockerfile(
     Example::
 
         await generate_dockerfile(python_version="3.12", port=8080)
+
+    Returns data (on success):
+        files_written (list[str]): names written — always ``"Dockerfile"``,
+            plus ``".dockerignore"`` if it did not already exist
+        python_version (str): the version tag used
+        port (int): the port baked into the image
+
+    Notes:
+        - If ``Dockerfile`` already exists, returns ``success=False`` with
+          ``data={"path": "Dockerfile"}`` (nothing is written).
+        - ``.dockerignore`` is only written when absent; an existing one is
+          left untouched.
     """
     root = project_root
     dockerfile = root / "Dockerfile"
@@ -124,6 +136,14 @@ async def generate_requirements(
         output_path: Output file name/path, relative to project root.
             Defaults to ``"requirements.txt"``.
         project_root: Auto-detected if ``None``.
+
+    Returns data (on success):
+        path (str): the output path (echoes *output_path*)
+        package_count (int): number of package lines written
+
+    Notes:
+        - If ``pip freeze`` exits non-zero, returns ``success=False`` with
+          ``data=None``.
     """
     root = project_root
 
@@ -174,6 +194,14 @@ async def check_production_readiness(
     Returns:
         ``AgentResult`` with ``issues`` (list of problem strings) and
         ``passed`` (list of passing checks).
+
+    Returns data (always):
+        ready (bool): ``True`` when ``issues`` is empty
+        issues (list[str]): one string per failing check
+        passed (list[str]): one string per passing check
+
+    Notes:
+        - ``success`` mirrors ``ready``.
     """
     root = project_root
 

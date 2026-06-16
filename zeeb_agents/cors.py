@@ -31,12 +31,33 @@ def _render_list(values: list[str]) -> str:
 
 
 def _set_or_append_setting(content: str, key: str, rendered: str) -> str:
-    """Replace an existing KEY = ... line or append it at end of file."""
-    pattern = re.compile(rf"^{re.escape(key)}\s*=\s*.*$", re.MULTILINE)
+    """Replace an existing ``KEY = ...`` assignment or append it at end of file.
+
+    Handles assignments whose value spans multiple lines (e.g. a list literal
+    split across lines), replacing the whole bracketed span rather than only
+    the first line — which would otherwise orphan the continuation lines and
+    corrupt ``settings.py``.
+    """
     new_line = f"{key} = {rendered}"
-    if pattern.search(content):
-        return pattern.sub(new_line, content)
-    return content.rstrip("\n") + f"\n{new_line}\n"
+    lines = content.splitlines(keepends=True)
+    key_re = re.compile(rf"^{re.escape(key)}\s*=")
+
+    start = next((i for i, ln in enumerate(lines) if key_re.match(ln)), None)
+    if start is None:
+        return content.rstrip("\n") + f"\n{new_line}\n"
+
+    # Extend the span until any opened (), [], {} brackets are balanced again,
+    # so multi-line literals are fully replaced.
+    depth = 0
+    end = start
+    for j in range(start, len(lines)):
+        depth += lines[j].count("(") + lines[j].count("[") + lines[j].count("{")
+        depth -= lines[j].count(")") + lines[j].count("]") + lines[j].count("}")
+        end = j
+        if depth <= 0:
+            break
+
+    return "".join(lines[:start]) + new_line + "\n" + "".join(lines[end + 1 :])
 
 
 @agent_function
@@ -72,6 +93,15 @@ async def configure_cors(
             origins=["https://myapp.com", "http://localhost:3000"],
             methods=["GET", "POST", "PUT", "DELETE"],
         )
+
+    Returns data (on success):
+        settings_file (str): settings.py path relative to the project root
+        keys_written (list[str]): the ``CORS_*`` setting keys written
+
+    Notes:
+        - On failure (no ``settings.py`` found) ``data`` is ``None``.
+        - ``CORS_EXPOSE_HEADERS`` is written only when ``expose_headers`` is
+          not ``None``; otherwise it is absent from ``keys_written``.
     """
     root = project_root
     settings_path = await asyncio.to_thread(_find_settings_file, root)
@@ -114,6 +144,10 @@ async def get_cors_config(
 
     Args:
         project_root: Auto-detected if ``None``.
+
+    Returns data (always):
+        cors (dict): mapping of each defined ``CORS_*`` key to its value;
+            an empty dict ``{}`` when no CORS settings are configured.
     """
     settings = await asyncio.to_thread(load_project_settings, project_root)
     cors = {k: settings.get(k) for k in _CORS_KEYS if k in settings}

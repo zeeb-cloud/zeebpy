@@ -71,6 +71,19 @@ async def create_task(
     Example::
 
         await create_task("billing", "send_monthly_invoices", schedule="0 9 1 * *")
+
+    Returns data (on success):
+        app (str): the app directory name
+        function_name (str): the task function name
+        schedule (str | None): the ``schedule`` argument as passed (may be
+            ``None``)
+        path (str): ``tasks.py`` path relative to the project root
+        file_created (bool): ``True`` if ``tasks.py`` was newly created, ``False``
+            if it already existed and was appended to
+
+    Notes:
+        - Raises (and the decorator converts to ``success=False``) if a task with
+          the same name already exists; in that case ``data`` is ``None``.
     """
     root = project_root
     tasks_path = _tasks_file(app, root)
@@ -120,6 +133,16 @@ async def list_tasks(
     Args:
         app: App directory name.
         project_root: Auto-detected if ``None``.
+
+    Returns data (always):
+        app (str): the app directory name (omitted when ``tasks.py`` is missing)
+        tasks (list[str]): async ``def`` function names found in ``tasks.py``;
+            empty list when no ``tasks.py`` exists
+        count (int): len(tasks)
+
+    Notes:
+        - When ``tasks.py`` does not exist this still returns ``success=True``
+          with ``data={"tasks": [], "count": 0}`` (no ``app`` key).
     """
     tasks_path = _tasks_file(app, project_root)
 
@@ -157,6 +180,14 @@ async def delete_task(
         app: App directory name.
         function_name: Name of the task function to remove.
         project_root: Auto-detected if ``None``.
+
+    Returns data (on success):
+        app (str): the app directory name
+        function_name (str): the removed task function name
+
+    Notes:
+        - On failure (missing ``tasks.py``, or the task is not found) ``data``
+          is ``None``.
     """
     tasks_path = _tasks_file(app, project_root)
 

@@ -30,6 +30,15 @@ async def read_file(
     Args:
         path: Absolute path or path relative to ``project_root``.
         project_root: Auto-detected if ``None``.
+
+    Returns data (on success):
+        path (str): the file path, relative to the project root.
+        content (str): the file contents (undecodable bytes are replaced).
+        size (int): len(content), in characters.
+
+    Notes:
+        - ``data`` is ``None`` on failure (file not found, path is not a file,
+          or the path escapes the project root).
     """
     root = project_root
     full = _resolve_path(root, path)
@@ -65,6 +74,16 @@ async def write_file(
         path: Absolute path or path relative to ``project_root``.
         content: File content to write.
         project_root: Auto-detected if ``None``.
+
+    Returns data (on success):
+        path (str): the file path, relative to the project root.
+        action (str): ``"created"`` if the file was new, ``"updated"`` if it
+            already existed.
+        size (int): len(content), in characters.
+
+    Notes:
+        - ``data`` is ``None`` on failure (e.g. the path escapes the project
+          root).
     """
     root = project_root
     full = _resolve_path(root, path)
@@ -98,6 +117,17 @@ async def list_files(
         pattern: Glob pattern to filter files (e.g. ``"*.py"``).  Matches
                  file names only, not full paths.
         project_root: Auto-detected if ``None``.
+
+    Returns data (on success):
+        directory (str): the listed directory, relative to the project root.
+        pattern (str): the glob that was applied.
+        entries (list[dict]): each ``{"name": str, "path": str (rel),
+            "type": "file"|"dir", "size": int|None}``.
+        count (int): len(entries).
+
+    Notes:
+        - Lists a single directory level (not recursive). Paths escaping the
+          project root are rejected with an error.
     """
     root = project_root
     target = _resolve_path(root, directory)
@@ -126,7 +156,12 @@ async def list_files(
     return AgentResult(
         success=True,
         message=f"Found {len(entries)} item(s) in {rel_dir}",
-        data={"directory": rel_dir, "pattern": pattern, "entries": entries},
+        data={
+            "directory": rel_dir,
+            "pattern": pattern,
+            "entries": entries,
+            "count": len(entries),
+        },
     )
 
 
@@ -142,6 +177,18 @@ async def search_code(
         pattern: Regular expression to search for.
         glob: Glob pattern for files to search (default: ``"**/*.py"``).
         project_root: Auto-detected if ``None``.
+
+    Returns data (on success):
+        pattern (str): the search pattern that was used.
+        glob (str): the file glob that was applied.
+        files (list[dict]): one entry per file with at least one match, each
+            ``{"file": str (rel), "matches": list[{"line_no": int,
+            "content": str}], "count": int}``.
+        total_matches (int): sum of ``count`` across all files.
+
+    Notes:
+        - The search is case-insensitive.
+        - An invalid regex returns ``success=False`` with ``data=None``.
     """
     root = project_root
     try:

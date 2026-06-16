@@ -14,6 +14,14 @@ async def run_migrations(project_root: Path | None = None) -> AgentResult:
     """Apply all pending migrations.
 
     Equivalent to ``python manage.py migrate``.
+
+    Returns data (on success):
+        applied (list[str]): names of the migrations that were applied
+            (empty list when there was nothing pending).
+
+    Notes:
+        - "Nothing to apply" is reported as ``success=True`` with
+          ``applied=[]``, not as a failure.
     """
     root = project_root
 
@@ -45,6 +53,21 @@ async def make_migrations(
     """Detect model changes and write a new migration file.
 
     Equivalent to ``python manage.py makemigrations``.
+
+    Args:
+        name: Optional human-readable suffix for the migration file name.
+        project_root: Auto-detected if ``None``.
+
+    Returns data (always):
+        created (str | None): the new migration file name, or ``None`` when
+            no model changes were detected.
+        operations (list[str]): human-readable descriptions of the schema
+            operations in the migration (empty when ``created`` is ``None``).
+
+    Notes:
+        - "No changes detected" is reported as ``success=True`` with
+          ``created=None`` — it is not a failure. Check ``data["created"]``
+          to know whether a file was actually written.
     """
     root = project_root
 
@@ -92,6 +115,13 @@ async def get_migration_status(project_root: Path | None = None) -> AgentResult:
     """Return the status of all migrations (applied / pending).
 
     Equivalent to ``python manage.py showmigrations``.
+
+    Returns data (on success):
+        migrations (list[dict]): every migration as
+            ``{"name": str, "applied": bool}`` in order.
+        applied (list[str]): names of the already-applied migrations.
+        pending (list[str]): names of the not-yet-applied migrations.
+        pending_count (int): len(pending).
     """
     root = project_root
 
@@ -103,11 +133,17 @@ async def get_migration_status(project_root: Path | None = None) -> AgentResult:
         return [{"name": name, "applied": applied} for name, applied in status]
 
     migrations = await asyncio.to_thread(_run)
-    pending = [m for m in migrations if not m["applied"]]
+    pending = [m["name"] for m in migrations if not m["applied"]]
+    applied = [m["name"] for m in migrations if m["applied"]]
     return AgentResult(
         success=True,
         message=f"{len(migrations)} migration(s), {len(pending)} pending",
-        data={"migrations": migrations, "pending_count": len(pending)},
+        data={
+            "migrations": migrations,
+            "applied": applied,
+            "pending": pending,
+            "pending_count": len(pending),
+        },
     )
 
 
@@ -119,6 +155,16 @@ async def rollback_migration(
     """Roll back the last *steps* migration(s).
 
     Equivalent to ``python manage.py migrate --rollback <N>``.
+
+    Args:
+        steps: How many applied migrations to roll back, counting from the
+            most recent (default 1). When ``steps`` >= the number of applied
+            migrations, everything is rolled back (target ``zero``).
+        project_root: Auto-detected if ``None``.
+
+    Returns data (on success):
+        rolled_back (list[str]): names of the migrations that were rolled
+            back (empty list when nothing was applied).
     """
     root = project_root
 

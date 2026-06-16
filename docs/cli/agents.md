@@ -54,6 +54,59 @@ import logging
 logging.getLogger("zeeb_agents").setLevel(logging.ERROR)
 ```
 
+### Return-shape conventions
+
+`data` shapes vary per function (each function's docstring documents its keys
+under a `Returns data:` block), but they follow consistent conventions:
+
+- **List / inventory functions** return the plural entity key **and** a
+  `count`: `{"apps": [...], "count": 3}`, `{"models": [...], "count": 5}`.
+- **File / scaffold functions** return affected paths **relative to the
+  project root** (`data["path"]`).
+- **Multi-step functions** return a list of what happened
+  (`generate_crud` → `data["steps"]`; `update_model` → `data["changes"]`;
+  `run_migrations` → `data["applied"]`).
+- **On failure** `data` is often `None`; some functions return useful context
+  instead (e.g. `read_logs` → `{"searched_in": ...}`). Always guard with
+  `if result.success and result.data:` before indexing.
+
+### `project_root` auto-detection
+
+Every project-scoped function takes a trailing `project_root` argument that you
+normally omit. When it is `None`, the `@agent_function` decorator walks up from
+the current working directory to the nearest `manage.py` and uses that
+directory. Pass an explicit path only to target a project outside the CWD.
+
+### Special cases & gotchas
+
+| Function | Behavior to know |
+|---|---|
+| `read_logs(level=...)` | `level` matches the level as a whole token (`[ERROR]`, ` ERROR `), not as a substring — so it won't match `NOTANERROR`. |
+| `create_route(path=...)` | `{name}` path segments (`/items/{item_id}`) become `str` parameters on the generated handler. |
+| `get_env()` | A missing `.env` is reported as `success=False` (with an empty `env` dict). |
+| `make_migrations()` | "No changes detected" is `success=True` with `data["created"] = None`. |
+| `manage_settings(key, value=...)` | Read mode = only `key`; write mode = `key` + `value`. Write only updates keys that already exist. |
+| `replace_model_fields(...)` | Destructive — replaces **all** fields. Use `add_field`/`remove_field` for incremental edits. |
+| `run_query(sql)` | Read-only: SELECT/WITH/EXPLAIN only, single statement, always rolled back. |
+| `export_openapi(...)` | Requires the dev server to be running (fetches the live spec). |
+
+### Tool discovery — `list_capabilities()`
+
+For programmatic discovery of the entire tool surface, call
+`list_capabilities()`. It introspects everything exported from
+`zeeb_agents.__all__`, so the inventory always matches the installed code:
+
+```python
+result = await list_capabilities(include_docstrings=True)
+for tool in result.data["tools"]:
+    print(tool["module"], tool["name"], tool["signature"])
+    # tool["summary"] (first docstring line) and tool["doc"] (full docstring,
+    # incl. the Returns data: block) are also available
+```
+
+Pass `module="models"` to filter to one module. This is the function an MCP
+server typically registers so an agent can discover available tools at runtime.
+
 ---
 
 ## Project & App Management
@@ -861,6 +914,7 @@ from zeeb_agents import get_resource, RESOURCE_URIS
 
 # RESOURCE_URIS maps short names → full URIs
 # {
+#   "principles":         "mcp://docs/principles",
 #   "capabilities":       "mcp://docs/capabilities",
 #   "project-lifecycle":  "mcp://docs/project-lifecycle",
 #   "backend-generation": "mcp://docs/backend-generation",

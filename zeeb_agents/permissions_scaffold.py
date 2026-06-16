@@ -121,6 +121,21 @@ async def create_permission_class(
     Example::
 
         await create_permission_class("blog", "IsPostOwner", logic="owner_only")
+
+    Returns data (on success):
+        app (str): echoes *app*
+        class_name (str): echoes *class_name*
+        logic (str): the preset applied
+        path (str): ``permissions.py`` path relative to the project root
+        file_created (bool): ``True`` if ``permissions.py`` was newly created,
+            ``False`` if an existing file was appended to
+
+    Notes:
+        - An unknown ``logic`` preset returns ``success=False`` with
+          ``data=None`` (no file is touched).
+        - If the class already exists, the underlying ``ValueError`` is wrapped
+          by the decorator into ``success=False`` with ``data=None``; when the
+          file was created in the same call it is left on disk.
     """
     if logic not in _LOGIC_PRESETS:
         return AgentResult(
@@ -179,6 +194,15 @@ async def list_permission_classes(
     Args:
         app: App directory name.
         project_root: Auto-detected if ``None``.
+
+    Returns data (on success):
+        app (str): echoes *app* (omitted when ``permissions.py`` is absent)
+        permissions (list[str]): class names found (empty if no file)
+        count (int): len(permissions)
+
+    Notes:
+        - A missing ``permissions.py`` still returns ``success=True`` with
+          ``data={"permissions": [], "count": 0}`` (no ``app`` key).
     """
     perms_file = _permissions_file(app, project_root)
 

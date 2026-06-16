@@ -188,6 +188,9 @@ from zeeb_agents.permissions_scaffold import (
     list_permission_classes,
 )
 
+# Tool discovery
+from zeeb_agents.capabilities import list_capabilities
+
 # MCP resource content
 from zeeb_agents.resources import (
     RESOURCE_URIS,
@@ -195,6 +198,7 @@ from zeeb_agents.resources import (
     get_deployment_doc,
     get_backend_generation_doc,
     get_frontend_generation_doc,
+    get_principles_doc,
     get_project_lifecycle_doc,
     get_resource,
 )
@@ -301,9 +305,12 @@ __all__ = [
     # Permission class scaffolding (BaaS)
     "create_permission_class",
     "list_permission_classes",
+    # Tool discovery
+    "list_capabilities",
     # MCP resource content
     "RESOURCE_URIS",
     "get_resource",
+    "get_principles_doc",
     "get_capabilities_doc",
     "get_project_lifecycle_doc",
     "get_backend_generation_doc",

@@ -4,6 +4,12 @@
 scaffolding and management operations as importable async functions.  It has
 no MCP dependency — plug it into any MCP server, CLI, or AI agent.
 
+> **New here?** Read `mcp://docs/principles` first — it covers the
+> `AgentResult` contract, return-shape conventions, the security model, the
+> documented special cases, and the framework concepts (auth, URL
+> registration, the generation flow). Call `{prefix}list_capabilities()` for a
+> machine-readable inventory of every tool with its signature and docstring.
+
 > **Tool name prefix**: In this document every tool name is written as
 > `{prefix}function_name`.  When served via MCP the `{prefix}` placeholder is
 > replaced with the prefix your MCP server uses (e.g. `zeeb_`, `myapp_`, or
@@ -202,11 +208,18 @@ data    : dict|None   — structured output (see per-tool docs)
 | `{prefix}create_permission_class(app, class_name, logic="deny_all", project_root=None)` | Scaffold permission |
 | `{prefix}list_permission_classes(app, project_root=None)` | List permission classes |
 
+### Discovery
+
+| Tool | Description |
+|---|---|
+| `{prefix}list_capabilities(include_docstrings=False, module=None)` | Machine-readable inventory of every tool, signature & docstring |
+
 ### MCP Resources
 
 | Tool | Description |
 |---|---|
 | `{prefix}get_resource(uri, project_root=None)` | Dispatch by `mcp://` URI |
+| `{prefix}get_principles_doc(project_root=None)` | Principles & special cases (read first) |
 | `{prefix}get_capabilities_doc(project_root=None)` | This document |
 | `{prefix}get_project_lifecycle_doc(project_root=None)` | Project lifecycle guide |
 | `{prefix}get_backend_generation_doc(project_root=None)` | Backend generation guide |

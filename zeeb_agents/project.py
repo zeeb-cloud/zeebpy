@@ -23,6 +23,14 @@ async def create_project(name: str, directory: str = ".") -> AgentResult:
 
     Delegates to the existing ``run_startproject`` CLI logic so the generated
     project structure is always in sync with the CLI.
+
+    Returns data (on success):
+        name (str): the project name
+        path (str): absolute path to the created project directory
+
+    Notes:
+        - A non-zero CLI exit code returns ``success=False`` with
+          ``data=None``.
     """
     def _run() -> int:
         from zeeb_orm.cli.commands.startproject import run_startproject
@@ -44,6 +52,14 @@ async def create_app(name: str, project_root: Path | None = None) -> AgentResult
     """Create a new app inside an existing Zeeb project.
 
     Delegates to the existing ``run_startapp`` CLI logic.
+
+    Returns data (on success):
+        name (str): the app name
+        path (str): absolute path to the created app directory
+
+    Notes:
+        - A non-zero CLI exit code returns ``success=False`` with
+          ``data=None``.
     """
     root = project_root
 
@@ -69,7 +85,16 @@ async def create_app(name: str, project_root: Path | None = None) -> AgentResult
 
 @agent_function
 async def delete_app(name: str, project_root: Path | None = None) -> AgentResult:
-    """Delete an existing app directory from the project."""
+    """Delete an existing app directory from the project.
+
+    Returns data (on success):
+        name (str): the app name
+        path (str): absolute path to the deleted app directory
+
+    Notes:
+        - If the app directory does not exist, returns ``success=False``
+          with ``data=None``.
+    """
     app_path = get_app_path(name, project_root)
     if not app_path.exists():
         return AgentResult(success=False, message=f"App '{name}' not found at {app_path}")
@@ -84,7 +109,17 @@ async def delete_app(name: str, project_root: Path | None = None) -> AgentResult
 
 @agent_function
 async def get_project_info(project_root: Path | None = None) -> AgentResult:
-    """Return a summary of the current project structure and settings."""
+    """Return a summary of the current project structure and settings.
+
+    Returns data (on success):
+        root (str): absolute path to the project root
+        project_package (str | None): name of the dir containing settings.py,
+            or ``None`` if not found
+        apps (list[str]): app directory names under ``apps/``
+        installed_apps (list): ``INSTALLED_APPS`` from settings
+        database_url (str | None): the configured database url, if any
+        auth_user_model (str | None): the ``AUTH_USER_MODEL`` setting, if any
+    """
     root = project_root
 
     def _load() -> dict:
@@ -119,6 +154,10 @@ async def list_apps(project_root: Path | None = None) -> AgentResult:
 
     Args:
         project_root: Auto-detected if ``None``.
+
+    Returns data (on success):
+        apps (list[str]): app directory names under ``apps/``
+        count (int): len(apps)
     """
     apps = await asyncio.to_thread(list_apps_util, project_root)
     return AgentResult(
@@ -200,6 +239,15 @@ async def rename_app(
 
     Note: does not update references inside Python files — that must be done
     manually or via ``update_model`` / ``update_serializer`` etc.
+
+    Returns data (on success):
+        old_name (str): the original app name
+        new_name (str): the new app name
+        path (str): absolute path to the renamed app directory
+
+    Notes:
+        - If *old_name* does not exist or *new_name* already exists, returns
+          ``success=False`` with ``data=None``.
     """
     root = project_root
     old_path = get_app_path(old_name, root)

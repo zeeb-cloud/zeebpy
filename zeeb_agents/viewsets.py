@@ -44,6 +44,15 @@ async def create_viewset(
         permission: Permission class name from ``zeeb_api.permissions``.
             Default: ``"IsAuthenticatedOrReadOnly"``.
         project_root: Auto-detected if ``None``.
+
+    Returns data (on success):
+        app (str): the app directory name
+        model (str): the model name passed in
+        viewset (str): the generated class name (``"<ModelName>ViewSet"``)
+
+    Notes:
+        - On failure (missing ``views.py``, or the class already exists)
+          ``data`` is ``None``.
     """
     path = _views_file(app, project_root)
     if not path.exists():
@@ -86,6 +95,15 @@ async def add_viewset_action(
         action_name: Snake-case method name (e.g. ``"publish"``).
         detail: Whether the action operates on a single instance (``pk`` in URL).
         methods: HTTP methods (default: ``["get"]``).
+
+    Returns data (on success):
+        app (str): the app directory name
+        viewset (str): the target class name (``"<ModelName>ViewSet"``)
+        action (str): the action method name added
+
+    Notes:
+        - On failure (missing ``views.py``, or the ViewSet class is not found)
+          ``data`` is ``None``.
     """
     path = _views_file(app, project_root)
     if not path.exists():
@@ -236,7 +254,18 @@ async def generate_crud(
 
 @agent_function
 async def list_endpoints(project_root: Path | None = None) -> AgentResult:
-    """Return all ``router.register(...)`` calls found across all app ``urls.py`` files."""
+    """Return all ``router.register(...)`` calls found across all app ``urls.py`` files.
+
+    Returns data (on success):
+        endpoints (list[dict]): each ``{"app": str, "prefix": str,
+            "viewset": str}``.
+        count (int): len(endpoints).
+
+    Notes:
+        - This finds only ViewSet registrations. For a full route inventory
+          including plain function routes, use
+          :func:`~zeeb_agents.schema.list_all_routes`.
+    """
     root = project_root
     from zeeb_agents._utils.project import list_apps
 
@@ -259,5 +288,5 @@ async def list_endpoints(project_root: Path | None = None) -> AgentResult:
     return AgentResult(
         success=True,
         message=f"Found {len(endpoints)} registered endpoint(s)",
-        data={"endpoints": endpoints},
+        data={"endpoints": endpoints, "count": len(endpoints)},
     )

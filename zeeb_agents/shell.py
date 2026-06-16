@@ -26,6 +26,17 @@ async def run_management_command(
                  ``"createsuperuser"``).
         args: Optional list of additional arguments/flags.
         project_root: Auto-detected if ``None``.
+
+    Returns data (always):
+        command (str): the command that was run.
+        args (list[str]): the extra arguments passed.
+        returncode (int): the subprocess exit code.
+        output (str): combined stdout + stderr.
+
+    Notes:
+        - ``success`` is ``True`` only when ``returncode == 0``.
+        - This spawns a real subprocess; avoid interactive commands that block
+          on stdin.
     """
     root = project_root
     manage_py = root / "manage.py"

@@ -505,3 +505,155 @@ async def test_signal_receiver_round_trip(project):
         "blog", "bogus_signal", "Post", "x", project_root=project
     )
     assert not result.success
+
+
+# ---------------------------------------------------------------------------
+# Tool discovery — list_capabilities
+# ---------------------------------------------------------------------------
+
+
+async def test_list_capabilities_covers_all_exports():
+    result = await agents.list_capabilities()
+    assert result.success, result.message
+    names = {t["name"] for t in result.data["tools"]}
+    # Every callable export (everything in __all__ except the non-functions)
+    expected = {
+        n
+        for n in agents.__all__
+        if n not in {"AgentResult", "RESOURCE_URIS"} and callable(getattr(agents, n))
+    }
+    assert expected <= names
+    assert result.data["count"] == len(result.data["tools"])
+    # Each entry has the documented shape and hides project_root from signatures.
+    entry = next(t for t in result.data["tools"] if t["name"] == "create_model")
+    assert entry["module"] == "models"
+    assert "project_root" not in entry["signature"]
+    assert entry["summary"]
+    assert "doc" not in entry  # omitted unless include_docstrings=True
+
+
+async def test_list_capabilities_with_docstrings_and_module_filter():
+    result = await agents.list_capabilities(include_docstrings=True, module="models")
+    assert result.success, result.message
+    assert result.data["modules"] == ["models"]
+    assert all(t["module"] == "models" for t in result.data["tools"])
+    assert all("doc" in t for t in result.data["tools"])
+
+
+# ---------------------------------------------------------------------------
+# MCP resource dispatch
+# ---------------------------------------------------------------------------
+
+
+async def test_get_resource_principles_with_tool_prefix():
+    result = await agents.get_resource("mcp://docs/principles", tool_prefix="zeeb_")
+    assert result.success, result.message
+    content = result.data["content"]
+    assert result.data["uri"] == "mcp://docs/principles"
+    assert result.data["mime_type"] == "text/markdown"
+    # The {prefix} placeholder must be fully substituted.
+    assert "{prefix}" not in content
+    assert "zeeb_list_capabilities" in content
+
+
+async def test_get_resource_unknown_uri_fails():
+    result = await agents.get_resource("mcp://docs/nope")
+    assert not result.success
+    assert "nope" in result.message
+
+
+async def test_resource_uris_registry_has_principles():
+    assert agents.RESOURCE_URIS["principles"] == "mcp://docs/principles"
+
+
+# ---------------------------------------------------------------------------
+# CORS round-trip
+# ---------------------------------------------------------------------------
+
+
+async def test_cors_round_trip(project):
+    result = await agents.get_cors_config(project_root=project)
+    assert result.success
+    assert isinstance(result.data["cors"], dict)
+
+    result = await agents.configure_cors(
+        ["https://app.example.com", "http://localhost:3000"],
+        methods=["GET", "POST"],
+        project_root=project,
+    )
+    assert result.success, result.message
+    assert "CORS_ALLOW_ORIGINS" in result.data["keys_written"]
+
+    result = await agents.get_cors_config(project_root=project)
+    assert result.success
+    cors = result.data["cors"]
+    assert cors["CORS_ALLOW_ORIGINS"] == ["https://app.example.com", "http://localhost:3000"]
+    assert cors["CORS_ALLOW_METHODS"] == ["GET", "POST"]
+
+
+# ---------------------------------------------------------------------------
+# Logs — read / search / level filter
+# ---------------------------------------------------------------------------
+
+
+def _write_log(project: Path) -> None:
+    logs_dir = project / "logs"
+    logs_dir.mkdir(exist_ok=True)
+    (logs_dir / "app.log").write_text(
+        "2026-06-16 INFO server started\n"
+        "2026-06-16 ERROR boom happened\n"
+        "2026-06-16 INFO this line mentions NOTANERROR but is INFO\n"
+        "2026-06-16 WARNING almost broke\n"
+    )
+
+
+async def test_read_logs_level_filter_is_token_matched(project):
+    _write_log(project)
+    result = await agents.read_logs(level="ERROR", project_root=project)
+    assert result.success, result.message
+    lines = result.data["lines"]
+    # Exactly the one real ERROR line — the NOTANERROR INFO line must not match.
+    assert len(lines) == 1
+    assert "boom happened" in lines[0]
+
+
+async def test_read_logs_no_file_fails(project):
+    result = await agents.read_logs(project_root=project)
+    assert not result.success
+    assert result.data["searched_in"]
+
+
+async def test_search_logs(project):
+    _write_log(project)
+    result = await agents.search_logs(r"boom", project_root=project)
+    assert result.success
+    assert result.data["count"] == 1
+    assert result.data["matches"][0]["content"].endswith("boom happened")
+
+
+# ---------------------------------------------------------------------------
+# JSON Schema generation
+# ---------------------------------------------------------------------------
+
+
+async def test_get_model_json_schema(project):
+    res = await agents.create_model(
+        "blog",
+        "Post",
+        [
+            {"name": "title", "type": "CharField", "max_length": 200},
+            {"name": "body", "type": "TextField"},
+        ],
+        project_root=project,
+    )
+    assert res.success, res.message
+
+    result = await agents.get_model_json_schema("blog", "Post", project_root=project)
+    assert result.success, result.message
+    schema = result.data["schema"]
+    assert schema["title"] == "Post"
+    assert schema["type"] == "object"
+    assert "title" in schema["properties"]
+
+    missing = await agents.get_model_json_schema("blog", "Nope", project_root=project)
+    assert not missing.success
