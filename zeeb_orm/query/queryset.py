@@ -489,12 +489,21 @@ class QuerySet(Generic[ModelT]):
 
     def _combined_order_column(self, field_name: str) -> Any:
         """Map a field name to a literal column usable after a set operation."""
+        from zeeb_orm.exceptions import FieldError
+
         name = field_name
         if name == "pk":
             name = self.model._meta.pk_name or "id"
         field = self.model._meta.get_field(name)
-        col_name = (field.db_column or field.name) if field is not None else name
-        return literal_column(col_name)
+        if field is None:
+            # Only resolved real model fields may reach literal_column: the raw
+            # string is rendered verbatim into SQL (no quoting/parameterization),
+            # so an unrecognized name would be a SQL-injection sink. Mirror the
+            # non-combined ORDER BY path, which rejects unknown fields.
+            raise FieldError(
+                f"Cannot order combined queryset by unknown field {field_name!r}"
+            )
+        return literal_column(field.db_column or field.name)
 
     def _build_combined_select(self) -> Any:
         """Build the compound (UNION/INTERSECT/EXCEPT) statement."""

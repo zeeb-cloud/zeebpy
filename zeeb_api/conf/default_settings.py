@@ -64,6 +64,12 @@ OAUTH_REDIRECT_URI = None
 # Where to redirect after a successful browser login (tokens are appended in the
 # URL fragment). None returns a JSON TokenResponse instead.
 OAUTH_SUCCESS_REDIRECT = None
+# Hosts permitted as post-login `next` redirect targets (browser flow). Relative
+# paths are always allowed; absolute URLs must match a host here (otherwise the
+# supplied `next` is ignored and the configured success redirect is used).
+# SECURITY: prevents leaking the access/refresh tokens (appended in the redirect
+# fragment) to an attacker-controlled origin.
+OAUTH_ALLOWED_REDIRECT_HOSTS = []
 # Provider names whose externally-issued JWTs (e.g. Azure AD access/ID tokens)
 # are accepted as Bearer tokens by JWTAuthMiddleware.
 OAUTH_ACCEPT_EXTERNAL_TOKENS = []

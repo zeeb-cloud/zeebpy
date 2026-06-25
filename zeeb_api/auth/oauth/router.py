@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 from typing import Any
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlparse
 
 from fastapi import APIRouter, Request
 from pydantic import BaseModel, Field
@@ -74,6 +74,25 @@ def _provider_not_found(name: str) -> ZeebException:
     )
 
 
+def _is_safe_next(url: str, allowed_hosts: set[str]) -> bool:
+    """Whether a user-supplied ``next`` redirect target is safe to honor.
+
+    Relative paths (no scheme/host, single leading ``/``) are always allowed.
+    Absolute URLs are allowed only with an http(s) scheme AND a host present in
+    ``allowed_hosts``. Everything else is rejected so attacker-controlled origins
+    cannot receive the tokens appended in the redirect fragment.
+    """
+    if not url or any(c in url for c in ("\n", "\r", "\t")):
+        return False
+    # Browsers treat backslashes as forward slashes; normalize before parsing.
+    url = url.replace("\\", "/")
+    parsed = urlparse(url)
+    if not parsed.scheme and not parsed.netloc:
+        # Relative path only; reject protocol-relative "//host".
+        return url.startswith("/") and not url.startswith("//")
+    return parsed.scheme in ("http", "https") and parsed.hostname in allowed_hosts
+
+
 def _translate_oauth_error(error: OAuthError) -> AuthenticationException:
     if isinstance(error, OAuthValidationError):
         code = ErrorCode.AUTH_OAUTH_ID_TOKEN_INVALID
@@ -130,11 +149,16 @@ def create_oauth_router(
         return str(request.url_for("oauth_callback", provider=name))
 
     def _resolve_success_redirect(state_next: str | None) -> str | None:
+        from zeeb_api.conf import settings
         if state_next:
-            return state_next
+            allowed = set(getattr(settings, "OAUTH_ALLOWED_REDIRECT_HOSTS", []) or [])
+            # Only honor a user-supplied `next` that is safe; otherwise fall
+            # through to the developer-configured (trusted) redirect so tokens
+            # can't be leaked to an attacker-controlled origin.
+            if _is_safe_next(state_next, allowed):
+                return state_next
         if success_redirect:
             return success_redirect
-        from zeeb_api.conf import settings
         return getattr(settings, "OAUTH_SUCCESS_REDIRECT", None)
 
     async def _upsert_user(

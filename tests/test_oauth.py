@@ -193,6 +193,7 @@ _OAUTH_SETTINGS = (
     "OAUTH_STATE_TTL_SECONDS",
     "OAUTH_REDIRECT_URI",
     "OAUTH_SUCCESS_REDIRECT",
+    "OAUTH_ALLOWED_REDIRECT_HOSTS",
     "OAUTH_ACCEPT_EXTERNAL_TOKENS",
 )
 
@@ -528,6 +529,44 @@ class TestStateAndPKCE:
         assert generate_pkce_pair() != generate_pkce_pair()
 
 
+class TestSafeNext:
+    """Unit tests for the `next` redirect-target validator."""
+
+    @pytest.mark.parametrize(
+        "url",
+        ["/dashboard", "/a/b/c?x=1#frag", "/"],
+    )
+    def test_relative_paths_allowed(self, url):
+        from zeeb_api.auth.oauth.router import _is_safe_next
+
+        assert _is_safe_next(url, set()) is True
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "https://evil.example/grab",      # absolute, not allowlisted
+            "//evil.example/grab",            # protocol-relative
+            "http://evil.example",            # absolute, not allowlisted
+            "javascript:alert(1)",            # non-http scheme
+            "\\\\evil.example/x",             # backslashes normalized to //
+            "/path\nwith-newline",            # control char
+            "",                                # empty
+            "relative-without-slash",         # not a rooted relative path
+        ],
+    )
+    def test_unsafe_targets_rejected(self, url):
+        from zeeb_api.auth.oauth.router import _is_safe_next
+
+        assert _is_safe_next(url, {"app.example.com"}) is False
+
+    def test_absolute_allowlisted_host_allowed(self):
+        from zeeb_api.auth.oauth.router import _is_safe_next
+
+        assert _is_safe_next("https://app.example.com/done", {"app.example.com"}) is True
+        # Wrong scheme still rejected even for an allowlisted host.
+        assert _is_safe_next("ftp://app.example.com/x", {"app.example.com"}) is False
+
+
 # Unit tests: registry
 
 
@@ -856,6 +895,60 @@ class TestBrowserFlow:
         location = callback.headers["location"]
         assert location.startswith("https://app.example.com/done#")
         assert "access_token=" in location.split("#", 1)[1]
+
+    async def _callback_with_next(self, client, idp, next_value):
+        authorize = await client.get("/auth/test/authorize/", params={"next": next_value})
+        params = {
+            k: v[0]
+            for k, v in parse_qs(urlparse(authorize.headers["location"]).query).items()
+        }
+        idp.nonce = params["nonce"]
+        return await client.get(
+            "/auth/test/callback/",
+            params={"code": "c", "state": params["state"]},
+        )
+
+    async def test_unsafe_next_does_not_leak_tokens(self, db, provider, idp):
+        """An attacker-controlled `next` host is ignored (no token redirect)."""
+        # No success_redirect configured -> falls back to JSON, not the evil host.
+        app = make_app(provider)
+        async with asgi_client(app) as client:
+            callback = await self._callback_with_next(
+                client, idp, "https://evil.example/grab"
+            )
+        assert callback.status_code == 200
+        assert "evil.example" not in callback.headers.get("location", "")
+        assert "access_token" in callback.json()
+
+    async def test_unsafe_next_falls_back_to_configured_redirect(self, db, provider, idp):
+        app = make_app(provider, success_redirect="https://app.example.com/done")
+        async with asgi_client(app) as client:
+            callback = await self._callback_with_next(
+                client, idp, "https://evil.example/grab"
+            )
+        assert callback.status_code == 303
+        location = callback.headers["location"]
+        assert location.startswith("https://app.example.com/done#")
+        assert "evil.example" not in location
+
+    async def test_relative_next_is_honored(self, db, provider, idp):
+        app = make_app(provider)
+        async with asgi_client(app) as client:
+            callback = await self._callback_with_next(client, idp, "/dashboard")
+        assert callback.status_code == 303
+        location = callback.headers["location"]
+        assert location.startswith("/dashboard#")
+        assert "access_token=" in location.split("#", 1)[1]
+
+    async def test_allowlisted_absolute_next_is_honored(self, db, provider, idp):
+        settings.OAUTH_ALLOWED_REDIRECT_HOSTS = ["app.example.com"]
+        app = make_app(provider)
+        async with asgi_client(app) as client:
+            callback = await self._callback_with_next(
+                client, idp, "https://app.example.com/done"
+            )
+        assert callback.status_code == 303
+        assert callback.headers["location"].startswith("https://app.example.com/done#")
 
     async def test_providers_listing(self, db, provider):
         app = make_app(provider)
