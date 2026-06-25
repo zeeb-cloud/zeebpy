@@ -654,6 +654,8 @@ await combined.delete()                  # raises NotSupportedError
 
 Each side of the set operation selects an explicit, identical column list in
 model field order, so rows map back to model instances deterministically.
+`order_by()` on a compound queryset only accepts real model field names;
+an unknown name raises `FieldError` (it is never rendered verbatim into SQL).
 
 > **MySQL note:** `INTERSECT` and `EXCEPT` require MySQL **8.0.31+**.
 > Older MySQL versions only support `UNION` / `UNION ALL`.

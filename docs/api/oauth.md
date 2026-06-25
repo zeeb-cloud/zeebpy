@@ -174,6 +174,12 @@ the `next` query parameter) to redirect instead — tokens are then carried in
 the **URL fragment** (`#access_token=...`), which browsers never send to
 servers.
 
+The user-supplied `next` is validated before use: relative paths are always
+allowed, but an absolute URL is only honored when its host is listed in
+`OAUTH_ALLOWED_REDIRECT_HOSTS`. An unlisted/unsafe `next` is ignored and the
+configured success redirect (or JSON response) is used instead, so tokens can
+never be redirected to an attacker-controlled origin.
+
 Azure's `response_mode=form_post` is supported: the callback accepts POST with
 a form body as well as the standard GET.
 
@@ -246,6 +252,7 @@ overhead when nothing is configured.
 | `OAUTH_STATE_TTL_SECONDS` | `600` | Lifetime of the signed state token (and PKCE cookie) |
 | `OAUTH_REDIRECT_URI` | `None` | Fixed redirect URI (default: derived from the callback route) |
 | `OAUTH_SUCCESS_REDIRECT` | `None` | Browser-flow redirect target (tokens in URL fragment) |
+| `OAUTH_ALLOWED_REDIRECT_HOSTS` | `[]` | Hosts allowed as absolute `next` redirect targets (relative paths are always allowed) |
 | `OAUTH_ACCEPT_EXTERNAL_TOKENS` | `[]` | Provider names whose IdP-issued JWTs are accepted as Bearer tokens |
 
 ## Security Notes
@@ -267,6 +274,12 @@ overhead when nothing is configured.
 - **Tokens in fragments**: the browser success redirect carries tokens in the
   URL fragment, which is not sent to servers or logged; still, prefer the SPA
   `POST /token/` flow where possible.
+- **Open-redirect / token theft**: the user-supplied `next` parameter is never
+  redirected to verbatim. Absolute URLs must match `OAUTH_ALLOWED_REDIRECT_HOSTS`
+  (relative paths are always allowed); anything else falls back to the configured
+  redirect. This prevents an attacker from crafting an authorize link that leaks
+  the victim's tokens (in the fragment) to a foreign origin after a legitimate
+  login.
 - Remember to install the extra: `pip install zeebpy[oauth]`.
 
 ## Error Codes

@@ -216,6 +216,29 @@ class TestCombinators:
         assert [i.qty for i in results] == [5, 4, 2, 1]
 
     @pytest.mark.asyncio
+    async def test_order_by_after_union_db_column(self, seeded):
+        # Ordering by a real field still resolves to its column.
+        qs = (
+            QmItem.objects.filter(qty=1)
+            .union(QmItem.objects.filter(qty=5))
+            .order_by("name")
+        )
+        assert [i.qty for i in await qs] == [1, 5]
+
+    @pytest.mark.asyncio
+    async def test_order_by_after_union_rejects_unknown_field(self, seeded):
+        # An unknown order-by name must not be rendered verbatim into SQL via
+        # literal_column (SQL-injection sink); it is rejected like the
+        # non-combined path.
+        from zeeb_orm.exceptions import FieldError
+
+        qs = QmItem.objects.filter(qty=1).union(
+            QmItem.objects.filter(qty=5)
+        ).order_by("1)) UNION SELECT sku FROM qm_items --")
+        with pytest.raises(FieldError):
+            await qs
+
+    @pytest.mark.asyncio
     async def test_slicing_after_union(self, seeded):
         qs = (
             QmItem.objects.filter(qty__lt=3)

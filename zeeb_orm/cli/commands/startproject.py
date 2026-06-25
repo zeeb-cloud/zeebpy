@@ -238,9 +238,8 @@ Create a new app with: zeeb startapp <name>
 """
 '''
 
-REQUIREMENTS_TXT = '''# Zeeb ORM and API
-zeebpy[all]>=0.1.0
-zeeb-api>=0.1.0
+REQUIREMENTS_TXT = '''# Zeeb ORM and API (zeeb_api ships inside the zeebpy distribution)
+zeebpy[all] @ git+https://github.com/zeeb-cloud/zeebpy.git
 
 # FastAPI
 fastapi>=0.100.0
