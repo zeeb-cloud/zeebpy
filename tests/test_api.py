@@ -150,6 +150,81 @@ class TestSerializer:
         assert serializer.data == {"name": "Alice"}
 
 
+class TestModelSerializerForeignKey:
+    """Regression tests for FK serialization (ForeignKeyLazyLoader leak)."""
+
+    def _models(self):
+        import uuid
+        from zeeb_orm import Model, fields
+        from zeeb_orm.models.fields import ForeignKeyLazyLoader
+
+        suffix = uuid.uuid4().hex[:8]
+
+        class Project(Model):
+            name = fields.CharField(max_length=100)
+
+            class Meta:
+                table_name = f"fk_projects_{suffix}"
+
+        class Task(Model):
+            title = fields.CharField(max_length=100)
+            project = fields.ForeignKey(Project, related_name="tasks")
+
+            class Meta:
+                table_name = f"fk_tasks_{suffix}"
+
+        class Profile(Model):
+            bio = fields.TextField(default="")
+            project = fields.OneToOneField(Project, related_name="profile")
+
+            class Meta:
+                table_name = f"fk_profiles_{suffix}"
+
+        return Project, Task, Profile, ForeignKeyLazyLoader
+
+    def test_foreignkey_serialized_as_pk_not_lazy_loader(self):
+        import uuid
+
+        Project, Task, _Profile, ForeignKeyLazyLoader = self._models()
+
+        class TaskSerializer(ModelSerializer):
+            class Meta:
+                model = Task
+                fields = "__all__"
+
+        project_id = uuid.uuid4()
+        task = Task(title="Write tests", project=project_id)
+
+        # Sanity: the raw descriptor would leak a lazy loader.
+        assert isinstance(task.project, ForeignKeyLazyLoader)
+
+        serializer = TaskSerializer(instance=task)
+        value = serializer.data["project"]
+        assert not isinstance(value, ForeignKeyLazyLoader)
+        assert value == project_id
+
+        # And the serialized dict validates against the generated response schema.
+        TaskSerializer.ResponseSchema(**serializer.data)
+
+    def test_onetoone_serialized_as_pk_not_lazy_loader(self):
+        import uuid
+
+        Project, _Task, Profile, ForeignKeyLazyLoader = self._models()
+
+        class ProfileSerializer(ModelSerializer):
+            class Meta:
+                model = Profile
+                fields = "__all__"
+
+        project_id = uuid.uuid4()
+        profile = Profile(bio="hi", project=project_id)
+
+        serializer = ProfileSerializer(instance=profile)
+        value = serializer.data["project"]
+        assert not isinstance(value, ForeignKeyLazyLoader)
+        assert value == project_id
+
+
 class TestViewSet:
     """Test ViewSet classes."""
     

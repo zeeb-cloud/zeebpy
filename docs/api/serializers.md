@@ -199,6 +199,34 @@ class ArticleSerializer(Serializer):
 | `validators` | `[]` | List of validator functions |
 | `error_messages` | `{}` | Custom error message overrides |
 
+## Foreign Keys
+
+By default, a `ModelSerializer` represents a `ForeignKey` (and `OneToOneField`)
+as the **primary key of the related object** — not the related object itself and
+not a lazy relation wrapper. The output field is typed as the target model's PK
+type (e.g. `UUID`):
+
+```python
+class TaskSerializer(ModelSerializer):
+    class Meta:
+        model = Task          # Task.project is a ForeignKey(Project)
+        fields = "__all__"
+```
+
+Output:
+```json
+{
+  "id": "...",
+  "title": "Ship it",
+  "project": "e5e5277f-13e1-4395-a02c-a29350ed9546"
+}
+```
+
+The serializer reads the raw FK id directly (the Django-style `project_id`
+attribute), so serializing a queryset never triggers a lazy database fetch for
+the relation. To embed the full related object instead, declare a nested
+serializer for that field (see below).
+
 ## Nested Serializers
 
 ### Include Related Objects
