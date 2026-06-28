@@ -227,6 +227,47 @@ attribute), so serializing a queryset never triggers a lazy database fetch for
 the relation. To embed the full related object instead, declare a nested
 serializer for that field (see below).
 
+## To-Many & Reverse Relations
+
+`ManyToManyField`, reverse foreign keys and reverse many-to-many accessors are
+**not** included by `fields = "__all__"` (they are not local columns). List them
+explicitly to serialize them as a **list of related primary keys**:
+
+```python
+class ArticleSerializer(ModelSerializer):
+    class Meta:
+        model = Article
+        fields = ["id", "title", "tags"]   # tags is a ManyToManyField
+
+
+class ProjectSerializer(ModelSerializer):
+    class Meta:
+        model = Project
+        fields = ["id", "name", "tasks"]   # tasks is the reverse FK accessor
+```
+
+Output:
+```json
+{ "id": "...", "title": "Hello", "tags": ["uuid-1", "uuid-2"] }
+{ "id": "...", "name": "Apollo", "tasks": ["uuid-3", "uuid-4"] }
+```
+
+These fields are **read-only** and serialize to `list[PK]` (an empty list when
+there are no related rows). A reverse one-to-one accessor serializes to a single
+`PK | None`. To embed full related objects instead, use a nested serializer.
+
+### Sync vs. async serialization
+
+Resolving a to-many / reverse relation requires a database query. The generated
+viewsets serialize responses through `await serializer.adata()`, which loads
+these relations automatically — so the auto CRUD and `POST /query/` endpoints
+work out of the box.
+
+The synchronous `serializer.data` property cannot load an unfetched relation: it
+resolves ForeignKey ids and *prefetched* to-many relations, but raises
+`NotSupportedError` for an unresolved relation manager. In custom code, prefer
+`await serializer.adata()`, or use `prefetch_related()` before accessing `.data`.
+
 ## Nested Serializers
 
 ### Include Related Objects
