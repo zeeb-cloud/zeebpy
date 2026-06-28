@@ -342,11 +342,33 @@ class Serializer(metaclass=SerializerMetaclass):
     
     def _serialize_instance(self, instance: Any) -> dict[str, Any]:
         """Serialize a single instance to dict."""
+        from zeeb_orm.models.fields import ForeignKeyField, ForeignKeyLazyLoader
+
         schema_class = self.ResponseSchema or self.Schema
         if schema_class is None:
-            # Fallback: extract all attributes
-            return {k: getattr(instance, k, None) for k in dir(instance) if not k.startswith("_")}
-        
+            # Fallback: extract all attributes, unwrapping any leaked FK loaders.
+            data = {}
+            for k in dir(instance):
+                if k.startswith("_"):
+                    continue
+                value = getattr(instance, k, None)
+                if isinstance(value, ForeignKeyLazyLoader):
+                    value = value._fk_id
+                data[k] = value
+            return data
+
+        # Collect ForeignKey field names so we read the raw FK id (e.g.
+        # ``project_id``) instead of triggering the lazy descriptor, which would
+        # return a ForeignKeyLazyLoader and fail response validation. isinstance
+        # covers OneToOneField too (its class name lacks "foreign").
+        meta = getattr(self, "Meta", None)
+        model_cls = getattr(meta, "model", None)
+        fk_names = set()
+        if model_cls is not None and hasattr(model_cls, "_meta"):
+            for f in getattr(model_cls._meta, "local_fields", []):
+                if isinstance(f, ForeignKeyField):
+                    fk_names.add(f.name)
+
         # Build data dict from instance
         data = {}
         for field_name in schema_class.model_fields:
@@ -358,12 +380,21 @@ class Serializer(metaclass=SerializerMetaclass):
                     if method:
                         data[field_name] = method(instance)
                     continue
-            
-            # Get value from instance
-            value = getattr(instance, field_name, None)
+
+            # Get value from instance. For ForeignKey fields, read the raw id
+            # rather than the relation attribute (which lazily loads).
+            if field_name in fk_names:
+                value = getattr(instance, f"{field_name}_id", None)
+            elif field_name.endswith("_id") and field_name[:-3] in fk_names:
+                value = getattr(instance, field_name, None)
+            else:
+                value = getattr(instance, field_name, None)
+                # Safety net: unwrap any FK loader reached indirectly.
+                if isinstance(value, ForeignKeyLazyLoader):
+                    value = value._fk_id
             if value is not None:
                 data[field_name] = value
-        
+
         return data
     
     @property
