@@ -37,7 +37,7 @@ class CreateModelMixin:
         
         # Return serialized response
         output_serializer = self.get_serializer(instance=instance)
-        return output_serializer.data
+        return await output_serializer.adata()
     
     async def perform_create(self, serializer: Any) -> None:
         """
@@ -119,12 +119,12 @@ class QueryModelMixin:
         
         # Serialize
         serializer = self.get_serializer(instance=items, many=True)
-        
+
         return {
             "count": count,
             "limit": limit,
             "offset": offset,
-            "results": serializer.data,
+            "results": await serializer.adata(),
         }
 
 
@@ -141,16 +141,16 @@ class ListModelMixin:
         
         # Serialize
         serializer = self.get_serializer(instance=items, many=True)
-        
+
         if page_info:
             return {
                 "count": page_info.get("count", len(items)),
                 "next": page_info.get("next"),
                 "previous": page_info.get("previous"),
-                "results": serializer.data,
+                "results": await serializer.adata(),
             }
-        
-        return serializer.data
+
+        return await serializer.adata()
 
 
 class RetrieveModelMixin:
@@ -160,7 +160,7 @@ class RetrieveModelMixin:
         """Retrieve a single model instance."""
         instance = await self.get_object()
         serializer = self.get_serializer(instance=instance)
-        return serializer.data
+        return await serializer.adata()
 
 
 class UpdateModelMixin:
@@ -186,7 +186,7 @@ class UpdateModelMixin:
             raise ValidationError(serializer.errors)
         
         instance = await serializer.save()
-        return self.get_serializer(instance=instance).data
+        return await self.get_serializer(instance=instance).adata()
     
     async def partial_update(self, request: Request, **kwargs: Any) -> dict[str, Any]:
         """Partially update a model instance."""
@@ -208,7 +208,7 @@ class UpdateModelMixin:
             raise ValidationError(serializer.errors)
         
         instance = await serializer.save()
-        return self.get_serializer(instance=instance).data
+        return await self.get_serializer(instance=instance).adata()
 
 
 class DestroyModelMixin:
