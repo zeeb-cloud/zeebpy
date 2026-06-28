@@ -16,6 +16,7 @@ from typing import (
 from datetime import datetime, date, time
 from decimal import Decimal
 from enum import Enum
+import inspect
 import uuid
 
 from pydantic import BaseModel, Field, ConfigDict, field_validator, model_validator
@@ -56,6 +57,36 @@ ORM_TO_PYTHON_TYPE: dict[str, type] = {
     "IPAddressField": str,
     "GenericIPAddressField": str,
 }
+
+
+def _relation_response_type(model: Any, field_name: str) -> tuple[Any, Any] | None:
+    """Response ``(type, default)`` for a to-many / reverse relation.
+
+    Returns the Pydantic field definition for a forward M2M, reverse FK,
+    reverse M2M (``list[pk]``) or reverse one-to-one (``pk | None``)
+    accessor, or ``None`` when ``field_name`` is not such a relation. These
+    fields serialize to related primary keys and are read-only.
+    """
+    try:
+        from zeeb_orm.models.relations import resolve_relation
+
+        rel = resolve_relation(model, field_name)
+    except Exception:
+        rel = None
+    if rel is None or rel.kind not in (
+        "m2m", "reverse_m2m", "reverse_fk", "reverse_o2o"
+    ):
+        return None
+
+    pk_type: Any = uuid.UUID
+    target = getattr(rel, "target_model", None)
+    target_pk = getattr(getattr(target, "_meta", None), "pk", None)
+    if target_pk is not None:
+        pk_type = getattr(target_pk, "_python_type", uuid.UUID)
+
+    if rel.kind == "reverse_o2o":
+        return (pk_type | None, None)
+    return (list[pk_type], [])
 
 
 # =============================================================================
@@ -340,9 +371,38 @@ class Serializer(metaclass=SerializerMetaclass):
             return [self._serialize_instance(item) for item in self.instance]
         return self._serialize_instance(self.instance)
     
+    def _fk_names(self) -> set[str]:
+        """ForeignKey/OneToOne field names on the serializer's model.
+
+        Used so FK fields are read from the raw id (e.g. ``project_id``)
+        instead of the relation descriptor, which lazily returns a
+        ``ForeignKeyLazyLoader`` and would fail response validation.
+        ``isinstance`` covers ``OneToOneField`` (its class name lacks
+        "foreign").
+        """
+        from zeeb_orm.models.fields import ForeignKeyField
+
+        meta = getattr(self, "Meta", None)
+        model_cls = getattr(meta, "model", None)
+        names: set[str] = set()
+        if model_cls is not None and hasattr(model_cls, "_meta"):
+            for f in getattr(model_cls._meta, "local_fields", []):
+                if isinstance(f, ForeignKeyField):
+                    names.add(f.name)
+        return names
+
     def _serialize_instance(self, instance: Any) -> dict[str, Any]:
-        """Serialize a single instance to dict."""
-        from zeeb_orm.models.fields import ForeignKeyField, ForeignKeyLazyLoader
+        """Serialize a single instance to dict (synchronous).
+
+        Resolves ForeignKey fields to their raw id and prefetched to-many
+        relations to a list of primary keys. To-many / reverse relations that
+        are *not* prefetched cannot be loaded synchronously — use
+        :meth:`adata` (the async path the viewsets use) or
+        ``prefetch_related`` instead.
+        """
+        from zeeb_orm.exceptions import NotSupportedError
+        from zeeb_orm.models.fields import ForeignKeyLazyLoader
+        from zeeb_orm.models.manager import Manager
 
         schema_class = self.ResponseSchema or self.Schema
         if schema_class is None:
@@ -354,20 +414,12 @@ class Serializer(metaclass=SerializerMetaclass):
                 value = getattr(instance, k, None)
                 if isinstance(value, ForeignKeyLazyLoader):
                     value = value._fk_id
+                elif isinstance(value, Manager):
+                    continue  # unresolved relation manager — skip in fallback
                 data[k] = value
             return data
 
-        # Collect ForeignKey field names so we read the raw FK id (e.g.
-        # ``project_id``) instead of triggering the lazy descriptor, which would
-        # return a ForeignKeyLazyLoader and fail response validation. isinstance
-        # covers OneToOneField too (its class name lacks "foreign").
-        meta = getattr(self, "Meta", None)
-        model_cls = getattr(meta, "model", None)
-        fk_names = set()
-        if model_cls is not None and hasattr(model_cls, "_meta"):
-            for f in getattr(model_cls._meta, "local_fields", []):
-                if isinstance(f, ForeignKeyField):
-                    fk_names.add(f.name)
+        fk_names = self._fk_names()
 
         # Build data dict from instance
         data = {}
@@ -378,7 +430,14 @@ class Serializer(metaclass=SerializerMetaclass):
                 if isinstance(field, SerializerMethodField):
                     method = getattr(self, field.method_name, None)
                     if method:
-                        data[field_name] = method(instance)
+                        result = method(instance)
+                        if inspect.isawaitable(result):
+                            raise NotSupportedError(
+                                f"Async SerializerMethodField '{field_name}' "
+                                "requires the async serializer path; use "
+                                "'await serializer.adata()'."
+                            )
+                        data[field_name] = result
                     continue
 
             # Get value from instance. For ForeignKey fields, read the raw id
@@ -389,14 +448,156 @@ class Serializer(metaclass=SerializerMetaclass):
                 value = getattr(instance, field_name, None)
             else:
                 value = getattr(instance, field_name, None)
-                # Safety net: unwrap any FK loader reached indirectly.
+                if isinstance(value, ForeignKeyLazyLoader):
+                    # Safety net: unwrap any FK loader reached indirectly.
+                    value = value._fk_id
+                elif isinstance(value, (list, tuple)):
+                    # Prefetched to-many relation: list of related instances.
+                    value = [getattr(o, "pk", o) for o in value]
+                elif isinstance(value, Manager):
+                    raise NotSupportedError(
+                        f"Field '{field_name}' is a to-many/reverse relation "
+                        "that is not prefetched; it cannot be serialized "
+                        "synchronously. Use 'await serializer.adata()' or "
+                        "prefetch_related()."
+                    )
+            if value is not None:
+                data[field_name] = value
+
+        return data
+
+    async def adata(self) -> dict[str, Any] | list[dict[str, Any]]:
+        """Async serialized output.
+
+        Like :attr:`data`, but resolves to-many / reverse relations (and
+        nested serializers over them) by awaiting the related managers. This
+        is the path the viewsets use so relation fields serialize to a list
+        of related primary keys instead of leaking a manager object.
+        """
+        if self.instance is None:
+            return self._validated_data or {}
+
+        rel_kinds = self._relation_field_kinds()
+        if self.many:
+            return [
+                await self._aserialize_instance(item, rel_kinds)
+                for item in self.instance
+            ]
+        return await self._aserialize_instance(self.instance, rel_kinds)
+
+    def _relation_field_kinds(self) -> dict[str, str]:
+        """Map schema field name -> relation kind for to-many/reverse fields."""
+        schema_class = self.ResponseSchema or self.Schema
+        meta = getattr(self, "Meta", None)
+        model_cls = getattr(meta, "model", None)
+        kinds: dict[str, str] = {}
+        if schema_class is None or model_cls is None:
+            return kinds
+        from zeeb_orm.models.relations import resolve_relation
+
+        for field_name in schema_class.model_fields:
+            if field_name in self._declared_fields:
+                continue
+            try:
+                rel = resolve_relation(model_cls, field_name)
+            except Exception:
+                rel = None
+            if rel is not None and rel.kind in (
+                "m2m", "reverse_m2m", "reverse_fk", "reverse_o2o"
+            ):
+                kinds[field_name] = rel.kind
+        return kinds
+
+    async def _aserialize_instance(
+        self, instance: Any, rel_kinds: dict[str, str]
+    ) -> dict[str, Any]:
+        """Async single-instance serialization (resolves relations)."""
+        from zeeb_orm.models.fields import ForeignKeyLazyLoader
+
+        schema_class = self.ResponseSchema or self.Schema
+        if schema_class is None:
+            return self._serialize_instance(instance)
+
+        fk_names = self._fk_names()
+        data: dict[str, Any] = {}
+        for field_name in schema_class.model_fields:
+            if field_name in self._declared_fields:
+                field = self._declared_fields[field_name]
+                if isinstance(field, SerializerMethodField):
+                    method = getattr(self, field.method_name, None)
+                    if method:
+                        result = method(instance)
+                        if inspect.isawaitable(result):
+                            result = await result
+                        data[field_name] = result
+                    continue
+                if isinstance(field, NestedSerializer):
+                    data[field_name] = await self._serialize_nested(
+                        field, instance, field_name
+                    )
+                    continue
+
+            if field_name in rel_kinds:
+                pks = await self._resolve_related_pks(
+                    getattr(instance, field_name, None)
+                )
+                if rel_kinds[field_name] == "reverse_o2o":
+                    data[field_name] = pks[0] if pks else None
+                else:
+                    data[field_name] = pks
+                continue
+
+            if field_name in fk_names:
+                value = getattr(instance, f"{field_name}_id", None)
+            elif field_name.endswith("_id") and field_name[:-3] in fk_names:
+                value = getattr(instance, field_name, None)
+            else:
+                value = getattr(instance, field_name, None)
                 if isinstance(value, ForeignKeyLazyLoader):
                     value = value._fk_id
             if value is not None:
                 data[field_name] = value
 
         return data
-    
+
+    async def _resolve_related_objects(self, value: Any) -> list[Any]:
+        """Resolve a relation attribute to a list of related model instances."""
+        from zeeb_orm.models.fields import ForeignKeyLazyLoader
+        from zeeb_orm.models.manager import Manager
+
+        if value is None:
+            return []
+        if isinstance(value, ForeignKeyLazyLoader):
+            obj = await value
+            return [obj] if obj is not None else []
+        if isinstance(value, (list, tuple)):
+            return list(value)
+        if isinstance(value, Manager):
+            return list(await value.all())
+        return [value]
+
+    async def _resolve_related_pks(self, value: Any) -> list[Any]:
+        """Resolve a relation attribute to a list of related primary keys."""
+        objs = await self._resolve_related_objects(value)
+        return [getattr(o, "pk", o) for o in objs]
+
+    async def _serialize_nested(
+        self, field: NestedSerializer, instance: Any, field_name: str
+    ) -> Any:
+        """Serialize a NestedSerializer field, resolving the relation async."""
+        objs = await self._resolve_related_objects(
+            getattr(instance, field_name, None)
+        )
+        nested_cls = field.serializer_class
+        if field.many:
+            out = []
+            for obj in objs:
+                out.append(await nested_cls(instance=obj).adata())
+            return out
+        if not objs:
+            return None
+        return await nested_cls(instance=objs[0]).adata()
+
     @property
     def validated_data(self) -> dict[str, Any]:
         """Get validated data."""
@@ -550,29 +751,38 @@ class ModelSerializer(Serializer, Generic[ModelT]):
                             response_fields[field_name] = (nested_response | None, None)
                     continue
             
+            from zeeb_orm.models.fields import ForeignKeyField
+
             # Get model field
             # Handle the case where user specifies "field_id" for a FK named "field"
             model_field = model_fields.get(field_name)
             actual_field_name = field_name
-            
+
             # If field not found, check if this is a "_id" reference to a FK
             if model_field is None and field_name.endswith("_id"):
                 fk_name = field_name[:-3]  # Remove "_id" suffix
                 model_field = model_fields.get(fk_name)
-                if model_field and "foreign" in model_field.__class__.__name__.lower():
+                if isinstance(model_field, ForeignKeyField):
                     actual_field_name = fk_name
                 else:
                     model_field = None
-            
+
             if model_field is None:
+                # Not a local column: it may be a to-many / reverse relation
+                # (forward M2M, reverse FK/O2O, reverse M2M). Serialize those as
+                # related primary keys (read-only).
+                rel_type = _relation_response_type(model, field_name)
+                if rel_type is not None:
+                    response_fields[field_name] = rel_type
                 continue
-            
+
             # Determine Python type
             field_class_name = model_field.__class__.__name__
             python_type = ORM_TO_PYTHON_TYPE.get(field_class_name, Any)
-            
-            # Check if this is a ForeignKey (could be ForeignKey, ForeignKeyField, etc.)
-            is_foreign_key = "foreign" in field_class_name.lower()
+
+            # Check if this is a ForeignKey. isinstance also covers
+            # OneToOneField, whose class name does not contain "foreign".
+            is_foreign_key = isinstance(model_field, ForeignKeyField)
             
             # Handle ForeignKey - get the target model's PK type
             if is_foreign_key:
