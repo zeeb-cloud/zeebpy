@@ -272,30 +272,30 @@ class CommentViewSet(ModelViewSet):
 Edit `apps/blog/urls.py`:
 
 ```python
-from zeeb_api.routers import Router
+from zeeb_api.routers import DefaultRouter
 from apps.blog.views import AuthorViewSet, PostViewSet, CommentViewSet
 
-router = Router()
+router = DefaultRouter()
 router.register("authors", AuthorViewSet)
 router.register("posts", PostViewSet)
 router.register("comments", CommentViewSet)
 
-urlpatterns = router.urls
+urlpatterns = router.routes
 ```
 
 Edit `blog_api/urls.py`:
 
 ```python
-from zeeb_api.routers import Router
+from zeeb_api.routers import DefaultRouter
 from apps.blog.urls import router as blog_router
 
 # Main router
-router = Router()
+router = DefaultRouter()
 
 # Include blog routes under /api/
-router.include_router(blog_router, prefix="/api")
+router.include(blog_router, prefix="api")
 
-urlpatterns = router.urls
+urlpatterns = router.routes
 ```
 
 ## 8. Run the Server

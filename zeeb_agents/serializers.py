@@ -13,11 +13,13 @@ from zeeb_agents._utils.code_gen import (
     ensure_import,
     render_serializer_class,
 )
-from zeeb_agents._utils.project import get_app_path
+from zeeb_agents._utils.errors import AgentError
+from zeeb_agents._utils.validation import ensure_app_exists, ensure_identifier
 
 
 def _serializers_file(app: str, root: Path) -> Path:
-    return get_app_path(app, root) / "serializers.py"
+    """Return ``apps/<app>/serializers.py``; fail with suggestions if the app is missing."""
+    return ensure_app_exists(app, root) / "serializers.py"
 
 
 @agent_function
@@ -26,6 +28,8 @@ async def create_serializer(
     model_name: str,
     fields: list[str] | None = None,
     read_only_fields: list[str] | None = None,
+    extra_fields: list[dict] | None = None,
+    validate_fields: list[str] | None = None,
     project_root: Path | None = None,
 ) -> AgentResult:
     """Append a ``ModelSerializer`` subclass to ``apps/<app>/serializers.py``.
@@ -35,23 +39,46 @@ async def create_serializer(
         model_name: The model this serializer is for (e.g. ``"Post"``).
         fields: Field names to include.  Defaults to ``["__all__"]``.
         read_only_fields: Fields that are read-only (e.g. ``["id", "created_at"]``).
+        extra_fields: Declared serializer field specs.  Each dict has ``name``,
+            ``type`` (a ``zeeb_api.serializers`` field class name, or
+            ``"nested"``), and any field kwargs, e.g.::
+
+                [
+                    {"name": "display_name", "type": "SerializerMethodField"},
+                    {"name": "password", "type": "CharField",
+                     "write_only": True, "max_length": 128},
+                    {"name": "author", "type": "nested",
+                     "serializer": "UserSerializer", "read_only": True},
+                ]
+
+            ``SerializerMethodField`` entries also emit a ``get_<name>`` stub.
+            Nested serializer classes must exist in (or be imported into) the
+            app's ``serializers.py``.  Declared names are appended to an
+            explicit ``fields`` list automatically.
+        validate_fields: Field names to emit ``validate_<field>(self, value)``
+            stub methods for.
         project_root: Auto-detected if ``None``.
 
     Example::
 
         await create_serializer("blog", "Post",
             fields=["id", "title", "body", "created_at"],
-            read_only_fields=["id", "created_at"])
+            read_only_fields=["id", "created_at"],
+            validate_fields=["title"])
 
     Returns data (on success):
         app (str): the app directory name
         model (str): the model name passed in
         serializer (str): the generated class name (``"<ModelName>Serializer"``)
+        extra_fields (list[str]): names of declared fields added (empty when
+            ``extra_fields`` was not given)
 
     Notes:
-        - On failure (missing ``serializers.py``, or the class already exists)
-          ``data`` is ``None``.
+        - Failures carry ``error_code`` in ``data`` (``app_not_found``,
+          ``already_exists``, ``invalid_field_type``, ``invalid_field_spec``, …)
+          plus close-match ``suggestions`` where applicable.
     """
+    ensure_identifier(model_name, "model name")
     path = _serializers_file(app, project_root)
     if not path.exists():
         return AgentResult(success=False, message=f"serializers.py not found at {path}")
@@ -61,8 +88,14 @@ async def create_serializer(
     def _write() -> None:
         content = path.read_text(encoding="utf-8")
         if class_exists(content, class_name):
-            raise ValueError(f"'{class_name}' already exists in {path}")
-        class_code = render_serializer_class(model_name, fields, read_only_fields)
+            raise AgentError(
+                f"'{class_name}' already exists in {path}",
+                code="already_exists",
+                serializer=class_name,
+            )
+        class_code = render_serializer_class(
+            model_name, fields, read_only_fields, extra_fields, validate_fields
+        )
         ensure_import(path, "from zeeb_api import serializers")
         ensure_import(path, "from zeeb_api.serializers import ModelSerializer")
         ensure_import(path, f"from .models import {model_name}")
@@ -72,7 +105,12 @@ async def create_serializer(
     return AgentResult(
         success=True,
         message=f"'{class_name}' created in apps/{app}/serializers.py",
-        data={"app": app, "model": model_name, "serializer": class_name},
+        data={
+            "app": app,
+            "model": model_name,
+            "serializer": class_name,
+            "extra_fields": [f["name"] for f in (extra_fields or [])],
+        },
     )
 
 
@@ -109,7 +147,11 @@ async def update_serializer(
     def _update() -> list[str]:
         content = path.read_text(encoding="utf-8")
         if not class_exists(content, class_name):
-            raise ValueError(f"'{class_name}' not found in {path}")
+            raise AgentError(
+                f"'{class_name}' not found in {path}",
+                code="model_not_found",
+                serializer=class_name,
+            )
         changes: list[str] = []
         if fields is not None:
             fields_repr = ", ".join(f'"{f}"' for f in fields)

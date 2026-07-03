@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 import asyncio
-import re
 from pathlib import Path
 
 from zeeb_agents._utils import AgentResult, agent_function
+from zeeb_agents._utils.code_gen import find_settings_file, set_or_append_setting
 from zeeb_agents._utils.project import load_project_settings
 
 _CORS_KEYS = (
@@ -17,47 +17,14 @@ _CORS_KEYS = (
     "CORS_EXPOSE_HEADERS",
 )
 
-
-def _find_settings_file(root: Path) -> Path | None:
-    for item in root.iterdir():
-        if item.is_dir() and (item / "settings.py").exists():
-            return item / "settings.py"
-    return None
+# Backwards-compatible aliases (canonical versions live in _utils.code_gen).
+_find_settings_file = find_settings_file
+_set_or_append_setting = set_or_append_setting
 
 
 def _render_list(values: list[str]) -> str:
     items = ", ".join(f'"{v}"' for v in values)
     return f"[{items}]"
-
-
-def _set_or_append_setting(content: str, key: str, rendered: str) -> str:
-    """Replace an existing ``KEY = ...`` assignment or append it at end of file.
-
-    Handles assignments whose value spans multiple lines (e.g. a list literal
-    split across lines), replacing the whole bracketed span rather than only
-    the first line — which would otherwise orphan the continuation lines and
-    corrupt ``settings.py``.
-    """
-    new_line = f"{key} = {rendered}"
-    lines = content.splitlines(keepends=True)
-    key_re = re.compile(rf"^{re.escape(key)}\s*=")
-
-    start = next((i for i, ln in enumerate(lines) if key_re.match(ln)), None)
-    if start is None:
-        return content.rstrip("\n") + f"\n{new_line}\n"
-
-    # Extend the span until any opened (), [], {} brackets are balanced again,
-    # so multi-line literals are fully replaced.
-    depth = 0
-    end = start
-    for j in range(start, len(lines)):
-        depth += lines[j].count("(") + lines[j].count("[") + lines[j].count("{")
-        depth -= lines[j].count(")") + lines[j].count("]") + lines[j].count("}")
-        end = j
-        if depth <= 0:
-            break
-
-    return "".join(lines[:start]) + new_line + "\n" + "".join(lines[end + 1 :])
 
 
 @agent_function

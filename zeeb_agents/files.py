@@ -8,6 +8,7 @@ import re
 from pathlib import Path
 
 from zeeb_agents._utils import AgentResult, agent_function
+from zeeb_agents._utils.errors import AgentError, fail
 
 
 def _resolve_path(root: Path, path: str | Path) -> Path:
@@ -16,7 +17,11 @@ def _resolve_path(root: Path, path: str | Path) -> Path:
     full = p if p.is_absolute() else root / p
     resolved = full.resolve()
     if not resolved.is_relative_to(Path(root).resolve()):
-        raise ValueError(f"Path '{path}' is outside the project root")
+        raise AgentError(
+            f"Path '{path}' is outside the project root",
+            code="outside_project_root",
+            path=str(path),
+        )
     return full
 
 
@@ -47,7 +52,7 @@ async def read_file(
         return full.read_text(errors="replace")
 
     if not full.exists():
-        return AgentResult(success=False, message=f"File not found: {full}")
+        return fail(f"File not found: {full}", code="file_not_found", path=str(full))
     if not full.is_file():
         return AgentResult(success=False, message=f"Path is not a file: {full}")
 
@@ -194,7 +199,7 @@ async def search_code(
     try:
         compiled = re.compile(pattern, re.IGNORECASE)
     except re.error as exc:
-        return AgentResult(success=False, message=f"Invalid regex pattern: {exc}")
+        return fail(f"Invalid regex pattern: {exc}", code="invalid_regex")
 
     def _search() -> list[dict]:
         matches = []

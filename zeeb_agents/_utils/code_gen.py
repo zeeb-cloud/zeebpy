@@ -5,7 +5,27 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from zeeb_agents._utils.field_types import render_field_line
+from zeeb_agents._utils.errors import AgentError, close_matches
+from zeeb_agents._utils.field_types import render_field_line, render_py_literal
+
+# The full ``class Meta`` surface zeeb_orm's Options.from_meta understands.
+# ``indexes``/``constraints`` accept lists of plain dicts (Options does
+# ``Index(**idx)`` / ``UniqueConstraint(**c)`` / ``CheckConstraint(**c)``).
+KNOWN_META_KEYS = frozenset(
+    {
+        "table_name",
+        "db_table",
+        "abstract",
+        "managed",
+        "ordering",
+        "unique_together",
+        "index_together",
+        "indexes",
+        "constraints",
+        "default_permissions",
+        "app_label",
+    }
+)
 
 
 # ---------------------------------------------------------------------------
@@ -18,7 +38,13 @@ def render_model_class(
     fields: list[dict],
     meta: dict | None = None,
 ) -> str:
-    """Render a complete ``Model`` subclass definition."""
+    """Render a complete ``Model`` subclass definition.
+
+    Meta values are emitted as Python literals, so nested structures work:
+    ``unique_together=[["author", "slug"]]``,
+    ``indexes=[{"fields": ["created_at"], "name": "idx_created"}]``,
+    ``constraints=[{"check": "price >= 0", "name": "ck_price"}]``.
+    """
     lines = [f"class {model_name}(Model):"]
 
     if fields:
@@ -28,42 +54,231 @@ def render_model_class(
         lines.append("    pass")
 
     if meta:
+        for key in meta:
+            if key not in KNOWN_META_KEYS:
+                suggestions = close_matches(str(key), sorted(KNOWN_META_KEYS))
+                hint = f" Did you mean: {', '.join(suggestions)}?" if suggestions else ""
+                raise AgentError(
+                    f"Unknown Meta key '{key}'.{hint} "
+                    f"Valid keys: {sorted(KNOWN_META_KEYS)}",
+                    code="invalid_meta",
+                    suggestions=suggestions,
+                )
         lines.append("")
         lines.append("    class Meta:")
         for key, val in meta.items():
-            if isinstance(val, str):
-                lines.append(f'        {key} = "{val}"')
-            elif isinstance(val, list):
-                items = ", ".join(f'"{i}"' for i in val)
-                lines.append(f"        {key} = [{items}]")
-            else:
-                lines.append(f"        {key} = {val}")
+            lines.append(f"        {key} = {render_py_literal(val)}")
 
     return "\n".join(lines)
+
+
+# Declared-field types available on zeeb_api.serializers (plus the "nested"
+# pseudo-type, which renders a nested serializer instance).
+SERIALIZER_FIELD_TYPES = frozenset(
+    {
+        "BooleanField",
+        "CharField",
+        "DateField",
+        "DateTimeField",
+        "DecimalField",
+        "DictField",
+        "EmailField",
+        "FloatField",
+        "IntegerField",
+        "ListField",
+        "PrimaryKeyRelatedField",
+        "SerializerMethodField",
+        "SlugRelatedField",
+        "TimeField",
+        "URLField",
+        "UUIDField",
+    }
+)
+
+
+def _render_serializer_field(spec: dict) -> tuple[str, str | None]:
+    """Render one declared serializer field.
+
+    Returns ``(field_line, method_stub)`` where *method_stub* is the
+    ``get_<name>`` body for ``SerializerMethodField`` (else ``None``).
+    """
+    spec = dict(spec)
+    name = spec.pop("name", None)
+    if not isinstance(name, str) or not name.isidentifier():
+        raise AgentError(
+            f"Serializer field spec needs a 'name' that is a valid identifier, got {name!r}",
+            code="invalid_field_spec",
+        )
+    ftype = spec.pop("type", None)
+    if ftype == "nested":
+        serializer = spec.pop("serializer", None)
+        if not isinstance(serializer, str) or not serializer.isidentifier():
+            raise AgentError(
+                f"Nested field '{name}' needs a 'serializer' class name "
+                '(e.g. {"name": "author", "type": "nested", "serializer": "UserSerializer"})',
+                code="invalid_field_spec",
+            )
+        kwargs = ", ".join(f"{k}={render_py_literal(v)}" for k, v in spec.items())
+        return f"{name} = {serializer}({kwargs})", None
+    if ftype not in SERIALIZER_FIELD_TYPES:
+        suggestions = close_matches(str(ftype), sorted(SERIALIZER_FIELD_TYPES))
+        hint = f" Did you mean: {', '.join(suggestions)}?" if suggestions else ""
+        raise AgentError(
+            f"Unknown serializer field type '{ftype}'.{hint} "
+            f"Valid types: {sorted(SERIALIZER_FIELD_TYPES)} or 'nested'",
+            code="invalid_field_type",
+            suggestions=suggestions,
+        )
+    kwargs = ", ".join(f"{k}={render_py_literal(v)}" for k, v in spec.items())
+    line = f"{name} = serializers.{ftype}({kwargs})"
+    stub: str | None = None
+    if ftype == "SerializerMethodField":
+        stub = (
+            f"    def get_{name}(self, obj):\n"
+            f"        return None  # TODO: implement {name}"
+        )
+    return line, stub
 
 
 def render_serializer_class(
     model_name: str,
     fields: list[str] | None = None,
     read_only_fields: list[str] | None = None,
+    extra_fields: list[dict] | None = None,
+    validate_fields: list[str] | None = None,
 ) -> str:
-    """Render a ``ModelSerializer`` subclass definition."""
+    """Render a ``ModelSerializer`` subclass definition.
+
+    *extra_fields* are declared serializer fields (``SerializerMethodField``,
+    typed fields with ``write_only``/``source``/…, or nested serializers via
+    ``{"type": "nested", "serializer": "UserSerializer"}``).  Their names are
+    appended to an explicit ``fields`` list automatically.  *validate_fields*
+    emits ``validate_<field>`` stub methods.
+    """
     class_name = f"{model_name}Serializer"
+
+    declared_lines: list[str] = []
+    method_stubs: list[str] = []
+    declared_names: list[str] = []
+    for spec in extra_fields or []:
+        line, stub = _render_serializer_field(spec)
+        declared_lines.append(f"    {line}")
+        declared_names.append(spec["name"])
+        if stub:
+            method_stubs.append(stub)
+
+    for field in validate_fields or []:
+        if not isinstance(field, str) or not field.isidentifier():
+            raise AgentError(
+                f"validate_fields entries must be field names, got {field!r}",
+                code="invalid_field_spec",
+            )
+        method_stubs.append(
+            f"    def validate_{field}(self, value):\n"
+            '        # TODO: raise serializers.ValidationError("...") on invalid input\n'
+            "        return value"
+        )
+
+    meta_fields = list(fields) if fields else None
+    if meta_fields is not None:
+        for name in declared_names:
+            if name not in meta_fields:
+                meta_fields.append(name)
     fields_repr = (
-        ", ".join(f'"{f}"' for f in fields)
-        if fields
+        ", ".join(f'"{f}"' for f in meta_fields)
+        if meta_fields
         else '"__all__"'
     )
-    lines = [
-        f"class {class_name}(ModelSerializer):",
-        f"    class Meta:",
-        f"        model = {model_name}",
-        f"        fields = [{fields_repr}]",
-    ]
+
+    lines = [f"class {class_name}(ModelSerializer):"]
+    if declared_lines:
+        lines.extend(declared_lines)
+        lines.append("")
+    lines.extend(
+        [
+            "    class Meta:",
+            f"        model = {model_name}",
+            f"        fields = [{fields_repr}]",
+        ]
+    )
     if read_only_fields:
         ro_repr = ", ".join(f'"{f}"' for f in read_only_fields)
         lines.append(f"        read_only_fields = [{ro_repr}]")
+    for stub in method_stubs:
+        lines.append("")
+        lines.append(stub)
     return "\n".join(lines)
+
+
+# Permission classes exported by zeeb_api.permissions.
+VIEWSET_PERMISSIONS = frozenset(
+    {
+        "AllowAny",
+        "IsAuthenticated",
+        "IsAdminUser",
+        "IsAuthenticatedOrReadOnly",
+        "IsOwner",
+        "IsOwnerOrReadOnly",
+        "DjangoModelPermissions",
+    }
+)
+
+# Throttle classes exported by zeeb_api.throttling that work as-is on a viewset.
+VIEWSET_THROTTLES = frozenset({"AnonRateThrottle", "UserRateThrottle", "ScopedRateThrottle"})
+
+# Friendly aliases → zeeb_api.pagination class names.
+PAGINATION_ALIASES = {
+    "page": "PageNumberPagination",
+    "limit_offset": "LimitOffsetPagination",
+    "cursor": "CursorPagination",
+    "PageNumberPagination": "PageNumberPagination",
+    "LimitOffsetPagination": "LimitOffsetPagination",
+    "CursorPagination": "CursorPagination",
+}
+
+
+def validate_permission(permission: str) -> str:
+    """Validate a permission class name against zeeb_api.permissions exports."""
+    if permission not in VIEWSET_PERMISSIONS:
+        suggestions = close_matches(permission, sorted(VIEWSET_PERMISSIONS))
+        hint = f" Did you mean: {', '.join(suggestions)}?" if suggestions else ""
+        raise AgentError(
+            f"Unknown permission class '{permission}'.{hint} "
+            f"Valid classes: {sorted(VIEWSET_PERMISSIONS)}",
+            code="invalid_permission",
+            suggestions=suggestions,
+        )
+    return permission
+
+
+def resolve_pagination(pagination: str) -> str:
+    """Resolve a pagination alias/class name to a zeeb_api.pagination class name."""
+    resolved = PAGINATION_ALIASES.get(pagination)
+    if resolved is None:
+        suggestions = close_matches(pagination, sorted(PAGINATION_ALIASES))
+        hint = f" Did you mean: {', '.join(suggestions)}?" if suggestions else ""
+        raise AgentError(
+            f"Unknown pagination '{pagination}'.{hint} "
+            f"Valid values: {sorted(set(PAGINATION_ALIASES))}",
+            code="invalid_input",
+            suggestions=suggestions,
+        )
+    return resolved
+
+
+def validate_throttles(throttles: list[str]) -> list[str]:
+    """Validate throttle class names against zeeb_api.throttling exports."""
+    for name in throttles:
+        if name not in VIEWSET_THROTTLES:
+            suggestions = close_matches(name, sorted(VIEWSET_THROTTLES))
+            hint = f" Did you mean: {', '.join(suggestions)}?" if suggestions else ""
+            raise AgentError(
+                f"Unknown throttle class '{name}'.{hint} "
+                f"Valid classes: {sorted(VIEWSET_THROTTLES)}",
+                code="invalid_input",
+                suggestions=suggestions,
+            )
+    return throttles
 
 
 def render_viewset_class(
@@ -71,16 +286,54 @@ def render_viewset_class(
     serializer_class: str | None = None,
     permission: str = "IsAuthenticatedOrReadOnly",
     extra_actions: list[dict] | None = None,
+    read_only: bool = False,
+    lookup_field: str | None = None,
+    pagination: str | None = None,
+    throttles: list[str] | None = None,
+    search_fields: list[str] | None = None,
+    ordering_fields: list[str] | None = None,
+    filterset: str | None = None,
 ) -> str:
-    """Render a ``ModelViewSet`` subclass definition."""
+    """Render a ``ModelViewSet`` (or ``ReadOnlyModelViewSet``) subclass definition.
+
+    Optional attributes cover the full viewset surface: ``lookup_field``,
+    ``pagination_class`` (via :data:`PAGINATION_ALIASES`), ``throttle_classes``,
+    and ``filter_backends`` built from *filterset* / *search_fields* /
+    *ordering_fields*.  The caller is responsible for the matching imports
+    (see :func:`viewset_option_imports`).
+    """
     class_name = f"{model_name}ViewSet"
     ser_class = serializer_class or f"{model_name}Serializer"
+    base_class = "ReadOnlyModelViewSet" if read_only else "ModelViewSet"
     lines = [
-        f"class {class_name}(ModelViewSet):",
+        f"class {class_name}({base_class}):",
         f"    queryset = {model_name}.objects.all()",
         f"    serializer_class = {ser_class}",
-        f"    permission_classes = [permissions.{permission}]",
+        f"    permission_classes = [permissions.{validate_permission(permission)}]",
     ]
+    if lookup_field:
+        lines.append(f'    lookup_field = "{lookup_field}"')
+    if pagination:
+        lines.append(f"    pagination_class = {resolve_pagination(pagination)}")
+    if throttles:
+        lines.append(
+            f"    throttle_classes = [{', '.join(validate_throttles(throttles))}]"
+        )
+    backends: list[str] = []
+    if filterset:
+        backends.append(filterset)
+    if search_fields:
+        backends.append("SearchFilter")
+    if ordering_fields:
+        backends.append("OrderingFilter")
+    if backends:
+        lines.append(f"    filter_backends = [{', '.join(backends)}]")
+    if search_fields:
+        quoted = ", ".join(f'"{f}"' for f in search_fields)
+        lines.append(f"    search_fields = [{quoted}]")
+    if ordering_fields:
+        quoted = ", ".join(f'"{f}"' for f in ordering_fields)
+        lines.append(f"    ordering_fields = [{quoted}]")
     if extra_actions:
         for action in extra_actions:
             a_name = action["name"]
@@ -90,13 +343,82 @@ def render_viewset_class(
             lines.append("")
             lines.append(f'    @action(detail={a_detail}, methods=[{methods_repr}])')
             lines.append(f"    async def {a_name}(self, request, pk=None):")
-            lines.append(f"        pass  # TODO: implement {a_name}")
+            lines.append(
+                f"        pass  # TODO: implement {a_name}; "
+                "raise zeeb_api.exceptions (e.g. NotFound) on errors"
+            )
     return "\n".join(lines)
+
+
+def viewset_option_imports(
+    read_only: bool = False,
+    pagination: str | None = None,
+    throttles: list[str] | None = None,
+    search_fields: list[str] | None = None,
+    ordering_fields: list[str] | None = None,
+    filterset: str | None = None,
+) -> list[str]:
+    """Return the import lines a viewset rendered with these options needs."""
+    imports: list[str] = []
+    if read_only:
+        imports.append("from zeeb_api.viewsets import ReadOnlyModelViewSet")
+    if pagination:
+        imports.append(f"from zeeb_api.pagination import {resolve_pagination(pagination)}")
+    if throttles:
+        imports.append(
+            f"from zeeb_api.throttling import {', '.join(validate_throttles(throttles))}"
+        )
+    filter_imports = [name for name, flag in
+                      (("SearchFilter", search_fields), ("OrderingFilter", ordering_fields))
+                      if flag]
+    if filter_imports:
+        imports.append(f"from zeeb_api.filters import {', '.join(filter_imports)}")
+    if filterset:
+        imports.append(f"from .filters import {filterset}")
+    return imports
 
 
 # ---------------------------------------------------------------------------
 # File-level helpers
 # ---------------------------------------------------------------------------
+
+
+def find_settings_file(root: Path) -> Path | None:
+    """Return the project package's ``settings.py`` (first match), or ``None``."""
+    for item in root.iterdir():
+        if item.is_dir() and (item / "settings.py").exists():
+            return item / "settings.py"
+    return None
+
+
+def set_or_append_setting(content: str, key: str, rendered: str) -> str:
+    """Replace an existing ``KEY = ...`` assignment or append it at end of file.
+
+    Handles assignments whose value spans multiple lines (e.g. a list literal
+    split across lines), replacing the whole bracketed span rather than only
+    the first line — which would otherwise orphan the continuation lines and
+    corrupt ``settings.py``.
+    """
+    new_line = f"{key} = {rendered}"
+    lines = content.splitlines(keepends=True)
+    key_re = re.compile(rf"^{re.escape(key)}\s*=")
+
+    start = next((i for i, ln in enumerate(lines) if key_re.match(ln)), None)
+    if start is None:
+        return content.rstrip("\n") + f"\n{new_line}\n"
+
+    # Extend the span until any opened (), [], {} brackets are balanced again,
+    # so multi-line literals are fully replaced.
+    depth = 0
+    end = start
+    for j in range(start, len(lines)):
+        depth += lines[j].count("(") + lines[j].count("[") + lines[j].count("{")
+        depth -= lines[j].count(")") + lines[j].count("]") + lines[j].count("}")
+        end = j
+        if depth <= 0:
+            break
+
+    return "".join(lines[:start]) + new_line + "\n" + "".join(lines[end + 1 :])
 
 
 def append_block(path: Path, code: str) -> None:

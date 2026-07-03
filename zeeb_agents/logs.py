@@ -7,6 +7,8 @@ import re
 from pathlib import Path
 
 from zeeb_agents._utils import AgentResult, agent_function
+from zeeb_agents._utils.errors import fail
+from zeeb_agents._utils.project import require_project_root
 
 _LOG_LEVELS = {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
 
@@ -50,8 +52,9 @@ async def read_logs(
         lines (list[str]): the tail lines (after any ``level`` filter)
         total_lines (int): total matching lines before the tail was applied
 
-    On failure (no log file found) ``data`` is
-    ``{"searched_in": "<project root>"}``.
+    On failure (no log file found) ``data`` carries
+    ``error_code="log_file_not_found"`` plus ``searched_in`` (auto-detect)
+    or ``path``/``available`` (explicit ``log_file``).
 
     Notes:
         - ``level`` is matched as a whole token (word boundaries), so
@@ -81,14 +84,27 @@ async def read_logs(
 
     result = await asyncio.to_thread(_read)
     if result["path"] is None:
-        return AgentResult(
-            success=False,
-            message="No log file found in project",
-            data={"searched_in": str(root)},
+        resolved_root = require_project_root(root)
+        if log_file:
+            available = [
+                str(f.relative_to(resolved_root)) for f in _find_log_files(resolved_root)
+            ]
+            return fail(
+                f"Log file '{log_file}' not found."
+                + (f" Available log files: {', '.join(available)}" if available else ""),
+                code="log_file_not_found",
+                path=log_file,
+                available=available,
+            )
+        return fail(
+            "No log file found in project",
+            code="log_file_not_found",
+            searched_in=str(root),
         )
+    empty_note = " (file is empty)" if result["total_lines"] == 0 else ""
     return AgentResult(
         success=True,
-        message=f"Read {len(result['lines'])} line(s) from {result['path']}",
+        message=f"Read {len(result['lines'])} line(s) from {result['path']}{empty_note}",
         data=result,
     )
 
@@ -117,7 +133,7 @@ async def search_logs(
     try:
         compiled = re.compile(pattern, re.IGNORECASE)
     except re.error as exc:
-        return AgentResult(success=False, message=f"Invalid regex pattern: {exc}")
+        return fail(f"Invalid regex pattern: {exc}", code="invalid_regex")
 
     def _search() -> dict:
         if log_file:
@@ -176,7 +192,7 @@ async def clear_logs(
 
     cleared = await asyncio.to_thread(_clear)
     if not cleared:
-        return AgentResult(success=False, message="No log files found to clear")
+        return fail("No log files found to clear", code="log_file_not_found")
     return AgentResult(
         success=True,
         message=f"Cleared {len(cleared)} log file(s): {', '.join(cleared)}",

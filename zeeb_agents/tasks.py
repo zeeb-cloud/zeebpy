@@ -7,6 +7,7 @@ import re
 from pathlib import Path
 
 from zeeb_agents._utils import AgentResult, agent_function
+from zeeb_agents._utils.errors import AgentError, close_matches, did_you_mean
 from zeeb_agents._utils.project import get_app_path
 
 _TASKS_HEADER = '''\
@@ -97,7 +98,11 @@ async def create_task(
 
         content = tasks_path.read_text(encoding="utf-8")
         if re.search(rf"^async def {re.escape(function_name)}\s*\(", content, re.MULTILINE):
-            raise ValueError(f"Task '{function_name}' already exists in tasks.py.")
+            raise AgentError(
+                f"Task '{function_name}' already exists in tasks.py.",
+                code="already_exists",
+                function=function_name,
+            )
 
         schedule_comment = schedule or "manual / call directly"
         block = _TASK_BLOCK.format(
@@ -202,7 +207,16 @@ async def delete_task(
         )
         new_source, n = pattern.subn("", source)
         if n == 0:
-            raise ValueError(f"Task '{function_name}' not found in tasks.py.")
+            names = re.findall(r"async def (\w+)", source)
+            hint = did_you_mean(function_name, names)
+            if not hint:
+                hint = f" Tasks present: {', '.join(names) or '(none)'}."
+            raise AgentError(
+                f"Task '{function_name}' not found in tasks.py.{hint}",
+                code="function_not_found",
+                suggestions=close_matches(function_name, names),
+                tasks=names,
+            )
         tasks_path.write_text(new_source, encoding="utf-8")
 
     await asyncio.to_thread(_remove)

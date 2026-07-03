@@ -22,17 +22,40 @@ UserT = TypeVar("UserT", bound="AbstractBaseUser")
 # Cache for resolved user model
 _user_model_cache: type | None = None
 
+# Explicit project root for settings discovery (set by out-of-process tooling
+# such as zeeb_agents/migrations that operate on a project by path rather
+# than from inside its working directory).
+_project_root_override: Path | None = None
+
+
+def set_project_root(project_root: Path | str | None) -> None:
+    """Point settings discovery at an explicit project root.
+
+    By default :func:`get_user_model` finds the project by walking up from
+    the process CWD to the nearest ``manage.py``. Tooling that targets a
+    project elsewhere on disk (e.g. migration registration in zeeb_agents)
+    must call this first so ``AUTH_USER_MODEL`` is read from the right
+    ``settings.py``. Pass ``None`` to restore CWD-based discovery. Clears
+    the cached user model.
+    """
+    global _project_root_override
+    _project_root_override = Path(project_root) if project_root is not None else None
+    clear_user_model_cache()
+
 
 def _get_project_settings() -> Any:
     """Load and return the project settings module."""
-    # Try to find project root
-    current = Path.cwd()
-    while current != current.parent:
-        if (current / "manage.py").exists():
-            break
-        current = current.parent
+    if _project_root_override is not None:
+        current = _project_root_override
     else:
-        return None
+        # Try to find project root
+        current = Path.cwd()
+        while current != current.parent:
+            if (current / "manage.py").exists():
+                break
+            current = current.parent
+        else:
+            return None
     
     # Add to path if needed
     if str(current) not in sys.path:

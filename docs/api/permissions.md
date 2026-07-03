@@ -67,6 +67,50 @@ class ArticleViewSet(ModelViewSet):
     # Anyone can read, only authenticated can write
 ```
 
+### IsOwner
+
+Object-level permission allowing only the object's owner (the model's
+`owner` attribute by default, falling back to `user`; override with
+`owner_field`).
+
+```python
+from zeeb_api.permissions import IsOwner
+
+
+class ArticleOwnerPermission(IsOwner):
+    owner_field = "author"
+
+
+class ArticleViewSet(ModelViewSet):
+    permission_classes = [ArticleOwnerPermission]
+```
+
+### IsOwnerOrReadOnly
+
+Like `IsOwner`, but `GET`/`HEAD`/`OPTIONS` are allowed for everyone.
+
+```python
+from zeeb_api.permissions import IsOwnerOrReadOnly
+
+
+class ArticleViewSet(ModelViewSet):
+    permission_classes = [IsOwnerOrReadOnly]
+```
+
+### DjangoModelPermissions
+
+Maps HTTP methods to Django-style model permissions
+(`view_<model>` / `add_<model>` / `change_<model>` / `delete_<model>`)
+checked via the user's permission set.
+
+```python
+from zeeb_api.permissions import DjangoModelPermissions
+
+
+class ArticleViewSet(ModelViewSet):
+    permission_classes = [DjangoModelPermissions]
+```
+
 ## Per-Action Permissions
 
 Different permissions for different actions:

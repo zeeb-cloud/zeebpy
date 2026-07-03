@@ -8,13 +8,16 @@ import shutil
 from pathlib import Path
 
 from zeeb_agents._utils import AgentResult, agent_function
+from zeeb_agents._utils.errors import close_matches, fail
 from zeeb_agents._utils.project import (
     get_app_path,
     load_project_settings,
+    require_project_root,
 )
 from zeeb_agents._utils.project import (
     list_apps as list_apps_util,
 )
+from zeeb_agents._utils.validation import ensure_identifier
 
 
 @agent_function
@@ -32,6 +35,8 @@ async def create_project(name: str, directory: str = ".") -> AgentResult:
         - A non-zero CLI exit code returns ``success=False`` with
           ``data=None``.
     """
+    ensure_identifier(name, "project name")
+
     def _run() -> int:
         from zeeb_orm.cli.commands.startproject import run_startproject
         return run_startproject(name, directory)
@@ -61,6 +66,7 @@ async def create_app(name: str, project_root: Path | None = None) -> AgentResult
         - A non-zero CLI exit code returns ``success=False`` with
           ``data=None``.
     """
+    ensure_identifier(name, "app name")
     root = project_root
 
     def _run() -> int:
@@ -95,9 +101,18 @@ async def delete_app(name: str, project_root: Path | None = None) -> AgentResult
         - If the app directory does not exist, returns ``success=False``
           with ``data=None``.
     """
-    app_path = get_app_path(name, project_root)
+    root = require_project_root(project_root)
+    app_path = get_app_path(name, root)
     if not app_path.exists():
-        return AgentResult(success=False, message=f"App '{name}' not found at {app_path}")
+        apps = list_apps_util(root)
+        suggestions = close_matches(name, apps)
+        hint = f" Did you mean: {', '.join(suggestions)}?" if suggestions else ""
+        return fail(
+            f"App '{name}' not found at {app_path}.{hint}",
+            code="app_not_found",
+            suggestions=suggestions,
+            apps=apps,
+        )
 
     await asyncio.to_thread(shutil.rmtree, app_path)
     return AgentResult(
@@ -181,8 +196,18 @@ async def get_project_structure(
         project_root: Auto-detected if ``None``.
         max_depth: Maximum directory depth to traverse (default: 3).
 
-    Returns:
-        ``AgentResult`` with ``tree`` (nested dict), ``root``, and ``file_count``.
+    Returns data (on success):
+        tree (dict): nested tree. Directory nodes are
+            ``{"name": str, "type": "dir", "children": [...]}``; file nodes
+            are ``{"name": str, "type": "file"}``.
+        root (str): absolute path of the project root.
+        max_depth (int): the depth that was traversed.
+        file_count (int): number of file nodes in the tree.
+
+    Notes:
+        - Directories deeper than ``max_depth`` appear as ``dir`` nodes with
+          empty ``children`` — an empty list does not mean the directory is
+          empty.
     """
     _SKIP_DIRS = frozenset({
         "__pycache__", ".git", "node_modules", ".mypy_cache",
@@ -249,14 +274,23 @@ async def rename_app(
         - If *old_name* does not exist or *new_name* already exists, returns
           ``success=False`` with ``data=None``.
     """
+    ensure_identifier(new_name, "app name")
     root = project_root
     old_path = get_app_path(old_name, root)
     new_path = get_app_path(new_name, root)
 
     if not old_path.exists():
-        return AgentResult(success=False, message=f"App '{old_name}' not found")
+        apps = list_apps_util(require_project_root(root))
+        suggestions = close_matches(old_name, apps)
+        hint = f" Did you mean: {', '.join(suggestions)}?" if suggestions else ""
+        return fail(
+            f"App '{old_name}' not found.{hint}",
+            code="app_not_found",
+            suggestions=suggestions,
+            apps=apps,
+        )
     if new_path.exists():
-        return AgentResult(success=False, message=f"App '{new_name}' already exists")
+        return fail(f"App '{new_name}' already exists", code="already_exists")
 
     await asyncio.to_thread(old_path.rename, new_path)
     return AgentResult(

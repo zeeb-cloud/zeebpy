@@ -58,6 +58,26 @@ def load_project_settings(project_root: Path) -> dict[str, Any]:
     return settings
 
 
+def resolve_db_url(settings: dict[str, Any], project_root: Path) -> str:
+    """Return the settings DATABASE url with relative sqlite paths anchored
+    at *project_root*.
+
+    zeeb_agents operates on target projects by path and must not depend on
+    the process CWD — but a relative sqlite URL (``sqlite:///db.sqlite3``)
+    resolves against the CWD when passed to SQLAlchemy.  Absolute URLs and
+    ``:memory:`` are returned unchanged.
+    """
+    import re
+
+    url: str = settings.get("DATABASE", {}).get("url", "sqlite+aiosqlite:///db.sqlite3")
+    m = re.match(r"^(sqlite(?:\+\w+)?)://(/?)(?!/)(.*)$", url)
+    if m:
+        driver, _slash, rel = m.groups()
+        if rel and rel != ":memory:" and not rel.startswith("/"):
+            return f"{driver}:///{(project_root / rel).resolve()}"
+    return url
+
+
 def list_apps(project_root: Path) -> list[str]:
     """Return app directory names found under ``apps/``."""
     apps_dir = project_root / "apps"

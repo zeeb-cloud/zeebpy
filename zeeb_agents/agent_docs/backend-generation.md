@@ -6,6 +6,17 @@ How to generate and iterate on all backend components using zeeb_agents tools.
 > It is replaced with the prefix your MCP server registered these tools under
 > (e.g. `zeeb_`, `myapp_`, or empty string).
 
+> **Build with tools, not `write_file`.** Every backend component — models,
+> serializers, viewsets, custom actions, and standalone routes — has a
+> dedicated tool that generates valid, correctly-imported, correctly-wired
+> code. **Do not hand-write `views.py`/`urls.py` (or `@router.get(...)`
+> wrappers) with `{prefix}write_file`.** Use `{prefix}create_route` /
+> `{prefix}add_viewset_action` and pass your implementation via their `body=`
+> argument. Reserve `{prefix}write_file` for files no tool covers. The argument
+> names and types below are exact — copy them verbatim. When unsure, call
+> `{prefix}list_capabilities(include_docstrings=True)` for the authoritative
+> signature of any tool.
+
 ## Models
 
 ### Field Types Reference
@@ -24,30 +35,65 @@ How to generate and iterate on all backend components using zeeb_agents tools.
 | `BooleanField` | `boolean` | |
 | `DateTimeField(auto_now_add, auto_now)` | `string/date-time` | |
 | `DateField` | `string/date` | |
+| `TimeField` | `string/time` | |
+| `DurationField` | `string/duration` | `timedelta` values |
+| `BinaryField` | `string` (base64) | Raw bytes |
+| `GenericIPAddressField` | `string` | IPv4/IPv6 |
+| `SmallIntegerField` / `BigIntegerField` | `integer` | |
+| `PositiveIntegerField` (+ `Small`/`Big`) | `integer >= 0` | |
+| `AutoField` / `BigAutoField` / `UUIDAutoField` | read-only PK | Explicit PKs (UUID is the default) |
 | `JSONField` | `object` | Arbitrary JSON |
-| `ForeignKey(to, on_delete, related_name)` | `integer` (FK id) | |
-| `OneToOneField(to, on_delete)` | `integer` | |
-| `ManyToManyField(to)` | `array[integer]` | |
+| `ForeignKey(to, on_delete, related_name)` | `integer` (FK id) | `to` **required** |
+| `OneToOneField(to, on_delete)` | `integer` | `to` **required** |
+| `ManyToManyField(to, through, through_fields, related_name)` | `array[integer]` | `to` **required**; no `on_delete`/`null` |
 
-Add `null=True` for optional fields.
+Common options on any field: `null`, `default`, `unique`, `index`,
+`choices` (list of `[value, label]` pairs), `help_text`, `verbose_name`,
+`db_column`. Values must be plain literals; for validators or callable
+defaults use the reserved `"raw"` key (verbatim Python per kwarg).
+Relation rules: `on_delete` ∈ CASCADE / PROTECT / RESTRICT / SET_NULL /
+SET_DEFAULT / DO_NOTHING; `SET_NULL` requires `null=True`.
 
 ### Creating Models
 
 ```
-{prefix}create_model(app="shop", name="Product", fields=[
+{prefix}create_model(app="shop", model_name="Product", fields=[
     {"name": "name",        "type": "CharField",   "max_length": 200},
     {"name": "price",       "type": "DecimalField","max_digits": 10, "decimal_places": 2},
     {"name": "stock",       "type": "IntegerField","default": 0},
+    {"name": "status",      "type": "CharField",   "max_length": 10, "choices": [["draft", "Draft"], ["live", "Live"]], "default": "draft"},
     {"name": "description", "type": "TextField",   "null": True},
     {"name": "created_at",  "type": "DateTimeField","auto_now_add": True},
+    {"name": "category",    "type": "ForeignKey",  "to": "Category", "on_delete": "CASCADE", "related_name": "products"},
+    {"name": "score",       "type": "IntegerField","default": 0, "raw": {"validators": "[validators.MinValueValidator(0)]"}},
 ])
 ```
+
+### Model Meta options
+
+The `meta=` dict supports the full `class Meta` surface — values are emitted
+as Python literals, so nested structures work:
+
+```
+{prefix}create_model(app="shop", model_name="Product", fields=[...], meta={
+    "table_name": "shop_products",
+    "ordering": ["-created_at"],
+    "unique_together": [["name", "category"]],
+    "indexes": [{"fields": ["created_at"], "name": "idx_product_created"}],
+    "constraints": [{"check": "price >= 0", "name": "ck_price_positive"}],
+})
+```
+
+Valid keys: `table_name`/`db_table`, `abstract`, `managed`, `ordering`,
+`unique_together`, `index_together`, `indexes`, `constraints`,
+`default_permissions`, `app_label`. Unknown keys are rejected with
+suggestions before anything is written.
 
 ### Inspecting Models
 
 ```
-{prefix}list_models(app="shop")
-# result.data["models"] == ["Product", "Category", "Order"]
+{prefix}list_models()
+# result.data["models"] — list of {"app", "model", "fields"} across all apps
 
 {prefix}get_model_json_schema(app="shop", model_name="Product")
 # result.data["schema"] — JSON Schema dict usable for validation / SDK gen
@@ -56,73 +102,247 @@ Add `null=True` for optional fields.
 ## Migrations
 
 ```
-{prefix}make_migrations()              # auto-detect all app changes
-{prefix}make_migrations(app="shop")   # single-app only
+{prefix}make_migrations()                 # auto-detect changes across all apps
+{prefix}make_migrations(name="add_stock")  # optional human-readable suffix
 
 {prefix}run_migrations()
 
 {prefix}get_migration_status()
 # result.data["pending"] — list of unapplied migration names
 
-{prefix}rollback_migration(app="shop", migration_name="0002_add_stock_field")
+{prefix}rollback_migration(steps=1)        # roll back the most recent migration(s)
 ```
 
 ## Serializers
 
 Zeeb serializers are Pydantic-like classes that validate and serialize data.
+The model argument is named `model_name` (not `model`).
 
 ```
-# Generate serializer from model fields (auto-detects field types)
-{prefix}create_serializer(app="shop", model="Product")
+# Generate serializer from model fields (defaults to all fields)
+{prefix}create_serializer(app="shop", model_name="Product")
 
 # Override which fields to expose
-{prefix}create_serializer(app="shop", model="Product", fields=["id", "name", "price"])
+{prefix}create_serializer(app="shop", model_name="Product", fields=["id", "name", "price"])
 
-# Add a field later
-{prefix}update_serializer(app="shop", model="Product", fields=["id", "name", "price", "stock"])
+# Add/replace fields later
+{prefix}update_serializer(app="shop", model_name="Product", fields=["id", "name", "price", "stock"])
 ```
+
+### Declared fields, nested serializers, validation stubs
+
+`extra_fields=` adds declared serializer fields; `validate_fields=` emits
+`validate_<field>` stub methods. `SerializerMethodField` entries also get a
+`get_<name>` stub; nested entries render `author = UserSerializer(...)`
+(the class must exist in the app's `serializers.py`):
+
+```
+{prefix}create_serializer(
+    app="shop", model_name="Product",
+    fields=["id", "name", "price"],
+    extra_fields=[
+        {"name": "display_name", "type": "SerializerMethodField"},
+        {"name": "internal_code", "type": "CharField", "write_only": True, "max_length": 32},
+        {"name": "category", "type": "nested", "serializer": "CategorySerializer", "read_only": True},
+    ],
+    validate_fields=["name"],
+)
+```
+
+Valid `extra_fields` types: the `zeeb_api.serializers` field classes
+(`CharField`, `IntegerField`, `FloatField`, `DecimalField`, `BooleanField`,
+`DateField`, `TimeField`, `DateTimeField`, `EmailField`, `URLField`,
+`UUIDField`, `ListField`, `DictField`, `PrimaryKeyRelatedField`,
+`SlugRelatedField`, `SerializerMethodField`) or `"nested"`. Field kwargs
+(`write_only`, `read_only`, `source`, `required`, `max_length`, …) pass
+through as literals.
 
 ## ViewSets
 
-```
-{prefix}create_viewset(app="shop", model="Product")
+The model argument is named `model_name`. Permissions default to
+`IsAuthenticatedOrReadOnly` — override with `permission=`.
 
-# Custom action: POST /products/{id}/restock/
-{prefix}add_viewset_action(app="shop", viewset="ProductViewSet", action_def={
-    "name": "restock",
-    "method": "post",
-    "detail": True,
-    "url_path": "restock",
-})
 ```
+{prefix}create_viewset(app="shop", model_name="Product")
+{prefix}create_viewset(app="shop", model_name="Order", permission="IsAuthenticated")
+```
+
+### ViewSet options — pagination, throttling, search, ordering, filters
+
+`create_viewset` covers the full viewset surface; each option also adds the
+matching imports:
+
+```
+{prefix}create_viewset(
+    app="shop", model_name="Product",
+    read_only=False,                      # True → ReadOnlyModelViewSet (query/list/retrieve only)
+    lookup_field="slug",                  # detail lookups by slug instead of id
+    pagination="page",                    # "page" | "limit_offset" | "cursor"
+    throttles=["UserRateThrottle"],       # AnonRateThrottle / UserRateThrottle / ScopedRateThrottle
+    search_fields=["name", "description"],   # enables ?search=…
+    ordering_fields=["price", "created_at"], # enables ?ordering=…
+    filterset="ProductFilter",            # from the app's filters.py (see FilterSets)
+)
+```
+
+Update an existing viewset with the same option names:
+
+```
+{prefix}update_viewset(app="shop", model_name="Product", permission="IsAdminUser", pagination="cursor")
+```
+
+### FilterSets (query-parameter filtering)
+
+```
+{prefix}create_filterset(app="shop", model_name="Product", filter_fields={"price": ["gte", "lte"], "status": ["exact", "in"]})
+# → apps/shop/filters.py with ProductFilter; accepts ?price__gte=10&price__lte=50
+```
+
+Valid lookups: exact, iexact, contains, icontains, in, gt, gte, lt, lte,
+startswith, istartswith, endswith, iendswith, isnull. Attach with
+`create_viewset(filterset="ProductFilter")` or
+`update_viewset(..., search_fields=...)`.
+
+Add a custom action (extra routed endpoint on the ViewSet). `action_name` is
+also the URL segment — this scaffolds `POST /products/{id}/restock/`. Pass the
+implementation via `body=` (flush-left or indented; it is normalized for you):
+
+```
+{prefix}add_viewset_action(
+    app="shop", model_name="Product", action_name="restock",
+    detail=True, methods=["post"],
+    body="""
+        product = await self.get_object()
+        product.stock += request.data.get("amount", 0)
+        await product.save()
+        return {"id": str(product.id), "stock": product.stock}
+    """,
+)
+```
+
+A `detail=True` action receives `pk` and operates on one instance (load it with
+`await self.get_object()`); `detail=False` acts on the collection
+(`/products/restock/`).
 
 ## Standalone Routes
 
-For non-CRUD endpoints (webhooks, computed endpoints, etc.):
+For non-CRUD endpoints (webhooks, computed/aggregate endpoints, custom flows).
+`{prefix}create_route` writes a FastAPI handler to `views.py` **and** wires it
+into `urls.py` so it is actually served — you do not write the `@router.get`
+wrapper yourself. Put the logic in `body=` and declare any imports it needs in
+`imports=`:
 
 ```
-{prefix}create_route(app="shop", path="/products/featured",   method="get",  function_name="get_featured_products")
-{prefix}create_route(app="shop", path="/checkout",            method="post", function_name="checkout")
+{prefix}create_route(
+    app="shop", path="/products/featured", method="get",
+    function_name="get_featured_products",
+    imports=["from .models import Product"],
+    body="""
+        products = await Product.objects.filter(featured=True).all()
+        return [{"id": str(p.id), "name": p.name} for p in products]
+    """,
+)
 ```
+
+The handler always receives a typed `request: Request`. `{name}` segments in the
+path become typed handler params (e.g. `/orders/{order_id}` →
+`async def handler(request: Request, order_id: str)`). Omitting `body` generates
+a valid placeholder you can fill in later.
+
+### Raising errors in `body=` code
+
+Error responses are standardized: every failure the API returns is a
+`{"success": false, "error": {"code", "message", "details", "meta"}}` envelope
+with a machine-readable `error.code`. To stay inside it, `body=`
+implementations (routes and viewset actions) must raise the canonical
+exception classes from `zeeb_api.exceptions` — never an ad-hoc
+`fastapi.HTTPException`, and never anything from the deprecated
+`zeeb_api.response` module:
+
+```
+{prefix}create_route(
+    app="shop", path="/products/{product_id}/discount", method="post",
+    function_name="apply_discount",
+    imports=[
+        "from .models import Product",
+        "from zeeb_api.exceptions import ResourceNotFoundException, ValidationException",
+    ],
+    body="""
+        product = await Product.objects.filter(id=product_id).first()
+        if product is None:
+            raise ResourceNotFoundException(
+                message="Product not found",
+                resource_type="Product", resource_id=product_id,
+            )
+        ...
+    """,
+)
+```
+
+Common choices: `ResourceNotFoundException` (404), `ValidationException` (400,
+takes field-level `details`), `PermissionException` (403),
+`ResourceConflictException` (409). DRF-style aliases (`NotFound`,
+`ValidationError({"field": ["msg"]})`, `PermissionDenied`) also exist. A bare
+`await Model.objects.get(...)` that misses is fine too — the installed
+handlers convert the ORM's `DoesNotExist` to a 404 `RESOURCE_NOT_FOUND`
+envelope automatically. Full taxonomy: `docs/api/errors.md` in the framework
+docs; the client-side view is in `mcp://docs/frontend-generation`.
 
 ## Full CRUD in One Call
 
+`{prefix}generate_crud` runs model + serializer + viewset + route registration
+in one shot. It takes `model_name` and a **required** `fields` list (same field
+spec dicts as `create_model`); run migrations afterwards.
+
 ```
-# Creates model serializer + viewset + registers route
-{prefix}generate_crud(app="shop", model="Product")
-{prefix}generate_crud(app="shop", model="Category")
-{prefix}generate_crud(app="shop", model="Order")
+{prefix}generate_crud(app="shop", model_name="Product", fields=[
+    {"name": "name",  "type": "CharField",    "max_length": 200},
+    {"name": "price", "type": "DecimalField", "max_digits": 10, "decimal_places": 2},
+    {"name": "stock", "type": "IntegerField", "default": 0},
+])
+# Optional: serializer_fields=[...], read_only_fields=[...], permission="IsAuthenticated",
+# plus everything create_model / create_serializer / create_viewset accept:
+# meta=, extra_fields=, validate_fields=, read_only=, lookup_field=,
+# pagination=, throttles=, search_fields=, ordering_fields=, filterset=
+```
+
+## Authentication
+
+```
+# JWT auth endpoints (login / refresh / logout / me / register) — idempotent
+{prefix}setup_auth(enable_registration=True, url_prefix="/auth", access_token_minutes=30)
+
+# OAuth/OIDC login via a preset provider (azure / github / google);
+# credentials are read from env vars — set them with {prefix}set_env
+{prefix}setup_oauth(provider="google")
+
+# Custom user model extending AbstractUser (sets AUTH_USER_MODEL; run migrations after)
+{prefix}create_user_model(app="accounts", model_name="Member", extra_fields=[{"name": "phone", "type": "CharField", "max_length": 20, "null": True}])
+```
+
+## Throttling & Versioning defaults
+
+```
+{prefix}configure_throttling(default_classes=["AnonRateThrottle"], rates={"anon": "100/hour", "user": "1000/day"})
+# Per-viewset: create_viewset(..., throttles=["UserRateThrottle"])
+
+{prefix}configure_versioning(scheme="header", default_version="1.0", allowed_versions=["1.0", "2.0"])
+# scheme: "url" (/v1/...), "header" (X-API-Version), "query" (?version=), "accept"
 ```
 
 ## Signals (Model Lifecycle Hooks)
 
 ```
-# Attach a post_save hook to Product
-{prefix}create_signal_receiver(app="shop", signal="post_save", model="Product")
-# Writes a receiver stub to apps/shop/signals.py
+# Attach a post_save hook to Product (signal_name + model_name + function_name)
+{prefix}create_signal_receiver(
+    app="shop", signal_name="post_save", model_name="Product",
+    function_name="on_product_saved",
+)
+# Writes a receiver stub to apps/shop/signals.py — fill in its body with
+# {prefix}edit_signal_receiver(app="shop", function_name="on_product_saved", new_body="...")
 
 # See which signals are connected to a model
-{prefix}list_model_signals(app="shop", model="Product")
+{prefix}list_model_signals(app="shop", model_name="Product")
 ```
 
 Signals fire automatically in `Model.save()` / `Model.delete()`:

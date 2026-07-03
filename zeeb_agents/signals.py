@@ -7,7 +7,9 @@ import re
 from pathlib import Path
 
 from zeeb_agents._utils import AgentResult, agent_function
-from zeeb_agents._utils.project import get_app_path
+from zeeb_agents._utils.errors import AgentError, close_matches, did_you_mean, fail
+from zeeb_agents._utils.project import require_project_root
+from zeeb_agents._utils.validation import ensure_app_exists, ensure_identifier
 
 _VALID_SIGNALS = frozenset({"pre_save", "post_save", "pre_delete", "post_delete"})
 
@@ -36,11 +38,34 @@ async def {func}(sender, instance, **kwargs):
 """
 
 
-def _signals_path(root: Path, app: str) -> Path | None:
-    app_path = get_app_path(app, root)
-    if not app_path.is_dir():
-        return None
-    return app_path / "signals.py"
+def _signals_path(root: Path, app: str) -> Path:
+    """Return ``apps/<app>/signals.py``; fail with suggestions if the app is missing."""
+    return ensure_app_exists(app, root) / "signals.py"
+
+
+def _require_signals_file(root: Path, app: str) -> Path:
+    path = _signals_path(root, app)
+    if not path.exists():
+        raise AgentError(
+            f"{app}/signals.py does not exist — create a receiver first with "
+            "create_signal_receiver()",
+            code="file_not_found",
+            app=app,
+        )
+    return path
+
+
+def _receiver_not_found(app: str, function_name: str, receivers: list[dict]) -> AgentError:
+    names = [r["func_name"] for r in receivers if r.get("func_name")]
+    hint = did_you_mean(function_name, names)
+    if not hint:
+        hint = f" Receivers present: {', '.join(names) or '(none)'}."
+    return AgentError(
+        f"Receiver '{function_name}' not found in {app}/signals.py.{hint}",
+        code="function_not_found",
+        suggestions=close_matches(function_name, names),
+        receivers=names,
+    )
 
 
 def _parse_receivers(source: str) -> list[dict]:
@@ -130,28 +155,33 @@ async def create_signal_receiver(
         action (str): ``"created"`` (new file) or ``"updated"`` (appended)
 
     Notes:
-        - An invalid ``signal_name`` returns ``success=False`` with
-          ``data=None``.
-        - A missing app or a duplicate function name raises internally and is
-          wrapped into ``success=False`` with ``data=None`` by the decorator.
+        - An invalid ``signal_name`` fails with ``error_code="invalid_input"``
+          and close-match ``suggestions`` in ``data``.
+        - A missing app fails with ``error_code="app_not_found"``; a duplicate
+          function name with ``error_code="already_exists"``.
     """
     if signal_name not in _VALID_SIGNALS:
-        return AgentResult(
-            success=False,
-            message=f"Invalid signal '{signal_name}'. Must be one of: {', '.join(sorted(_VALID_SIGNALS))}",
+        return fail(
+            f"Invalid signal '{signal_name}'. Must be one of: {', '.join(sorted(_VALID_SIGNALS))}",
+            code="invalid_input",
+            suggestions=close_matches(signal_name, sorted(_VALID_SIGNALS)),
         )
-    root = project_root
+    ensure_identifier(model_name, "model name")
+    ensure_identifier(function_name, "function name")
+    root = require_project_root(project_root)
 
     def _write() -> tuple[str, bool]:
         path = _signals_path(root, app)
-        if path is None:
-            raise FileNotFoundError(f"App '{app}' not found in project")
         existed = path.exists()
         if existed:
             source = path.read_text()
             # Check for duplicate function name
             if re.search(rf"\bdef\s+{re.escape(function_name)}\b", source):
-                raise ValueError(f"Receiver '{function_name}' already exists in {path.name}")
+                raise AgentError(
+                    f"Receiver '{function_name}' already exists in {path.name}",
+                    code="already_exists",
+                    function=function_name,
+                )
             # Append to existing file
             block = _ADDITIONAL_TEMPLATE.format(
                 signal=signal_name, model=model_name, func=function_name
@@ -201,15 +231,13 @@ async def list_signal_receivers(
     Notes:
         - If ``signals.py`` is absent, ``receivers`` is ``[]`` and
           ``count`` is ``0`` (still ``success=True``).
-        - A missing app raises internally and is wrapped into
-          ``success=False`` with ``data=None``.
+        - A missing app fails with ``error_code="app_not_found"`` and
+          close-match ``suggestions`` in ``data``.
     """
-    root = project_root
+    root = require_project_root(project_root)
 
     def _read() -> list[dict]:
         path = _signals_path(root, app)
-        if path is None:
-            raise FileNotFoundError(f"App '{app}' not found in project")
         if not path.exists():
             return []
         source = path.read_text()
@@ -246,25 +274,23 @@ async def read_signal_receiver(
         source (str): full source text (decorator + function body)
 
     Notes:
-        - A missing app, a missing ``signals.py``, or an unknown
-          ``function_name`` raises internally and is wrapped into
-          ``success=False`` with ``data=None``.
+        - A missing app fails with ``error_code="app_not_found"``, a
+          missing ``signals.py`` with ``"file_not_found"``, and an unknown
+          ``function_name`` with ``"function_not_found"`` (plus close-match
+          ``suggestions`` in ``data``).
     """
-    root = project_root
+    root = require_project_root(project_root)
 
     def _read() -> dict:
-        path = _signals_path(root, app)
-        if path is None:
-            raise FileNotFoundError(f"App '{app}' not found in project")
-        if not path.exists():
-            raise FileNotFoundError(f"{app}/signals.py does not exist")
+        path = _require_signals_file(root, app)
         source = path.read_text()
         lines = source.splitlines()
-        for r in _parse_receivers(source):
+        receivers = _parse_receivers(source)
+        for r in receivers:
             if r["func_name"] == function_name:
                 chunk = "\n".join(lines[r["decorator_line"]:r["func_end"]])
                 return {**r, "source": chunk}
-        raise ValueError(f"Receiver '{function_name}' not found in {app}/signals.py")
+        raise _receiver_not_found(app, function_name, receivers)
 
     result = await asyncio.to_thread(_read)
     return AgentResult(
@@ -301,21 +327,19 @@ async def edit_signal_receiver(
         func_name (str): the edited receiver function name
 
     Notes:
-        - A missing app, a missing ``signals.py``, or an unknown
-          ``function_name`` raises internally and is wrapped into
-          ``success=False`` with ``data=None``.
+        - A missing app fails with ``error_code="app_not_found"``, a
+          missing ``signals.py`` with ``"file_not_found"``, and an unknown
+          ``function_name`` with ``"function_not_found"`` (plus close-match
+          ``suggestions`` in ``data``).
     """
-    root = project_root
+    root = require_project_root(project_root)
 
     def _edit() -> str:
-        path = _signals_path(root, app)
-        if path is None:
-            raise FileNotFoundError(f"App '{app}' not found in project")
-        if not path.exists():
-            raise FileNotFoundError(f"{app}/signals.py does not exist")
+        path = _require_signals_file(root, app)
         source = path.read_text()
         lines = source.splitlines(keepends=True)
-        for r in _parse_receivers(source):
+        receivers = _parse_receivers(source)
+        for r in receivers:
             if r["func_name"] != function_name:
                 continue
             # Preserve decorator + def line(s), replace body
@@ -334,7 +358,7 @@ async def edit_signal_receiver(
             )
             path.write_text("".join(new_lines))
             return str(path.relative_to(root))
-        raise ValueError(f"Receiver '{function_name}' not found in {app}/signals.py")
+        raise _receiver_not_found(app, function_name, receivers)
 
     rel_path = await asyncio.to_thread(_edit)
     return AgentResult(
@@ -362,27 +386,25 @@ async def delete_signal_receiver(
         func_name (str): the removed receiver function name
 
     Notes:
-        - A missing app, a missing ``signals.py``, or an unknown
-          ``function_name`` raises internally and is wrapped into
-          ``success=False`` with ``data=None``.
+        - A missing app fails with ``error_code="app_not_found"``, a
+          missing ``signals.py`` with ``"file_not_found"``, and an unknown
+          ``function_name`` with ``"function_not_found"`` (plus close-match
+          ``suggestions`` in ``data``).
     """
-    root = project_root
+    root = require_project_root(project_root)
 
     def _delete() -> str:
-        path = _signals_path(root, app)
-        if path is None:
-            raise FileNotFoundError(f"App '{app}' not found in project")
-        if not path.exists():
-            raise FileNotFoundError(f"{app}/signals.py does not exist")
+        path = _require_signals_file(root, app)
         source = path.read_text()
         lines = source.splitlines(keepends=True)
-        for r in _parse_receivers(source):
+        receivers = _parse_receivers(source)
+        for r in receivers:
             if r["func_name"] != function_name:
                 continue
             new_lines = lines[: r["decorator_line"]] + lines[r["func_end"]:]
             path.write_text("".join(new_lines))
             return str(path.relative_to(root))
-        raise ValueError(f"Receiver '{function_name}' not found in {app}/signals.py")
+        raise _receiver_not_found(app, function_name, receivers)
 
     rel_path = await asyncio.to_thread(_delete)
     return AgentResult(
@@ -416,15 +438,13 @@ async def list_model_signals(
     Notes:
         - If ``signals.py`` is absent, ``receivers`` is ``[]`` and
           ``count`` is ``0`` (still ``success=True``).
-        - A missing app raises internally and is wrapped into
-          ``success=False`` with ``data=None``.
+        - A missing app fails with ``error_code="app_not_found"`` and
+          close-match ``suggestions`` in ``data``.
     """
-    root = project_root
+    root = require_project_root(project_root)
 
     def _read() -> list[dict]:
         path = _signals_path(root, app)
-        if path is None:
-            raise FileNotFoundError(f"App '{app}' not found in project")
         if not path.exists():
             return []
         source = path.read_text()

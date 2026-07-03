@@ -15,7 +15,7 @@ Zeeb provides a familiar Django-style API for building async web applications wi
 
 ```python
 from zeeb_orm import Model, fields
-from zeeb_api import Serializer, ModelViewSet, Router
+from zeeb_api import Serializer, ModelViewSet, DefaultRouter
 
 # Define a model
 class Post(Model):
@@ -42,7 +42,7 @@ class PostViewSet(ModelViewSet):
     serializer_class = PostSerializer
 
 # Register routes
-router = Router()
+router = DefaultRouter()
 router.register("posts", PostViewSet)
 ```
 
@@ -93,6 +93,7 @@ python manage.py runserver
 - [Permissions](api/permissions.md) - Access control
 - [Throttling](api/throttling.md) - Rate limiting
 - [Versioning](api/versioning.md) - API versioning
+- [Error Handling](api/errors.md) - The standardized error envelope and error codes
 
 ### CLI & Tools
 - [Commands](cli/commands.md) - Management commands
