@@ -7,6 +7,7 @@ import re
 from pathlib import Path
 
 from zeeb_agents._utils import AgentResult, agent_function
+from zeeb_agents._utils.errors import AgentError
 from zeeb_agents._utils.project import get_app_path
 
 _PERMISSIONS_HEADER = '''\
@@ -154,7 +155,11 @@ async def create_permission_class(
 
         content = perms_file.read_text(encoding="utf-8")
         if re.search(rf"^class {re.escape(class_name)}\b", content, re.MULTILINE):
-            raise ValueError(f"Permission class '{class_name}' already exists in permissions.py.")
+            raise AgentError(
+                f"Permission class '{class_name}' already exists in permissions.py.",
+                code="already_exists",
+                class_name=class_name,
+            )
 
         body = _LOGIC_PRESETS[logic]
         docstring = _LOGIC_DOCSTRINGS.get(logic, "Custom permission.")

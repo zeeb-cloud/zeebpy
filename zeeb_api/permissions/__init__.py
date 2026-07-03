@@ -8,6 +8,9 @@ from zeeb_api.permissions.base import (
     IsAuthenticated,
     IsAdminUser,
     IsAuthenticatedOrReadOnly,
+    IsOwner,
+    IsOwnerOrReadOnly,
+    DjangoModelPermissions,
 )
 
 __all__ = [
@@ -16,4 +19,7 @@ __all__ = [
     "IsAuthenticated",
     "IsAdminUser",
     "IsAuthenticatedOrReadOnly",
+    "IsOwner",
+    "IsOwnerOrReadOnly",
+    "DjangoModelPermissions",
 ]

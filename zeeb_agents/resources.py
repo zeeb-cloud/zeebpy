@@ -162,6 +162,12 @@ async def get_principles_doc(
         project_root: When provided, a live project context section is appended.
         tool_prefix: String prepended to every ``{prefix}`` placeholder in the
             markdown.  Defaults to ``""`` (no prefix).
+
+    Returns data (on success):
+        content (str): the guide as markdown, with ``{prefix}`` placeholders
+            replaced by *tool_prefix*.
+        uri (str): ``"mcp://docs/principles"``.
+        mime_type (str): ``"text/markdown"``.
     """
     content = await asyncio.to_thread(_read_doc, "principles")
     content = content.replace("{prefix}", tool_prefix)
@@ -193,6 +199,12 @@ async def get_capabilities_doc(
             markdown, matching the tool name prefix your MCP server uses.
             For example ``"zeeb_"`` turns ``{prefix}create_model`` into
             ``zeeb_create_model``.  Defaults to ``""`` (no prefix).
+
+    Returns data (on success):
+        content (str): the reference as markdown, with ``{prefix}``
+            placeholders replaced by *tool_prefix*.
+        uri (str): ``"mcp://docs/capabilities"``.
+        mime_type (str): ``"text/markdown"``.
     """
     content = await asyncio.to_thread(_read_doc, "capabilities")
     content = content.replace("{prefix}", tool_prefix)
@@ -223,6 +235,12 @@ async def get_project_lifecycle_doc(
             are appended.
         tool_prefix: String prepended to every ``{prefix}`` placeholder in the
             markdown.  Defaults to ``""`` (no prefix).
+
+    Returns data (on success):
+        content (str): the guide as markdown, with ``{prefix}`` placeholders
+            replaced by *tool_prefix*.
+        uri (str): ``"mcp://docs/project-lifecycle"``.
+        mime_type (str): ``"text/markdown"``.
     """
     content = await asyncio.to_thread(_read_doc, "project-lifecycle")
     content = content.replace("{prefix}", tool_prefix)
@@ -252,6 +270,12 @@ async def get_backend_generation_doc(
         project_root: When provided, current app list is appended.
         tool_prefix: String prepended to every ``{prefix}`` placeholder in the
             markdown.  Defaults to ``""`` (no prefix).
+
+    Returns data (on success):
+        content (str): the guide as markdown, with ``{prefix}`` placeholders
+            replaced by *tool_prefix*.
+        uri (str): ``"mcp://docs/backend-generation"``.
+        mime_type (str): ``"text/markdown"``.
     """
     content = await asyncio.to_thread(_read_doc, "backend-generation")
     content = content.replace("{prefix}", tool_prefix)
@@ -282,6 +306,12 @@ async def get_frontend_generation_doc(
             inventory are appended.
         tool_prefix: String prepended to every ``{prefix}`` placeholder in the
             markdown.  Defaults to ``""`` (no prefix).
+
+    Returns data (on success):
+        content (str): the guide as markdown, with ``{prefix}`` placeholders
+            replaced by *tool_prefix*.
+        uri (str): ``"mcp://docs/frontend-generation"``.
+        mime_type (str): ``"text/markdown"``.
     """
     content = await asyncio.to_thread(_read_doc, "frontend-generation")
     content = content.replace("{prefix}", tool_prefix)
@@ -331,6 +361,12 @@ async def get_deployment_doc(
             result is appended.
         tool_prefix: String prepended to every ``{prefix}`` placeholder in the
             markdown.  Defaults to ``""`` (no prefix).
+
+    Returns data (on success):
+        content (str): the guide as markdown, with ``{prefix}`` placeholders
+            replaced by *tool_prefix*.
+        uri (str): ``"mcp://docs/deployment"``.
+        mime_type (str): ``"text/markdown"``.
     """
     content = await asyncio.to_thread(_read_doc, "deployment")
     content = content.replace("{prefix}", tool_prefix)
@@ -370,6 +406,7 @@ async def get_resource(
 
     Supported URIs:
 
+    - ``mcp://docs/principles``
     - ``mcp://docs/capabilities``
     - ``mcp://docs/project-lifecycle``
     - ``mcp://docs/backend-generation``
@@ -386,9 +423,14 @@ async def get_resource(
             ``zeeb_create_model`` so agents see the correct tool names.
             Defaults to ``""`` (no prefix — bare function names).
 
-    Returns:
-        ``AgentResult`` with ``data["content"]`` (markdown),
-        ``data["uri"]``, and ``data["mime_type"]``.
+    Returns data (on success):
+        content (str): the resolved markdown document.
+        uri (str): the resource URI that was fetched.
+        mime_type (str): ``"text/markdown"``.
+
+    Notes:
+        - An unknown *uri* fails (``success=False``, ``data=None``) with the
+          list of available URIs in ``message``.
 
     Example::
 

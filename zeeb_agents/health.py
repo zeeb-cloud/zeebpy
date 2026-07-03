@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from zeeb_agents._utils import AgentResult, agent_function
-from zeeb_agents._utils.project import load_project_settings
+from zeeb_agents._utils.project import load_project_settings, resolve_db_url
 
 _HEALTH_MODULE = '''\
 """Health check endpoints.
@@ -58,7 +58,7 @@ async def readiness_check():
 
 def _sync_db_url(root: Path) -> str:
     settings = load_project_settings(root)
-    url: str = settings.get("DATABASE", {}).get("url", "sqlite:///db.sqlite3")
+    url = resolve_db_url(settings, root)
     url = url.replace("sqlite+aiosqlite://", "sqlite://")
     url = url.replace("postgresql+asyncpg://", "postgresql://")
     url = url.replace("mysql+aiomysql://", "mysql://")
@@ -91,6 +91,15 @@ async def create_health_endpoint(
 
     Args:
         project_root: Auto-detected if ``None``.
+
+    Returns data (on success):
+        path (str): the ``health.py`` path relative to the project root.
+        endpoints (list[dict]): one ``{"method", "path", "description"}`` entry
+            per scaffolded endpoint (``GET /health`` and ``GET /ready``).
+
+    Notes:
+        - Returns ``success=False`` with ``data={"path": "health.py"}`` when a
+          ``health.py`` already exists — it is never overwritten.
     """
     root = project_root
     health_file = root / "health.py"

@@ -9,9 +9,11 @@ from pathlib import Path
 from typing import Any
 
 from zeeb_agents._utils import AgentResult, agent_function
+from zeeb_agents._utils.errors import AgentError
 from zeeb_agents._utils.project import get_app_path, list_apps
 
-# Map zeeb_orm field types → JSON Schema types
+# Map zeeb_orm field types → JSON Schema types (covers every canonical field
+# class in zeeb_agents._utils.field_types — a unit test keeps them in sync)
 _FIELD_TYPE_MAP: dict[str, dict[str, Any]] = {
     "CharField": {"type": "string"},
     "TextField": {"type": "string"},
@@ -20,11 +22,23 @@ _FIELD_TYPE_MAP: dict[str, dict[str, Any]] = {
     "SlugField": {"type": "string"},
     "UUIDField": {"type": "string", "format": "uuid"},
     "IntegerField": {"type": "integer"},
+    "SmallIntegerField": {"type": "integer"},
+    "BigIntegerField": {"type": "integer"},
+    "PositiveIntegerField": {"type": "integer", "minimum": 0},
+    "PositiveSmallIntegerField": {"type": "integer", "minimum": 0},
+    "PositiveBigIntegerField": {"type": "integer", "minimum": 0},
+    "AutoField": {"type": "integer", "readOnly": True},
+    "BigAutoField": {"type": "integer", "readOnly": True},
+    "UUIDAutoField": {"type": "string", "format": "uuid", "readOnly": True},
     "FloatField": {"type": "number"},
     "DecimalField": {"type": "string", "format": "decimal"},
     "BooleanField": {"type": "boolean"},
     "DateTimeField": {"type": "string", "format": "date-time"},
     "DateField": {"type": "string", "format": "date"},
+    "TimeField": {"type": "string", "format": "time"},
+    "DurationField": {"type": "string", "format": "duration"},
+    "BinaryField": {"type": "string", "contentEncoding": "base64"},
+    "GenericIPAddressField": {"type": "string"},
     "ForeignKey": {"type": "integer", "description": "FK id"},
     "OneToOneField": {"type": "integer", "description": "FK id"},
     "ManyToManyField": {"type": "array", "items": {"type": "integer"}},
@@ -36,9 +50,51 @@ _DEFAULT_SCHEMA_TYPE: dict[str, Any] = {"type": "string"}
 # Patterns for route scanning
 _VIEWSET_RE = re.compile(r'router\.register\(\s*["\']([^"\']+)["\']\s*,\s*(\w+)', re.MULTILINE)
 _ROUTE_RE = re.compile(r'@router\.(get|post|put|patch|delete)\(\s*["\']([^"\']+)["\']', re.MULTILINE)
-_FIELD_DEF_RE = re.compile(r"^\s{4}(\w+)\s*=\s*fields\.(\w+)\s*\(([^)]*)\)", re.MULTILINE)
+# Field lines are single-line in generated code — capture params to EOL so
+# nested parens/brackets (choices, validators) don't truncate the match.
+_FIELD_DEF_RE = re.compile(r"^\s{4}(\w+)\s*=\s*fields\.(\w+)\s*\((.*)$", re.MULTILINE)
 _NULLABLE_RE = re.compile(r"null\s*=\s*True")
 _MAX_LENGTH_RE = re.compile(r"max_length\s*=\s*(\d+)")
+_HELP_TEXT_RE = re.compile(r'help_text\s*=\s*"([^"]*)"')
+_DEFAULT_RE = re.compile(r"default\s*=\s*([\w.\"']+)")
+
+
+def _extract_choices(params: str) -> list[Any] | None:
+    """Return choice *values* from a ``choices=[...]`` kwarg (best-effort)."""
+    import ast
+
+    idx = params.find("choices=")
+    if idx == -1:
+        return None
+    start = params.find("[", idx)
+    if start == -1:
+        return None
+    depth = 0
+    for end in range(start, len(params)):
+        depth += params[end] in "([{"
+        depth -= params[end] in ")]}"
+        if depth == 0:
+            break
+    else:
+        return None
+    try:
+        choices = ast.literal_eval(params[start : end + 1])
+        return [c[0] if isinstance(c, (list, tuple)) else c for c in choices]
+    except (ValueError, SyntaxError, TypeError, IndexError):
+        return None
+
+
+def _extract_default(params: str) -> Any:
+    """Return a scalar ``default=`` value (best-effort), or ``None``."""
+    import ast
+
+    m = _DEFAULT_RE.search(params)
+    if not m:
+        return None
+    try:
+        return ast.literal_eval(m.group(1))
+    except (ValueError, SyntaxError):
+        return None  # callable/expression defaults are not representable
 
 
 def _parse_model_fields(source: str, model_name: str) -> dict[str, Any]:
@@ -62,16 +118,31 @@ def _parse_model_fields(source: str, model_name: str) -> dict[str, Any]:
 
         schema_type = dict(_FIELD_TYPE_MAP.get(ftype, _DEFAULT_SCHEMA_TYPE))
 
+        # max_length?
+        ml = _MAX_LENGTH_RE.search(params)
+        if ml and schema_type.get("type") == "string":
+            schema_type["maxLength"] = int(ml.group(1))
+
+        # choices → enum
+        choices = _extract_choices(params)
+        if choices:
+            schema_type["enum"] = choices
+
+        # help_text → description
+        ht = _HELP_TEXT_RE.search(params)
+        if ht:
+            schema_type["description"] = ht.group(1)
+
+        # scalar default
+        default = _extract_default(params)
+        if default is not None:
+            schema_type["default"] = default
+
         # Nullable?
         if _NULLABLE_RE.search(params):
             schema_type = {"oneOf": [schema_type, {"type": "null"}]}
         else:
             required.append(fname)
-
-        # max_length?
-        ml = _MAX_LENGTH_RE.search(params)
-        if ml and "type" in schema_type and schema_type["type"] == "string":
-            schema_type["maxLength"] = int(ml.group(1))
 
         properties[fname] = schema_type
 
@@ -108,20 +179,33 @@ async def get_model_json_schema(
     Notes:
         - If ``models.py`` is missing, returns ``success=False`` with
           ``data=None``.
-        - If the model is not found in the source, the underlying ``ValueError``
-          is wrapped by the decorator into ``success=False`` with ``data=None``.
+        - If the model is not found, fails with
+          ``error_code="model_not_found"`` and close-match ``suggestions``.
         - Fields are parsed statically from source text, not by importing the
-          model; an ``id`` integer property is always added.
+          model; an ``id`` integer property is always added.  ``choices``
+          map to ``enum``, ``help_text`` to ``description``, and scalar
+          ``default`` values are included.
     """
     models_path = get_app_path(app, project_root) / "models.py"
     if not models_path.exists():
         return AgentResult(success=False, message=f"models.py not found at {models_path}.")
 
     def _build() -> dict[str, Any]:
+        from zeeb_agents._utils.code_gen import extract_model_names
+        from zeeb_agents._utils.errors import close_matches
+
         source = models_path.read_text(encoding="utf-8")
         fields_info = _parse_model_fields(source, model_name)
         if not fields_info:
-            raise ValueError(f"Model '{model_name}' not found in apps/{app}/models.py.")
+            names = extract_model_names(source)
+            suggestions = close_matches(model_name, names)
+            hint = f" Did you mean: {', '.join(suggestions)}?" if suggestions else ""
+            raise AgentError(
+                f"Model '{model_name}' not found in apps/{app}/models.py.{hint}",
+                code="model_not_found",
+                suggestions=suggestions,
+                models=names,
+            )
         schema: dict[str, Any] = {
             "$schema": "https://json-schema.org/draft/2020-12/schema",
             "title": model_name,
@@ -224,9 +308,11 @@ async def export_openapi(
         title (str): the spec's ``info.title`` (``""`` if absent)
 
     Notes:
-        - Requires ``httpx`` and a running dev server; a missing dependency,
-          connection error, or non-2xx response is wrapped by the decorator
-          into ``success=False`` with ``data=None``.
+        - Requires ``httpx`` and a running dev server.  A missing dependency
+          fails with ``error_code="dependency_missing"``; a connection error
+          or non-2xx response with ``error_code="server_not_reachable"``
+          (``data`` includes the ``port``) and a hint to run
+          ``start_server()``.
     """
     root = project_root
 
@@ -234,17 +320,35 @@ async def export_openapi(
         try:
             import httpx
         except ImportError:
-            raise RuntimeError(
+            raise AgentError(
                 "httpx is required for export_openapi. "
-                "Install with: pip install httpx"
-            )
-        async with httpx.AsyncClient() as client:
-            resp = await client.get(
-                f"http://localhost:{port}/openapi.json",
-                timeout=10.0,
-            )
-            resp.raise_for_status()
-            return resp.json()
+                "Install with: pip install httpx",
+                code="dependency_missing",
+                dependency="httpx",
+            ) from None
+        try:
+            async with httpx.AsyncClient() as client:
+                resp = await client.get(
+                    f"http://localhost:{port}/openapi.json",
+                    timeout=10.0,
+                )
+                resp.raise_for_status()
+                return resp.json()
+        except httpx.HTTPStatusError as exc:
+            raise AgentError(
+                f"Dev server on port {port} returned HTTP "
+                f"{exc.response.status_code} for /openapi.json",
+                code="server_not_reachable",
+                port=port,
+                status=exc.response.status_code,
+            ) from exc
+        except httpx.HTTPError as exc:
+            raise AgentError(
+                f"Dev server not reachable on port {port} ({exc}) — "
+                "start it with start_server()",
+                code="server_not_reachable",
+                port=port,
+            ) from exc
 
     spec = await _fetch()
 

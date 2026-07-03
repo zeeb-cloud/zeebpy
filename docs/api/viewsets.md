@@ -89,15 +89,15 @@ Provides only:
 ## Registering ViewSets
 
 ```python
-from zeeb_api.routers import Router
+from zeeb_api.routers import DefaultRouter
 from apps.blog.views import ArticleViewSet, AuthorViewSet
 
-router = Router()
+router = DefaultRouter()
 router.register("articles", ArticleViewSet)
 router.register("authors", AuthorViewSet)
 
 # Get URL patterns
-urlpatterns = router.urls
+urlpatterns = router.routes
 ```
 
 ## Custom Actions
@@ -542,9 +542,9 @@ Available mixins:
 ## Nested Routes
 
 ```python
-from zeeb_api.routers import Router
+from zeeb_api.routers import DefaultRouter
 
-router = Router()
+router = DefaultRouter()
 router.register("articles", ArticleViewSet)
 router.register("articles/{article_pk}/comments", CommentViewSet)
 

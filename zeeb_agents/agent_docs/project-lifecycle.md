@@ -11,19 +11,20 @@ End-to-end guide for creating, developing, and running a Zeeb BaaS project.
 ```
 {prefix}create_project(name="my_api", directory=".")
 ```
-Creates: `my_api/manage.py`, `my_api/config/settings.py`, `my_api/config/urls.py`, etc.
+Creates: `my_api/manage.py`, `my_api/my_api/settings.py`, `my_api/my_api/urls.py`, etc.
+(the inner package is named after the project, e.g. `my_api/my_api/`).
 
 ## Step 2 — Create Apps
 
 Each logical domain lives in its own app under `apps/`.
 
 ```
-{prefix}create_app(app_name="users")
-{prefix}create_app(app_name="blog")
-{prefix}create_app(app_name="billing")
+{prefix}create_app(name="users")
+{prefix}create_app(name="blog")
+{prefix}create_app(name="billing")
 ```
 
-Register in `config/settings.py`:
+Register in `my_api/settings.py`:
 ```python
 INSTALLED_APPS = [
     "apps.users",
@@ -35,7 +36,7 @@ INSTALLED_APPS = [
 ## Step 3 — Define Models
 
 ```
-{prefix}create_model(app="blog", name="Post", fields=[
+{prefix}create_model(app="blog", model_name="Post", fields=[
     {"name": "title",      "type": "CharField",    "max_length": 200},
     {"name": "slug",       "type": "SlugField",    "unique": True},
     {"name": "body",       "type": "TextField"},
@@ -46,7 +47,7 @@ INSTALLED_APPS = [
 
 Add relationships:
 ```
-{prefix}add_relationship(app="blog", model="Post", rel_def={
+{prefix}add_relationship(app="blog", model_name="Post", rel={
     "name": "author",
     "type": "ForeignKey",
     "to": "User",
@@ -71,18 +72,24 @@ Check status:
 
 ## Step 5 — Generate API Layer
 
-Create the full CRUD stack for a model in one call:
+If the model does **not** exist yet, scaffold the whole stack (model +
+serializer + viewset + route) in one call — `fields` is required and creates the
+model for you, so use this *instead of* Step 3 for that model:
 
 ```
-{prefix}generate_crud(app="blog", model="Post")
-# Creates: serializer, viewset, registers route in urls.py
+{prefix}generate_crud(app="blog", model_name="Post", fields=[
+    {"name": "title", "type": "CharField", "max_length": 200},
+    {"name": "body",  "type": "TextField"},
+])
+# Creates: model, serializer, viewset, registers route in urls.py — then run migrations.
 ```
 
-Or build piece by piece:
+When the model already exists (as in Step 3 above), build the API piece by
+piece — note `model_name=` and `url_prefix=`:
 ```
-{prefix}create_serializer(app="blog", model="Post")
-{prefix}create_viewset(app="blog", model="Post")
-{prefix}register_route(app="blog", prefix="posts", viewset="PostViewSet")
+{prefix}create_serializer(app="blog", model_name="Post")
+{prefix}create_viewset(app="blog", model_name="Post")
+{prefix}register_route(app="blog", model_name="Post", url_prefix="posts")
 ```
 
 ## Step 6 — Configure Auth & Permissions
@@ -101,7 +108,7 @@ Or build piece by piece:
 ## Step 8 — Start the Dev Server
 
 ```
-{prefix}start_server(port=8000)
+{prefix}start_server(addrport="127.0.0.1:8000")
 # Docs available at http://localhost:8000/docs
 ```
 
@@ -115,8 +122,8 @@ Or build piece by piece:
 ## Step 10 — Iterate
 
 ```
-{prefix}add_field(app="blog", model="Post", field_def={"name": "views", "type": "IntegerField", "default": 0})
-{prefix}make_migrations(app="blog")
+{prefix}add_field(app="blog", model_name="Post", field={"name": "views", "type": "IntegerField", "default": 0})
+{prefix}make_migrations()       # detects changes across all apps
 {prefix}run_migrations()
 ```
 
@@ -132,7 +139,7 @@ Or build piece by piece:
 ```
 {prefix}check_system_health()       # DB ping, settings check
 {prefix}read_logs(lines=50)         # recent log output
-{prefix}search_logs(query="ERROR")  # find error lines
+{prefix}search_logs(pattern="ERROR")  # find error lines
 {prefix}run_query(sql="SELECT COUNT(*) FROM blog_post")
 ```
 
@@ -141,9 +148,10 @@ Or build piece by piece:
 ```
 my_api/
 ├── manage.py
-├── config/
+├── my_api/                 # project package (named after the project)
 │   ├── settings.py
-│   └── urls.py
+│   ├── urls.py
+│   └── asgi.py
 ├── apps/
 │   ├── blog/
 │   │   ├── models.py

@@ -7,7 +7,8 @@ import re
 from pathlib import Path
 
 from zeeb_agents._utils import AgentResult, agent_function
-from zeeb_agents._utils.project import load_project_settings
+from zeeb_agents._utils.errors import AgentError, close_matches, fail
+from zeeb_agents._utils.project import load_project_settings, resolve_db_url
 
 _SELECT_KEYWORDS = frozenset({"select", "with", "explain"})
 
@@ -65,7 +66,7 @@ def _validate_read_only_sql(sql: str) -> str | None:
 def _sync_db_url(root: Path) -> str:
     """Return a *synchronous* SQLAlchemy DB URL (strips async drivers)."""
     settings = load_project_settings(root)
-    url: str = settings.get("DATABASE", {}).get("url", "sqlite:///db.sqlite3")
+    url = resolve_db_url(settings, root)
     # Convert async drivers to sync equivalents for inspection
     url = url.replace("sqlite+aiosqlite://", "sqlite://")
     url = url.replace("postgresql+asyncpg://", "postgresql://")
@@ -118,17 +119,33 @@ async def describe_table(
             "nullable": bool, "default": str | None}``.
 
     Notes:
-        - ``data`` is ``None`` on failure (e.g. the table does not exist or the
-          database cannot be reached).
+        - A missing table fails with ``error_code="table_not_found"``,
+          close-match ``suggestions``, and the existing ``tables`` in ``data``.
     """
     root = project_root
 
     def _run() -> list[dict]:
         from sqlalchemy import create_engine
         from sqlalchemy import inspect as sa_inspect
+        from sqlalchemy.exc import NoSuchTableError
+
         engine = create_engine(_sync_db_url(root))
         inspector = sa_inspect(engine)
-        cols = inspector.get_columns(table_name)
+        try:
+            cols = inspector.get_columns(table_name)
+        except NoSuchTableError:
+            cols = []
+        if not cols:
+            tables = inspector.get_table_names()
+            suggestions = close_matches(table_name, tables)
+            hint = f" Did you mean: {', '.join(suggestions)}?" if suggestions else ""
+            raise AgentError(
+                f"Table '{table_name}' not found.{hint} "
+                f"Existing tables: {', '.join(sorted(tables)) or '(none)'}",
+                code="table_not_found",
+                suggestions=suggestions,
+                tables=sorted(tables),
+            )
         return [
             {
                 "name": c["name"],
@@ -165,14 +182,15 @@ async def run_query(
         count (int): len(rows).
 
     Notes:
-        - The query is rejected (``success=False``, ``data=None``) when it is
-          not a single read-only ``SELECT`` / ``WITH`` / ``EXPLAIN`` statement.
+        - The query is rejected (``success=False``,
+          ``error_code="invalid_sql"``) when it is not a single read-only
+          ``SELECT`` / ``WITH`` / ``EXPLAIN`` statement.
         - Execution always runs inside a transaction that is rolled back, so
           nothing is ever committed even if a mutation slipped past the gate.
     """
     error = _validate_read_only_sql(sql)
     if error:
-        return AgentResult(success=False, message=error)
+        return fail(error, code="invalid_sql")
     root = project_root
 
     def _run() -> list[dict]:

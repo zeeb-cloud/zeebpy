@@ -10,12 +10,28 @@ import sys
 from pathlib import Path
 
 from zeeb_agents._utils import AgentResult, agent_function
+from zeeb_agents._utils.errors import fail
+from zeeb_agents._utils.project import require_project_root
 
 _PID_FILENAME = ".zeeb_server.pid"
+_SERVER_LOG_FILENAME = ".zeeb_server.log"
 
 
 def _pid_file(root: Path) -> Path:
     return root / _PID_FILENAME
+
+
+def _server_log_file(root: Path) -> Path:
+    return root / _SERVER_LOG_FILENAME
+
+
+def _read_pid(pid_path: Path) -> int | None:
+    """Return the stored PID, or ``None`` (and remove the file) if corrupt."""
+    try:
+        return int(pid_path.read_text().strip())
+    except (ValueError, OSError):
+        pid_path.unlink(missing_ok=True)
+        return None
 
 
 @agent_function
@@ -37,42 +53,62 @@ async def start_server(
         addrport (str): the ``"host:port"`` the server was started on
 
     Notes:
-        - If a server is already running, returns ``success=False`` with
-          ``data={"pid": <existing pid>}``.
-        - If the process exits within ~1.5s of launch, returns
-          ``success=False`` with ``data=None`` (stale PID file removed).
+        - Server output is captured to ``.zeeb_server.log`` in the project
+          root.
+        - If a server is already running, fails with
+          ``error_code="already_exists"`` and ``data["pid"]``.
+        - If the process exits within ~1.5s of launch, fails with
+          ``error_code="server_not_running"`` and the last log lines in
+          ``data["output"]`` (stale PID file removed).
     """
-    root = project_root
+    root = require_project_root(project_root)
     pid_path = _pid_file(root)
 
     if pid_path.exists():
-        pid = int(pid_path.read_text().strip())
-        try:
-            os.kill(pid, 0)
-            return AgentResult(
-                success=False,
-                message=f"Server already running (PID {pid}). Stop it first with stop_server().",
-                data={"pid": pid},
-            )
-        except ProcessLookupError:
-            pid_path.unlink(missing_ok=True)
+        pid = _read_pid(pid_path)
+        if pid is not None:
+            try:
+                os.kill(pid, 0)
+                return fail(
+                    f"Server already running (PID {pid}). Stop it first with stop_server().",
+                    code="already_exists",
+                    pid=pid,
+                )
+            except ProcessLookupError:
+                pid_path.unlink(missing_ok=True)
 
     manage_py = root / "manage.py"
     cmd = [sys.executable, str(manage_py), "runserver", addrport, "--no-reload"]
-    proc = await asyncio.to_thread(
-        subprocess.Popen,
-        cmd,
-        cwd=str(root),
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        start_new_session=True,
-    )
+    log_path = _server_log_file(root)
+    log_handle = open(log_path, "w")  # noqa: SIM115 — handed to the child process
+    try:
+        proc = await asyncio.to_thread(
+            subprocess.Popen,
+            cmd,
+            cwd=str(root),
+            stdout=log_handle,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+        )
+    finally:
+        log_handle.close()
     pid_path.write_text(str(proc.pid))
     # Brief pause to let the server start (or fail fast)
     await asyncio.sleep(1.5)
     if proc.poll() is not None:
         pid_path.unlink(missing_ok=True)
-        return AgentResult(success=False, message="Server process exited immediately")
+        tail = ""
+        try:
+            tail_lines = log_path.read_text(errors="replace").splitlines()[-10:]
+            tail = "\n".join(tail_lines)
+        except OSError:
+            pass
+        return fail(
+            "Server process exited immediately"
+            + (f". Last output:\n{tail}" if tail else ""),
+            code="server_not_running",
+            output=tail or None,
+        )
 
     return AgentResult(
         success=True,
@@ -96,9 +132,17 @@ async def stop_server(project_root: Path | None = None) -> AgentResult:
     pid_path = _pid_file(project_root)
 
     if not pid_path.exists():
-        return AgentResult(success=False, message="No server PID file found. Is the server running?")
+        return fail(
+            "No server PID file found. Is the server running?",
+            code="server_not_running",
+        )
 
-    pid = int(pid_path.read_text().strip())
+    pid = _read_pid(pid_path)
+    if pid is None:
+        return fail(
+            "Server PID file was corrupt and has been removed.",
+            code="server_not_running",
+        )
     try:
         os.kill(pid, signal.SIGTERM)
         await asyncio.sleep(0.5)
@@ -143,7 +187,13 @@ async def get_server_status(project_root: Path | None = None) -> AgentResult:
             data={"running": False},
         )
 
-    pid = int(pid_path.read_text().strip())
+    pid = _read_pid(pid_path)
+    if pid is None:
+        return AgentResult(
+            success=True,
+            message="Server is not running (corrupt PID file removed)",
+            data={"running": False},
+        )
     try:
         os.kill(pid, 0)
         return AgentResult(

@@ -65,7 +65,47 @@ The auth URLs are registered automatically when `zeeb_api.auth` is in `INSTALLED
 {prefix}create_user(email="user@example.com",  password="user123")
 ```
 
-## 3 — OpenAPI / Swagger Documentation
+## 3 — Handling API Errors
+
+**Every** error the API returns — validation, auth, permissions, 404s,
+throttling, crashes — uses one standardized envelope. Generated frontend code
+must branch on `error.code` (stable, machine-readable), never on `message`
+(English debug text):
+
+```json
+{
+  "success": false,
+  "error": {
+    "code": "VALIDATION_ERROR",
+    "message": "Request validation failed",
+    "details": [
+      {"code": "FIELD_REQUIRED", "field": "email", "message": "Field required",
+       "meta": {"input": null}}
+    ],
+    "meta": {"request_id": "…", "timestamp": "…", "path": "/api/users/", "method": "POST"}
+  }
+}
+```
+
+Codes a generated client must handle:
+
+| `error.code` | Status | Client behaviour |
+|---|---|---|
+| `AUTH_TOKEN_EXPIRED` | 401 | `POST /auth/token/refresh/` with the refresh token, then retry once. |
+| `AUTH_TOKEN_MISSING` / `AUTH_TOKEN_INVALID` / `AUTH_INVALID_CREDENTIALS` | 401 | Clear stored tokens; send the user to login. |
+| `PERM_DENIED` (and other `PERM_*`) | 403 | Show a "no access" state — do not retry. |
+| `VALIDATION_ERROR` | 400/422 | Map `error.details[]` onto form fields via each detail's `field` (dotted for nested, `null` = non-field) and `code` (`FIELD_REQUIRED`, `FIELD_TOO_SHORT`, `FIELD_INVALID_EMAIL`, …); `meta` carries constraint context (`min_length`, `input`, …). |
+| `RESOURCE_NOT_FOUND` | 404 | Show not-found state. |
+| `RESOURCE_CONFLICT` / `RESOURCE_ALREADY_EXISTS` | 409 | Surface the conflict (e.g. duplicate). |
+| `RATE_LIMIT_EXCEEDED` | 429 | Back off for the `Retry-After` header value (seconds) before retrying. |
+| `SERVER_*` | 5xx | Generic error state; safe to retry idempotent requests with backoff. |
+
+Since `error.code` values are stable identifiers, key your i18n translations on
+them. `error.meta.request_id` echoes an `X-Request-ID` header when the client
+sends one — include it in support/error reports to correlate with server logs.
+The full code taxonomy is in the project docs (`docs/api/errors.md`).
+
+## 4 — OpenAPI / Swagger Documentation
 
 The live server exposes `/docs` (Swagger UI) and `/openapi.json` automatically.
 To save the spec for client SDK generation:
@@ -80,7 +120,7 @@ The saved `openapi.json` can be used with:
 - **Speakeasy**, **Stainless**, or **fern** for SDK generation
 - **Postman** / **Insomnia** for API testing collections
 
-## 4 — Data Shapes (JSON Schema)
+## 5 — Data Shapes (JSON Schema)
 
 Get the exact shape of any model for frontend form generation or validation:
 
@@ -108,7 +148,7 @@ Use this schema directly with:
 - **Ajv** for runtime JSON validation
 - **react-jsonschema-form** for auto-generated forms
 
-## 5 — Route Inventory
+## 6 — Route Inventory
 
 Discover all available endpoints without a running server:
 
@@ -131,7 +171,7 @@ Standard ViewSet `{prefix}` expands to these REST endpoints:
 | PATCH  | `/{route_prefix}/{id}/` | partial_update |
 | DELETE | `/{route_prefix}/{id}/` | destroy |
 
-## 6 — Health / Status Endpoints
+## 7 — Health / Status Endpoints
 
 Add health probes that frontend monitoring dashboards or load balancers use:
 
@@ -146,7 +186,7 @@ GET /health  →  {"status": "ok"}                       # 200 always
 GET /ready   →  {"status": "ready", "db": "ok"}        # 200 / 503
 ```
 
-## 7 — Real-Time Considerations
+## 8 — Real-Time Considerations
 
 Zeeb does not yet ship a built-in WebSocket layer.  For real-time features:
 
@@ -154,12 +194,13 @@ Zeeb does not yet ship a built-in WebSocket layer.  For real-time features:
 - Add **Broadcaster** + **starlette-websockets** manually for pub/sub
 - Use an external managed service (Pusher, Ably, Supabase Realtime)
 
-Scaffold a WebSocket endpoint stub:
-```
-{prefix}create_route(app="chat", path="/ws/messages", method="websocket", function_name="ws_messages_handler")
-```
+`{prefix}create_route` only emits HTTP handlers (`get`/`post`/`put`/`patch`/
+`delete`) — WebSockets are not one of its methods. A WebSocket route is one of
+the few cases with no dedicated tool, so write the module yourself with
+`{prefix}write_file` (e.g. `apps/chat/ws.py`) and include its FastAPI
+`APIRouter` from the project `urls.py`.
 
-## 8 — Environment Configuration
+## 9 — Environment Configuration
 
 Set frontend-relevant settings via env:
 

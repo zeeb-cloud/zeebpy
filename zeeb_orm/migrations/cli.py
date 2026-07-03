@@ -41,6 +41,15 @@ def _register_models(project_root: Path | None = None) -> None:
 
     sys.path.insert(0, str(project_root))
     try:
+        # Point zeeb_api's settings discovery at the target project so
+        # AUTH_USER_MODEL resolves even when the process CWD is elsewhere
+        # (zeeb_agents operates on projects by path).
+        try:
+            from zeeb_api.auth.backends import set_project_root
+            set_project_root(project_root)
+        except ImportError:
+            pass  # zeeb_api is optional
+
         # Load settings to get INSTALLED_APPS and AUTH_USER_MODEL
         from zeeb_orm.migrations._settings import load_settings_module
         settings_module = load_settings_module(project_root)

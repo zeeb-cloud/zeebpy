@@ -43,8 +43,20 @@ if result:   # AgentResult is truthy on success
 
 ### Error handling & logging
 
-Agent functions **never raise** — any unexpected exception is caught and
-returned as `AgentResult(success=False, message="ExceptionType: details")`.
+Agent functions **never raise**. *Expected* failures (bad input, a missing
+app/model, invalid SQL, …) return a plain actionable message — often with a
+"Did you mean: …?" suggestion — and populate `data["error_code"]` (a closed
+vocabulary: `app_not_found`, `model_not_found`, `already_exists`,
+`invalid_field_spec`, `invalid_field_type`, `invalid_identifier`,
+`invalid_input`, `invalid_permission`, `invalid_meta`, `invalid_sql`,
+`invalid_regex`, `table_not_found`, `user_not_found`, `no_user_table`,
+`setting_not_found`, `env_key_not_found`, `field_not_found`,
+`function_not_found`, `file_not_found`, `log_file_not_found`,
+`outside_project_root`, `server_not_running`, `server_not_reachable`,
+`dependency_missing`, `permission_denied`, `no_project_root`) plus
+`data["suggestions"]` (close-match candidates) where applicable. Any
+*unexpected* exception is caught and returned as
+`AgentResult(success=False, message="ExceptionType: details")`.
 Full tracebacks are logged via the `"zeeb_agents"` logger
 (`logging.getLogger("zeeb_agents")`); attach a handler or raise the level to
 see/silence them:
@@ -66,8 +78,9 @@ under a `Returns data:` block), but they follow consistent conventions:
 - **Multi-step functions** return a list of what happened
   (`generate_crud` → `data["steps"]`; `update_model` → `data["changes"]`;
   `run_migrations` → `data["applied"]`).
-- **On failure** `data` is often `None`; some functions return useful context
-  instead (e.g. `read_logs` → `{"searched_in": ...}`). Always guard with
+- **On failure** `data` carries `error_code` (and often `suggestions` or
+  other context like `read_logs` → `{"searched_in": ...}`) for expected
+  failures, and may be `None` for unexpected ones. Always guard with
   `if result.success and result.data:` before indexing.
 
 ### `project_root` auto-detection
@@ -82,13 +95,17 @@ directory. Pass an explicit path only to target a project outside the CWD.
 | Function | Behavior to know |
 |---|---|
 | `read_logs(level=...)` | `level` matches the level as a whole token (`[ERROR]`, ` ERROR `), not as a substring — so it won't match `NOTANERROR`. |
-| `create_route(path=...)` | `{name}` path segments (`/items/{item_id}`) become `str` parameters on the generated handler. |
+| `create_route(path=..., body=...)` | Generates a FastAPI `APIRouter` handler and auto-wires it into `urls.py`; pass logic via `body=`. `{name}` path segments (`/items/{item_id}`) become typed `str` handler params. |
 | `get_env()` | A missing `.env` is reported as `success=False` (with an empty `env` dict). |
 | `make_migrations()` | "No changes detected" is `success=True` with `data["created"] = None`. |
 | `manage_settings(key, value=...)` | Read mode = only `key`; write mode = `key` + `value`. Write only updates keys that already exist. |
 | `replace_model_fields(...)` | Destructive — replaces **all** fields. Use `add_field`/`remove_field` for incremental edits. |
 | `run_query(sql)` | Read-only: SELECT/WITH/EXPLAIN only, single statement, always rolled back. |
 | `export_openapi(...)` | Requires the dev server to be running (fetches the live spec). |
+| Relation field specs | `to` is **required**; `on_delete="SET_NULL"` needs `null=True`; M2M rejects `on_delete`/`null`. Invalid specs are rejected before anything is written. |
+| Field spec `"raw"` key | Escape hatch for non-literal kwargs (validators, callables): a dict of kwarg → verbatim Python source. |
+| `setup_auth` / `setup_oauth` | Idempotent — re-running reports `already_wired` instead of duplicating includes. |
+| `start_server(...)` | Server output goes to `.zeeb_server.log`; an immediate exit returns the last log lines in `data["output"]`. |
 
 ### Tool discovery — `list_capabilities()`
 
@@ -146,22 +163,42 @@ Append a `Model` subclass to `apps/<app>/models.py`.
 
 | Key | Required | Notes |
 |-----|----------|-------|
-| `name` | ✅ | Python attribute name |
+| `name` | ✅ | Python attribute name (validated as an identifier) |
 | `type` | ✅ | See [Field Types](#field-types) |
 | `max_length` | CharField | |
 | `null` | | `True` / `False` |
-| `default` | | Any serialisable value |
-| `to` | FK / O2O / M2M | Target model name |
-| `on_delete` | FK / O2O | Default: `"CASCADE"` |
+| `default` | | Any literal value (str/num/bool/None/list/dict) |
+| `choices` | | List of `[value, label]` pairs |
+| `help_text`, `verbose_name`, `db_column`, `unique`, `index` | | Pass through as literals |
+| `to` | FK / O2O / M2M | Target model name — **required** on relation fields |
+| `on_delete` | FK / O2O | One of CASCADE/PROTECT/RESTRICT/SET_NULL/SET_DEFAULT/DO_NOTHING; `SET_NULL` requires `null=True` |
+| `through`, `through_fields`, `related_name`, `db_table` | M2M | Custom through table support |
+| `raw` | | Escape hatch: dict of kwarg → **verbatim Python source** for validators, callables, etc. Raw entries win over same-named keys. |
+
+All specs are validated up front — invalid types get "Did you mean" suggestions
+and nothing is written on failure.
 
 ```python
 await create_model("blog", "Post", [
     {"name": "title",   "type": "CharField",  "max_length": 200},
     {"name": "body",    "type": "TextField"},
     {"name": "slug",    "type": "SlugField",  "unique": True},
+    {"name": "status",  "type": "CharField",  "max_length": 10,
+     "choices": [["draft", "Draft"], ["pub", "Published"]], "default": "draft"},
+    {"name": "score",   "type": "IntegerField", "default": 0,
+     "raw": {"validators": "[validators.MinValueValidator(0)]"}},
     {"name": "author",  "type": "ForeignKey", "to": "User"},
-], meta={"ordering": ["-created_at"]})
+], meta={
+    "ordering": ["-created_at"],
+    "unique_together": [["author", "slug"]],
+    "indexes": [{"fields": ["created_at"], "name": "idx_post_created"}],
+    "constraints": [{"check": "score >= 0", "name": "ck_score_positive"}],
+})
 ```
+
+Valid `meta` keys: `table_name`/`db_table`, `abstract`, `managed`, `ordering`,
+`unique_together`, `index_together`, `indexes`, `constraints`,
+`default_permissions`, `app_label`.
 
 ### `update_model(app, model_name, rename_to=None, meta_changes=None, project_root=None)`
 Rename a model and/or update its `class Meta` options.
@@ -195,13 +232,23 @@ await add_relationship("blog", "Post", {
 
 ## Serializer Management
 
-### `create_serializer(app, model_name, fields=None, read_only_fields=None, project_root=None)`
-Append a `ModelSerializer` to `apps/<app>/serializers.py`.
+### `create_serializer(app, model_name, fields=None, read_only_fields=None, extra_fields=None, validate_fields=None, project_root=None)`
+Append a `ModelSerializer` to `apps/<app>/serializers.py`. `extra_fields`
+declares serializer fields (`SerializerMethodField` entries get a `get_<name>`
+stub, `{"type": "nested", "serializer": "UserSerializer"}` renders a nested
+serializer, other types take kwargs like `write_only`/`source`/`max_length`);
+`validate_fields` emits `validate_<field>(self, value)` stubs.
 
 ```python
 await create_serializer("blog", "Post",
     fields=["id", "title", "body", "created_at"],
-    read_only_fields=["id", "created_at"])
+    read_only_fields=["id", "created_at"],
+    extra_fields=[
+        {"name": "summary", "type": "SerializerMethodField"},
+        {"name": "author", "type": "nested", "serializer": "UserSerializer",
+         "read_only": True},
+    ],
+    validate_fields=["title"])
 ```
 
 ### `update_serializer(app, model_name, fields=None, read_only_fields=None, project_root=None)`
@@ -211,22 +258,54 @@ Update the `fields` / `read_only_fields` of an existing serializer.
 
 ## ViewSet & Route Management
 
-### `create_viewset(app, model_name, serializer_class=None, permission="IsAuthenticatedOrReadOnly", project_root=None)`
-Append a `ModelViewSet` to `apps/<app>/views.py`.
+### `create_viewset(app, model_name, serializer_class=None, permission="IsAuthenticatedOrReadOnly", read_only=False, lookup_field=None, pagination=None, throttles=None, search_fields=None, ordering_fields=None, filterset=None, project_root=None)`
+Append a `ModelViewSet` (or `ReadOnlyModelViewSet` with `read_only=True`) to
+`apps/<app>/views.py`, with the full viewset option surface:
 
-### `add_viewset_action(app, model_name, action_name, detail=True, methods=None, project_root=None)`
-Add a custom `@action` method to an existing ViewSet.
+```python
+await create_viewset("shop", "Product",
+    permission="IsAuthenticated",
+    lookup_field="slug",
+    pagination="page",                 # "page" | "limit_offset" | "cursor"
+    throttles=["UserRateThrottle"],    # Anon/User/ScopedRateThrottle
+    search_fields=["name"],            # ?search=…
+    ordering_fields=["price"],         # ?ordering=…
+    filterset="ProductFilter")         # from apps/shop/filters.py
+```
+
+Permissions are validated against `zeeb_api.permissions` (`AllowAny`,
+`IsAuthenticated`, `IsAdminUser`, `IsAuthenticatedOrReadOnly`, `IsOwner`,
+`IsOwnerOrReadOnly`, `DjangoModelPermissions`); imports for pagination,
+throttling, and filters are added automatically.
+
+### `update_viewset(app, model_name, permission=None, lookup_field=None, pagination=None, throttles=None, search_fields=None, ordering_fields=None, project_root=None)`
+Set or update class attributes on an existing ViewSet (same option names as
+`create_viewset`); `filter_backends` is kept in sync when
+`search_fields`/`ordering_fields` are given.
+
+### `add_viewset_action(app, model_name, action_name, detail=True, methods=None, body=None, project_root=None)`
+Add a custom `@action` method to an existing ViewSet. Pass the method body via
+`body=` (dedented/indented automatically) so you don't have to edit `views.py`
+by hand; omit it for a `pass  # TODO` placeholder.
 
 ```python
 await add_viewset_action("blog", "Post", "publish",
-    detail=True, methods=["post"])
+    detail=True, methods=["post"],
+    body="""
+        post = await self.get_object()
+        post.published = True
+        await post.save()
+        return {"status": "published"}
+    """)
 ```
 
 ### `register_route(app, model_name, url_prefix=None, project_root=None)`
 Add a `router.register(...)` line to `apps/<app>/urls.py`.
 
-### `generate_crud(app, model_name, fields, serializer_fields=None, read_only_fields=None, permission=..., project_root=None)`
+### `generate_crud(app, model_name, fields, serializer_fields=None, read_only_fields=None, permission=..., meta=None, extra_fields=None, validate_fields=None, read_only=False, lookup_field=None, pagination=None, throttles=None, search_fields=None, ordering_fields=None, filterset=None, project_root=None)`
 **One-shot scaffold** — creates model + serializer + viewset + registers route.
+Forwards `meta` to `create_model`, `extra_fields`/`validate_fields` to
+`create_serializer`, and all viewset options to `create_viewset`.
 
 ```python
 await generate_crud("blog", "Post", fields=[
@@ -285,14 +364,22 @@ Friendly aliases accepted by the `type` key in field specs:
 | `smallint` | `SmallIntegerField` |
 | `bigint` | `BigIntegerField` |
 | `posint` | `PositiveIntegerField` |
+| `possmallint` | `PositiveSmallIntegerField` |
+| `posbigint` | `PositiveBigIntegerField` |
 | `float` | `FloatField` |
 | `decimal` | `DecimalField` |
 | `bool`, `boolean` | `BooleanField` |
 | `date` | `DateField` |
 | `datetime`, `timestamp` | `DateTimeField` |
 | `time` | `TimeField` |
+| `duration` | `DurationField` |
 | `json` | `JSONField` |
 | `uuid` | `UUIDField` |
+| `binary`, `bytes` | `BinaryField` |
+| `ip`, `ipaddress` | `GenericIPAddressField` |
+| `auto` | `AutoField` |
+| `bigauto` | `BigAutoField` |
+| `uuidauto` | `UUIDAutoField` |
 | `fk`, `foreignkey` | `ForeignKey` |
 | `o2o`, `onetoone` | `OneToOneField` |
 | `m2m`, `manytomany` | `ManyToManyField` |
@@ -551,17 +638,30 @@ result = await get_project_structure(max_depth=2)
 
 ## Standalone Routes
 
-### `create_route(app, path, method, function_name, response_model=None, project_root=None)`
-Append a standalone `@router.<method>(path)` async handler to `{app}/views.py`.
-Unlike `create_viewset`, this creates a plain function — not a class-based ViewSet.
+### `create_route(app, path, method, function_name, response_model=None, body=None, imports=None, project_root=None)`
+Append a standalone `@router.<method>(path)` async handler to `{app}/views.py`
+**and** auto-wire it into `{app}/urls.py` so it is actually served. Unlike
+`create_viewset`, this creates a plain function — not a class-based ViewSet. The
+handler lives on a FastAPI `router = APIRouter()` (note: `zeeb_api` exposes no
+`Router`) and always receives a typed `request: Request`.
 
 - `method`: One of `get`, `post`, `put`, `patch`, `delete`.
 - `response_model`: Optional Pydantic model name added as `response_model=...`.
+- `body`: Handler implementation as Python source (dedented/indented for you).
+  Put the real logic here — no `write_file` needed. Omit for a placeholder.
+- `imports`: Import lines the body needs (added to `views.py` if absent).
 
 ```python
-result = await create_route("blog", "/posts/featured", "get", "get_featured_posts")
-result = await create_route("blog", "/posts/{post_id}/publish", "post", "publish_post")
-# result.data == {"app": "blog", "path": "/posts/featured", "method": "get", "function_name": "get_featured_posts"}
+result = await create_route(
+    "blog", "/posts/featured", "get", "get_featured_posts",
+    imports=["from .models import Post"],
+    body="""
+        posts = await Post.objects.filter(featured=True).all()
+        return [{"id": str(p.id), "title": p.title} for p in posts]
+    """,
+)
+# result.data == {"app": "blog", "path": "/posts/featured", "method": "get",
+#                 "function_name": "get_featured_posts", "response_model": None, "wired": True}
 ```
 
 ---
@@ -615,6 +715,12 @@ Reads model definitions from `{app}/models.py` and writes `seeds/{app}_seed.py`.
 - `models`: List of model names to include. Defaults to all models in the app.
 - `count`: Number of records to create per model (default: 5).
 - `output_path`: Override the output file path (relative to project root).
+
+Placeholders are typed per field (ints stay ints, booleans stay booleans,
+JSON fields get dict literals, `DurationField` gets `timedelta`); fields with
+`choices` use the first choice value. Auto-generated fields (PKs, `auto_now`
+timestamps, M2M) and nullable relations are omitted; non-null relations are
+emitted as `None` with a `# TODO` comment to fill in.
 
 ```python
 result = await generate_seed_script("blog", count=10)
@@ -870,6 +976,93 @@ List all permission classes in `apps/{app}/permissions.py`.
 ```python
 result = await list_permission_classes("blog")
 # result.data == {"permissions": ["IsPostOwner", "IsPublicRead"], "count": 2}
+```
+
+---
+
+## Auth Scaffolding
+
+### `setup_auth(enable_registration=True, url_prefix="/auth", access_token_minutes=None, refresh_token_days=None, project_root=None)`
+Wire zeeb_api's JWT auth router into the project `urls.py` — exposes
+`POST {prefix}/login/`, `/refresh/`, `/logout/`, `GET /me/`, and (optionally)
+`POST /register/`. Idempotent: re-running reports `data["already_wired"]=True`.
+Optionally writes `JWT_ACCESS_TOKEN_EXPIRE_MINUTES` /
+`JWT_REFRESH_TOKEN_EXPIRE_DAYS`.
+
+```python
+await setup_auth(enable_registration=True, access_token_minutes=30)
+```
+
+### `setup_oauth(provider, client_id_env=None, client_secret_env=None, scopes=None, redirect_uri=None, project_root=None)`
+Configure an OAuth/OIDC provider preset (`"azure"`, `"github"`, `"google"`)
+in `OAUTH_PROVIDERS` and wire `create_oauth_router()` into `urls.py`.
+Credentials are read from environment variables (default
+`<PROVIDER>_CLIENT_ID` / `<PROVIDER>_CLIENT_SECRET`) — set them with
+`set_env`. Requires the `zeebpy[oauth]` extra at runtime.
+
+```python
+await setup_oauth("google")
+await set_env("GOOGLE_CLIENT_ID", "…")
+await set_env("GOOGLE_CLIENT_SECRET", "…")
+```
+
+### `create_user_model(app, model_name="User", extra_fields=None, set_auth_user_model=True, project_root=None)`
+Create a custom user model extending `zeeb_api.auth.models.AbstractUser` and
+set `AUTH_USER_MODEL`. Run migrations afterwards; `create_user` etc. then work
+against the new table.
+
+```python
+await create_user_model("accounts", "Member", extra_fields=[
+    {"name": "phone", "type": "CharField", "max_length": 20, "null": True},
+])
+```
+
+---
+
+## FilterSet Scaffolding
+
+### `create_filterset(app, model_name, filter_fields, project_root=None)`
+Create a `FilterSet` class in `apps/{app}/filters.py` for declarative
+query-parameter filtering; attach it to a viewset via
+`create_viewset(filterset=...)`.
+
+```python
+await create_filterset("shop", "Product", {
+    "price": ["gte", "lte"],       # ?price__gte=10&price__lte=50
+    "status": ["exact", "in"],     # ?status=live or ?status__in=live,draft
+})
+```
+
+Valid lookups: `exact`, `iexact`, `contains`, `icontains`, `in`, `gt`, `gte`,
+`lt`, `lte`, `startswith`, `istartswith`, `endswith`, `iendswith`, `isnull`.
+
+---
+
+## API Configuration
+
+### `configure_throttling(default_classes=None, rates=None, project_root=None)`
+Write project-wide rate-limit defaults (`DEFAULT_THROTTLE_CLASSES` as
+`zeeb_api.throttling` dotted paths, `DEFAULT_THROTTLE_RATES`). Rate format:
+`"<number>/<period>"` with period `s/sec`, `m/min`, `h/hour`, `d/day`.
+
+```python
+await configure_throttling(
+    default_classes=["AnonRateThrottle"],
+    rates={"anon": "100/hour", "user": "1000/day"},
+)
+```
+
+> The default throttle cache is in-memory **per process** — multi-worker
+> deployments need a custom `BaseThrottleCache`.
+
+### `configure_versioning(scheme="url", default_version=None, allowed_versions=None, project_root=None)`
+Write API-versioning settings (`DEFAULT_VERSIONING_CLASS`, `DEFAULT_VERSION`,
+`ALLOWED_VERSIONS`). Schemes: `"url"` (`/v1/…`), `"header"`
+(`X-API-Version`), `"query"` (`?version=`), `"accept"`.
+
+```python
+await configure_versioning(scheme="header", default_version="1.0",
+                           allowed_versions=["1.0", "2.0"])
 ```
 
 ---

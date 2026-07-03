@@ -6,7 +6,9 @@ import asyncio
 from pathlib import Path
 
 from zeeb_agents._utils import AgentResult, agent_function
-from zeeb_agents._utils.project import load_project_settings
+from zeeb_agents._utils.errors import close_matches, fail
+from zeeb_agents._utils.project import load_project_settings, require_project_root
+from zeeb_agents._utils.validation import ENV_KEY_RE
 
 _SCALAR_TYPES = (str, int, float, bool, type(None))
 
@@ -135,7 +137,17 @@ async def set_env(
         key (str): the variable name that was set.
         action (str): ``"added"`` if the key was new, ``"updated"`` if it
             already existed.
+
+    Notes:
+        - An invalid key (not ``[A-Za-z_][A-Za-z0-9_]*``) is rejected with
+          ``error_code="invalid_input"`` — it would corrupt the ``.env`` file.
     """
+    if not ENV_KEY_RE.match(key):
+        return fail(
+            f"Invalid env key '{key}': must match [A-Za-z_][A-Za-z0-9_]*",
+            code="invalid_input",
+            key=key,
+        )
     env_path = _find_env_file(project_root)
 
     def _write() -> bool:
@@ -184,10 +196,14 @@ async def delete_env(
 
     removed = await asyncio.to_thread(_remove)
     if not removed:
-        return AgentResult(
-            success=False,
-            message=f"Key '{key}' not found in .env",
-            data={"key": key},
+        existing = sorted(_parse_env_file(env_path))
+        suggestions = close_matches(key, existing)
+        hint = f" Did you mean: {', '.join(suggestions)}?" if suggestions else ""
+        return fail(
+            f"Key '{key}' not found in .env.{hint}",
+            code="env_key_not_found",
+            suggestions=suggestions,
+            key=key,
         )
     return AgentResult(
         success=True,
@@ -248,10 +264,13 @@ async def manage_settings(
     if is_read:
         settings = await asyncio.to_thread(load_project_settings, root)
         if key not in settings:
-            return AgentResult(
-                success=False,
-                message=f"Setting '{key}' not found in settings.py",
-                data={"key": key},
+            suggestions = close_matches(key, sorted(settings))
+            hint = f" Did you mean: {', '.join(suggestions)}?" if suggestions else ""
+            return fail(
+                f"Setting '{key}' not found in settings.py.{hint}",
+                code="setting_not_found",
+                suggestions=suggestions,
+                key=key,
             )
         return AgentResult(
             success=True,
@@ -261,14 +280,13 @@ async def manage_settings(
 
     # Write mode
     if not isinstance(value, _SCALAR_TYPES):
-        return AgentResult(
-            success=False,
-            message=(
-                f"manage_settings only supports scalar values "
-                f"(str, int, float, bool, None). "
-                f"Got {type(value).__name__}. "
-                f"Use read_file/write_file to edit settings.py directly."
-            ),
+        return fail(
+            f"manage_settings only supports scalar values "
+            f"(str, int, float, bool, None). "
+            f"Got {type(value).__name__}. "
+            f"Use read_file/write_file to edit settings.py directly.",
+            code="invalid_input",
+            key=key,
         )
 
     def _write() -> bool:
@@ -288,10 +306,15 @@ async def manage_settings(
 
     found = await asyncio.to_thread(_write)
     if not found:
-        return AgentResult(
-            success=False,
-            message=f"Setting '{key}' not found in settings.py (key must already exist to update it)",
-            data={"key": key},
+        settings = await asyncio.to_thread(load_project_settings, require_project_root(root))
+        suggestions = close_matches(key, sorted(settings))
+        hint = f" Did you mean: {', '.join(suggestions)}?" if suggestions else ""
+        return fail(
+            f"Setting '{key}' not found in settings.py "
+            f"(key must already exist to update it).{hint}",
+            code="setting_not_found",
+            suggestions=suggestions,
+            key=key,
         )
     return AgentResult(
         success=True,

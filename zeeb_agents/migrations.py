@@ -6,7 +6,7 @@ import asyncio
 from pathlib import Path
 
 from zeeb_agents._utils import AgentResult, agent_function
-from zeeb_agents._utils.project import load_project_settings
+from zeeb_agents._utils.project import load_project_settings, resolve_db_url
 
 
 @agent_function
@@ -28,7 +28,7 @@ async def run_migrations(project_root: Path | None = None) -> AgentResult:
     def _run() -> list[str]:
         from zeeb_orm.migrations import executor
         settings = load_project_settings(root)
-        db_url = settings.get("DATABASE", {}).get("url", "sqlite+aiosqlite:///db.sqlite3")
+        db_url = resolve_db_url(settings, root)
         return executor.migrate(database_url=db_url, project_root=root)
 
     applied = await asyncio.to_thread(_run)
@@ -128,7 +128,7 @@ async def get_migration_status(project_root: Path | None = None) -> AgentResult:
     def _run() -> list[dict]:
         from zeeb_orm.migrations import executor
         settings = load_project_settings(root)
-        db_url = settings.get("DATABASE", {}).get("url", "sqlite+aiosqlite:///db.sqlite3")
+        db_url = resolve_db_url(settings, root)
         status = executor.showmigrations(database_url=db_url, project_root=root)
         return [{"name": name, "applied": applied} for name, applied in status]
 
@@ -171,7 +171,7 @@ async def rollback_migration(
     def _run() -> list[str]:
         from zeeb_orm.migrations import executor
         settings = load_project_settings(root)
-        db_url = settings.get("DATABASE", {}).get("url", "sqlite+aiosqlite:///db.sqlite3")
+        db_url = resolve_db_url(settings, root)
         status = executor.showmigrations(database_url=db_url, project_root=root)
         applied = [name for name, is_applied in status if is_applied]
         if not applied:
