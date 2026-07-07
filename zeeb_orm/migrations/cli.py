@@ -77,7 +77,19 @@ def _register_models(project_root: Path | None = None) -> None:
                 stacklevel=2,
             )
 
-        # Register models from installed apps (including custom user models)
+        # Register models from installed apps (including custom user models).
+        # Two phases: first import every app's models module so ALL model
+        # classes land in the registry, then build tables. This makes
+        # cross-app string references (e.g. ForeignKey("accounts.User") from
+        # an app listed earlier in INSTALLED_APPS) independent of app order.
+        # Failures here are fatal, not warnings — schema tooling running
+        # against an incomplete model state can generate destructive
+        # migrations (missing tables diff as DeleteModel).
+        from zeeb_orm.exceptions import ModelRegistrationError
+
+        failures: list[str] = []
+        app_models: list[tuple[str, type[Model]]] = []
+        seen_models: set[type[Model]] = set()
         for app in installed_apps:
             if app == "zeeb_auth":
                 continue
@@ -90,7 +102,7 @@ def _register_models(project_root: Path | None = None) -> None:
                 import_paths.append(f"{app}.models")
 
             imported = False
-            last_error = None
+            last_error: Exception | None = None
             for import_path in import_paths:
                 try:
                     models_module = importlib.import_module(import_path)
@@ -98,8 +110,10 @@ def _register_models(project_root: Path | None = None) -> None:
                         obj = getattr(models_module, name)
                         if (isinstance(obj, type) and issubclass(obj, Model)
                                 and obj is not Model
-                                and not getattr(obj._meta, 'abstract', False)):
-                            obj._get_table()
+                                and not getattr(obj._meta, 'abstract', False)
+                                and obj not in seen_models):
+                            seen_models.add(obj)
+                            app_models.append((app, obj))
                     imported = True
                     break
                 except ImportError as e:
@@ -109,10 +123,29 @@ def _register_models(project_root: Path | None = None) -> None:
                     break  # Non-import errors are real problems
 
             if not imported and last_error is not None:
-                warnings.warn(
-                    f"Could not import models from app '{app}': {last_error}",
-                    stacklevel=2,
+                if isinstance(last_error, ImportError):
+                    # App without an importable models module — skippable.
+                    warnings.warn(
+                        f"Could not import models from app '{app}': {last_error}",
+                        stacklevel=2,
+                    )
+                else:
+                    failures.append(f"app '{app}': {last_error!r}")
+
+        for app, model_cls in app_models:
+            try:
+                model_cls._get_table()
+            except Exception as exc:
+                failures.append(
+                    f"model '{model_cls.__name__}' (app '{app}'): {exc}"
                 )
+
+        if failures:
+            raise ModelRegistrationError(
+                "Could not register all models from INSTALLED_APPS — refusing "
+                "to continue with an incomplete model state:\n  - "
+                + "\n  - ".join(failures)
+            )
 
         # Clear cached user model so it re-resolves with sys.path set up
         try:

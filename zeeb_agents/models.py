@@ -63,6 +63,8 @@ async def create_model(
             {"name": "author", "type": "ForeignKey", "to": "User", "on_delete": "CASCADE"},
         ]
 
+    Relation targets (``"to"``) accept a bare model name (``"User"``), a
+    Django-style dotted label (``"accounts.User"``), or ``"self"``.
     Field specs support the full zeeb_orm surface: any option renders as a
     proper Python literal (``choices=[["draft", "Draft"]]``, ``default={}``),
     relation fields validate ``on_delete``, and the reserved ``"raw"`` key
@@ -294,7 +296,8 @@ async def add_relationship(
 
     Args:
         rel: Dict with ``"name"``, ``"type"`` (ForeignKey / OneToOneField /
-            ManyToManyField), ``"to"`` (target model name), and optional
+            ManyToManyField), ``"to"`` (target model — ``"User"``,
+            ``"accounts.User"`` or ``"self"``), and optional
             ``"on_delete"`` (default ``"CASCADE"``).
 
     Example::
