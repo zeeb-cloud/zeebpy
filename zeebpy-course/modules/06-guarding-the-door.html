@@ -1,0 +1,412 @@
+<section class="module" id="module-6" style="background: var(--color-bg)">
+  <div class="module-content">
+
+    <header class="module-header animate-in">
+      <span class="module-number">06</span>
+      <h1 class="module-title">Guarding the Door</h1>
+      <p class="module-subtitle">How the API knows who you are, and what you are allowed to do.</p>
+    </header>
+
+    <div class="module-body">
+
+      <!-- ============ SCREEN 1: HOOK + METAPHOR ============ -->
+      <section class="screen animate-in">
+        <h2 class="screen-heading">Should <em>anyone</em> be able to delete a book?</h2>
+        <p>In Module 5 you learned to create and delete books over the web. That is exactly why we need a lock on the door. Should <em>any</em> stranger be able to call
+          <span class="term" data-definition="An HTTP request that asks the server to remove a record. DELETE is one of the standard web actions, alongside GET (read) and POST (create).">DELETE /books/5/</span>?
+          Obviously not.</p>
+
+        <p>So how does the API know who you are, and what you are allowed to do? Meet the <strong>bouncer</strong>.</p>
+
+        <div class="callout callout-accent">
+          <div class="callout-icon">🎟️</div>
+          <div class="callout-content">
+            <strong class="callout-title">The nightclub metaphor</strong>
+            <p>The <strong>bouncer</strong> checks your ID at the door. Your <strong>wristband</strong> proves you were already checked, so you do not re-show ID at every bar. The <strong>guest list</strong> says who gets into the VIP room. The <strong>capacity limit</strong> caps how many people pour in at once.</p>
+          </div>
+        </div>
+
+        <div class="icon-rows">
+          <div class="icon-row">
+            <div class="icon-circle" style="background: var(--color-actor-1)">💂</div>
+            <div>
+              <strong>Bouncer = the middleware</strong>
+              <p>Checks your token on every single request before anything else runs.</p>
+            </div>
+          </div>
+          <div class="icon-row">
+            <div class="icon-circle" style="background: var(--color-actor-4)">🎟️</div>
+            <div>
+              <strong>Wristband = the token</strong>
+              <p>Tamper-proof proof of who you are, so you do not log in again on every click.</p>
+            </div>
+          </div>
+          <div class="icon-row">
+            <div class="icon-circle" style="background: var(--color-actor-3)">📋</div>
+            <div>
+              <strong>Guest list = permissions</strong>
+              <p>Even a checked-in guest is not allowed everywhere. Are you allowed to delete this book?</p>
+            </div>
+          </div>
+          <div class="icon-row">
+            <div class="icon-circle" style="background: var(--color-actor-5)">🚦</div>
+            <div>
+              <strong>Capacity limit = throttling</strong>
+              <p>Only so many requests per minute, so no one can flood the club.</p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============ SCREEN 2: THE FOUR GUARDS ============ -->
+      <section class="screen animate-in">
+        <h2 class="screen-heading">Four guards, four questions</h2>
+        <p>Every protected request passes through up to four checks. Each answers one plain question.</p>
+
+        <div class="pattern-cards stagger-children">
+          <div class="pattern-card animate-in" style="border-top: 3px solid var(--color-actor-1)">
+            <div class="pattern-icon" style="background: var(--color-actor-1)">🪪</div>
+            <h4 class="pattern-title">Authentication</h4>
+            <p class="pattern-desc"><em>Who are you?</em> You prove it once with a login, and get a signed
+              <span class="term" data-definition="Short for JSON Web Token: a small, digitally signed bundle of facts about you (like your user id) that the server hands out after you log in. Anyone can read it, but no one can forge it without the secret.">token</span>.</p>
+          </div>
+          <div class="pattern-card animate-in" style="border-top: 3px solid var(--color-actor-2)">
+            <div class="pattern-icon" style="background: var(--color-actor-2)">💂</div>
+            <h4 class="pattern-title">Middleware</h4>
+            <p class="pattern-desc"><em>Is your pass real?</em> The bouncer runs on <strong>every</strong> request, decodes the token, and attaches the user.</p>
+          </div>
+          <div class="pattern-card animate-in" style="border-top: 3px solid var(--color-actor-3)">
+            <div class="pattern-icon" style="background: var(--color-actor-3)">📋</div>
+            <h4 class="pattern-title">Permissions</h4>
+            <p class="pattern-desc"><em>What may you do?</em> The guest list decides if <strong>this</strong> user may perform <strong>this</strong> action.</p>
+          </div>
+          <div class="pattern-card animate-in" style="border-top: 3px solid var(--color-actor-5)">
+            <div class="pattern-icon" style="background: var(--color-actor-5)">🚦</div>
+            <h4 class="pattern-title">Throttling</h4>
+            <p class="pattern-desc"><em>How often?</em> A capacity limit caps how many requests anyone can fire per minute.</p>
+          </div>
+        </div>
+
+        <div class="callout callout-info">
+          <div class="callout-icon">🔑</div>
+          <div class="callout-content">
+            <strong class="callout-title">Authentication vs. authorization</strong>
+            <p><span class="term" data-definition="Proving who you are. Like showing your ID at the door so the bouncer knows your name.">Authentication</span> asks <em>who are you</em>. <span class="term" data-definition="Deciding what you are allowed to do once you are identified. Like the guest list saying you can enter the main floor but not the VIP room.">Authorization</span> asks <em>what may you do</em>. They sound alike but are two separate checks — and mixing them up is a classic security bug.</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============ SCREEN 3: MINTING THE TOKEN (Snippet A) ============ -->
+      <section class="screen animate-in">
+        <h2 class="screen-heading">Stamping the wristband</h2>
+        <p>When you log in successfully, the server builds a wristband: a small bundle of facts, sealed with a
+          <span class="term" data-definition="A digital seal made with a secret key. It lets the server later confirm the token was not tampered with. Change even one letter of the token and the signature no longer matches.">signature</span>.
+          Here is that exact moment in <code>zeeb_api/auth/jwt.py</code>.</p>
+
+        <div class="translation-block animate-in">
+          <div class="translation-code">
+            <span class="translation-label">CODE</span>
+<pre><code><span class="code-line">    payload = {</span>
+<span class="code-line">        <span class="code-string">"sub"</span>: <span class="code-function">str</span>(user_id),</span>
+<span class="code-line">        <span class="code-string">"type"</span>: <span class="code-string">"access"</span>,</span>
+<span class="code-line">        <span class="code-string">"exp"</span>: now + <span class="code-function">timedelta</span>(minutes=config.access_token_expire_minutes),</span>
+<span class="code-line">        <span class="code-string">"iat"</span>: now,</span>
+<span class="code-line">        <span class="code-string">"jti"</span>: <span class="code-function">str</span>(uuid.<span class="code-function">uuid4</span>()),</span>
+<span class="code-line">    }</span>
+<span class="code-line"></span>
+<span class="code-line">    <span class="code-keyword">if</span> config.issuer:</span>
+<span class="code-line">        payload[<span class="code-string">"iss"</span>] = config.issuer</span>
+<span class="code-line">    <span class="code-keyword">if</span> config.audience:</span>
+<span class="code-line">        payload[<span class="code-string">"aud"</span>] = config.audience</span>
+<span class="code-line">    <span class="code-keyword">if</span> claims:</span>
+<span class="code-line">        payload[<span class="code-string">"claims"</span>] = claims</span>
+<span class="code-line"></span>
+<span class="code-line">    <span class="code-keyword">return</span> jwt.<span class="code-function">encode</span>(payload, config.secret_key, algorithm=config.algorithm)</span>
+</code></pre>
+          </div>
+          <div class="translation-english">
+            <span class="translation-label">PLAIN ENGLISH</span>
+            <div class="translation-lines">
+              <p class="tl">Start building the wristband — a small bundle of facts.</p>
+              <p class="tl"><strong>sub</strong> = who this is (the user id).</p>
+              <p class="tl"><strong>type</strong> = what kind of pass this is (an access pass).</p>
+              <p class="tl"><strong>exp</strong> = when it expires — wristbands do not last forever.</p>
+              <p class="tl"><strong>iat</strong> = when it was issued.</p>
+              <p class="tl"><strong>jti</strong> = a unique serial number for this exact token.</p>
+              <p class="tl">Optionally stamp who issued it and who it is for.</p>
+              <p class="tl">Optionally attach extra facts.</p>
+              <p class="tl">Finally, seal it with a secret signature. Anyone can <em>read</em> the facts, but no one can forge or change them without the secret.</p>
+            </div>
+          </div>
+        </div>
+
+        <div class="callout callout-accent">
+          <div class="callout-icon">💡</div>
+          <div class="callout-content">
+            <strong class="callout-title">Why a signed token beats a session lookup</strong>
+            <p>The wristband carries its own proof. The server does not have to remember you or look you up in a database on every click — it just re-reads the sealed facts. Engineers call this <em>stateless</em> auth.</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============ SCREEN 4: THE BOUNCER (Snippet B) ============ -->
+      <section class="screen animate-in">
+        <h2 class="screen-heading">The bouncer on every request</h2>
+        <p>Before your request reaches the code that deletes a book, the
+          <span class="term" data-definition="Code that runs in the middle — between the incoming request and your actual handler. Like a bouncer positioned at the door that every guest must pass before entering.">middleware</span>
+          inspects it. It looks in the
+          <span class="term" data-definition="A labeled slot in the request that carries extra info the browser attaches, such as Authorization. Think of it as the note pinned to the front of an envelope.">header</span>
+          for a
+          <span class="term" data-definition="A token sent in the Authorization header prefixed with the word Bearer. It literally means the bearer of this token is allowed in — like showing your wristband.">Bearer token</span>.</p>
+
+        <div class="translation-block animate-in">
+          <div class="translation-code">
+            <span class="translation-label">CODE</span>
+<pre><code><span class="code-line">        request.state.user = <span class="code-keyword">None</span></span>
+<span class="code-line"></span>
+<span class="code-line">        <span class="code-comment"># Try to extract and validate token</span></span>
+<span class="code-line">        auth_header = request.headers.<span class="code-function">get</span>(<span class="code-string">"Authorization"</span>)</span>
+<span class="code-line">        <span class="code-keyword">if</span> auth_header <span class="code-keyword">and</span> auth_header.<span class="code-function">startswith</span>(<span class="code-string">"Bearer "</span>):</span>
+<span class="code-line">            token = auth_header[<span class="code-number">7</span>:]  <span class="code-comment"># Remove "Bearer " prefix</span></span>
+<span class="code-line"></span>
+<span class="code-line">            <span class="code-keyword">try</span>:</span>
+<span class="code-line">                payload = <span class="code-function">decode_token</span>(token, token_type=<span class="code-string">"access"</span>)</span>
+<span class="code-line"></span>
+<span class="code-line">                <span class="code-comment"># Load user (custom loader or default)</span></span>
+<span class="code-line">                <span class="code-keyword">if</span> self.user_loader:</span>
+<span class="code-line">                    request.state.user = <span class="code-keyword">await</span> self.<span class="code-function">user_loader</span>(payload)</span>
+<span class="code-line">                <span class="code-keyword">else</span>:</span>
+<span class="code-line">                    request.state.user = <span class="code-function">AuthenticatedUser</span>(payload)</span>
+</code></pre>
+          </div>
+          <div class="translation-english">
+            <span class="translation-label">PLAIN ENGLISH</span>
+            <div class="translation-lines">
+              <p class="tl">Assume nobody until proven otherwise — start with no user.</p>
+              <p class="tl">Look for a token on the request.</p>
+              <p class="tl">Check the request for an Authorization header.</p>
+              <p class="tl">If it starts with the word Bearer, the token follows it...</p>
+              <p class="tl">...snip off the Bearer prefix to get the raw token.</p>
+              <p class="tl">Try to open and verify the wristband...</p>
+              <p class="tl">...decode it and check the signature and expiry.</p>
+              <p class="tl">If a custom user-lookup is set, use it to fetch the full user...</p>
+              <p class="tl">...otherwise build a lightweight user straight from the token facts. Either way, <code>request.state.user</code> is now set for everything downstream.</p>
+            </div>
+          </div>
+        </div>
+
+        <div class="callout callout-info">
+          <div class="callout-icon">📌</div>
+          <div class="callout-content">
+            <strong class="callout-title">One shared clipboard</strong>
+            <p><span class="term" data-definition="A per-request scratchpad where middleware can stash information for later code to read. Everything downstream in the same request can see request.state.user.">request.state</span> is the note the bouncer clips to your file. Every guard and action after it reads the same note to know who you are.</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============ SCREEN 5: THE FLOW (HERO) ============ -->
+      <section class="screen animate-in">
+        <h2 class="screen-heading">Trace a real delete, step by step</h2>
+        <p>Watch an authenticated <code>DELETE /books/5/</code> travel through all four guards. Click <strong>Next Step</strong> to follow the wristband.</p>
+
+        <div class="flow-animation" data-steps='[
+          {"highlight":"flow-actor-1","label":"Browser sends DELETE /books/5/ with its token in the header"},
+          {"highlight":"flow-actor-1","label":"The request hits the bouncer first","packet":true,"from":"actor-1","to":"actor-2"},
+          {"highlight":"flow-actor-2","label":"The bouncer decodes the token and checks the seal and expiry"},
+          {"highlight":"flow-actor-2","label":"Valid — it attaches the user to the request","packet":true,"from":"actor-2","to":"actor-3"},
+          {"highlight":"flow-actor-3","label":"The guest list asks: is this user allowed to delete?"},
+          {"highlight":"flow-actor-3","label":"Allowed — pass it on","packet":true,"from":"actor-3","to":"actor-4"},
+          {"highlight":"flow-actor-4","label":"The viewset performs the delete","packet":true,"from":"actor-4","to":"actor-5"},
+          {"highlight":"flow-actor-5","label":"The row is removed and a 204 No Content goes back"}
+        ]'>
+          <div class="flow-actors">
+            <div class="flow-actor" id="flow-actor-1">
+              <div class="flow-actor-icon">🎟️</div>
+              <span>Browser (with wristband)</span>
+            </div>
+            <div class="flow-actor" id="flow-actor-2">
+              <div class="flow-actor-icon">💂</div>
+              <span>Middleware (bouncer)</span>
+            </div>
+            <div class="flow-actor" id="flow-actor-3">
+              <div class="flow-actor-icon">📋</div>
+              <span>Permission check (guest list)</span>
+            </div>
+            <div class="flow-actor" id="flow-actor-4">
+              <div class="flow-actor-icon">⚙️</div>
+              <span>ViewSet (the action)</span>
+            </div>
+            <div class="flow-actor" id="flow-actor-5">
+              <div class="flow-actor-icon">🗄️</div>
+              <span>Database</span>
+            </div>
+          </div>
+
+          <div class="flow-packet" id="flow-packet"></div>
+
+          <div class="flow-step-label" id="flow-label">Click "Next Step" to begin</div>
+
+          <div class="flow-controls">
+            <button class="btn flow-next-btn">Next Step</button>
+            <button class="btn flow-reset-btn">Restart</button>
+            <span class="flow-progress"></span>
+          </div>
+        </div>
+
+        <div class="callout callout-warning">
+          <div class="callout-icon">🚫</div>
+          <div class="callout-content">
+            <strong class="callout-title">Where it can stop early</strong>
+            <p>If the token were missing or expired, the bouncer stops it at step 3 and the browser gets a
+              <span class="term" data-definition="The web status code for Unauthorized: we do not know who you are, because your token is missing, malformed, or expired. Log in again.">401 Unauthorized</span>.
+              If the user simply lacked permission, the guest list stops it at step 5 with a
+              <span class="term" data-definition="The web status code for Forbidden: we know exactly who you are, but you are not allowed to do this. Logging in again will not help.">403 Forbidden</span>.</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============ SCREEN 6: THE GUEST LIST (Snippet C) ============ -->
+      <section class="screen animate-in">
+        <h2 class="screen-heading">The guest list, in code</h2>
+        <p>A <span class="term" data-definition="A yes/no gate that runs before an action to decide whether this particular user is allowed to perform it.">permission</span>
+          is just a yes/no function that runs before the action. Here is the simplest one — <em>are you logged in at all?</em> — from <code>zeeb_api/permissions/base.py</code>.</p>
+
+        <div class="translation-block animate-in">
+          <div class="translation-code">
+            <span class="translation-label">CODE</span>
+<pre><code><span class="code-line">    <span class="code-keyword">async def</span> <span class="code-function">has_permission</span>(self, request: Request, view: ViewSet) -&gt; bool:</span>
+<span class="code-line">        <span class="code-comment"># Check if user is authenticated</span></span>
+<span class="code-line">        <span class="code-comment"># FastAPI stores user in request.state after authentication</span></span>
+<span class="code-line">        user = <span class="code-function">getattr</span>(request.state, <span class="code-string">"user"</span>, <span class="code-keyword">None</span>)</span>
+<span class="code-line">        <span class="code-keyword">return</span> user <span class="code-keyword">is not</span> <span class="code-keyword">None</span> <span class="code-keyword">and</span> <span class="code-function">getattr</span>(user, <span class="code-string">"is_authenticated"</span>, <span class="code-keyword">True</span>)</span>
+</code></pre>
+          </div>
+          <div class="translation-english">
+            <span class="translation-label">PLAIN ENGLISH</span>
+            <div class="translation-lines">
+              <p class="tl">This yes/no gate runs before the action.</p>
+              <p class="tl">It looks at who the bouncer already identified.</p>
+              <p class="tl">Grab the user the middleware attached (or nothing, if none).</p>
+              <p class="tl">Allow the action only if there <em>is</em> a user and they count as logged in. No wristband, no entry.</p>
+            </div>
+          </div>
+        </div>
+
+        <p>Richer permission classes build on this same shape — checking whether you are an admin, whether you own the record, or whether you hold a specific role.</p>
+      </section>
+
+      <!-- ============ SCREEN 7: THE INSECURE-SECRET SAFETY NET ============ -->
+      <section class="screen animate-in">
+        <h2 class="screen-heading">The whole thing rests on one secret</h2>
+        <p>The wristband is only forgery-proof because the seal uses a
+          <span class="term" data-definition="A private password the server uses to sign and verify tokens. It never leaves the server. If it leaks, anyone can mint tokens for anyone.">secret key</span>
+          that only the server knows. If anyone could guess that secret, they could forge a wristband for <em>any</em> user — including an admin.</p>
+
+        <div class="callout callout-warning">
+          <div class="callout-icon">⚠️</div>
+          <div class="callout-content">
+            <strong class="callout-title">zeebpy refuses to start with a default secret</strong>
+            <p>When
+              <span class="term" data-definition="A setting that says whether you are in development (DEBUG=true, relaxed) or production (DEBUG=false, strict). Real deployments run with DEBUG off.">DEBUG</span>
+              is <code>false</code>, zeebpy will <strong>not boot</strong> with the built-in placeholder secret — it raises an error instead. This is a safety net so a demo secret never sneaks into production. Never ship a default or guessable secret.</p>
+          </div>
+        </div>
+
+        <div class="callout callout-info">
+          <div class="callout-icon">🛡️</div>
+          <div class="callout-content">
+            <strong class="callout-title">Why this matters to a vibe coder</strong>
+            <p>Security is where vibe coders get burned. Knowing where the <em>who are you</em> and <em>what may you do</em> checks live lets you ask an AI for the right protection — and spot when it suggests something insecure, like storing a password as plain text or trusting a user id the browser sends.</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============ SCREEN 8: QUIZ ============ -->
+      <section class="screen animate-in">
+        <h2 class="screen-heading">Check your instincts</h2>
+        <p>Three security decisions. Pause and think about which guard is doing the work.</p>
+
+        <div class="quiz-container" id="quiz-module6">
+
+          <div class="quiz-question-block"
+               data-correct="opt-b"
+               data-explanation-right="Exactly. With no valid token, the middleware never attaches a user, so request.state.user stays None. The permission check then sees nobody and returns false, producing a 401. No wristband means no entry."
+               data-explanation-wrong="Think earlier in the chain. A logged-out visitor never got a valid wristband, so the bouncer and the permission gate — not the database or the viewset — are what turn them away.">
+            <h3 class="quiz-question">A logged-out visitor calls <code>DELETE /books/5/</code> and gets <code>401 Unauthorized</code>. Which guard stopped them?</h3>
+            <div class="quiz-options">
+              <button class="quiz-option" data-value="opt-a" onclick="selectOption(this)">
+                <div class="quiz-option-radio"></div>
+                <span>The database refused to delete the row.</span>
+              </button>
+              <button class="quiz-option" data-value="opt-b" onclick="selectOption(this)">
+                <div class="quiz-option-radio"></div>
+                <span>The middleware and permission check — no valid token means no attached user.</span>
+              </button>
+              <button class="quiz-option" data-value="opt-c" onclick="selectOption(this)">
+                <div class="quiz-option-radio"></div>
+                <span>The throttle limit — they made too many requests.</span>
+              </button>
+            </div>
+            <div class="quiz-feedback"></div>
+          </div>
+
+          <div class="quiz-question-block"
+               data-correct="opt-c"
+               data-explanation-right="Right. The browser controls everything it sends, so a plain user_id could be set to anyone. A signed token carries a seal only the server can produce, so it cannot be forged without the server secret."
+               data-explanation-wrong="Not the main reason. Signed tokens are not mostly about speed or size — the core point is trust: a raw user_id from the browser can be faked, but a signature cannot be forged without the secret.">
+            <h3 class="quiz-question">Why hand out a signed token instead of just trusting a <code>user_id</code> the browser sends?</h3>
+            <div class="quiz-options">
+              <button class="quiz-option" data-value="opt-a" onclick="selectOption(this)">
+                <div class="quiz-option-radio"></div>
+                <span>Tokens are shorter, so they save bandwidth.</span>
+              </button>
+              <button class="quiz-option" data-value="opt-b" onclick="selectOption(this)">
+                <div class="quiz-option-radio"></div>
+                <span>Tokens are faster for the database to look up.</span>
+              </button>
+              <button class="quiz-option" data-value="opt-c" onclick="selectOption(this)">
+                <div class="quiz-option-radio"></div>
+                <span>The browser could lie and send any id; a signed token cannot be forged without the server secret.</span>
+              </button>
+            </div>
+            <div class="quiz-feedback"></div>
+          </div>
+
+          <div class="quiz-question-block"
+               data-correct="opt-a"
+               data-explanation-right="Exactly — that is throttling, the capacity limit. It caps how often anyone can call, regardless of who they are, so one client cannot flood the API."
+               data-explanation-wrong="That is a different guard. Authentication and permissions decide who you are and what you may do, but not how often — capping request rate is the job of throttling.">
+            <h3 class="quiz-question">You want to stop one client from hammering your API 10,000 times a minute. Which of the four guards is that?</h3>
+            <div class="quiz-options">
+              <button class="quiz-option" data-value="opt-a" onclick="selectOption(this)">
+                <div class="quiz-option-radio"></div>
+                <span><span class="term" data-definition="Rate limiting: capping how many requests a client can make in a time window, like a nightclub with a capacity limit. Excess requests get a 429 Too Many Requests.">Throttling</span> — the capacity limit.</span>
+              </button>
+              <button class="quiz-option" data-value="opt-b" onclick="selectOption(this)">
+                <div class="quiz-option-radio"></div>
+                <span>Authentication — checking who they are.</span>
+              </button>
+              <button class="quiz-option" data-value="opt-c" onclick="selectOption(this)">
+                <div class="quiz-option-radio"></div>
+                <span>Permissions — the guest list.</span>
+              </button>
+            </div>
+            <div class="quiz-feedback"></div>
+          </div>
+
+          <button class="quiz-check-btn" onclick="checkQuiz('quiz-module6')">Check Answers</button>
+          <button class="quiz-reset-btn" onclick="resetQuiz('quiz-module6')">Try Again</button>
+        </div>
+
+        <div class="callout callout-accent">
+          <div class="callout-icon">🤖</div>
+          <div class="callout-content">
+            <strong class="callout-title">One layer left</strong>
+            <p>You now understand the lock on the door. Next up, Module 7 — <em>The Robot Helpers</em>: the helper functions an AI assistant uses to build all of this <em>for</em> you, safely.</p>
+          </div>
+        </div>
+      </section>
+
+    </div>
+  </div>
+</section>

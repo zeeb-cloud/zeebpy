@@ -1,0 +1,2649 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Inside zeebpy — How a Web Framework Works</title>
+
+  <!-- Google Fonts: Bricolage Grotesque · DM Sans · JetBrains Mono -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,400;12..96,600;12..96,700;12..96,800&family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400;1,9..40,500&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+
+  <link rel="stylesheet" href="styles.css">
+
+  <!--
+    CUSTOMIZE PER COURSE — change only the three accent variables below.
+    Options:
+      vermillion  #D94F30 / #C4432A / #FDEEE9 / #E8836C  (default)
+      coral       #E06B56 / #C85A47 / #FDECEA / #E89585
+      teal        #2A7B9B / #1F6280 / #E4F2F7 / #5A9DB8
+      amber       #D4A843 / #BF9530 / #FDF5E0 / #E0C070
+      forest      #2D8B55 / #226B41 / #E8F5EE / #5AAD7A
+  -->
+  <style>
+    :root {
+      --color-accent:       #D94F30;
+      --color-accent-hover: #C4432A;
+      --color-accent-light: #FDEEE9;
+      --color-accent-muted: #E8836C;
+    }
+  </style>
+
+  <script src="main.js" defer></script>
+</head>
+<body>
+
+  <nav class="nav" id="nav">
+    <div class="progress-bar" id="progress-bar" role="progressbar" aria-valuenow="0" aria-valuemin="0" aria-valuemax="100"></div>
+    <div class="nav-inner">
+      <span class="nav-title">Inside zeebpy</span>
+      <div class="nav-dots" id="nav-dots" role="tablist">
+        <button class="nav-dot" data-target="module-1" data-tooltip="What zeebpy Is" role="tab" aria-label="Module 1: What zeebpy Is"></button>
+        <button class="nav-dot" data-target="module-2" data-tooltip="The Three Packages" role="tab" aria-label="Module 2: The Three Packages"></button>
+        <button class="nav-dot" data-target="module-3" data-tooltip="Class to Table" role="tab" aria-label="Module 3: From Class to Table"></button>
+        <button class="nav-dot" data-target="module-4" data-tooltip="Querying the Data" role="tab" aria-label="Module 4: Querying the Data"></button>
+        <button class="nav-dot" data-target="module-5" data-tooltip="Data to the Web" role="tab" aria-label="Module 5: From Data to the Web"></button>
+        <button class="nav-dot" data-target="module-6" data-tooltip="Guarding the Door" role="tab" aria-label="Module 6: Guarding the Door"></button>
+        <button class="nav-dot" data-target="module-7" data-tooltip="The Agent Layer" role="tab" aria-label="Module 7: The Agent Layer"></button>
+      </div>
+    </div>
+  </nav>
+
+  <main id="main">
+    <!-- modules/*.html content is assembled here by build.sh -->
+<section class="module" id="module-1" style="background: var(--color-bg-warm)">
+  <div class="module-content">
+    <header class="module-header animate-in">
+      <span class="module-number">01</span>
+      <h1 class="module-title">What zeebpy Is</h1>
+      <p class="module-subtitle">And what really happens when you save one record</p>
+    </header>
+
+    <div class="module-body">
+
+      <!-- SCREEN 1: The hook -->
+      <section class="screen animate-in">
+        <h2 class="screen-heading">One line. No database commands.</h2>
+        <p>You write a single line of <span class="term" data-definition="A popular, beginner-friendly programming language. zeebpy is written in Python, and you describe your app to it using Python.">Python</span> to save a new user:</p>
+        <div class="callout callout-info">
+          <div class="callout-icon">✨</div>
+          <div class="callout-content">
+            <strong class="callout-title">The magic line</strong>
+            <p><code>await User.objects.create(name="Alice", ...)</code> — no <span class="term" data-definition="SQL (Structured Query Language) is the language databases speak. It looks like: INSERT INTO users VALUES (...). zeebpy writes it for you so you never have to.">SQL</span>, no raw database commands. Here is the journey that one line takes under the hood.</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- SCREEN 2: What zeebpy is (product intro) -->
+      <section class="screen animate-in">
+        <h2 class="screen-heading">So what is zeebpy?</h2>
+        <p>zeebpy is a <span class="term" data-definition="A framework is a big pre-built toolkit that handles the repetitive plumbing of building software, so you only write the parts unique to your app. Think of it as a house with the wiring and pipes already installed.">framework</span> for building the back end of a web app. You write Python classes that describe your data, and zeebpy hands you a working <span class="term" data-definition="A database is an organized store where your app keeps information permanently — user accounts, posts, orders. It survives even when the app restarts.">database</span> plus a ready-made <span class="term" data-definition="A REST API is a web address other programs can call to read or change your data — like a public service counter for your app that phones and websites talk to.">REST API</span> almost for free.</p>
+
+        <h3 style="font-family: var(--font-display); font-weight: 600; margin-top: var(--space-8);">What you get out of the box</h3>
+        <div class="icon-rows stagger-children">
+          <div class="icon-row animate-in">
+            <div class="icon-circle" style="background: var(--color-actor-2)">🗄️</div>
+            <div>
+              <strong>A database</strong>
+              <p>A permanent home for your app data — no setup rituals required</p>
+            </div>
+          </div>
+          <div class="icon-row animate-in">
+            <div class="icon-circle" style="background: var(--color-actor-1)">🌐</div>
+            <div>
+              <strong>A REST API</strong>
+              <p>Web addresses that let phones and websites read and change your data</p>
+            </div>
+          </div>
+          <div class="icon-row animate-in">
+            <div class="icon-circle" style="background: var(--color-actor-3)">📦</div>
+            <div>
+              <strong>Migrations</strong>
+              <p>Safe, tracked updates to your data structure as your app grows</p>
+            </div>
+          </div>
+          <div class="icon-row animate-in">
+            <div class="icon-circle" style="background: var(--color-actor-4)">🔐</div>
+            <div>
+              <strong>Auth</strong>
+              <p>Built-in login, passwords, and permissions so you do not build them yourself</p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- SCREEN 3: The metaphor -->
+      <section class="screen animate-in">
+        <h2 class="screen-heading">The interpreter in the booth</h2>
+        <p>Picture a <strong>simultaneous interpreter</strong> at the United Nations. You speak Python; the database only speaks SQL. zeebpy sits in the booth and translates, live, in both directions.</p>
+        <p>You never have to learn the database's language — you just talk, and the interpreter handles the rest. That interpreter has a real name: an <span class="term" data-definition="ORM stands for Object-Relational Mapper. It is the translator that turns your Python objects into database rows and back again, so you write Python instead of SQL.">ORM</span> (Object-Relational Mapper).</p>
+        <div class="callout callout-accent">
+          <div class="callout-icon">💡</div>
+          <div class="callout-content">
+            <strong class="callout-title">Declarative vs. plumbing</strong>
+            <p>You <em>declared</em> what a User looks like. You never wrote code to open a database connection, build a SQL string, or juggle data types. That gap is exactly what a framework fills for you.</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- SCREEN 4: The hero flow animation -->
+      <section class="screen animate-in">
+        <h2 class="screen-heading">Watch one save travel end-to-end</h2>
+        <p>Press <strong>Next Step</strong> to follow your <code>create()</code> call as it moves from your Python, through the interpreter, into real SQL, and lands in the database.</p>
+
+        <div class="flow-animation" data-steps='[
+          {"highlight":"flow-actor-1","label":"You call User.objects.create(name=Alice)"},
+          {"highlight":"flow-actor-1","label":"Your Python code hands the request to the ORM","packet":true,"from":"actor-1","to":"actor-2"},
+          {"highlight":"flow-actor-2","label":"The ORM looks up the table blueprint it built for User"},
+          {"highlight":"flow-actor-2","label":"It translates your Python into a SQL command","packet":true,"from":"actor-2","to":"actor-3"},
+          {"highlight":"flow-actor-3","label":"INSERT INTO users (name, email, age) VALUES (Alice, ...)","packet":true,"from":"actor-3","to":"actor-4"},
+          {"highlight":"flow-actor-4","label":"The database saves a new row and hands back the fresh record"}
+        ]'>
+          <div class="flow-actors">
+            <div class="flow-actor" id="flow-actor-1">
+              <div class="flow-actor-icon">🐍</div>
+              <span>Your Python code</span>
+            </div>
+            <div class="flow-actor" id="flow-actor-2">
+              <div class="flow-actor-icon">🔄</div>
+              <span>zeebpy ORM</span>
+            </div>
+            <div class="flow-actor" id="flow-actor-3">
+              <div class="flow-actor-icon">📝</div>
+              <span>SQL</span>
+            </div>
+            <div class="flow-actor" id="flow-actor-4">
+              <div class="flow-actor-icon">🗄️</div>
+              <span>Database</span>
+            </div>
+          </div>
+
+          <div class="flow-packet" id="flow-packet"></div>
+
+          <div class="flow-step-label" id="flow-label">Click "Next Step" to begin</div>
+
+          <div class="flow-controls">
+            <button class="btn flow-next-btn">Next Step</button>
+            <button class="btn flow-reset-btn">Restart</button>
+            <span class="flow-progress"></span>
+          </div>
+        </div>
+      </section>
+
+      <!-- SCREEN 5: Translation A — defining a model -->
+      <section class="screen animate-in">
+        <h2 class="screen-heading">Step 1 — Describe your data</h2>
+        <p>First you write a <span class="term" data-definition="A model is a Python class that describes one kind of thing your app stores — like a User or a Post. It is the blueprint the database table is built from.">model</span>: a <span class="term" data-definition="A class is a reusable template in code. Here it defines the shape of a User — what pieces of information every user has.">class</span> that spells out what a User is. Each line is a <span class="term" data-definition="A field is one piece of information a model stores — like name, email, or age. Each field becomes a column in the database table.">field</span> — one piece of information you want to keep.</p>
+
+        <div class="translation-block animate-in">
+          <div class="translation-code">
+            <span class="translation-label">CODE</span>
+            <pre><code><span class="code-line"><span class="code-keyword">class</span> <span class="code-function">User</span>(Model):</span>
+<span class="code-line">    <span class="code-comment">"""User model with basic fields."""</span></span>
+<span class="code-line">    name = fields.<span class="code-function">CharField</span>(<span class="code-property">max_length</span>=<span class="code-number">100</span>)</span>
+<span class="code-line">    email = fields.<span class="code-function">EmailField</span>(<span class="code-property">unique</span>=<span class="code-keyword">True</span>)</span>
+<span class="code-line">    age = fields.<span class="code-function">IntegerField</span>(<span class="code-property">null</span>=<span class="code-keyword">True</span>)</span>
+<span class="code-line">    is_active = fields.<span class="code-function">BooleanField</span>(<span class="code-property">default</span>=<span class="code-keyword">True</span>)</span>
+<span class="code-line">    bio = fields.<span class="code-function">TextField</span>(<span class="code-property">null</span>=<span class="code-keyword">True</span>)</span>
+<span class="code-line">    created_at = fields.<span class="code-function">DateTimeField</span>(<span class="code-property">auto_now_add</span>=<span class="code-keyword">True</span>)</span>
+<span class="code-line"></span>
+<span class="code-line">    <span class="code-keyword">class</span> <span class="code-function">Meta</span>:</span>
+<span class="code-line">        table_name = <span class="code-string">"users"</span></span>
+<span class="code-line">        ordering = [<span class="code-string">"-created_at"</span>]</span></code></pre>
+          </div>
+          <div class="translation-english">
+            <span class="translation-label">PLAIN ENGLISH</span>
+            <div class="translation-lines">
+              <p class="tl">Describe a kind of thing we want to store — a User.</p>
+              <p class="tl">A human-readable note about what this is.</p>
+              <p class="tl">Every user has a name — up to 100 letters long.</p>
+              <p class="tl">…and an email, which must be unique — no two users can share one.</p>
+              <p class="tl">…and an age, which is optional (<code>null=True</code> means "can be blank").</p>
+              <p class="tl">…and an on/off switch for whether the account is active — on by default.</p>
+              <p class="tl">…and a free-text bio, also optional.</p>
+              <p class="tl">…and a timestamp that fills itself in the moment the user is created.</p>
+              <p class="tl"><code>Meta</code> is a settings panel for this model.</p>
+              <p class="tl">Store these in a database <span class="term" data-definition="A table is a grid inside the database, like a spreadsheet. Each column is a field; each row is one record. This model becomes a table literally named users.">table</span> literally named "users".</p>
+              <p class="tl">When listing users, show newest first (the minus means "descending").</p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- SCREEN 6: Translation B — creating a record -->
+      <section class="screen animate-in">
+        <h2 class="screen-heading">Step 2 — Save an actual user</h2>
+        <p>Now you fill in the blanks and hit save. The word <span class="term" data-definition="await pauses your code just long enough to let a slow task — like talking to a database — finish, without freezing everything else. It is how async code waits politely.">await</span> tells your code to wait for the database to finish, because that work is <span class="term" data-definition="Async (asynchronous) means the program can start a slow task and keep doing other useful work while it waits, instead of sitting idle. zeebpy is async-first.">async</span>.</p>
+
+        <div class="translation-block animate-in">
+          <div class="translation-code">
+            <span class="translation-label">CODE</span>
+            <pre><code><span class="code-line">alice = <span class="code-keyword">await</span> User.objects.<span class="code-function">create</span>(</span>
+<span class="code-line">    <span class="code-property">name</span>=<span class="code-string">"Alice Smith"</span>,</span>
+<span class="code-line">    <span class="code-property">email</span>=<span class="code-string">"alice@example.com"</span>,</span>
+<span class="code-line">    <span class="code-property">age</span>=<span class="code-number">28</span>,</span>
+<span class="code-line">    <span class="code-property">bio</span>=<span class="code-string">"Software engineer"</span></span>
+<span class="code-line">)</span></code></pre>
+          </div>
+          <div class="translation-english">
+            <span class="translation-label">PLAIN ENGLISH</span>
+            <div class="translation-lines">
+              <p class="tl">Ask the User "front desk" (<code>objects</code>) to create a new user, and wait for it to finish (<code>await</code>).</p>
+              <p class="tl">Her name is Alice Smith.</p>
+              <p class="tl">Her email is alice@example.com.</p>
+              <p class="tl">She is 28.</p>
+              <p class="tl">Her bio says "Software engineer." zeebpy writes all of this into the database as one new <span class="term" data-definition="A row is a single record in a table — one complete entry. Saving Alice creates one row in the users table.">row</span>.</p>
+            </div>
+          </div>
+        </div>
+
+        <div class="callout callout-info">
+          <div class="callout-icon">🔑</div>
+          <div class="callout-content">
+            <strong class="callout-title">You did not set an ID</strong>
+            <p>zeebpy quietly gives every new row a unique <span class="term" data-definition="A primary key is the unique ID that labels each row in a table, so the database can always tell one record from another. zeebpy adds one automatically.">primary key</span> so it can always tell Alice apart from every other user — you never have to manage it.</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- SCREEN 7: The three packages teaser -->
+      <section class="screen animate-in">
+        <h2 class="screen-heading">The ORM has two siblings</h2>
+        <p>The translator you just met is one of three packages that ship together. We will go deep in Module 2 — here is the quick roster.</p>
+        <div class="pattern-cards stagger-children">
+          <div class="pattern-card animate-in" style="border-top: 3px solid var(--color-actor-1)">
+            <div class="pattern-icon" style="background: var(--color-actor-1)">🔄</div>
+            <h4 class="pattern-title">zeeb_orm</h4>
+            <p class="pattern-desc">The interpreter. Talks to the database so you write Python, not SQL.</p>
+          </div>
+          <div class="pattern-card animate-in" style="border-top: 3px solid var(--color-actor-2)">
+            <div class="pattern-icon" style="background: var(--color-actor-2)">🌐</div>
+            <h4 class="pattern-title">zeeb_api</h4>
+            <p class="pattern-desc">Turns your data into a REST API other apps can call over the web.</p>
+          </div>
+          <div class="pattern-card animate-in" style="border-top: 3px solid var(--color-actor-4)">
+            <div class="pattern-icon" style="background: var(--color-actor-4)">🤖</div>
+            <h4 class="pattern-title">zeeb_agents</h4>
+            <p class="pattern-desc">Helper functions an AI assistant can call to build and inspect your project.</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- SCREEN 8: Why care -->
+      <section class="screen animate-in">
+        <h2 class="screen-heading">Why this matters for you</h2>
+        <p>Knowing there is a translation layer changes how you work with your app — and with AI assistants.</p>
+        <div class="step-cards stagger-children">
+          <div class="step-card animate-in">
+            <div class="step-num">1</div>
+            <div class="step-body">
+              <strong>You steer AI better</strong>
+              <p>You can say "use the ORM, do not hand-write SQL" — and know exactly why that is the right call.</p>
+            </div>
+          </div>
+          <div class="step-card animate-in">
+            <div class="step-num">2</div>
+            <div class="step-body">
+              <strong>You can debug the translation</strong>
+              <p>When a save misbehaves, you know there is an interpreter in the middle to look at.</p>
+            </div>
+          </div>
+          <div class="step-card animate-in">
+            <div class="step-num">3</div>
+            <div class="step-body">
+              <strong>You reason about speed</strong>
+              <p>Every Python call quietly becomes real database work — so more calls means more work.</p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- SCREEN 9: Quiz -->
+      <section class="screen animate-in">
+        <h2 class="screen-heading">Check your understanding</h2>
+        <p>No memorizing — just think through each situation.</p>
+
+        <div class="quiz-container" id="quiz-module1">
+          <div class="quiz-question-block"
+               data-correct="opt-b"
+               data-explanation-right="Exactly. Generating the SQL is the ORM&apos;s entire job — you described the User in Python, and the translator turned your create() call into an INSERT statement for you."
+               data-explanation-wrong="Not quite. You never wrote any SQL, and the database only runs SQL it is handed. Think about who sits in the middle translating Python into SQL.">
+            <h3 class="quiz-question">You ran <code>User.objects.create(...)</code> but never saw any SQL. Where did the SQL come from?</h3>
+            <div class="quiz-options">
+              <button class="quiz-option" data-value="opt-a" onclick="selectOption(this)">
+                <div class="quiz-option-radio"></div>
+                <span>The database wrote it itself before saving</span>
+              </button>
+              <button class="quiz-option" data-value="opt-b" onclick="selectOption(this)">
+                <div class="quiz-option-radio"></div>
+                <span>zeebpy generated it for you — that is the ORM's whole job</span>
+              </button>
+              <button class="quiz-option" data-value="opt-c" onclick="selectOption(this)">
+                <div class="quiz-option-radio"></div>
+                <span>There was no SQL — Python talks to databases directly</span>
+              </button>
+            </div>
+            <div class="quiz-feedback"></div>
+          </div>
+
+          <div class="quiz-question-block"
+               data-correct="opt-b"
+               data-explanation-right="Right. Adding unique=True to the email field tells the database to reject any second user with the same email — the rule lives right there in your model."
+               data-explanation-wrong="Not quite. This rule is declared on the field itself when you describe the model. Look back at how the email line was written.">
+            <h3 class="quiz-question">You want the database to reject two users sharing the same email. Which part of the model handles that?</h3>
+            <div class="quiz-options">
+              <button class="quiz-option" data-value="opt-a" onclick="selectOption(this)">
+                <div class="quiz-option-radio"></div>
+                <span>The <code>ordering</code> setting inside <code>Meta</code></span>
+              </button>
+              <button class="quiz-option" data-value="opt-b" onclick="selectOption(this)">
+                <div class="quiz-option-radio"></div>
+                <span><code>unique=True</code> on the email field</span>
+              </button>
+              <button class="quiz-option" data-value="opt-c" onclick="selectOption(this)">
+                <div class="quiz-option-radio"></div>
+                <span>The <code>await</code> keyword when you save</span>
+              </button>
+            </div>
+            <div class="quiz-feedback"></div>
+          </div>
+
+          <div class="quiz-question-block"
+               data-correct="opt-c"
+               data-explanation-right="Exactly. The ORM already writes safe INSERT statements and runs your model&apos;s checks (like unique emails and validation). Hand-written SQL skips all of that and bypasses the translation layer."
+               data-explanation-wrong="Reconsider. The ORM already does this job and enforces your model&apos;s rules along the way. Writing raw SQL by hand would skip those safeguards.">
+            <h3 class="quiz-question">An AI assistant offers to "write raw SQL INSERT statements" to save your users. Good idea here?</h3>
+            <div class="quiz-options">
+              <button class="quiz-option" data-value="opt-a" onclick="selectOption(this)">
+                <div class="quiz-option-radio"></div>
+                <span>Yes — raw SQL is always faster and cleaner</span>
+              </button>
+              <button class="quiz-option" data-value="opt-b" onclick="selectOption(this)">
+                <div class="quiz-option-radio"></div>
+                <span>Yes — the ORM cannot handle new users</span>
+              </button>
+              <button class="quiz-option" data-value="opt-c" onclick="selectOption(this)">
+                <div class="quiz-option-radio"></div>
+                <span>No — the ORM already does this and hand-written SQL bypasses <span class="term" data-definition="Validation is the automatic checking of your data before it is saved — like making sure an email is really an email. zeebpy runs these checks for you on save.">validation</span> and the translation layer</span>
+              </button>
+            </div>
+            <div class="quiz-feedback"></div>
+          </div>
+
+          <button class="quiz-check-btn" onclick="checkQuiz('quiz-module1')">Check Answers</button>
+          <button class="quiz-reset-btn" onclick="resetQuiz('quiz-module1')">Try Again</button>
+        </div>
+      </section>
+
+      <!-- SCREEN 10: Next module teaser -->
+      <section class="screen animate-in">
+        <div class="callout callout-accent">
+          <div class="callout-icon">➡️</div>
+          <div class="callout-content">
+            <strong class="callout-title">Up next: The Three Packages</strong>
+            <p>You just met the ORM in action — but it has two siblings. Let us meet the whole family.</p>
+          </div>
+        </div>
+      </section>
+
+    </div>
+  </div>
+</section>
+<section class="module" id="module-2" style="background: var(--color-bg)">
+  <div class="module-content">
+
+    <header class="module-header animate-in">
+      <span class="module-number">02</span>
+      <h1 class="module-title">The Cast of Characters</h1>
+      <p class="module-subtitle">Three separate packages, stacked like floors of a building — and one strict rule about who is allowed to call whom.</p>
+    </header>
+
+    <div class="module-body">
+
+      <!-- SCREEN 1: Hook + metaphor -->
+      <section class="screen animate-in">
+        <h2 class="screen-heading">Meet the whole family</h2>
+        <p>Last module you met one of the three characters — the <span class="term" data-definition="The ORM (Object-Relational Mapper) is the piece that talks to the database. It turns Python objects into database rows and back again — you met it saving a record in Module 1.">ORM</span>, which saved a record for you. It turns out it has two siblings.</p>
+        <p>zeebpy isn't one giant blob of code. It's three separate <span class="term" data-definition="A package is a bundle of related code shipped as one unit — like an app you install. zeebpy ships three of them together, each with its own job.">packages</span> stacked like the floors of a building, connected by a strict <strong>one-way elevator</strong>: the top floor can call down to the floors below, but no floor can ever call <em>up</em>.</p>
+
+        <div class="callout callout-info">
+          <div class="callout-icon">🏢</div>
+          <div class="callout-content">
+            <strong class="callout-title">The metaphor: a three-story building</strong>
+            <p>Each floor has exactly one job and depends only on the floors beneath it. The elevator runs one way — down. Keep that picture in your head; the whole module hangs on it.</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- SCREEN 2: The hero — interactive architecture diagram -->
+      <section class="screen animate-in">
+        <h2 class="screen-heading">The building, floor by floor</h2>
+        <p>Here's the actual structure. The top floor uses the ones below it; the arrows only ever point <strong>down</strong>. Click any floor to see what it does.</p>
+
+        <div class="arch-diagram">
+
+          <div class="arch-zone arch-zone-external" style="border-color: var(--color-actor-3)">
+            <h4 class="arch-zone-label" style="color: var(--color-actor-3)">Top floor — the Robot Helpers</h4>
+            <div class="arch-component" data-desc="zeeb_agents: about 43 helper functions an AI assistant can call — to scaffold new code, run migrations, and inspect the database. It sits on top and uses BOTH siblings below it."
+                 onclick="showArchDesc(this)" style="border-left: 4px solid var(--color-actor-3)">
+              <div class="arch-icon">🤖</div>
+              <span><code>zeeb_agents</code> — the Robot Helpers</span>
+            </div>
+          </div>
+
+          <div class="arch-arrow" style="text-align:center; font-size:1.5rem; color: var(--color-actor-3)">↓ calls down ↓</div>
+
+          <div class="arch-zone arch-zone-browser" style="border-color: var(--color-actor-2)">
+            <h4 class="arch-zone-label" style="color: var(--color-actor-2)">Middle floor — the Web Front Desk</h4>
+            <div class="arch-component" data-desc="zeeb_api: the layer that faces the outside world. It turns your data into a REST API — web addresses other apps can call — and uses the ORM below it to fetch and save data. It never touches the database directly."
+                 onclick="showArchDesc(this)" style="border-left: 4px solid var(--color-actor-2)">
+              <div class="arch-icon">🏢</div>
+              <span><code>zeeb_api</code> — the Web Front Desk</span>
+            </div>
+          </div>
+
+          <div class="arch-arrow" style="text-align:center; font-size:1.5rem; color: var(--color-actor-2)">↓ calls down ↓</div>
+
+          <div class="arch-zone arch-zone-external" style="border-color: var(--color-actor-1)">
+            <h4 class="arch-zone-label" style="color: var(--color-actor-1)">Ground floor — the Database Brain</h4>
+            <div class="arch-component" data-desc="zeeb_orm: the piece that knows how to talk to the database. It turns Python classes into tables and your queries into SQL. It's the foundation — it depends on nothing above it."
+                 onclick="showArchDesc(this)" style="border-left: 4px solid var(--color-actor-1)">
+              <div class="arch-icon">🧠</div>
+              <span><code>zeeb_orm</code> — the Database Brain</span>
+            </div>
+          </div>
+
+          <div class="arch-description" id="arch-desc">Click any floor to learn what it does — and notice the elevator only goes down.</div>
+        </div>
+      </section>
+
+      <!-- SCREEN 3: The three characters as cards -->
+      <section class="screen animate-in">
+        <h2 class="screen-heading">The three characters</h2>
+        <p>Each package is a character with one clear job. Their colors stay the same for the rest of the course, so you'll always know who's speaking.</p>
+
+        <div class="pattern-cards">
+          <div class="pattern-card" style="border-top: 3px solid var(--color-actor-1)">
+            <div class="pattern-icon" style="background: var(--color-actor-1)">🧠</div>
+            <h4 class="pattern-title"><code>zeeb_orm</code></h4>
+            <p class="pattern-desc"><strong>The Database Brain.</strong> Knows how to talk to the database. Turns Python classes into tables and queries into <span class="term" data-definition="SQL is the standard language databases speak. You write Python; the ORM translates it into SQL behind the scenes so you never have to.">SQL</span>. Depends on nothing above it.</p>
+          </div>
+          <div class="pattern-card" style="border-top: 3px solid var(--color-actor-2)">
+            <div class="pattern-icon" style="background: var(--color-actor-2)">🏢</div>
+            <h4 class="pattern-title"><code>zeeb_api</code></h4>
+            <p class="pattern-desc"><strong>The Web Front Desk.</strong> Faces the outside world. Turns your data into a <span class="term" data-definition="A REST API is a set of web addresses (URLs) other programs can call to read or change your data — the standard way apps talk to each other over the internet.">REST API</span> — web addresses other apps can call. Uses the ORM to fetch and save data.</p>
+          </div>
+          <div class="pattern-card" style="border-top: 3px solid var(--color-actor-3)">
+            <div class="pattern-icon" style="background: var(--color-actor-3)">🤖</div>
+            <h4 class="pattern-title"><code>zeeb_agents</code></h4>
+            <p class="pattern-desc"><strong>The Robot Helpers.</strong> ~43 helper functions an AI assistant can call to <span class="term" data-definition="To scaffold means to auto-generate the starter files and folders for a new piece of code — like a template that saves you writing boilerplate by hand.">scaffold</span> code, run migrations, inspect the database. Sits on top and uses both siblings.</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- SCREEN 4: Group chat (MANDATORY) -->
+      <section class="screen animate-in">
+        <h2 class="screen-heading">Watch them work together</h2>
+        <p>A web request just arrived — someone wants a list of books. Play the conversation and watch the packages hand work down the elevator, then back up.</p>
+
+        <div class="chat-window" id="chat-packages">
+          <div class="chat-messages">
+
+            <div class="chat-message" data-msg="0" data-sender="actor-2" style="display:none">
+              <div class="chat-avatar" style="background: var(--color-actor-2)">🏢</div>
+              <div class="chat-bubble">
+                <span class="chat-sender" style="color: var(--color-actor-2)">Web Front Desk · zeeb_api</span>
+                <p>Someone just asked for a list of books. I handle the web side — but I do not touch the database myself.</p>
+              </div>
+            </div>
+
+            <div class="chat-message" data-msg="1" data-sender="actor-2" style="display:none">
+              <div class="chat-avatar" style="background: var(--color-actor-2)">🏢</div>
+              <div class="chat-bubble">
+                <span class="chat-sender" style="color: var(--color-actor-2)">Web Front Desk · zeeb_api</span>
+                <p>Hey ORM, can you fetch all the books?</p>
+              </div>
+            </div>
+
+            <div class="chat-message" data-msg="2" data-sender="actor-1" style="display:none">
+              <div class="chat-avatar" style="background: var(--color-actor-1)">🧠</div>
+              <div class="chat-bubble">
+                <span class="chat-sender" style="color: var(--color-actor-1)">Database Brain · zeeb_orm</span>
+                <p>On it. I will turn that into SQL, ask the database, and hand you back the results.</p>
+              </div>
+            </div>
+
+            <div class="chat-message" data-msg="3" data-sender="actor-1" style="display:none">
+              <div class="chat-avatar" style="background: var(--color-actor-1)">🧠</div>
+              <div class="chat-bubble">
+                <span class="chat-sender" style="color: var(--color-actor-1)">Database Brain · zeeb_orm</span>
+                <p>Here you go — 12 books.</p>
+              </div>
+            </div>
+
+            <div class="chat-message" data-msg="4" data-sender="actor-2" style="display:none">
+              <div class="chat-avatar" style="background: var(--color-actor-2)">🏢</div>
+              <div class="chat-bubble">
+                <span class="chat-sender" style="color: var(--color-actor-2)">Web Front Desk · zeeb_api</span>
+                <p>Thanks. I will package these as <span class="term" data-definition="JSON is a simple, text-based format for sending structured data between programs — a list of books, say. It's the common language apps use to talk over the web.">JSON</span> and send them back out to the browser.</p>
+              </div>
+            </div>
+
+            <div class="chat-message" data-msg="5" data-sender="actor-3" style="display:none">
+              <div class="chat-avatar" style="background: var(--color-actor-3)">🤖</div>
+              <div class="chat-bubble">
+                <span class="chat-sender" style="color: var(--color-actor-3)">Robot Helper · zeeb_agents</span>
+                <p>And when you build a brand-new app, I am the one who scaffolds these files for you — I sit on top and use you both.</p>
+              </div>
+            </div>
+
+          </div>
+
+          <div class="chat-typing" id="chat-packages-typing" style="display:none">
+            <div class="chat-avatar" id="chat-packages-typing-avatar">?</div>
+            <div class="chat-typing-dots">
+              <span class="typing-dot"></span>
+              <span class="typing-dot"></span>
+              <span class="typing-dot"></span>
+            </div>
+          </div>
+
+          <div class="chat-controls">
+            <button class="btn chat-next-btn">Next Message</button>
+            <button class="btn chat-all-btn">Play All</button>
+            <button class="btn chat-reset-btn">Replay</button>
+            <span class="chat-progress"></span>
+          </div>
+        </div>
+      </section>
+
+      <!-- SCREEN 5: Code to English translation -->
+      <section class="screen animate-in">
+        <h2 class="screen-heading">The one-way rule, in real code</h2>
+        <p>Here's the top of <code>example_api.py</code>. When one package uses another, it <span class="term" data-definition="To import means to pull in code from another package so you can use it. An import line at the top of a file lists exactly which pieces it borrows from where.">imports</span> it. Watch which direction the imports point.</p>
+
+        <div class="translation-block animate-in">
+          <div class="translation-code">
+            <span class="translation-label">CODE</span>
+            <pre><code><span class="code-line"><span class="code-comment"># Zeeb ORM imports</span></span>
+<span class="code-line"><span class="code-keyword">from</span> zeeb_orm <span class="code-keyword">import</span> (</span>
+<span class="code-line">    Model, fields, Q,</span>
+<span class="code-line">    configure, setup_database, close_all_connections,</span>
+<span class="code-line">)</span>
+<span class="code-line"></span>
+<span class="code-line"><span class="code-comment"># Zeeb API imports</span></span>
+<span class="code-line"><span class="code-keyword">from</span> zeeb_api <span class="code-keyword">import</span> (</span>
+<span class="code-line">    ModelSerializer, ModelViewSet, DefaultRouter,</span>
+<span class="code-line">    ...</span>
+<span class="code-line">)</span></code></pre>
+          </div>
+          <div class="translation-english">
+            <span class="translation-label">PLAIN ENGLISH</span>
+            <div class="translation-lines">
+              <p class="tl">The comment marks where the database-layer tools come from.</p>
+              <p class="tl">From <code>zeeb_orm</code> we borrow the building blocks for data: Model, fields, and query tools.</p>
+              <p class="tl">&hellip;the pieces that set up and talk to the database.</p>
+              <p class="tl">&nbsp;</p>
+              <p class="tl">The comment marks the web-layer tools.</p>
+              <p class="tl">From <code>zeeb_api</code> we borrow the tools that turn that data into a web API.</p>
+              <p class="tl"><strong>Notice the direction:</strong> the API file reaches <em>down</em> into the ORM. The ORM never reaches <em>up</em> into the API — that is the one-way elevator rule.</p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- SCREEN 6: Callout — separation of concerns + why care -->
+      <section class="screen animate-in">
+        <h2 class="screen-heading">Why this matters to you</h2>
+
+        <div class="callout callout-accent">
+          <div class="callout-icon">💡</div>
+          <div class="callout-content">
+            <strong class="callout-title">Separation of concerns</strong>
+            <p>Splitting a system into <span class="term" data-definition="A layer is one horizontal slice of a system that handles a single job — like a floor of the building. Layers stack, and each one only relies on the layers beneath it.">layers</span> that each do one job — and only depend downward — is one of software's most important ideas. It's why you can change how data is stored without touching how the web API looks.</p>
+          </div>
+        </div>
+
+        <p>When you can name which layer owns what, you can steer an AI precisely and debug faster:</p>
+
+        <div class="icon-rows">
+          <div class="icon-row">
+            <div class="icon-circle" style="background: var(--color-actor-1)">🧠</div>
+            <div>
+              <strong>Data is wrong?</strong>
+              <p>Look in the ORM — the Database Brain owns how data is fetched and stored.</p>
+            </div>
+          </div>
+          <div class="icon-row">
+            <div class="icon-circle" style="background: var(--color-actor-2)">🏢</div>
+            <div>
+              <strong>A web request 404s?</strong>
+              <p>Look in the API — the Web Front Desk owns the web addresses.</p>
+            </div>
+          </div>
+          <div class="icon-row">
+            <div class="icon-circle" style="background: var(--color-actor-3)">🤖</div>
+            <div>
+              <strong>Scaffolding or migrations?</strong>
+              <p>That's the Robot Helpers on the top floor.</p>
+            </div>
+          </div>
+        </div>
+
+        <p style="margin-top: var(--space-6)">Engineers call this whole idea <span class="term" data-definition="Separation of concerns means each part of a system handles one job and stays out of the others' business. It makes code easier to change, test, and reason about.">separation of concerns</span>. Say it to an AI — "put this database logic in the ORM layer, not the API layer" — and you'll get sharper results.</p>
+      </section>
+
+      <!-- SCREEN 7: Quiz -->
+      <section class="screen animate-in">
+        <h2 class="screen-heading">Check your intuition</h2>
+        <p>No memorizing — just think through where things live.</p>
+
+        <div class="quiz-container" id="quiz-module2">
+
+          <div class="quiz-question-block"
+               data-correct="orm"
+               data-explanation-right="Exactly. The web request working means the Web Front Desk (API) did its job — it found the address and answered. If the numbers are wrong, the problem is in how the data was fetched, which is the Database Brain's job."
+               data-explanation-wrong="Not quite. The web request itself works fine — so the API found the right address and responded. When the values are wrong but the request succeeds, the trouble is in the data layer: the ORM.">
+            <h3 class="quiz-question">Your API returns the <em>wrong data</em> — the numbers are off, but the web request itself works fine. Which layer do you investigate first?</h3>
+            <div class="quiz-options">
+              <button class="quiz-option" data-value="api" onclick="selectOption(this)">
+                <div class="quiz-option-radio"></div>
+                <span>The API layer (Web Front Desk)</span>
+              </button>
+              <button class="quiz-option" data-value="orm" onclick="selectOption(this)">
+                <div class="quiz-option-radio"></div>
+                <span>The ORM layer (Database Brain)</span>
+              </button>
+              <button class="quiz-option" data-value="agents" onclick="selectOption(this)">
+                <div class="quiz-option-radio"></div>
+                <span>The agents layer (Robot Helpers)</span>
+              </button>
+            </div>
+            <div class="quiz-feedback"></div>
+          </div>
+
+          <div class="quiz-question-block"
+               data-correct="no"
+               data-explanation-right="Right. The elevator only goes down. zeeb_orm is the ground floor — it depends on nothing above it. If it imported from zeeb_api, that would be reaching up, breaking the one-way rule."
+               data-explanation-wrong="Think about the one-way elevator. zeeb_orm is the ground floor; zeeb_api sits above it. Lower layers are never allowed to reach up into higher ones — so no, the ORM can't import from the API.">
+            <h3 class="quiz-question">Could <code>zeeb_orm</code> import something from <code>zeeb_api</code>?</h3>
+            <div class="quiz-options">
+              <button class="quiz-option" data-value="yes" onclick="selectOption(this)">
+                <div class="quiz-option-radio"></div>
+                <span>Yes — packages can freely import each other</span>
+              </button>
+              <button class="quiz-option" data-value="no" onclick="selectOption(this)">
+                <div class="quiz-option-radio"></div>
+                <span>No — that would break the one-way rule</span>
+              </button>
+              <button class="quiz-option" data-value="sometimes" onclick="selectOption(this)">
+                <div class="quiz-option-radio"></div>
+                <span>Only when handling a web request</span>
+              </button>
+            </div>
+            <div class="quiz-feedback"></div>
+          </div>
+
+          <div class="quiz-question-block"
+               data-correct="api"
+               data-explanation-right="Exactly. Rate limiting is about how the outside world hits your web endpoints — that's the Web Front Desk's territory. It belongs in zeeb_api."
+               data-explanation-wrong="Think about what a rate limit protects: your web endpoints, the doors the outside world knocks on. Those doors belong to the Web Front Desk — so this lives in zeeb_api, not the database or agents layer.">
+            <h3 class="quiz-question">You ask an AI to add a rate limit to your web endpoints. Which package should that live in?</h3>
+            <div class="quiz-options">
+              <button class="quiz-option" data-value="orm" onclick="selectOption(this)">
+                <div class="quiz-option-radio"></div>
+                <span><code>zeeb_orm</code> — the database layer</span>
+              </button>
+              <button class="quiz-option" data-value="api" onclick="selectOption(this)">
+                <div class="quiz-option-radio"></div>
+                <span><code>zeeb_api</code> — the web layer</span>
+              </button>
+              <button class="quiz-option" data-value="agents" onclick="selectOption(this)">
+                <div class="quiz-option-radio"></div>
+                <span><code>zeeb_agents</code> — the helper layer</span>
+              </button>
+            </div>
+            <div class="quiz-feedback"></div>
+          </div>
+
+          <button class="quiz-check-btn" onclick="checkQuiz('quiz-module2')">Check Answers</button>
+          <button class="quiz-reset-btn" onclick="resetQuiz('quiz-module2')">Try Again</button>
+        </div>
+      </section>
+
+      <!-- SCREEN 8: Handoff -->
+      <section class="screen animate-in">
+        <h2 class="screen-heading">Next stop: the ground floor</h2>
+        <p>You've met the whole family and learned the one rule that binds them: dependencies only ever point down. Every technical term you met here — <span class="term" data-definition="A module is a single file of code (or a small group of them). Several modules together make up a package. Confusingly, this course also calls its lessons 'modules' — here we mean the code kind.">module</span>, <span class="term" data-definition="A dependency is code that another piece of code relies on. If A depends on B, A can't work without B — and A is said to 'depend on' B.">dependency</span>, package — is now yours to use with an AI.</p>
+        <p>Let's take the elevator down to the ground floor — the Database Brain, <code>zeeb_orm</code> — and see how a plain Python class becomes a real database table.</p>
+      </section>
+
+    </div>
+  </div>
+</section>
+<section class="module" id="module-3" style="background: var(--color-bg-warm)">
+  <div class="module-content">
+    <header class="module-header animate-in">
+      <span class="module-number">03</span>
+      <h1 class="module-title">From a Python Class to a Database Table</h1>
+      <p class="module-subtitle">We are on the ground floor now — the Database Brain (<code>zeeb_orm</code>). Let us watch a class become a real table.</p>
+    </header>
+
+    <div class="module-body">
+
+      <!-- SCREEN 1: The hook + metaphor -->
+      <section class="screen animate-in">
+        <h2 class="screen-heading">Who actually builds the table — and when?</h2>
+        <p>In Module 1 you saw <code>class User(Model)</code> turn into a real table. But a plain Python <span class="term" data-definition="A class is a blueprint that describes what something is and what it can do. In code you write it once, then create many real copies from it. Here, a class describes one kind of thing you want to store.">class</span> has no idea what a database is.</p>
+
+        <div class="callout callout-accent">
+          <div class="callout-icon">🏛️</div>
+          <div class="callout-content">
+            <strong class="callout-title">The metaphor: a blueprint becoming a building</strong>
+            <p>Your Python class is the <strong>blueprint</strong>. A hidden construction crew reads it the instant the class is defined. The database <span class="term" data-definition="A table is a grid of data in a database — rows and columns, like a spreadsheet. Each row is one record (one user), each column is one piece of info (their name, their email).">table</span> is the finished building. And <span class="term" data-definition="A migration is a dated, saved record of one change to your database's structure — like a renovation permit that documents exactly what was altered and when.">migrations</span> are the renovation permits: a logbook of every change you make over time.</p>
+          </div>
+        </div>
+
+        <div class="icon-rows stagger-children">
+          <div class="icon-row animate-in">
+            <div class="icon-circle" style="background: var(--color-actor-1)">📄</div>
+            <div>
+              <strong>The blueprint — your model</strong>
+              <p>A Python class listing the fields you want to store.</p>
+            </div>
+          </div>
+          <div class="icon-row animate-in">
+            <div class="icon-circle" style="background: var(--color-actor-2)">🏗️</div>
+            <div>
+              <strong>The construction crew — the metaclass</strong>
+              <p>Runs the moment the class is defined and assembles the table plan.</p>
+            </div>
+          </div>
+          <div class="icon-row animate-in">
+            <div class="icon-circle" style="background: var(--color-actor-3)">🗄️</div>
+            <div>
+              <strong>The finished building — the table</strong>
+              <p>A real grid in the database, ready to hold your data.</p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- SCREEN 2: Fields become columns (Snippet A translation) -->
+      <section class="screen animate-in">
+        <h2 class="screen-heading">Each field is one column</h2>
+        <p>Inside the model, every line declares a <span class="term" data-definition="A column is one vertical slice of a table — a single kind of information stored for every row, like the email address for every user.">column</span>. You are not just naming things — each field also sets a <span class="term" data-definition="A data type is the kind of value a column holds: text, a whole number, true/false, a date. It tells the database what is and is not allowed in that slot.">data type</span> and its rules.</p>
+
+        <div class="translation-block animate-in">
+          <div class="translation-code">
+            <span class="translation-label">CODE</span>
+            <pre><code><span class="code-line">    name = fields.<span class="code-function">CharField</span>(<span class="code-property">max_length</span>=<span class="code-number">100</span>)</span>
+<span class="code-line">    email = fields.<span class="code-function">EmailField</span>(<span class="code-property">unique</span>=<span class="code-keyword">True</span>)</span>
+<span class="code-line">    age = fields.<span class="code-function">IntegerField</span>(<span class="code-property">null</span>=<span class="code-keyword">True</span>)</span>
+<span class="code-line">    is_active = fields.<span class="code-function">BooleanField</span>(<span class="code-property">default</span>=<span class="code-keyword">True</span>)</span>
+<span class="code-line">    bio = fields.<span class="code-function">TextField</span>(<span class="code-property">null</span>=<span class="code-keyword">True</span>)</span>
+<span class="code-line">    created_at = fields.<span class="code-function">DateTimeField</span>(<span class="code-property">auto_now_add</span>=<span class="code-keyword">True</span>)</span></code></pre>
+          </div>
+          <div class="translation-english">
+            <span class="translation-label">PLAIN ENGLISH</span>
+            <div class="translation-lines">
+              <p class="tl"><strong>name</strong> becomes a text column, at most 100 characters.</p>
+              <p class="tl"><strong>email</strong> becomes a text column that must be unique across the whole table.</p>
+              <p class="tl"><strong>age</strong> becomes a whole-number column that is allowed to be empty.</p>
+              <p class="tl"><strong>is_active</strong> becomes a true/false column, defaulting to true.</p>
+              <p class="tl"><strong>bio</strong> becomes a long-text column, optional.</p>
+              <p class="tl"><strong>created_at</strong> becomes a date-and-time column that stamps itself automatically.</p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- SCREEN 3: The metaclass (Snippet B translation) -->
+      <section class="screen animate-in">
+        <h2 class="screen-heading">Meet the construction crew: the metaclass</h2>
+        <p>A special piece of machinery called a <span class="term" data-definition="A metaclass is code that runs the moment a class is defined — a class that builds other classes. Here it reads your model and wires up the matching database table before you ever create a single record.">metaclass</span> (<code>ModelBase</code>) runs the instant your class is defined. It scans the class for fields, collects them, and assembles the table blueprint.</p>
+
+        <div class="translation-block animate-in">
+          <div class="translation-code">
+            <span class="translation-label">CODE</span>
+            <pre><code><span class="code-line">        <span class="code-comment"># Collect fields from this class</span></span>
+<span class="code-line">        <span class="code-keyword">for</span> attr_name, attr_value <span class="code-keyword">in</span> <span class="code-function">list</span>(namespace.items()):</span>
+<span class="code-line">            <span class="code-keyword">if</span> <span class="code-function">isinstance</span>(attr_value, Field):</span>
+<span class="code-line">                attr_value.<span class="code-function">contribute_to_class</span>(new_class, attr_name)</span>
+<span class="code-line">                fields.<span class="code-function">append</span>(attr_value)</span>
+<span class="code-line">                <span class="code-keyword">if</span> attr_value.primary_key:</span>
+<span class="code-line">                    has_pk = <span class="code-keyword">True</span></span>
+<span class="code-line">                    new_class._meta.pk = attr_value</span>
+<span class="code-line">                    new_class._meta.pk_name = attr_name</span></code></pre>
+          </div>
+          <div class="translation-english">
+            <span class="translation-label">PLAIN ENGLISH</span>
+            <div class="translation-lines">
+              <p class="tl">Now gather every field defined on the class.</p>
+              <p class="tl">Walk through everything written inside the class, one item at a time.</p>
+              <p class="tl">If this item is a Field (like CharField or IntegerField)…</p>
+              <p class="tl">…officially register it as a column of the new table…</p>
+              <p class="tl">…add it to the running list of fields.</p>
+              <p class="tl">If this field was marked as the <span class="term" data-definition="A primary key is the column that uniquely identifies each row — the fingerprint the database uses to find one exact record. In zeebpy every model gets one automatically.">primary key</span>…</p>
+              <p class="tl">…remember that the table has one…</p>
+              <p class="tl">…and record which field it is…</p>
+              <p class="tl">…so the ORM always knows how to find a single row.</p>
+            </div>
+          </div>
+        </div>
+
+        <div class="callout callout-accent">
+          <div class="callout-icon">💡</div>
+          <div class="callout-content">
+            <strong class="callout-title">Declarative, not imperative</strong>
+            <p>Notice you never wrote <code>CREATE TABLE</code>. You <em>declared</em> what a User is, and the metaclass figured out the step-by-step build for you. Migrations do the exact same thing for <em>changes</em> to that model.</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- SCREEN 4: The migration loop — HERO FLOW ANIMATION -->
+      <section class="screen animate-in">
+        <h2 class="screen-heading">The migration loop: how a change reaches the database</h2>
+        <p>Changing your model does not change the database by itself. Two commands close the gap: <span class="term" data-definition="makemigrations is a command that looks at your models, notices what changed, and writes those changes into a new saved file. It does NOT touch the real database yet.">makemigrations</span> writes down the change, then <span class="term" data-definition="migrate is a command that reads the saved migration files and applies their changes to the real database, so the table structure finally matches your models.">migrate</span> applies it.</p>
+
+        <div class="flow-animation animate-in" data-steps='[
+          {"highlight":"flow-actor-1","label":"You add a new field to your model"},
+          {"highlight":"flow-actor-1","label":"You run: zeeb-manage makemigrations","packet":true,"from":"actor-1","to":"actor-2"},
+          {"highlight":"flow-actor-2","label":"The detective compares your models to the last known state"},
+          {"highlight":"flow-actor-2","label":"It writes down exactly what changed","packet":true,"from":"actor-2","to":"actor-3"},
+          {"highlight":"flow-actor-3","label":"A dated migration file is saved — a permanent record"},
+          {"highlight":"flow-actor-3","label":"You run: zeeb-manage migrate","packet":true,"from":"actor-3","to":"actor-4"},
+          {"highlight":"flow-actor-4","label":"The database applies the change — the new column now exists"}
+        ]'>
+          <div class="flow-actors">
+            <div class="flow-actor" id="flow-actor-1">
+              <div class="flow-actor-icon">📄</div>
+              <span>Your models.py</span>
+            </div>
+            <div class="flow-actor" id="flow-actor-2">
+              <div class="flow-actor-icon">🔍</div>
+              <span>makemigrations (the detective)</span>
+            </div>
+            <div class="flow-actor" id="flow-actor-3">
+              <div class="flow-actor-icon">📜</div>
+              <span>Migration file (the permit)</span>
+            </div>
+            <div class="flow-actor" id="flow-actor-4">
+              <div class="flow-actor-icon">🗄️</div>
+              <span>migrate → Database</span>
+            </div>
+          </div>
+
+          <div class="flow-packet" id="flow-packet"></div>
+
+          <div class="flow-step-label" id="flow-label">Click "Next Step" to trace a change through the loop</div>
+
+          <div class="flow-controls">
+            <button class="btn flow-next-btn">Next Step</button>
+            <button class="btn flow-reset-btn">Restart</button>
+            <span class="flow-progress"></span>
+          </div>
+        </div>
+      </section>
+
+      <!-- SCREEN 5: How the detective knows what changed (Snippet C docstring) -->
+      <section class="screen animate-in">
+        <h2 class="screen-heading">How does the detective know what changed?</h2>
+        <p>You might expect it to peek at the live database. It does something smarter and safer instead — it replays the history of every past <span class="term" data-definition="A migration is a dated, saved record of one change to your database's structure. Replaying them in order rebuilds the full history of how your tables were shaped.">migration</span> into a throwaway copy and compares against that.</p>
+
+        <div class="callout callout-info">
+          <div class="callout-icon">🔍</div>
+          <div class="callout-content">
+            <strong class="callout-title">From the source (autodetector.py)</strong>
+            <p style="font-style: italic;">"Compare current model state against existing migration state and return operations. This is the core of makemigrations — it detects what changed. Instead of comparing against the live database (which would re-detect already-migrated changes if migrations have not been applied yet), this replays all existing migration files into an in-memory SQLite database and compares the model metadata against that state."</p>
+          </div>
+        </div>
+
+        <div class="badge-list">
+          <div class="badge-item">
+            <code class="badge-code">schema</code>
+            <span class="badge-desc">The overall <span class="term" data-definition="A schema is the blueprint of a database's structure — which tables exist, and which columns and types each one has. Not the data itself, just the shape it lives in.">shape</span> of your database: its tables and columns.</span>
+          </div>
+          <div class="badge-item">
+            <code class="badge-code">in-memory SQLite</code>
+            <span class="badge-desc">A tiny throwaway <span class="term" data-definition="SQLite is a small self-contained database that needs no separate server — perfect for quick local checks. An in-memory database lives only in RAM and vanishes when the check is done.">database that lives only in memory</span> — used just for this comparison, then discarded.</span>
+          </div>
+        </div>
+      </section>
+
+      <!-- SCREEN 6: The warning — the classic beginner bug -->
+      <section class="screen animate-in">
+        <h2 class="screen-heading">The single most common beginner bug</h2>
+
+        <div class="callout callout-warning">
+          <div class="callout-icon">⚠️</div>
+          <div class="callout-content">
+            <strong class="callout-title">The "no such column" trap</strong>
+            <p>Whenever you change a model, you must run <code>makemigrations</code> <em>then</em> <code>migrate</code>. Forget it, and the app crashes with errors like <code>no such column: phone</code> — because the model changed but the real table never did. This is the #1 thing vibe coders get stuck on.</p>
+          </div>
+        </div>
+
+        <div class="step-cards stagger-children">
+          <div class="step-card animate-in">
+            <div class="step-num">1</div>
+            <div class="step-body">
+              <strong>Change your model</strong>
+              <p>Add, remove, or edit a field in <code>models.py</code>.</p>
+            </div>
+          </div>
+          <div class="step-card animate-in">
+            <div class="step-num">2</div>
+            <div class="step-body">
+              <strong>Run <span class="term" data-definition="The CLI (command-line interface) is the text window where you type commands to your project instead of clicking buttons. A command is one typed instruction, like zeeb-manage makemigrations.">makemigrations</span></strong>
+              <p>The change gets written into a new dated file.</p>
+            </div>
+          </div>
+          <div class="step-card animate-in">
+            <div class="step-num">3</div>
+            <div class="step-body">
+              <strong>Run <code>migrate</code></strong>
+              <p>That file is applied — the real table finally matches your model.</p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- SCREEN 7: Quiz -->
+      <section class="screen animate-in">
+        <h2 class="screen-heading">Check your understanding</h2>
+        <p>No memorizing — each question is a real situation. Pick what you would actually do.</p>
+
+        <div class="quiz-container" id="quiz-module3">
+
+          <div class="quiz-question-block"
+               data-correct="option-c"
+               data-explanation-right="Exactly. The model in your code changed, but the real database table was never updated. makemigrations writes the change down, and migrate applies it. Run both and the column will exist."
+               data-explanation-wrong="Not quite. Restarting the app or editing the model again does not touch the database structure. The error means the table is missing the column — you need to write the change down (makemigrations) and apply it (migrate).">
+            <h3 class="quiz-question">You added <code>phone = fields.CharField(...)</code> to your model, restarted the app, and now every request errors with "no such column: phone." What did you forget?</h3>
+            <div class="quiz-options">
+              <button class="quiz-option" data-value="option-a" onclick="selectOption(this)">
+                <div class="quiz-option-radio"></div>
+                <span>Restart the database server so it reloads the model.</span>
+              </button>
+              <button class="quiz-option" data-value="option-b" onclick="selectOption(this)">
+                <div class="quiz-option-radio"></div>
+                <span>Delete the phone field again — CharField is not allowed on User.</span>
+              </button>
+              <button class="quiz-option" data-value="option-c" onclick="selectOption(this)">
+                <div class="quiz-option-radio"></div>
+                <span>Run makemigrations, then migrate — the model changed but the database was never updated.</span>
+              </button>
+            </div>
+            <div class="quiz-feedback"></div>
+          </div>
+
+          <div class="quiz-question-block"
+               data-correct="option-b"
+               data-explanation-right="Right. makemigrations comes first and only writes the change into a file. migrate comes second and applies that file to the real database. Two distinct jobs, always in that order."
+               data-explanation-wrong="Not quite. makemigrations does not touch the real database — it only records the change in a file. migrate is the step that actually applies that file to the database. So it is makemigrations first, migrate second.">
+            <h3 class="quiz-question">In what order do the two commands run, and what does each one do?</h3>
+            <div class="quiz-options">
+              <button class="quiz-option" data-value="option-a" onclick="selectOption(this)">
+                <div class="quiz-option-radio"></div>
+                <span>migrate first (it plans the change), then makemigrations (it saves the plan).</span>
+              </button>
+              <button class="quiz-option" data-value="option-b" onclick="selectOption(this)">
+                <div class="quiz-option-radio"></div>
+                <span>makemigrations first — it writes the change into a file; then migrate — it applies that file to the real database.</span>
+              </button>
+              <button class="quiz-option" data-value="option-c" onclick="selectOption(this)">
+                <div class="quiz-option-radio"></div>
+                <span>They do the same thing, so the order does not matter.</span>
+              </button>
+            </div>
+            <div class="quiz-feedback"></div>
+          </div>
+
+          <div class="quiz-question-block"
+               data-correct="option-a"
+               data-explanation-right="Exactly. Migration files are an ordered history that can be replayed safely on any database — your laptop, the test server, production — without wiping the data that already lives there."
+               data-explanation-wrong="Not quite. Rebuilding tables from scratch would throw away all existing data every time. The real value of keeping migration files is that they are a safe, ordered history you can replay on any database while preserving what is already there.">
+            <h3 class="quiz-question">Why keep migration files in your project instead of just rebuilding the tables from scratch each time?</h3>
+            <div class="quiz-options">
+              <button class="quiz-option" data-value="option-a" onclick="selectOption(this)">
+                <div class="quiz-option-radio"></div>
+                <span>They are an ordered history that can be replayed safely on any database — dev, test, production — without losing existing data.</span>
+              </button>
+              <button class="quiz-option" data-value="option-b" onclick="selectOption(this)">
+                <div class="quiz-option-radio"></div>
+                <span>They make the app run faster because the database is smaller.</span>
+              </button>
+              <button class="quiz-option" data-value="option-c" onclick="selectOption(this)">
+                <div class="quiz-option-radio"></div>
+                <span>They are only needed for SQLite and can be deleted on other databases.</span>
+              </button>
+            </div>
+            <div class="quiz-feedback"></div>
+          </div>
+
+          <button class="quiz-check-btn" onclick="checkQuiz('quiz-module3')">Check Answers</button>
+          <button class="quiz-reset-btn" onclick="resetQuiz('quiz-module3')">Try Again</button>
+        </div>
+      </section>
+
+      <!-- SCREEN 8: Bridge to next module -->
+      <section class="screen animate-in">
+        <div class="callout callout-accent">
+          <div class="callout-icon">➡️</div>
+          <div class="callout-content">
+            <strong class="callout-title">Your data now lives in a table</strong>
+            <p>Next: how do you <em>ask questions</em> of it — "give me every active user, newest first" — without writing a single word of SQL? That is Module 4, Asking the Database Questions.</p>
+          </div>
+        </div>
+      </section>
+
+    </div>
+  </div>
+</section>
+<section class="module" id="module-4" style="background: var(--color-bg)">
+  <div class="module-content">
+
+    <header class="module-header animate-in">
+      <span class="module-number">04</span>
+      <h1 class="module-title">Asking the Database Questions</h1>
+      <p class="module-subtitle">Your data lives in a table now. Time to ask it questions — without writing a single line of SQL.</p>
+    </header>
+
+    <div class="module-body">
+
+      <!-- SCREEN 1 — The metaphor / hook -->
+      <section class="screen animate-in">
+        <h2 class="screen-heading">You are just writing down the question</h2>
+        <p>Think of refining filters on a shopping site. You tick <em>"under $30,"</em> then <em>"in stock,"</em> then <em>"newest first."</em> Nothing loads. The page only fetches results when you finally press the button.</p>
+
+        <div class="callout callout-info">
+          <div class="callout-icon">🛒</div>
+          <div class="callout-content">
+            <strong class="callout-title">The hook</strong>
+            <p><code>User.objects.filter(age__lt=30)</code> — you have not asked the database anything yet. You have only <em>written down the question</em>. It runs the moment you <code>await</code> it, and not a nanosecond before.</p>
+          </div>
+        </div>
+
+        <p>A zeebpy
+          <span class="term" data-definition="A QuerySet is a saved-up database question. It remembers the conditions you stacked up (filters, sorting) but does not touch the database until you ask for the results.">QuerySet</span>
+          works exactly like those shopping filters: you stack conditions, and the database is only bothered when you press "go."</p>
+
+        <div class="flow-steps">
+          <div class="flow-step">
+            <div class="flow-step-num">1</div>
+            <p>Tick "is active"</p>
+          </div>
+          <div class="flow-arrow">→</div>
+          <div class="flow-step">
+            <div class="flow-step-num">2</div>
+            <p>Tick "under 30"</p>
+          </div>
+          <div class="flow-arrow">→</div>
+          <div class="flow-step">
+            <div class="flow-step-num">3</div>
+            <p>Press <code>await</code></p>
+          </div>
+          <div class="flow-arrow">→</div>
+          <div class="flow-step">
+            <div class="flow-step-num">4</div>
+            <p>Results load</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- SCREEN 2 — Snippet A: lookups → SQL -->
+      <section class="screen animate-in">
+        <h2 class="screen-heading">From plain words to a database question</h2>
+        <p>Here is real code from <code>example_basic.py</code>. Each line is a
+          <span class="term" data-definition="A lookup is the little suffix after a double underscore — like __lt or __gte — that tells the database HOW to compare. __lt means 'less than,' __gte means 'greater than or equal to.'">lookup</span>
+          that zeebpy translates into a
+          <span class="term" data-definition="The WHERE clause is the part of a database question that filters rows — 'only give me the ones WHERE this condition is true.' You never write it by hand here; zeebpy writes it for you.">WHERE clause</span>.</p>
+
+        <div class="translation-block animate-in">
+          <div class="translation-code">
+            <span class="translation-label">CODE</span>
+            <pre><code><span class="code-line">    <span class="code-comment"># Filter users</span></span>
+<span class="code-line">    active_users = <span class="code-keyword">await</span> User.objects.<span class="code-function">filter</span>(is_active=<span class="code-keyword">True</span>)</span>
+<span class="code-line"></span>
+<span class="code-line">    <span class="code-comment"># Filter with lookups</span></span>
+<span class="code-line">    young_users = <span class="code-keyword">await</span> User.objects.<span class="code-function">filter</span>(age__lt=<span class="code-number">30</span>)</span>
+<span class="code-line"></span>
+<span class="code-line">    adults = <span class="code-keyword">await</span> User.objects.<span class="code-function">filter</span>(age__gte=<span class="code-number">25</span>, age__lte=<span class="code-number">40</span>)</span></code></pre>
+          </div>
+          <div class="translation-english">
+            <span class="translation-label">PLAIN ENGLISH</span>
+            <div class="translation-lines">
+              <p class="tl">Find users matching a condition.</p>
+              <p class="tl">Ask for users whose <code>is_active</code> switch is on → SQL: <code>WHERE is_active = true</code>.</p>
+              <p class="tl">&nbsp;</p>
+              <p class="tl">Conditions can be comparisons, not just equals.</p>
+              <p class="tl"><code>age__lt=30</code> means "age less than 30" → SQL: <code>WHERE age &lt; 30</code>. The <code>__lt</code> is the magic word for "less than."</p>
+              <p class="tl">&nbsp;</p>
+              <p class="tl"><code>age__gte=25, age__lte=40</code> means "at least 25 AND at most 40" → SQL: <code>WHERE age &gt;= 25 AND age &lt;= 40</code>.</p>
+            </div>
+          </div>
+        </div>
+
+        <p>Those <code>age__lt=30</code> pairs are
+          <span class="term" data-definition="A keyword argument is a named input to a function, written as name=value. Here the name (age__lt) carries the field AND the comparison, and the value (30) is what to compare against.">keyword arguments</span>
+          — the name carries both the field and the comparison, the value is what to match.</p>
+      </section>
+
+      <!-- SCREEN 3 — Snippet B: filter returns a clone (why lazy) -->
+      <section class="screen animate-in">
+        <h2 class="screen-heading">Why nothing runs yet: <code>filter</code> hands back a copy</h2>
+        <p>This is the heart of the trick, from <code>zeeb_orm/query/queryset.py</code>. When you call <code>.filter()</code>, zeebpy does <strong>not</strong> touch the database — it makes a fresh
+          <span class="term" data-definition="A clone is an exact copy. zeebpy copies your question before adding a condition, so the original question is never changed — this is what 'immutable' means.">clone</span>
+          of your question and hands that back.</p>
+
+        <div class="translation-block animate-in">
+          <div class="translation-code">
+            <span class="translation-label">CODE</span>
+            <pre><code><span class="code-line">        self.<span class="code-function">_check_combinator</span>(<span class="code-string">"filter"</span>)</span>
+<span class="code-line">        clone = self.<span class="code-function">_clone</span>()</span>
+<span class="code-line">        <span class="code-keyword">if</span> args:</span>
+<span class="code-line">            <span class="code-keyword">for</span> arg <span class="code-keyword">in</span> args:</span>
+<span class="code-line">                <span class="code-keyword">if</span> <span class="code-function">isinstance</span>(arg, Q):</span>
+<span class="code-line">                    clone._filters.<span class="code-function">append</span>(arg)</span>
+<span class="code-line">        <span class="code-keyword">if</span> kwargs:</span>
+<span class="code-line">            clone._filters.<span class="code-function">append</span>(<span class="code-function">Q</span>(**kwargs))</span>
+<span class="code-line">        <span class="code-keyword">return</span> clone</span></code></pre>
+          </div>
+          <div class="translation-english">
+            <span class="translation-label">PLAIN ENGLISH</span>
+            <div class="translation-lines">
+              <p class="tl">First a safety check that filtering is allowed here.</p>
+              <p class="tl">Make a fresh copy of the question — never modify the original.</p>
+              <p class="tl">If you passed any <code>Q</code> objects…</p>
+              <p class="tl">…go through them one by one…</p>
+              <p class="tl">&nbsp;</p>
+              <p class="tl">…and add each as a new condition on the copy.</p>
+              <p class="tl">If you passed plain keywords like <code>age__lt=30</code>…</p>
+              <p class="tl">…bundle them into a condition and add that too.</p>
+              <p class="tl">Hand back the <em>copy</em>. Notice: it talked to no database. It just remembered your condition and returned a new question.</p>
+            </div>
+          </div>
+        </div>
+
+        <p>Because each <code>.filter()</code> returns a brand-new copy, QuerySets are
+          <span class="term" data-definition="Chainable (or 'method chaining') means you can stick calls end to end — .filter().filter().order_by() — because each one hands back a new object ready for the next call.">chainable</span>:
+          you can stack <code>.filter().filter()</code> forever, and every earlier question stays untouched.</p>
+      </section>
+
+      <!-- SCREEN 4 — The lazy-eval callout + Snippet C: the moment it runs -->
+      <section class="screen animate-in">
+        <h2 class="screen-heading">The exact moment it runs</h2>
+
+        <div class="callout callout-accent">
+          <div class="callout-icon">💡</div>
+          <div class="callout-content">
+            <strong class="callout-title">Lazy evaluation</strong>
+            <p>Building a query costs <em>nothing</em> — only <code>await</code> (or looping over it) actually triggers the database. This is a deliberate design: you can pass an unfinished query around, tack on more filters, and run it just once at the very end.</p>
+          </div>
+        </div>
+
+        <p>Deep in <code>queryset.py</code> lives the switch that fires only when you put <code>await</code> in front of a query. This is where a saved-up question finally becomes real rows.</p>
+
+        <div class="translation-block animate-in">
+          <div class="translation-code">
+            <span class="translation-label">CODE</span>
+            <pre><code><span class="code-line">    <span class="code-keyword">def</span> <span class="code-function">__await__</span>(self) -&gt; Any:</span>
+<span class="code-line">        <span class="code-comment">"""Allow awaiting QuerySet directly to get list of results."""</span></span>
+<span class="code-line">        <span class="code-keyword">return</span> self.<span class="code-function">_fetch_all</span>().<span class="code-function">__await__</span>()</span></code></pre>
+          </div>
+          <div class="translation-english">
+            <span class="translation-label">PLAIN ENGLISH</span>
+            <div class="translation-lines">
+              <p class="tl">This special method fires only when you put <code>await</code> in front of the query.</p>
+              <p class="tl">Awaiting the query is what turns it into a real list of results.</p>
+              <p class="tl"><em>Now</em> — and only now — it runs <code>_fetch_all</code>, which sends the SQL to the database and brings back the rows. This is what it means to
+                <span class="term" data-definition="To 'execute a query' means to actually send the question to the database and get rows back. Until you execute it, a QuerySet is only a plan on paper.">execute a query</span>.</p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- SCREEN 5 — Flow animation -->
+      <section class="screen animate-in">
+        <h2 class="screen-heading">Watch a filter chain build, then fire</h2>
+        <p>Step through it. Notice how the first two steps are silent — the database is only contacted at step three.</p>
+
+        <div class="flow-animation" data-steps='[
+          {"highlight":"flow-actor-1","label":"filter(is_active=True) — a condition is written down. No database yet."},
+          {"highlight":"flow-actor-2","label":"filter(age__lt=30) — a second condition stacks on. Still no database.","packet":true,"from":"actor-1","to":"actor-2"},
+          {"highlight":"flow-actor-3","label":"await — NOW the question is sent as SQL.","packet":true,"from":"actor-2","to":"actor-3"},
+          {"highlight":"flow-actor-4","label":"The database runs the query and returns matching rows.","packet":true,"from":"actor-3","to":"actor-4"}
+        ]'>
+          <div class="flow-actors">
+            <div class="flow-actor" id="flow-actor-1">
+              <div class="flow-actor-icon" style="background: var(--color-actor-1)">1</div>
+              <span>filter(is_active=True)</span>
+            </div>
+            <div class="flow-actor" id="flow-actor-2">
+              <div class="flow-actor-icon" style="background: var(--color-actor-1)">2</div>
+              <span>filter(age__lt=30)</span>
+            </div>
+            <div class="flow-actor" id="flow-actor-3">
+              <div class="flow-actor-icon" style="background: var(--color-accent)">3</div>
+              <span>await → SQL sent</span>
+            </div>
+            <div class="flow-actor" id="flow-actor-4">
+              <div class="flow-actor-icon" style="background: var(--color-actor-2)">4</div>
+              <span>Database returns rows</span>
+            </div>
+          </div>
+
+          <div class="flow-packet" id="flow-packet"></div>
+
+          <div class="flow-step-label" id="flow-label">Click "Next Step" to begin</div>
+
+          <div class="flow-controls">
+            <button class="btn flow-next-btn">Next Step</button>
+            <button class="btn flow-reset-btn">Restart</button>
+            <span class="flow-progress"></span>
+          </div>
+        </div>
+      </section>
+
+      <!-- SCREEN 6 — Spot the Bug -->
+      <section class="screen animate-in">
+        <h2 class="screen-heading">Spot the bug</h2>
+        <p>This is the single most common "why is my data not showing up?" mistake. One line quietly breaks everything below it. Click the line you think is the culprit.</p>
+
+        <div class="bug-challenge">
+          <h3>Find the bug in this code:</h3>
+          <div class="bug-code">
+            <div class="bug-line bug-target" data-line="1" onclick="checkBugLine(this, true)">
+              <span class="line-num">1</span>
+              <code>young = User.objects.filter(age__lt=30)</code>
+            </div>
+            <div class="bug-line" data-line="2" onclick="checkBugLine(this, false)">
+              <span class="line-num">2</span>
+              <code>print("Found:", len(young))</code>
+            </div>
+            <div class="bug-line" data-line="3" onclick="checkBugLine(this, false)">
+              <span class="line-num">3</span>
+              <code>for u in young:</code>
+            </div>
+            <div class="bug-line" data-line="4" onclick="checkBugLine(this, false)">
+              <span class="line-num">4</span>
+              <code>    print(u.name)</code>
+            </div>
+          </div>
+          <div class="bug-feedback" id="bug-feedback"></div>
+        </div>
+
+        <div class="callout callout-warning">
+          <div class="callout-icon">⚠️</div>
+          <div class="callout-content">
+            <strong class="callout-title">The tell-tale symptom</strong>
+            <p>If a query gives you a weird object instead of a list of results, the very first thing to check is: did you forget <code>await</code>?</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- SCREEN 7 — Q operators badge list -->
+      <section class="screen animate-in">
+        <h2 class="screen-heading">Combining conditions with <code>Q</code></h2>
+        <p>Plain filters are joined with AND. When you need OR or NOT, you reach for a
+          <span class="term" data-definition="A Q object is a reusable, combinable condition. Unlike plain filters, Q objects can be joined with OR and negated, so you can express 'this OR that' logic.">Q object</span>.
+          These four examples come straight from the code's own documentation in <code>zeeb_orm/query/q.py</code>.</p>
+
+        <div class="badge-list">
+          <div class="badge-item">
+            <code class="badge-code">Q(name='John')</code>
+            <span class="badge-desc">A single plain condition, ready to reuse or combine.</span>
+          </div>
+          <div class="badge-item">
+            <code class="badge-code">Q(age__gte=18) &amp; Q(age__lte=65)</code>
+            <span class="badge-desc"><strong>&amp; = AND</strong> — both must be true: at least 18 <em>and</em> at most 65.</span>
+          </div>
+          <div class="badge-item">
+            <code class="badge-code">Q(status='active') | Q(status='pending')</code>
+            <span class="badge-desc"><strong>| = OR</strong> — either one counts: active <em>or</em> pending.</span>
+          </div>
+          <div class="badge-item">
+            <code class="badge-code">~Q(deleted=True)</code>
+            <span class="badge-desc"><strong>~ = NOT</strong> — flips it: everything that is <em>not</em> deleted.</span>
+          </div>
+        </div>
+      </section>
+
+      <!-- SCREEN 8 — Quiz -->
+      <section class="screen animate-in">
+        <h2 class="screen-heading">Check your understanding</h2>
+
+        <div class="quiz-container" id="quiz-module4">
+          <div class="quiz-question-block"
+               data-correct="missing-await"
+               data-explanation-right="Exactly — a QuerySet is lazy. Without await, the query never runs, so 'users' is just the unexecuted question, not a list of rows. Add await and it springs to life."
+               data-explanation-wrong="Not quite. The filter syntax and field name are fine here. Think about what makes a QuerySet actually run — it is lazy until one specific keyword is present.">
+            <h3 class="quiz-question">You wrote <code>users = User.objects.filter(is_active=True)</code> and got a strange object instead of a list of users. What is most likely wrong?</h3>
+            <div class="quiz-options">
+              <button class="quiz-option" data-value="wrong-field" onclick="selectOption(this)">
+                <div class="quiz-option-radio"></div>
+                <span>The field name <code>is_active</code> is spelled wrong.</span>
+              </button>
+              <button class="quiz-option" data-value="missing-await" onclick="selectOption(this)">
+                <div class="quiz-option-radio"></div>
+                <span>You forgot <code>await</code> — the query is lazy and never executed.</span>
+              </button>
+              <button class="quiz-option" data-value="db-empty" onclick="selectOption(this)">
+                <div class="quiz-option-radio"></div>
+                <span>The database table is empty.</span>
+              </button>
+            </div>
+            <div class="quiz-feedback"></div>
+          </div>
+
+          <div class="quiz-question-block"
+               data-correct="zero-then-one"
+               data-explanation-right="Right! Building a chain runs zero queries — each .filter() just returns a new copy. The single database trip happens only when you finally await the whole thing."
+               data-explanation-wrong="Not quite. Remember, each .filter() only makes a copy of the question — it does not talk to the database. Building the chain costs zero queries; awaiting it costs one.">
+            <h3 class="quiz-question"><code>User.objects.filter(age__gte=18).filter(is_active=True)</code> — how many database queries does <em>building</em> this chain run?</h3>
+            <div class="quiz-options">
+              <button class="quiz-option" data-value="two" onclick="selectOption(this)">
+                <div class="quiz-option-radio"></div>
+                <span>Two — one per <code>.filter()</code> call.</span>
+              </button>
+              <button class="quiz-option" data-value="one" onclick="selectOption(this)">
+                <div class="quiz-option-radio"></div>
+                <span>One — the chain runs immediately.</span>
+              </button>
+              <button class="quiz-option" data-value="zero-then-one" onclick="selectOption(this)">
+                <div class="quiz-option-radio"></div>
+                <span>Zero — until you <code>await</code> it; then one.</span>
+              </button>
+            </div>
+            <div class="quiz-feedback"></div>
+          </div>
+
+          <div class="quiz-question-block"
+               data-correct="q-or"
+               data-explanation-right="Exactly! Plain filters only AND together. To say 'this OR that,' you combine two Q objects with the | operator: Q(role='admin') | Q(age__gte=65)."
+               data-explanation-wrong="Not quite. Stacking plain filters always means AND, which would require BOTH to be true. To express OR, you need Q objects joined with the | operator.">
+            <h3 class="quiz-question">You want "admins OR anyone over 65." Which tool combines those two conditions?</h3>
+            <div class="quiz-options">
+              <button class="quiz-option" data-value="two-filters" onclick="selectOption(this)">
+                <div class="quiz-option-radio"></div>
+                <span>Two chained <code>.filter()</code> calls.</span>
+              </button>
+              <button class="quiz-option" data-value="q-or" onclick="selectOption(this)">
+                <div class="quiz-option-radio"></div>
+                <span>A <code>Q</code> object with <code>|</code> — <code>Q(role='admin') | Q(age__gte=65)</code>.</span>
+              </button>
+              <button class="quiz-option" data-value="q-and" onclick="selectOption(this)">
+                <div class="quiz-option-radio"></div>
+                <span>A <code>Q</code> object with <code>&amp;</code> — <code>Q(role='admin') &amp; Q(age__gte=65)</code>.</span>
+              </button>
+            </div>
+            <div class="quiz-feedback"></div>
+          </div>
+
+          <button class="quiz-check-btn" onclick="checkQuiz('quiz-module4')">Check Answers</button>
+          <button class="quiz-reset-btn" onclick="resetQuiz('quiz-module4')">Try Again</button>
+        </div>
+
+        <div class="callout callout-info">
+          <div class="callout-icon">🔜</div>
+          <div class="callout-content">
+            <strong class="callout-title">Coming up next</strong>
+            <p>So far this all runs <em>inside</em> your program. Next: how does a stranger on the internet trigger one of these queries and get JSON back?</p>
+          </div>
+        </div>
+      </section>
+
+    </div>
+  </div>
+</section>
+<section class="module" id="module-5" style="background: var(--color-bg-warm)">
+  <div class="module-content">
+
+    <header class="module-header animate-in">
+      <span class="module-number">05</span>
+      <h1 class="module-title">From the Database to the Web</h1>
+      <p class="module-subtitle">Serializers, viewsets, and routers — the airport that moves a web request in and a tidy reply back out.</p>
+    </header>
+
+    <div class="module-body">
+
+      <!-- SCREEN 1 — Hook + metaphor -->
+      <section class="screen animate-in">
+        <h2 class="screen-heading">Those queries you wrote? Now the whole world can trigger them.</h2>
+        <p>In the last module you ran queries inside your own program. But real apps get poked from the <em>outside</em> — someone opens a browser or a phone app and does something.</p>
+        <p>So: when someone visits
+          <span class="term" data-definition="An HTTP request is a message your browser or app sends to a server asking it to do something — load a page, save a form, delete an item. It is the basic unit of talking to a web app.">HTTP request</span>
+          like
+          <code>POST /books/</code> to add a new book, how does that become a real row in your database — and a clean reply on the way back? Follow the request through the airport.</p>
+
+        <div class="callout callout-info">
+          <div class="callout-icon">✈️</div>
+          <div class="callout-content">
+            <strong class="callout-title">The metaphor: an airport</strong>
+            <p>A request is a passenger with a ticket. Three staff members get it to the right place and back — you will meet them next.</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- SCREEN 2 — The three characters -->
+      <section class="screen animate-in">
+        <h2 class="screen-heading">Meet the three airport staff</h2>
+        <p>Every web request is handled by the same three roles. Learn who does what, and debugging stops being guesswork.</p>
+
+        <div class="icon-rows stagger-children">
+          <div class="icon-row animate-in">
+            <div class="icon-circle" style="background: var(--color-actor-2)">🪧</div>
+            <div>
+              <strong>The
+                <span class="term" data-definition="A router is the part of a web app that reads the address of an incoming request and decides which piece of code should handle it. Like terminal signage pointing you to the right gate.">router</span>
+                — terminal signage</strong>
+              <p>Reads the address on the ticket (<code>/books/</code>) and points the passenger to the correct gate.</p>
+            </div>
+          </div>
+          <div class="icon-row animate-in">
+            <div class="icon-circle" style="background: var(--color-actor-3)">🧑‍✈️</div>
+            <div>
+              <strong>The
+                <span class="term" data-definition="A viewset is a bundle of code that handles all the standard actions for one kind of thing — create, read, update, delete. Like a gate agent who handles everything for one flight.">viewset</span>
+                — the gate agent</strong>
+              <p>Handles everything you can do to Books: create one, read one, update one, delete one.</p>
+            </div>
+          </div>
+          <div class="icon-row animate-in">
+            <div class="icon-circle" style="background: var(--color-actor-5)">🛂</div>
+            <div>
+              <strong>The
+                <span class="term" data-definition="A serializer inspects and converts data as it enters or leaves a web app: it checks that incoming data is valid, and it shapes database rows into clean output. Like passport control and customs.">serializer</span>
+                — passport control</strong>
+              <p>Inspects everything coming <em>in</em> (is this valid?) and shapes everything going <em>out</em> (into clean JSON).</p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- SCREEN 3 — HERO: message flow animation -->
+      <section class="screen animate-in">
+        <h2 class="screen-heading">Watch one request make the whole round trip</h2>
+        <p>A request flows <strong>Browser → Router → ViewSet → Serializer → ORM → Database</strong> — and the reply comes back the same way. Step through it.</p>
+
+        <div class="flow-animation" data-steps='[
+          {"highlight":"flow-actor-1","label":"Browser sends POST /books/ with a new book"},
+          {"highlight":"flow-actor-1","label":"The request reaches the router","packet":true,"from":"actor-1","to":"actor-2"},
+          {"highlight":"flow-actor-2","label":"The router reads the address and picks the Book viewset","packet":true,"from":"actor-2","to":"actor-3"},
+          {"highlight":"flow-actor-3","label":"The viewset hands the data to the serializer to check it","packet":true,"from":"actor-3","to":"actor-4"},
+          {"highlight":"flow-actor-4","label":"Passport control: is the data valid? If yes, it passes through","packet":true,"from":"actor-4","to":"actor-5"},
+          {"highlight":"flow-actor-5","label":"The ORM turns it into SQL and saves it","packet":true,"from":"actor-5","to":"actor-6"},
+          {"highlight":"flow-actor-6","label":"The database stores the new row and returns it"},
+          {"highlight":"flow-actor-4","label":"On the way out, the serializer shapes the row into clean JSON"},
+          {"highlight":"flow-actor-1","label":"The browser receives 201 Created with the new book as JSON"}
+        ]'>
+          <div class="flow-actors">
+            <div class="flow-actor" id="flow-actor-1">
+              <div class="flow-actor-icon" style="background: var(--color-actor-4)">🌐</div>
+              <span>Browser / App</span>
+            </div>
+            <div class="flow-actor" id="flow-actor-2">
+              <div class="flow-actor-icon" style="background: var(--color-actor-2)">🪧</div>
+              <span>Router</span>
+            </div>
+            <div class="flow-actor" id="flow-actor-3">
+              <div class="flow-actor-icon" style="background: var(--color-actor-3)">🧑‍✈️</div>
+              <span>ViewSet</span>
+            </div>
+            <div class="flow-actor" id="flow-actor-4">
+              <div class="flow-actor-icon" style="background: var(--color-actor-5)">🛂</div>
+              <span>Serializer</span>
+            </div>
+            <div class="flow-actor" id="flow-actor-5">
+              <div class="flow-actor-icon" style="background: var(--color-actor-1)">🔄</div>
+              <span>ORM</span>
+            </div>
+            <div class="flow-actor" id="flow-actor-6">
+              <div class="flow-actor-icon" style="background: var(--color-text-secondary)">🗄️</div>
+              <span>Database</span>
+            </div>
+          </div>
+
+          <div class="flow-packet" id="flow-packet"></div>
+          <div class="flow-step-label" id="flow-label">Click "Next Step" to begin</div>
+
+          <div class="flow-controls">
+            <button class="btn flow-next-btn">Next Step</button>
+            <button class="btn flow-reset-btn">Restart</button>
+            <span class="flow-progress"></span>
+          </div>
+        </div>
+
+        <div class="callout callout-accent">
+          <div class="callout-icon">💡</div>
+          <div class="callout-content">
+            <strong class="callout-title">Why this matters</strong>
+            <p>Each layer has one job. When something breaks, the layer tells you where to look — no more staring at the whole app at once.</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- SCREEN 4 — Serializer translation (Snippet A) -->
+      <section class="screen animate-in">
+        <h2 class="screen-heading">Passport control, in code</h2>
+        <p>Here is a real serializer. It declares exactly which fields are allowed through the gate — nothing else gets in or out.</p>
+
+        <div class="translation-block animate-in">
+          <div class="translation-code">
+            <span class="translation-label">CODE</span>
+<pre><code><span class="code-line"><span class="code-keyword">class</span> <span class="code-function">BookSerializer</span>(ModelSerializer):</span>
+<span class="code-line">    <span class="code-string">"""Serializer for Book model."""</span></span>
+<span class="code-line">    author_name = <span class="code-function">SerializerMethodField</span>()</span>
+<span class="code-line"></span>
+<span class="code-line">    <span class="code-keyword">class</span> <span class="code-function">Meta</span>:</span>
+<span class="code-line">        model = Book</span>
+<span class="code-line">        fields = [<span class="code-string">"id"</span>, <span class="code-string">"title"</span>, <span class="code-string">"author_id"</span>, <span class="code-string">"author_name"</span>, <span class="code-string">"published_year"</span>,</span>
+<span class="code-line">                  <span class="code-string">"genre"</span>, <span class="code-string">"price"</span>, <span class="code-string">"in_stock"</span>]</span>
+<span class="code-line">        read_only_fields = [<span class="code-string">"id"</span>]</span>
+</code></pre>
+          </div>
+          <div class="translation-english">
+            <span class="translation-label">PLAIN ENGLISH</span>
+            <div class="translation-lines">
+              <p class="tl">Define how a Book is checked and shaped as it enters or leaves the web.</p>
+              <p class="tl">A short note about what this does.</p>
+              <p class="tl">Add an extra computed field — a friendly author name that is not stored directly.</p>
+              <p class="tl">&nbsp;</p>
+              <p class="tl">The settings panel for this serializer.</p>
+              <p class="tl">It is based on the Book model from the database.</p>
+              <p class="tl">These are the only fields allowed through the gate — anything else is ignored.</p>
+              <p class="tl">(the rest of that field list)</p>
+              <p class="tl"><code>id</code> is a
+                <span class="term" data-definition="A read-only field can be seen by clients but never set by them. The server owns it — like a boarding-pass number you can read but not write.">read-only field</span>
+                — clients can see it but never set it themselves.</p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- SCREEN 5 — Viewset (Snippet B) -->
+      <section class="screen animate-in">
+        <h2 class="screen-heading">The gate agent, in code</h2>
+        <p>The viewset is almost embarrassingly short. You point it at some data and at a serializer — and full
+          <span class="term" data-definition="CRUD stands for Create, Read, Update, Delete — the four basic things you can do to stored data. Almost every app is mostly CRUD under the hood.">CRUD</span>
+          comes free.</p>
+
+        <div class="translation-block animate-in">
+          <div class="translation-code">
+            <span class="translation-label">CODE</span>
+<pre><code><span class="code-line"><span class="code-keyword">class</span> <span class="code-function">BookViewSet</span>(ModelViewSet):</span>
+<span class="code-line">    <span class="code-string">"""</span></span>
+<span class="code-line">    <span class="code-string">ViewSet for Book CRUD operations.</span></span>
+<span class="code-line"></span>
+<span class="code-line">    <span class="code-string">Query with Q filters via POST /books/query/</span></span>
+<span class="code-line">    <span class="code-string">"""</span></span>
+<span class="code-line">    queryset = Book.objects</span>
+<span class="code-line">    serializer_class = BookSerializer</span>
+</code></pre>
+          </div>
+          <div class="translation-english">
+            <span class="translation-label">PLAIN ENGLISH</span>
+            <div class="translation-lines">
+              <p class="tl">Define the handler for everything you can do to Books over the web.</p>
+              <p class="tl">A description of this handler...</p>
+              <p class="tl">It provides full create / read / update / delete out of the box...</p>
+              <p class="tl">&nbsp;</p>
+              <p class="tl">...plus a bonus query endpoint for advanced filtering.</p>
+              <p class="tl">(end of the description)</p>
+              <p class="tl">Point it at the Book data — which set of rows it manages.</p>
+              <p class="tl">Tell it which serializer to use for checking and shaping data. That is all — the CRUD web addresses come for free.</p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- SCREEN 6 — Router (Snippet C) + callout -->
+      <section class="screen animate-in">
+        <h2 class="screen-heading">The signage that wires it all up</h2>
+        <p>The
+          <span class="term" data-definition="A route (or endpoint) is one web address plus method that your app responds to — for example GET /books/ or DELETE /books/3/. It is a single door into your app.">router</span>
+          connects addresses to handlers. Two lines here create dozens of working web addresses.</p>
+
+        <div class="translation-block animate-in">
+          <div class="translation-code">
+            <span class="translation-label">CODE</span>
+<pre><code><span class="code-line">router = <span class="code-function">DefaultRouter</span>()</span>
+<span class="code-line">router.<span class="code-function">register</span>(<span class="code-string">"authors"</span>, AuthorViewSet, basename=<span class="code-string">"author"</span>)</span>
+<span class="code-line">router.<span class="code-function">register</span>(<span class="code-string">"books"</span>, BookViewSet, basename=<span class="code-string">"book"</span>)</span>
+</code></pre>
+          </div>
+          <div class="translation-english">
+            <span class="translation-label">PLAIN ENGLISH</span>
+            <div class="translation-lines">
+              <p class="tl">Create a router — the thing that maps web addresses to handlers.</p>
+              <p class="tl">Register the Author handler under the <code>/authors/</code> addresses.</p>
+              <p class="tl">Register the Book handler under the <code>/books/</code> addresses. From these two lines, zeebpy generates GET / POST / PUT / PATCH / DELETE routes automatically.</p>
+            </div>
+          </div>
+        </div>
+
+        <div class="callout callout-accent">
+          <div class="callout-icon">🚪</div>
+          <div class="callout-content">
+            <strong class="callout-title">One definition, many endpoints</strong>
+            <p>From a serializer + a viewset + one <code>register()</code> line, zeebpy generates a whole family of
+              <span class="term" data-definition="An endpoint (or route) is a single web address your app answers, like /books/ or /books/3/. Together they form the app's public surface.">endpoints</span>.
+              That is the payoff of a framework — you describe the shape, it builds the doors.</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- SCREEN 7 — What endpoints exist -->
+      <section class="screen animate-in">
+        <h2 class="screen-heading">The doors you just built for free</h2>
+        <p>That single <code>register("books", ...)</code> line opened all of these — no extra code:</p>
+
+        <div class="badge-list stagger-children">
+          <div class="badge-item animate-in">
+            <code class="badge-code">GET /books/</code>
+            <span class="badge-desc">List every book</span>
+          </div>
+          <div class="badge-item animate-in">
+            <code class="badge-code">POST /books/</code>
+            <span class="badge-desc">
+              <span class="term" data-definition="POST is the HTTP method for creating something new — it sends data to the server to be saved. GET only asks for data; POST changes things.">Create</span>
+              a new book</span>
+          </div>
+          <div class="badge-item animate-in">
+            <code class="badge-code">GET /books/{id}/</code>
+            <span class="badge-desc">
+              <span class="term" data-definition="GET is the HTTP method for asking the server for data without changing anything. Loading a page or fetching one item uses GET.">Read</span>
+              one book by its id</span>
+          </div>
+          <div class="badge-item animate-in">
+            <code class="badge-code">PUT /books/{id}/</code>
+            <span class="badge-desc">
+              <span class="term" data-definition="PUT replaces an entire item with new data. PATCH updates only the fields you send. Both change an existing record.">Replace</span>
+              a book fully</span>
+          </div>
+          <div class="badge-item animate-in">
+            <code class="badge-code">PATCH /books/{id}/</code>
+            <span class="badge-desc">Update just a few fields</span>
+          </div>
+          <div class="badge-item animate-in">
+            <code class="badge-code">DELETE /books/{id}/</code>
+            <span class="badge-desc">
+              <span class="term" data-definition="DELETE is the HTTP method that asks the server to remove an item permanently.">Remove</span>
+              a book</span>
+          </div>
+        </div>
+      </section>
+
+      <!-- SCREEN 8 — Group chat -->
+      <section class="screen animate-in">
+        <h2 class="screen-heading">Listen in: the staff handling GET /books/1/</h2>
+        <p>Someone just asked to read book number 1. Here is the conversation behind the scenes.</p>
+
+        <div class="chat-window" id="chat-request">
+          <div class="chat-messages">
+            <div class="chat-message" data-msg="0" data-sender="actor-2" style="display:none">
+              <div class="chat-avatar" style="background: var(--color-actor-2)">🪧</div>
+              <div class="chat-bubble">
+                <span class="chat-sender" style="color: var(--color-actor-2)">Router</span>
+                <p>Address is /books/1/ — that is the Book viewset, action: retrieve item 1.</p>
+              </div>
+            </div>
+            <div class="chat-message" data-msg="1" data-sender="actor-3" style="display:none">
+              <div class="chat-avatar" style="background: var(--color-actor-3)">🧑‍✈️</div>
+              <div class="chat-bubble">
+                <span class="chat-sender" style="color: var(--color-actor-3)">ViewSet</span>
+                <p>Got it. ORM, fetch book number 1 please.</p>
+              </div>
+            </div>
+            <div class="chat-message" data-msg="2" data-sender="actor-1" style="display:none">
+              <div class="chat-avatar" style="background: var(--color-actor-1)">🔄</div>
+              <div class="chat-bubble">
+                <span class="chat-sender" style="color: var(--color-actor-1)">ORM</span>
+                <p>SELECT * FROM books WHERE id = 1 … here is the row.</p>
+              </div>
+            </div>
+            <div class="chat-message" data-msg="3" data-sender="actor-5" style="display:none">
+              <div class="chat-avatar" style="background: var(--color-actor-5)">🛂</div>
+              <div class="chat-bubble">
+                <span class="chat-sender" style="color: var(--color-actor-5)">Serializer</span>
+                <p>Let me strip out anything private and format the rest as
+                  <span class="term" data-definition="JSON is a plain-text way of writing structured data that both apps and humans can read — names paired with values inside braces. It is the common language web apps use to exchange data.">JSON</span>.</p>
+              </div>
+            </div>
+            <div class="chat-message" data-msg="4" data-sender="actor-2" style="display:none">
+              <div class="chat-avatar" style="background: var(--color-actor-2)">🪧</div>
+              <div class="chat-bubble">
+                <span class="chat-sender" style="color: var(--color-actor-2)">Router</span>
+                <p>Sending
+                  <span class="term" data-definition="A status code is a 3-digit number a server sends back to say how a request went. 200 OK means success, 201 Created means a new item was made, 404 Not Found means the address did not match, 422 means the data was rejected.">200 OK</span>
+                  back to the browser with the JSON.</p>
+              </div>
+            </div>
+          </div>
+
+          <div class="chat-typing" id="chat-request-typing" style="display:none">
+            <div class="chat-avatar" id="chat-request-typing-avatar">?</div>
+            <div class="chat-typing-dots">
+              <span class="typing-dot"></span>
+              <span class="typing-dot"></span>
+              <span class="typing-dot"></span>
+            </div>
+          </div>
+
+          <div class="chat-controls">
+            <button class="btn chat-next-btn">Next Message</button>
+            <button class="btn chat-all-btn">Play All</button>
+            <button class="btn chat-reset-btn">Replay</button>
+            <span class="chat-progress"></span>
+          </div>
+        </div>
+      </section>
+
+      <!-- SCREEN 9 — Debugging map -->
+      <section class="screen animate-in">
+        <h2 class="screen-heading">The error tells you which layer to blame</h2>
+        <p>Because each layer has one job, the
+          <span class="term" data-definition="A status code is the 3-digit number a server returns to describe the outcome of a request — 201 created, 404 not found, 422 the data was invalid.">status code</span>
+          points straight at the culprit. This is your debugging cheat sheet.</p>
+
+        <div class="pattern-cards stagger-children">
+          <div class="pattern-card animate-in" style="border-top: 3px solid var(--color-actor-5)">
+            <div class="pattern-icon" style="background: var(--color-actor-5)">🛂</div>
+            <h4 class="pattern-title">422 Unprocessable</h4>
+            <p class="pattern-desc">The serializer rejected your data.
+              <span class="term" data-definition="Validation is the step of checking incoming data is correct before it is used — right type, nothing required missing. Like a form that will not submit until you fix the red fields.">Validation</span>
+              failed — a missing or wrong-typed field. Look at the serializer.</p>
+          </div>
+          <div class="pattern-card animate-in" style="border-top: 3px solid var(--color-actor-2)">
+            <div class="pattern-icon" style="background: var(--color-actor-2)">🪧</div>
+            <h4 class="pattern-title">404 Not Found</h4>
+            <p class="pattern-desc">The router did not recognize the address (or the id does not exist). Check the route and the URL you called.</p>
+          </div>
+          <div class="pattern-card animate-in" style="border-top: 3px solid var(--color-actor-1)">
+            <div class="pattern-icon" style="background: var(--color-actor-1)">✅</div>
+            <h4 class="pattern-title">201 Created</h4>
+            <p class="pattern-desc">Everything worked and a new row was saved. The reply carries the fresh item as JSON.</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- SCREEN 10 — Quiz -->
+      <section class="screen animate-in">
+        <h2 class="screen-heading">Check your instincts</h2>
+        <p>No memorizing — each question is a real situation. Pick where <em>you</em> would look.</p>
+
+        <div class="quiz-container" id="quiz-module5">
+          <div class="quiz-question-block"
+               data-correct="opt-serializer"
+               data-explanation-right="Exactly. A 422 means the incoming data failed validation — the serializer is passport control, and it turned the data away at the gate. Check the field types and required fields in the serializer."
+               data-explanation-wrong="Not quite. A 422 is specifically about invalid data, and only one layer inspects data on the way in. The router would give a 404 for a bad address; the database is never even reached.">
+            <h3 class="quiz-question">Your API returns <code>422 Unprocessable Entity</code> when a user submits a new book. Which layer rejected it, and why?</h3>
+            <div class="quiz-options">
+              <button class="quiz-option" data-value="opt-router" onclick="selectOption(this)">
+                <div class="quiz-option-radio"></div>
+                <span>The router — it could not find the address</span>
+              </button>
+              <button class="quiz-option" data-value="opt-serializer" onclick="selectOption(this)">
+                <div class="quiz-option-radio"></div>
+                <span>The serializer — the incoming data failed validation (a missing or wrong-typed field)</span>
+              </button>
+              <button class="quiz-option" data-value="opt-database" onclick="selectOption(this)">
+                <div class="quiz-option-radio"></div>
+                <span>The database — it ran out of storage space</span>
+              </button>
+            </div>
+            <div class="quiz-feedback"></div>
+          </div>
+
+          <div class="quiz-question-block"
+               data-correct="opt-crud"
+               data-explanation-right="Right. That one register() line generates the full CRUD set automatically: list and create at /books/, and retrieve, update, and delete at /books/{id}/. You describe the shape; the framework builds the doors."
+               data-explanation-wrong="Not quite. The whole point of registering a viewset is that you do NOT write each route by hand — the router generates the standard CRUD family for you from that single line.">
+            <h3 class="quiz-question">You registered <code>BookViewSet</code> under <code>router.register("books", ...)</code>. Without writing any more code, which web addresses now exist?</h3>
+            <div class="quiz-options">
+              <button class="quiz-option" data-value="opt-none" onclick="selectOption(this)">
+                <div class="quiz-option-radio"></div>
+                <span>None yet — you still have to write each route by hand</span>
+              </button>
+              <button class="quiz-option" data-value="opt-list" onclick="selectOption(this)">
+                <div class="quiz-option-radio"></div>
+                <span>Only <code>GET /books/</code> to list them</span>
+              </button>
+              <button class="quiz-option" data-value="opt-crud" onclick="selectOption(this)">
+                <div class="quiz-option-radio"></div>
+                <span>The full CRUD set — list/create at <code>/books/</code>, retrieve/update/delete at <code>/books/{id}/</code></span>
+              </button>
+            </div>
+            <div class="quiz-feedback"></div>
+          </div>
+
+          <div class="quiz-question-block"
+               data-correct="opt-fields"
+               data-explanation-right="Exactly. The serializer's fields list controls precisely what goes out. Drop cost from the list and keep price, and cost never appears in the JSON — no other layer needs to change."
+               data-explanation-wrong="Not quite. The router only deals with addresses and the database just stores everything. What appears in the outgoing JSON is decided by the serializer's fields list.">
+            <h3 class="quiz-question">You want the API response to hide a book's internal <code>cost</code> field but keep showing <code>price</code>. Where do you make that change?</h3>
+            <div class="quiz-options">
+              <button class="quiz-option" data-value="opt-router" onclick="selectOption(this)">
+                <div class="quiz-option-radio"></div>
+                <span>In the router, by renaming the route</span>
+              </button>
+              <button class="quiz-option" data-value="opt-fields" onclick="selectOption(this)">
+                <div class="quiz-option-radio"></div>
+                <span>In the serializer's <code>fields</code> list — it controls exactly what goes out</span>
+              </button>
+              <button class="quiz-option" data-value="opt-db" onclick="selectOption(this)">
+                <div class="quiz-option-radio"></div>
+                <span>In the database, by deleting the cost column</span>
+              </button>
+            </div>
+            <div class="quiz-feedback"></div>
+          </div>
+
+          <button class="quiz-check-btn" onclick="checkQuiz('quiz-module5')">Check Answers</button>
+          <button class="quiz-reset-btn" onclick="resetQuiz('quiz-module5')">Try Again</button>
+        </div>
+      </section>
+
+      <!-- SCREEN 11 — Next -->
+      <section class="screen animate-in">
+        <h2 class="screen-heading">But should <em>anyone</em> be allowed through?</h2>
+        <p>You now have a full set of doors into your data — create, read, update, delete, all wide open.</p>
+        <div class="callout callout-warning">
+          <div class="callout-icon">🚧</div>
+          <div class="callout-content">
+            <strong class="callout-title">Next: Guarding the Door</strong>
+            <p>Should <em>anyone</em> be allowed to delete any book? Next we put a bouncer on the door — authentication and permissions.</p>
+          </div>
+        </div>
+      </section>
+
+    </div>
+  </div>
+</section>
+<section class="module" id="module-6" style="background: var(--color-bg)">
+  <div class="module-content">
+
+    <header class="module-header animate-in">
+      <span class="module-number">06</span>
+      <h1 class="module-title">Guarding the Door</h1>
+      <p class="module-subtitle">How the API knows who you are, and what you are allowed to do.</p>
+    </header>
+
+    <div class="module-body">
+
+      <!-- ============ SCREEN 1: HOOK + METAPHOR ============ -->
+      <section class="screen animate-in">
+        <h2 class="screen-heading">Should <em>anyone</em> be able to delete a book?</h2>
+        <p>In Module 5 you learned to create and delete books over the web. That is exactly why we need a lock on the door. Should <em>any</em> stranger be able to call
+          <span class="term" data-definition="An HTTP request that asks the server to remove a record. DELETE is one of the standard web actions, alongside GET (read) and POST (create).">DELETE /books/5/</span>?
+          Obviously not.</p>
+
+        <p>So how does the API know who you are, and what you are allowed to do? Meet the <strong>bouncer</strong>.</p>
+
+        <div class="callout callout-accent">
+          <div class="callout-icon">🎟️</div>
+          <div class="callout-content">
+            <strong class="callout-title">The nightclub metaphor</strong>
+            <p>The <strong>bouncer</strong> checks your ID at the door. Your <strong>wristband</strong> proves you were already checked, so you do not re-show ID at every bar. The <strong>guest list</strong> says who gets into the VIP room. The <strong>capacity limit</strong> caps how many people pour in at once.</p>
+          </div>
+        </div>
+
+        <div class="icon-rows">
+          <div class="icon-row">
+            <div class="icon-circle" style="background: var(--color-actor-1)">💂</div>
+            <div>
+              <strong>Bouncer = the middleware</strong>
+              <p>Checks your token on every single request before anything else runs.</p>
+            </div>
+          </div>
+          <div class="icon-row">
+            <div class="icon-circle" style="background: var(--color-actor-4)">🎟️</div>
+            <div>
+              <strong>Wristband = the token</strong>
+              <p>Tamper-proof proof of who you are, so you do not log in again on every click.</p>
+            </div>
+          </div>
+          <div class="icon-row">
+            <div class="icon-circle" style="background: var(--color-actor-3)">📋</div>
+            <div>
+              <strong>Guest list = permissions</strong>
+              <p>Even a checked-in guest is not allowed everywhere. Are you allowed to delete this book?</p>
+            </div>
+          </div>
+          <div class="icon-row">
+            <div class="icon-circle" style="background: var(--color-actor-5)">🚦</div>
+            <div>
+              <strong>Capacity limit = throttling</strong>
+              <p>Only so many requests per minute, so no one can flood the club.</p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============ SCREEN 2: THE FOUR GUARDS ============ -->
+      <section class="screen animate-in">
+        <h2 class="screen-heading">Four guards, four questions</h2>
+        <p>Every protected request passes through up to four checks. Each answers one plain question.</p>
+
+        <div class="pattern-cards stagger-children">
+          <div class="pattern-card animate-in" style="border-top: 3px solid var(--color-actor-1)">
+            <div class="pattern-icon" style="background: var(--color-actor-1)">🪪</div>
+            <h4 class="pattern-title">Authentication</h4>
+            <p class="pattern-desc"><em>Who are you?</em> You prove it once with a login, and get a signed
+              <span class="term" data-definition="Short for JSON Web Token: a small, digitally signed bundle of facts about you (like your user id) that the server hands out after you log in. Anyone can read it, but no one can forge it without the secret.">token</span>.</p>
+          </div>
+          <div class="pattern-card animate-in" style="border-top: 3px solid var(--color-actor-2)">
+            <div class="pattern-icon" style="background: var(--color-actor-2)">💂</div>
+            <h4 class="pattern-title">Middleware</h4>
+            <p class="pattern-desc"><em>Is your pass real?</em> The bouncer runs on <strong>every</strong> request, decodes the token, and attaches the user.</p>
+          </div>
+          <div class="pattern-card animate-in" style="border-top: 3px solid var(--color-actor-3)">
+            <div class="pattern-icon" style="background: var(--color-actor-3)">📋</div>
+            <h4 class="pattern-title">Permissions</h4>
+            <p class="pattern-desc"><em>What may you do?</em> The guest list decides if <strong>this</strong> user may perform <strong>this</strong> action.</p>
+          </div>
+          <div class="pattern-card animate-in" style="border-top: 3px solid var(--color-actor-5)">
+            <div class="pattern-icon" style="background: var(--color-actor-5)">🚦</div>
+            <h4 class="pattern-title">Throttling</h4>
+            <p class="pattern-desc"><em>How often?</em> A capacity limit caps how many requests anyone can fire per minute.</p>
+          </div>
+        </div>
+
+        <div class="callout callout-info">
+          <div class="callout-icon">🔑</div>
+          <div class="callout-content">
+            <strong class="callout-title">Authentication vs. authorization</strong>
+            <p><span class="term" data-definition="Proving who you are. Like showing your ID at the door so the bouncer knows your name.">Authentication</span> asks <em>who are you</em>. <span class="term" data-definition="Deciding what you are allowed to do once you are identified. Like the guest list saying you can enter the main floor but not the VIP room.">Authorization</span> asks <em>what may you do</em>. They sound alike but are two separate checks — and mixing them up is a classic security bug.</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============ SCREEN 3: MINTING THE TOKEN (Snippet A) ============ -->
+      <section class="screen animate-in">
+        <h2 class="screen-heading">Stamping the wristband</h2>
+        <p>When you log in successfully, the server builds a wristband: a small bundle of facts, sealed with a
+          <span class="term" data-definition="A digital seal made with a secret key. It lets the server later confirm the token was not tampered with. Change even one letter of the token and the signature no longer matches.">signature</span>.
+          Here is that exact moment in <code>zeeb_api/auth/jwt.py</code>.</p>
+
+        <div class="translation-block animate-in">
+          <div class="translation-code">
+            <span class="translation-label">CODE</span>
+<pre><code><span class="code-line">    payload = {</span>
+<span class="code-line">        <span class="code-string">"sub"</span>: <span class="code-function">str</span>(user_id),</span>
+<span class="code-line">        <span class="code-string">"type"</span>: <span class="code-string">"access"</span>,</span>
+<span class="code-line">        <span class="code-string">"exp"</span>: now + <span class="code-function">timedelta</span>(minutes=config.access_token_expire_minutes),</span>
+<span class="code-line">        <span class="code-string">"iat"</span>: now,</span>
+<span class="code-line">        <span class="code-string">"jti"</span>: <span class="code-function">str</span>(uuid.<span class="code-function">uuid4</span>()),</span>
+<span class="code-line">    }</span>
+<span class="code-line"></span>
+<span class="code-line">    <span class="code-keyword">if</span> config.issuer:</span>
+<span class="code-line">        payload[<span class="code-string">"iss"</span>] = config.issuer</span>
+<span class="code-line">    <span class="code-keyword">if</span> config.audience:</span>
+<span class="code-line">        payload[<span class="code-string">"aud"</span>] = config.audience</span>
+<span class="code-line">    <span class="code-keyword">if</span> claims:</span>
+<span class="code-line">        payload[<span class="code-string">"claims"</span>] = claims</span>
+<span class="code-line"></span>
+<span class="code-line">    <span class="code-keyword">return</span> jwt.<span class="code-function">encode</span>(payload, config.secret_key, algorithm=config.algorithm)</span>
+</code></pre>
+          </div>
+          <div class="translation-english">
+            <span class="translation-label">PLAIN ENGLISH</span>
+            <div class="translation-lines">
+              <p class="tl">Start building the wristband — a small bundle of facts.</p>
+              <p class="tl"><strong>sub</strong> = who this is (the user id).</p>
+              <p class="tl"><strong>type</strong> = what kind of pass this is (an access pass).</p>
+              <p class="tl"><strong>exp</strong> = when it expires — wristbands do not last forever.</p>
+              <p class="tl"><strong>iat</strong> = when it was issued.</p>
+              <p class="tl"><strong>jti</strong> = a unique serial number for this exact token.</p>
+              <p class="tl">Optionally stamp who issued it and who it is for.</p>
+              <p class="tl">Optionally attach extra facts.</p>
+              <p class="tl">Finally, seal it with a secret signature. Anyone can <em>read</em> the facts, but no one can forge or change them without the secret.</p>
+            </div>
+          </div>
+        </div>
+
+        <div class="callout callout-accent">
+          <div class="callout-icon">💡</div>
+          <div class="callout-content">
+            <strong class="callout-title">Why a signed token beats a session lookup</strong>
+            <p>The wristband carries its own proof. The server does not have to remember you or look you up in a database on every click — it just re-reads the sealed facts. Engineers call this <em>stateless</em> auth.</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============ SCREEN 4: THE BOUNCER (Snippet B) ============ -->
+      <section class="screen animate-in">
+        <h2 class="screen-heading">The bouncer on every request</h2>
+        <p>Before your request reaches the code that deletes a book, the
+          <span class="term" data-definition="Code that runs in the middle — between the incoming request and your actual handler. Like a bouncer positioned at the door that every guest must pass before entering.">middleware</span>
+          inspects it. It looks in the
+          <span class="term" data-definition="A labeled slot in the request that carries extra info the browser attaches, such as Authorization. Think of it as the note pinned to the front of an envelope.">header</span>
+          for a
+          <span class="term" data-definition="A token sent in the Authorization header prefixed with the word Bearer. It literally means the bearer of this token is allowed in — like showing your wristband.">Bearer token</span>.</p>
+
+        <div class="translation-block animate-in">
+          <div class="translation-code">
+            <span class="translation-label">CODE</span>
+<pre><code><span class="code-line">        request.state.user = <span class="code-keyword">None</span></span>
+<span class="code-line"></span>
+<span class="code-line">        <span class="code-comment"># Try to extract and validate token</span></span>
+<span class="code-line">        auth_header = request.headers.<span class="code-function">get</span>(<span class="code-string">"Authorization"</span>)</span>
+<span class="code-line">        <span class="code-keyword">if</span> auth_header <span class="code-keyword">and</span> auth_header.<span class="code-function">startswith</span>(<span class="code-string">"Bearer "</span>):</span>
+<span class="code-line">            token = auth_header[<span class="code-number">7</span>:]  <span class="code-comment"># Remove "Bearer " prefix</span></span>
+<span class="code-line"></span>
+<span class="code-line">            <span class="code-keyword">try</span>:</span>
+<span class="code-line">                payload = <span class="code-function">decode_token</span>(token, token_type=<span class="code-string">"access"</span>)</span>
+<span class="code-line"></span>
+<span class="code-line">                <span class="code-comment"># Load user (custom loader or default)</span></span>
+<span class="code-line">                <span class="code-keyword">if</span> self.user_loader:</span>
+<span class="code-line">                    request.state.user = <span class="code-keyword">await</span> self.<span class="code-function">user_loader</span>(payload)</span>
+<span class="code-line">                <span class="code-keyword">else</span>:</span>
+<span class="code-line">                    request.state.user = <span class="code-function">AuthenticatedUser</span>(payload)</span>
+</code></pre>
+          </div>
+          <div class="translation-english">
+            <span class="translation-label">PLAIN ENGLISH</span>
+            <div class="translation-lines">
+              <p class="tl">Assume nobody until proven otherwise — start with no user.</p>
+              <p class="tl">Look for a token on the request.</p>
+              <p class="tl">Check the request for an Authorization header.</p>
+              <p class="tl">If it starts with the word Bearer, the token follows it...</p>
+              <p class="tl">...snip off the Bearer prefix to get the raw token.</p>
+              <p class="tl">Try to open and verify the wristband...</p>
+              <p class="tl">...decode it and check the signature and expiry.</p>
+              <p class="tl">If a custom user-lookup is set, use it to fetch the full user...</p>
+              <p class="tl">...otherwise build a lightweight user straight from the token facts. Either way, <code>request.state.user</code> is now set for everything downstream.</p>
+            </div>
+          </div>
+        </div>
+
+        <div class="callout callout-info">
+          <div class="callout-icon">📌</div>
+          <div class="callout-content">
+            <strong class="callout-title">One shared clipboard</strong>
+            <p><span class="term" data-definition="A per-request scratchpad where middleware can stash information for later code to read. Everything downstream in the same request can see request.state.user.">request.state</span> is the note the bouncer clips to your file. Every guard and action after it reads the same note to know who you are.</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============ SCREEN 5: THE FLOW (HERO) ============ -->
+      <section class="screen animate-in">
+        <h2 class="screen-heading">Trace a real delete, step by step</h2>
+        <p>Watch an authenticated <code>DELETE /books/5/</code> travel through all four guards. Click <strong>Next Step</strong> to follow the wristband.</p>
+
+        <div class="flow-animation" data-steps='[
+          {"highlight":"flow-actor-1","label":"Browser sends DELETE /books/5/ with its token in the header"},
+          {"highlight":"flow-actor-1","label":"The request hits the bouncer first","packet":true,"from":"actor-1","to":"actor-2"},
+          {"highlight":"flow-actor-2","label":"The bouncer decodes the token and checks the seal and expiry"},
+          {"highlight":"flow-actor-2","label":"Valid — it attaches the user to the request","packet":true,"from":"actor-2","to":"actor-3"},
+          {"highlight":"flow-actor-3","label":"The guest list asks: is this user allowed to delete?"},
+          {"highlight":"flow-actor-3","label":"Allowed — pass it on","packet":true,"from":"actor-3","to":"actor-4"},
+          {"highlight":"flow-actor-4","label":"The viewset performs the delete","packet":true,"from":"actor-4","to":"actor-5"},
+          {"highlight":"flow-actor-5","label":"The row is removed and a 204 No Content goes back"}
+        ]'>
+          <div class="flow-actors">
+            <div class="flow-actor" id="flow-actor-1">
+              <div class="flow-actor-icon">🎟️</div>
+              <span>Browser (with wristband)</span>
+            </div>
+            <div class="flow-actor" id="flow-actor-2">
+              <div class="flow-actor-icon">💂</div>
+              <span>Middleware (bouncer)</span>
+            </div>
+            <div class="flow-actor" id="flow-actor-3">
+              <div class="flow-actor-icon">📋</div>
+              <span>Permission check (guest list)</span>
+            </div>
+            <div class="flow-actor" id="flow-actor-4">
+              <div class="flow-actor-icon">⚙️</div>
+              <span>ViewSet (the action)</span>
+            </div>
+            <div class="flow-actor" id="flow-actor-5">
+              <div class="flow-actor-icon">🗄️</div>
+              <span>Database</span>
+            </div>
+          </div>
+
+          <div class="flow-packet" id="flow-packet"></div>
+
+          <div class="flow-step-label" id="flow-label">Click "Next Step" to begin</div>
+
+          <div class="flow-controls">
+            <button class="btn flow-next-btn">Next Step</button>
+            <button class="btn flow-reset-btn">Restart</button>
+            <span class="flow-progress"></span>
+          </div>
+        </div>
+
+        <div class="callout callout-warning">
+          <div class="callout-icon">🚫</div>
+          <div class="callout-content">
+            <strong class="callout-title">Where it can stop early</strong>
+            <p>If the token were missing or expired, the bouncer stops it at step 3 and the browser gets a
+              <span class="term" data-definition="The web status code for Unauthorized: we do not know who you are, because your token is missing, malformed, or expired. Log in again.">401 Unauthorized</span>.
+              If the user simply lacked permission, the guest list stops it at step 5 with a
+              <span class="term" data-definition="The web status code for Forbidden: we know exactly who you are, but you are not allowed to do this. Logging in again will not help.">403 Forbidden</span>.</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============ SCREEN 6: THE GUEST LIST (Snippet C) ============ -->
+      <section class="screen animate-in">
+        <h2 class="screen-heading">The guest list, in code</h2>
+        <p>A <span class="term" data-definition="A yes/no gate that runs before an action to decide whether this particular user is allowed to perform it.">permission</span>
+          is just a yes/no function that runs before the action. Here is the simplest one — <em>are you logged in at all?</em> — from <code>zeeb_api/permissions/base.py</code>.</p>
+
+        <div class="translation-block animate-in">
+          <div class="translation-code">
+            <span class="translation-label">CODE</span>
+<pre><code><span class="code-line">    <span class="code-keyword">async def</span> <span class="code-function">has_permission</span>(self, request: Request, view: ViewSet) -&gt; bool:</span>
+<span class="code-line">        <span class="code-comment"># Check if user is authenticated</span></span>
+<span class="code-line">        <span class="code-comment"># FastAPI stores user in request.state after authentication</span></span>
+<span class="code-line">        user = <span class="code-function">getattr</span>(request.state, <span class="code-string">"user"</span>, <span class="code-keyword">None</span>)</span>
+<span class="code-line">        <span class="code-keyword">return</span> user <span class="code-keyword">is not</span> <span class="code-keyword">None</span> <span class="code-keyword">and</span> <span class="code-function">getattr</span>(user, <span class="code-string">"is_authenticated"</span>, <span class="code-keyword">True</span>)</span>
+</code></pre>
+          </div>
+          <div class="translation-english">
+            <span class="translation-label">PLAIN ENGLISH</span>
+            <div class="translation-lines">
+              <p class="tl">This yes/no gate runs before the action.</p>
+              <p class="tl">It looks at who the bouncer already identified.</p>
+              <p class="tl">Grab the user the middleware attached (or nothing, if none).</p>
+              <p class="tl">Allow the action only if there <em>is</em> a user and they count as logged in. No wristband, no entry.</p>
+            </div>
+          </div>
+        </div>
+
+        <p>Richer permission classes build on this same shape — checking whether you are an admin, whether you own the record, or whether you hold a specific role.</p>
+      </section>
+
+      <!-- ============ SCREEN 7: THE INSECURE-SECRET SAFETY NET ============ -->
+      <section class="screen animate-in">
+        <h2 class="screen-heading">The whole thing rests on one secret</h2>
+        <p>The wristband is only forgery-proof because the seal uses a
+          <span class="term" data-definition="A private password the server uses to sign and verify tokens. It never leaves the server. If it leaks, anyone can mint tokens for anyone.">secret key</span>
+          that only the server knows. If anyone could guess that secret, they could forge a wristband for <em>any</em> user — including an admin.</p>
+
+        <div class="callout callout-warning">
+          <div class="callout-icon">⚠️</div>
+          <div class="callout-content">
+            <strong class="callout-title">zeebpy refuses to start with a default secret</strong>
+            <p>When
+              <span class="term" data-definition="A setting that says whether you are in development (DEBUG=true, relaxed) or production (DEBUG=false, strict). Real deployments run with DEBUG off.">DEBUG</span>
+              is <code>false</code>, zeebpy will <strong>not boot</strong> with the built-in placeholder secret — it raises an error instead. This is a safety net so a demo secret never sneaks into production. Never ship a default or guessable secret.</p>
+          </div>
+        </div>
+
+        <div class="callout callout-info">
+          <div class="callout-icon">🛡️</div>
+          <div class="callout-content">
+            <strong class="callout-title">Why this matters to a vibe coder</strong>
+            <p>Security is where vibe coders get burned. Knowing where the <em>who are you</em> and <em>what may you do</em> checks live lets you ask an AI for the right protection — and spot when it suggests something insecure, like storing a password as plain text or trusting a user id the browser sends.</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============ SCREEN 8: QUIZ ============ -->
+      <section class="screen animate-in">
+        <h2 class="screen-heading">Check your instincts</h2>
+        <p>Three security decisions. Pause and think about which guard is doing the work.</p>
+
+        <div class="quiz-container" id="quiz-module6">
+
+          <div class="quiz-question-block"
+               data-correct="opt-b"
+               data-explanation-right="Exactly. With no valid token, the middleware never attaches a user, so request.state.user stays None. The permission check then sees nobody and returns false, producing a 401. No wristband means no entry."
+               data-explanation-wrong="Think earlier in the chain. A logged-out visitor never got a valid wristband, so the bouncer and the permission gate — not the database or the viewset — are what turn them away.">
+            <h3 class="quiz-question">A logged-out visitor calls <code>DELETE /books/5/</code> and gets <code>401 Unauthorized</code>. Which guard stopped them?</h3>
+            <div class="quiz-options">
+              <button class="quiz-option" data-value="opt-a" onclick="selectOption(this)">
+                <div class="quiz-option-radio"></div>
+                <span>The database refused to delete the row.</span>
+              </button>
+              <button class="quiz-option" data-value="opt-b" onclick="selectOption(this)">
+                <div class="quiz-option-radio"></div>
+                <span>The middleware and permission check — no valid token means no attached user.</span>
+              </button>
+              <button class="quiz-option" data-value="opt-c" onclick="selectOption(this)">
+                <div class="quiz-option-radio"></div>
+                <span>The throttle limit — they made too many requests.</span>
+              </button>
+            </div>
+            <div class="quiz-feedback"></div>
+          </div>
+
+          <div class="quiz-question-block"
+               data-correct="opt-c"
+               data-explanation-right="Right. The browser controls everything it sends, so a plain user_id could be set to anyone. A signed token carries a seal only the server can produce, so it cannot be forged without the server secret."
+               data-explanation-wrong="Not the main reason. Signed tokens are not mostly about speed or size — the core point is trust: a raw user_id from the browser can be faked, but a signature cannot be forged without the secret.">
+            <h3 class="quiz-question">Why hand out a signed token instead of just trusting a <code>user_id</code> the browser sends?</h3>
+            <div class="quiz-options">
+              <button class="quiz-option" data-value="opt-a" onclick="selectOption(this)">
+                <div class="quiz-option-radio"></div>
+                <span>Tokens are shorter, so they save bandwidth.</span>
+              </button>
+              <button class="quiz-option" data-value="opt-b" onclick="selectOption(this)">
+                <div class="quiz-option-radio"></div>
+                <span>Tokens are faster for the database to look up.</span>
+              </button>
+              <button class="quiz-option" data-value="opt-c" onclick="selectOption(this)">
+                <div class="quiz-option-radio"></div>
+                <span>The browser could lie and send any id; a signed token cannot be forged without the server secret.</span>
+              </button>
+            </div>
+            <div class="quiz-feedback"></div>
+          </div>
+
+          <div class="quiz-question-block"
+               data-correct="opt-a"
+               data-explanation-right="Exactly — that is throttling, the capacity limit. It caps how often anyone can call, regardless of who they are, so one client cannot flood the API."
+               data-explanation-wrong="That is a different guard. Authentication and permissions decide who you are and what you may do, but not how often — capping request rate is the job of throttling.">
+            <h3 class="quiz-question">You want to stop one client from hammering your API 10,000 times a minute. Which of the four guards is that?</h3>
+            <div class="quiz-options">
+              <button class="quiz-option" data-value="opt-a" onclick="selectOption(this)">
+                <div class="quiz-option-radio"></div>
+                <span><span class="term" data-definition="Rate limiting: capping how many requests a client can make in a time window, like a nightclub with a capacity limit. Excess requests get a 429 Too Many Requests.">Throttling</span> — the capacity limit.</span>
+              </button>
+              <button class="quiz-option" data-value="opt-b" onclick="selectOption(this)">
+                <div class="quiz-option-radio"></div>
+                <span>Authentication — checking who they are.</span>
+              </button>
+              <button class="quiz-option" data-value="opt-c" onclick="selectOption(this)">
+                <div class="quiz-option-radio"></div>
+                <span>Permissions — the guest list.</span>
+              </button>
+            </div>
+            <div class="quiz-feedback"></div>
+          </div>
+
+          <button class="quiz-check-btn" onclick="checkQuiz('quiz-module6')">Check Answers</button>
+          <button class="quiz-reset-btn" onclick="resetQuiz('quiz-module6')">Try Again</button>
+        </div>
+
+        <div class="callout callout-accent">
+          <div class="callout-icon">🤖</div>
+          <div class="callout-content">
+            <strong class="callout-title">One layer left</strong>
+            <p>You now understand the lock on the door. Next up, Module 7 — <em>The Robot Helpers</em>: the helper functions an AI assistant uses to build all of this <em>for</em> you, safely.</p>
+          </div>
+        </div>
+      </section>
+
+    </div>
+  </div>
+</section>
+<section class="module" id="module-7" style="background: var(--color-bg-warm)">
+  <div class="module-content">
+    <header class="module-header animate-in">
+      <span class="module-number">07</span>
+      <h1 class="module-title">The Robot Helpers</h1>
+      <p class="module-subtitle">Meet the layer an AI uses to build your app — safely. And take a victory lap across everything you've learned.</p>
+    </header>
+
+    <div class="module-body">
+
+      <!-- ===================== SCREEN 1: HOOK ===================== -->
+      <section class="screen animate-in">
+        <h2 class="screen-heading">From the human's door to the robot's help desk</h2>
+        <p>In Module 6 you saw the whole framework a <em>human</em> uses. Now meet the layer an <em>AI</em> uses.</p>
+        <p>zeebpy ships about <strong>43 helper functions</strong> an AI assistant can call to
+          <span class="term" data-definition="Scaffolding means auto-generating the starter files and folders for a new piece of your app — like a template kit that lays the foundation so you don't type it all by hand.">scaffold</span>
+          apps, run
+          <span class="term" data-definition="A migration is a recorded change to your database's structure — like a numbered save point that adds a table or column and can be applied or rolled back.">migrations</span>,
+          and inspect your database. Every single one obeys two unbreakable rules.</p>
+
+        <div class="callout callout-info">
+          <div class="callout-icon">🏢</div>
+          <div class="callout-content">
+            <strong class="callout-title">The metaphor: a help desk with one standard form</strong>
+            <p>Imagine a help desk where every request — no matter how it goes — comes back on the same tidy slip: <em>done ✓ or not done ✗, here's why, here's the data.</em> No confusing pile of errors ever gets thrown back at you across the counter.</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- ===================== SCREEN 2: THE TWO RULES ===================== -->
+      <section class="screen animate-in">
+        <h2 class="screen-heading">Two rules, and they're a masterclass in careful design</h2>
+        <div class="icon-rows">
+          <div class="icon-row">
+            <div class="icon-circle" style="background: var(--color-actor-3)">📋</div>
+            <div>
+              <strong>Rule 1 — Uniform result</strong>
+              <p>Every function hands back the exact same shape:
+                <span class="term" data-definition="AgentResult is the standard result slip every helper returns. It always has three parts: success (did it work?), message (a sentence for humans), and data (the structured details).">AgentResult</span>(success, message, data). Callers never have to guess.</p>
+            </div>
+          </div>
+          <div class="icon-row">
+            <div class="icon-circle" style="background: var(--color-actor-3)">🛡️</div>
+            <div>
+              <strong>Rule 2 — Never raises</strong>
+              <p>A
+                <span class="term" data-definition="A decorator is a wrapper you place on top of a function (written as @name above it) that adds behavior without changing the function's own code — like slipping a document into a protective sleeve.">decorator</span>
+                catches <em>any</em>
+                <span class="term" data-definition="An exception is an error that interrupts a program. To 'raise' one is to throw that error up to whoever called you — which, unhandled, crashes the program.">error</span>
+                and turns it into a friendly failed result instead of crashing the caller.</p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ===================== SCREEN 3: THE UNIFORM SHAPE ===================== -->
+      <section class="screen animate-in">
+        <h2 class="screen-heading">Rule 1 up close: one shape, every time</h2>
+        <p>Whatever you ask for, the slip has the same three fields. That predictability is the whole point.</p>
+
+        <div class="badge-list stagger-children">
+          <div class="badge-item animate-in">
+            <code class="badge-code">success</code>
+            <span class="badge-desc">Did it work? A simple true / false. This is what the caller checks first.</span>
+          </div>
+          <div class="badge-item animate-in">
+            <code class="badge-code">message</code>
+            <span class="badge-desc">A human-readable sentence — "Created app 'blog'." or "Project folder not found."</span>
+          </div>
+          <div class="badge-item animate-in">
+            <code class="badge-code">data</code>
+            <span class="badge-desc">A bag of structured details (file paths, row counts, names). May be empty — but it's always there.</span>
+          </div>
+        </div>
+
+        <div class="callout callout-accent">
+          <div class="callout-icon">💡</div>
+          <div class="callout-content">
+            <strong class="callout-title">Why a fixed shape matters</strong>
+            <p>Because the
+              <span class="term" data-definition="A return value is whatever a function hands back to the code that called it — the answer you get after asking a question.">return value</span>
+              never changes shape, the code calling 43 different functions can be written once and trusted everywhere. This is called a
+              <span class="term" data-definition="A contract in software is a promise about how a piece of code behaves — what it takes in and what it hands back. Keep the contract and everyone who relies on you keeps working.">contract</span>.</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- ===================== SCREEN 4: THE SAFETY WRAPPER (code↔english) ===================== -->
+      <section class="screen animate-in">
+        <h2 class="screen-heading">Rule 2 up close: the safety net that never lets go</h2>
+        <p>This is the real wrapper. It looks long, but it's doing one calm thing: <em>catch everything, hand back a slip.</em></p>
+
+        <div class="translation-block animate-in">
+          <div class="translation-code">
+            <span class="translation-label">CODE</span>
+<pre><code><span class="code-line">        <span class="code-comment">@functools.wraps(fn)</span></span>
+<span class="code-line">        <span class="code-keyword">async def</span> <span class="code-function">wrapper</span>(*args: Any, **kwargs: Any) -> AgentResult:</span>
+<span class="code-line">            <span class="code-keyword">try</span>:</span>
+<span class="code-line">                <span class="code-keyword">if</span> needs_root:</span>
+<span class="code-line">                    bound = signature.<span class="code-function">bind</span>(*args, **kwargs)</span>
+<span class="code-line">                    bound.<span class="code-function">apply_defaults</span>()</span>
+<span class="code-line">                    given = bound.arguments.<span class="code-function">get</span>(<span class="code-string">"project_root"</span>)</span>
+<span class="code-line">                    <span class="code-keyword">if</span> <span class="code-function">isinstance</span>(given, str):</span>
+<span class="code-line">                        given = <span class="code-function">Path</span>(given)</span>
+<span class="code-line">                    <span class="code-keyword">try</span>:</span>
+<span class="code-line">                        bound.arguments[<span class="code-string">"project_root"</span>] = <span class="code-function">require_project_root</span>(given)</span>
+<span class="code-line">                    <span class="code-keyword">except</span> RuntimeError <span class="code-keyword">as</span> exc:</span>
+<span class="code-line">                        logger.<span class="code-function">info</span>(<span class="code-string">"%s failed: %s"</span>, fn.__qualname__, exc)</span>
+<span class="code-line">                        <span class="code-keyword">return</span> <span class="code-function">fail</span>(<span class="code-function">str</span>(exc), code=<span class="code-string">"no_project_root"</span>)</span>
+<span class="code-line">                    args, kwargs = bound.args, bound.kwargs</span>
+<span class="code-line">                <span class="code-keyword">return await</span> <span class="code-function">fn</span>(*args, **kwargs)</span>
+<span class="code-line">            <span class="code-keyword">except</span> AgentError <span class="code-keyword">as</span> exc:</span>
+<span class="code-line">                <span class="code-comment"># Expected, targeted failure — no traceback needed.</span></span>
+<span class="code-line">                logger.<span class="code-function">info</span>(<span class="code-string">"%s failed: %s"</span>, fn.__qualname__, exc)</span>
+<span class="code-line">                <span class="code-keyword">return</span> exc.result</span>
+<span class="code-line">            <span class="code-keyword">except</span> FileNotFoundError <span class="code-keyword">as</span> exc:</span>
+<span class="code-line">                logger.<span class="code-function">exception</span>(<span class="code-string">"%s failed"</span>, fn.__qualname__)</span>
+<span class="code-line">                <span class="code-keyword">return</span> <span class="code-function">fail</span>(<span class="code-string">f"FileNotFoundError: {exc}"</span>, code=<span class="code-string">"file_not_found"</span>)</span>
+<span class="code-line">            <span class="code-keyword">except</span> PermissionError <span class="code-keyword">as</span> exc:</span>
+<span class="code-line">                logger.<span class="code-function">exception</span>(<span class="code-string">"%s failed"</span>, fn.__qualname__)</span>
+<span class="code-line">                <span class="code-keyword">return</span> <span class="code-function">fail</span>(<span class="code-string">f"PermissionError: {exc}"</span>, code=<span class="code-string">"permission_denied"</span>)</span>
+<span class="code-line">            <span class="code-keyword">except</span> Exception <span class="code-keyword">as</span> exc:</span>
+<span class="code-line">                logger.<span class="code-function">exception</span>(<span class="code-string">"%s failed"</span>, fn.__qualname__)</span>
+<span class="code-line">                <span class="code-keyword">return</span> <span class="code-function">AgentResult</span>(</span>
+<span class="code-line">                    success=False, message=<span class="code-string">f"{type(exc).__name__}: {exc}"</span></span>
+<span class="code-line">                )</span></code></pre>
+          </div>
+          <div class="translation-english">
+            <span class="translation-label">PLAIN ENGLISH</span>
+            <div class="translation-lines">
+              <p class="tl">Wrap the real function so callers still see its name and docs — but with our safety net around the whole body.</p>
+              <p class="tl"><strong><span class="term" data-definition="'try' starts a block that attempts risky work while standing ready to catch anything that goes wrong inside it.">try</span></strong> = attempt the real work, ready to catch <em>anything</em> that goes wrong.</p>
+              <p class="tl">First, resolve and sanity-check the project folder. If that step fails, hand back a clean failure slip — don't crash.</p>
+              <p class="tl">Now run the actual function and return whatever it produced.</p>
+              <p class="tl">If it raised an <em>expected</em> error, return the friendly failure it already prepared.</p>
+              <p class="tl">If a file was missing, return a "file not found" slip — not a crash.</p>
+              <p class="tl">If a permission was denied, return a "permission denied" slip.</p>
+              <p class="tl">And the catch-all: <em>any</em> other error at all becomes an AgentResult with success = False. Nothing ever escapes as an
+                <span class="term" data-definition="To 'except' an error means to catch it and handle it gracefully instead of letting it crash the program.">exception</span>.</p>
+            </div>
+          </div>
+        </div>
+
+        <div class="callout callout-accent">
+          <div class="callout-icon">🪤</div>
+          <div class="callout-content">
+            <strong class="callout-title">The whole trick in one sentence</strong>
+            <p>No matter what breaks — missing file, denied permission, or a bug nobody predicted — the last net catches it and turns it into a normal result. The caller <em>cannot</em> be crashed.</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- ===================== SCREEN 5: THE CLEVER TRICKS (pattern cards) ===================== -->
+      <section class="screen animate-in">
+        <h2 class="screen-heading">Five clever tricks worth stealing</h2>
+        <p>These patterns are why an AI can operate on your codebase without you holding your breath.</p>
+
+        <div class="pattern-cards stagger-children">
+          <div class="pattern-card animate-in" style="border-top: 3px solid var(--color-actor-1)">
+            <div class="pattern-icon" style="background: var(--color-actor-1)">📋</div>
+            <h4 class="pattern-title">Uniform Result</h4>
+            <p class="pattern-desc">Every function hands back the same slip: success, message, data. Callers never guess the shape.</p>
+          </div>
+          <div class="pattern-card animate-in" style="border-top: 3px solid var(--color-actor-2)">
+            <div class="pattern-icon" style="background: var(--color-actor-2)">🛡️</div>
+            <h4 class="pattern-title">Never Raises</h4>
+            <p class="pattern-desc">A decorator catches every error and converts it to a failed result. One bad call cannot crash the whole agent.</p>
+          </div>
+          <div class="pattern-card animate-in" style="border-top: 3px solid var(--color-actor-3)">
+            <div class="pattern-icon" style="background: var(--color-actor-3)">🔌</div>
+            <h4 class="pattern-title">Zero MCP Dependency</h4>
+            <p class="pattern-desc">Ready to plug into an AI tool protocol
+              (<span class="term" data-definition="MCP (Model Context Protocol) is a shared standard that lets AI assistants safely call external tools and read resources. Think of it as a universal power outlet for AI tools.">MCP</span>),
+              but needs none of it installed. You can import and call these from plain Python.</p>
+          </div>
+          <div class="pattern-card animate-in" style="border-top: 3px solid var(--color-actor-4)">
+            <div class="pattern-icon" style="background: var(--color-actor-4)">🔒</div>
+            <h4 class="pattern-title">Read-Only SQL Gate</h4>
+            <p class="pattern-desc">The query helper
+              <span class="term" data-definition="To sanitize input is to clean and check it before use — stripping out anything dangerous so a bad request can't cause harm.">strips</span>
+              comments, allows a single statement, blocks dangerous keywords, and always
+              <span class="term" data-definition="To roll back is to undo everything a database operation did, returning to the state from before it started — as if it never happened.">rolls back</span>
+              — so an AI can <em>look</em> but never <em>break</em>.</p>
+          </div>
+          <div class="pattern-card animate-in" style="border-top: 3px solid var(--color-actor-5)">
+            <div class="pattern-icon" style="background: var(--color-actor-5)">🚧</div>
+            <h4 class="pattern-title">No Escaping the Project</h4>
+            <p class="pattern-desc">File helpers reject any path that tries to climb out of the project folder.</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- ===================== SCREEN 6: THE SQL GATE zoom ===================== -->
+      <section class="screen animate-in">
+        <h2 class="screen-heading">Why the query gate always rolls back</h2>
+        <p>When an AI wants to peek at your data, this gate lets it look through the glass — never touch the merchandise.</p>
+
+        <div class="flow-steps">
+          <div class="flow-step">
+            <div class="flow-step-num">1</div>
+            <p>Strip out comments that could hide sneaky code</p>
+          </div>
+          <div class="flow-arrow">→</div>
+          <div class="flow-step">
+            <div class="flow-step-num">2</div>
+            <p>Allow one statement only — no chaining a second command</p>
+          </div>
+          <div class="flow-arrow">→</div>
+          <div class="flow-step">
+            <div class="flow-step-num">3</div>
+            <p>Block a
+              <span class="term" data-definition="A keyword denylist is a list of forbidden words (like DROP or DELETE) that a request is checked against and rejected if it contains any of them.">denylist</span>
+              of dangerous words (DROP, DELETE…)</p>
+          </div>
+          <div class="flow-arrow">→</div>
+          <div class="flow-step">
+            <div class="flow-step-num">4</div>
+            <p>Always roll back, so nothing is ever saved</p>
+          </div>
+        </div>
+
+        <div class="callout callout-info">
+          <div class="callout-icon">🔎</div>
+          <div class="callout-content">
+            <strong class="callout-title">Read-only by construction</strong>
+            <p>It isn't "please be careful." The data <em>literally cannot</em> change, because the last step undoes any write before it can stick. Safety built into the machinery, not left to good intentions.</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- ===================== SCREEN 7: DEFENSIVE DESIGN callout ===================== -->
+      <section class="screen animate-in">
+        <h2 class="screen-heading">The big idea: defensive design</h2>
+        <div class="callout callout-accent">
+          <div class="callout-icon">🧱</div>
+          <div class="callout-content">
+            <strong class="callout-title">Predictability is what makes automation trustworthy</strong>
+            <p>By <em>guaranteeing</em> the return shape and <em>guaranteeing</em> no exception escapes, zeebpy turns 43 different functions into one predictable, safe contract. That's the difference between an AI helper you can leave running and one you have to babysit.</p>
+          </div>
+        </div>
+        <p>This "always return a result object, never throw" pattern is something you can ask an AI to build for <em>you</em> — in any language, for any set of tools.</p>
+      </section>
+
+      <!-- ===================== SCREEN 8: QUIZ ===================== -->
+      <section class="screen animate-in">
+        <h2 class="screen-heading">Think it through</h2>
+        <div class="quiz-container" id="quiz-module7">
+
+          <div class="quiz-question-block"
+               data-correct="opt-uniform"
+               data-explanation-right="Exactly. Making every tool return a uniform result and never throw means one failure can't cascade into a crash — the agent just reads the slip and moves on. Both 'uniform return' and 'never raise' are the gold-standard rules here."
+               data-explanation-wrong="Not quite. Pretty output and fast speed are nice, but the rule that actually makes an AI's tools safe is: return the SAME result shape every time and never let an error escape as a crash.">
+            <h3 class="quiz-question">You're designing your own set of tools for an AI to call. What's one rule from zeebpy worth copying?</h3>
+            <div class="quiz-options">
+              <button class="quiz-option" data-value="opt-uniform" onclick="selectOption(this)">
+                <div class="quiz-option-radio"></div>
+                <span>Make every tool return a uniform result object and never throw — one failure can't crash the agent</span>
+              </button>
+              <button class="quiz-option" data-value="opt-pretty" onclick="selectOption(this)">
+                <div class="quiz-option-radio"></div>
+                <span>Make each tool print colorful, nicely formatted output</span>
+              </button>
+              <button class="quiz-option" data-value="opt-fast" onclick="selectOption(this)">
+                <div class="quiz-option-radio"></div>
+                <span>Make each tool as fast as possible, even if results vary in shape</span>
+              </button>
+            </div>
+            <div class="quiz-feedback"></div>
+          </div>
+
+          <div class="quiz-question-block"
+               data-correct="opt-readonly"
+               data-explanation-right="Right. Blocking words like DROP and always rolling back means an AI exploring your database can read freely but can never delete or alter anything — read-only by construction, not by politeness."
+               data-explanation-wrong="Not the main reason. It isn't about speed or logging — the rollback and keyword block exist so an AI can look at data safely but has no power to change or destroy it.">
+            <h3 class="quiz-question">Why does the SQL helper <em>always roll back</em> and block keywords like DROP?</h3>
+            <div class="quiz-options">
+              <button class="quiz-option" data-value="opt-readonly" onclick="selectOption(this)">
+                <div class="quiz-option-radio"></div>
+                <span>So an AI can read the database safely but can never delete or alter data — read-only by construction</span>
+              </button>
+              <button class="quiz-option" data-value="opt-speed" onclick="selectOption(this)">
+                <div class="quiz-option-radio"></div>
+                <span>To make queries run faster by skipping the save step</span>
+              </button>
+              <button class="quiz-option" data-value="opt-log" onclick="selectOption(this)">
+                <div class="quiz-option-radio"></div>
+                <span>To keep a neat log of every query for later</span>
+              </button>
+            </div>
+            <div class="quiz-feedback"></div>
+          </div>
+
+          <div class="quiz-question-block"
+               data-correct="opt-result"
+               data-explanation-right="Exactly. The catch-all in the decorator scoops up any unexpected error and hands back an AgentResult with success=False and a message. The caller gets a slip, never a crash."
+               data-explanation-wrong="Not quite. The whole point of the decorator's safety net is that the caller NEVER sees a raw crash or stack trace — even a totally unexpected bug comes back as a normal AgentResult with success=False.">
+            <h3 class="quiz-question">An agent function hits an unexpected error deep inside. What does the <em>caller</em> receive?</h3>
+            <div class="quiz-options">
+              <button class="quiz-option" data-value="opt-result" onclick="selectOption(this)">
+                <div class="quiz-option-radio"></div>
+                <span>A normal AgentResult with success=False and a message — never an exception or crash</span>
+              </button>
+              <button class="quiz-option" data-value="opt-crash" onclick="selectOption(this)">
+                <div class="quiz-option-radio"></div>
+                <span>A raw crash with a stack trace they have to debug</span>
+              </button>
+              <button class="quiz-option" data-value="opt-nothing" onclick="selectOption(this)">
+                <div class="quiz-option-radio"></div>
+                <span>Nothing at all — the function just silently stops</span>
+              </button>
+            </div>
+            <div class="quiz-feedback"></div>
+          </div>
+
+          <button class="quiz-check-btn" onclick="checkQuiz('quiz-module7')">Check Answers</button>
+          <button class="quiz-reset-btn" onclick="resetQuiz('quiz-module7')">Try Again</button>
+        </div>
+      </section>
+
+      <!-- ===================== SCREEN 9: COURSE RECAP ===================== -->
+      <section class="screen animate-in">
+        <h2 class="screen-heading">The victory lap: everything you've learned</h2>
+        <p>You started with a Python class and followed it all the way to an AI that can build the whole thing. Trace the journey.</p>
+
+        <div class="flow-steps stagger-children">
+          <div class="flow-step animate-in">
+            <div class="flow-step-num">1</div>
+            <p><strong>Python class</strong><br>You describe your data as a plain class</p>
+          </div>
+          <div class="flow-arrow">→</div>
+          <div class="flow-step animate-in">
+            <div class="flow-step-num">2</div>
+            <p><strong>Database table</strong><br>zeebpy turns it into a real table</p>
+          </div>
+          <div class="flow-arrow">→</div>
+          <div class="flow-step animate-in">
+            <div class="flow-step-num">3</div>
+            <p><strong>Query</strong><br>You ask for exactly the rows you want</p>
+          </div>
+          <div class="flow-arrow">→</div>
+          <div class="flow-step animate-in">
+            <div class="flow-step-num">4</div>
+            <p><strong>Web API</strong><br>Those rows become live web endpoints</p>
+          </div>
+          <div class="flow-arrow">→</div>
+          <div class="flow-step animate-in">
+            <div class="flow-step-num">5</div>
+            <p><strong>Auth</strong><br>A door checks who's allowed in</p>
+          </div>
+          <div class="flow-arrow">→</div>
+          <div class="flow-step animate-in">
+            <div class="flow-step-num">6</div>
+            <p><strong>Agents</strong><br>An AI can now build and inspect it all — safely</p>
+          </div>
+        </div>
+
+        <div class="callout callout-accent">
+          <div class="callout-icon">🎓</div>
+          <div class="callout-content">
+            <strong class="callout-title">You now have the map — and the words</strong>
+            <p>Class, table, query, endpoint, auth, agent, contract, rollback. These aren't just words anymore — they're the vocabulary that lets you steer an AI across every layer of a real app and know what it's doing.</p>
+          </div>
+        </div>
+
+        <p style="text-align:center; font-size: var(--text-lg); margin-top: var(--space-8)">You came in a vibe coder. You're leaving able to read the machine. Go build something. 🚀</p>
+      </section>
+
+    </div>
+  </div>
+</section>
+  </main>
+
+</body>
+</html>

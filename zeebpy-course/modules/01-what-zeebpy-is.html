@@ -1,0 +1,338 @@
+<section class="module" id="module-1" style="background: var(--color-bg-warm)">
+  <div class="module-content">
+    <header class="module-header animate-in">
+      <span class="module-number">01</span>
+      <h1 class="module-title">What zeebpy Is</h1>
+      <p class="module-subtitle">And what really happens when you save one record</p>
+    </header>
+
+    <div class="module-body">
+
+      <!-- SCREEN 1: The hook -->
+      <section class="screen animate-in">
+        <h2 class="screen-heading">One line. No database commands.</h2>
+        <p>You write a single line of <span class="term" data-definition="A popular, beginner-friendly programming language. zeebpy is written in Python, and you describe your app to it using Python.">Python</span> to save a new user:</p>
+        <div class="callout callout-info">
+          <div class="callout-icon">✨</div>
+          <div class="callout-content">
+            <strong class="callout-title">The magic line</strong>
+            <p><code>await User.objects.create(name="Alice", ...)</code> — no <span class="term" data-definition="SQL (Structured Query Language) is the language databases speak. It looks like: INSERT INTO users VALUES (...). zeebpy writes it for you so you never have to.">SQL</span>, no raw database commands. Here is the journey that one line takes under the hood.</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- SCREEN 2: What zeebpy is (product intro) -->
+      <section class="screen animate-in">
+        <h2 class="screen-heading">So what is zeebpy?</h2>
+        <p>zeebpy is a <span class="term" data-definition="A framework is a big pre-built toolkit that handles the repetitive plumbing of building software, so you only write the parts unique to your app. Think of it as a house with the wiring and pipes already installed.">framework</span> for building the back end of a web app. You write Python classes that describe your data, and zeebpy hands you a working <span class="term" data-definition="A database is an organized store where your app keeps information permanently — user accounts, posts, orders. It survives even when the app restarts.">database</span> plus a ready-made <span class="term" data-definition="A REST API is a web address other programs can call to read or change your data — like a public service counter for your app that phones and websites talk to.">REST API</span> almost for free.</p>
+
+        <h3 style="font-family: var(--font-display); font-weight: 600; margin-top: var(--space-8);">What you get out of the box</h3>
+        <div class="icon-rows stagger-children">
+          <div class="icon-row animate-in">
+            <div class="icon-circle" style="background: var(--color-actor-2)">🗄️</div>
+            <div>
+              <strong>A database</strong>
+              <p>A permanent home for your app data — no setup rituals required</p>
+            </div>
+          </div>
+          <div class="icon-row animate-in">
+            <div class="icon-circle" style="background: var(--color-actor-1)">🌐</div>
+            <div>
+              <strong>A REST API</strong>
+              <p>Web addresses that let phones and websites read and change your data</p>
+            </div>
+          </div>
+          <div class="icon-row animate-in">
+            <div class="icon-circle" style="background: var(--color-actor-3)">📦</div>
+            <div>
+              <strong>Migrations</strong>
+              <p>Safe, tracked updates to your data structure as your app grows</p>
+            </div>
+          </div>
+          <div class="icon-row animate-in">
+            <div class="icon-circle" style="background: var(--color-actor-4)">🔐</div>
+            <div>
+              <strong>Auth</strong>
+              <p>Built-in login, passwords, and permissions so you do not build them yourself</p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- SCREEN 3: The metaphor -->
+      <section class="screen animate-in">
+        <h2 class="screen-heading">The interpreter in the booth</h2>
+        <p>Picture a <strong>simultaneous interpreter</strong> at the United Nations. You speak Python; the database only speaks SQL. zeebpy sits in the booth and translates, live, in both directions.</p>
+        <p>You never have to learn the database's language — you just talk, and the interpreter handles the rest. That interpreter has a real name: an <span class="term" data-definition="ORM stands for Object-Relational Mapper. It is the translator that turns your Python objects into database rows and back again, so you write Python instead of SQL.">ORM</span> (Object-Relational Mapper).</p>
+        <div class="callout callout-accent">
+          <div class="callout-icon">💡</div>
+          <div class="callout-content">
+            <strong class="callout-title">Declarative vs. plumbing</strong>
+            <p>You <em>declared</em> what a User looks like. You never wrote code to open a database connection, build a SQL string, or juggle data types. That gap is exactly what a framework fills for you.</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- SCREEN 4: The hero flow animation -->
+      <section class="screen animate-in">
+        <h2 class="screen-heading">Watch one save travel end-to-end</h2>
+        <p>Press <strong>Next Step</strong> to follow your <code>create()</code> call as it moves from your Python, through the interpreter, into real SQL, and lands in the database.</p>
+
+        <div class="flow-animation" data-steps='[
+          {"highlight":"flow-actor-1","label":"You call User.objects.create(name=Alice)"},
+          {"highlight":"flow-actor-1","label":"Your Python code hands the request to the ORM","packet":true,"from":"actor-1","to":"actor-2"},
+          {"highlight":"flow-actor-2","label":"The ORM looks up the table blueprint it built for User"},
+          {"highlight":"flow-actor-2","label":"It translates your Python into a SQL command","packet":true,"from":"actor-2","to":"actor-3"},
+          {"highlight":"flow-actor-3","label":"INSERT INTO users (name, email, age) VALUES (Alice, ...)","packet":true,"from":"actor-3","to":"actor-4"},
+          {"highlight":"flow-actor-4","label":"The database saves a new row and hands back the fresh record"}
+        ]'>
+          <div class="flow-actors">
+            <div class="flow-actor" id="flow-actor-1">
+              <div class="flow-actor-icon">🐍</div>
+              <span>Your Python code</span>
+            </div>
+            <div class="flow-actor" id="flow-actor-2">
+              <div class="flow-actor-icon">🔄</div>
+              <span>zeebpy ORM</span>
+            </div>
+            <div class="flow-actor" id="flow-actor-3">
+              <div class="flow-actor-icon">📝</div>
+              <span>SQL</span>
+            </div>
+            <div class="flow-actor" id="flow-actor-4">
+              <div class="flow-actor-icon">🗄️</div>
+              <span>Database</span>
+            </div>
+          </div>
+
+          <div class="flow-packet" id="flow-packet"></div>
+
+          <div class="flow-step-label" id="flow-label">Click "Next Step" to begin</div>
+
+          <div class="flow-controls">
+            <button class="btn flow-next-btn">Next Step</button>
+            <button class="btn flow-reset-btn">Restart</button>
+            <span class="flow-progress"></span>
+          </div>
+        </div>
+      </section>
+
+      <!-- SCREEN 5: Translation A — defining a model -->
+      <section class="screen animate-in">
+        <h2 class="screen-heading">Step 1 — Describe your data</h2>
+        <p>First you write a <span class="term" data-definition="A model is a Python class that describes one kind of thing your app stores — like a User or a Post. It is the blueprint the database table is built from.">model</span>: a <span class="term" data-definition="A class is a reusable template in code. Here it defines the shape of a User — what pieces of information every user has.">class</span> that spells out what a User is. Each line is a <span class="term" data-definition="A field is one piece of information a model stores — like name, email, or age. Each field becomes a column in the database table.">field</span> — one piece of information you want to keep.</p>
+
+        <div class="translation-block animate-in">
+          <div class="translation-code">
+            <span class="translation-label">CODE</span>
+            <pre><code><span class="code-line"><span class="code-keyword">class</span> <span class="code-function">User</span>(Model):</span>
+<span class="code-line">    <span class="code-comment">"""User model with basic fields."""</span></span>
+<span class="code-line">    name = fields.<span class="code-function">CharField</span>(<span class="code-property">max_length</span>=<span class="code-number">100</span>)</span>
+<span class="code-line">    email = fields.<span class="code-function">EmailField</span>(<span class="code-property">unique</span>=<span class="code-keyword">True</span>)</span>
+<span class="code-line">    age = fields.<span class="code-function">IntegerField</span>(<span class="code-property">null</span>=<span class="code-keyword">True</span>)</span>
+<span class="code-line">    is_active = fields.<span class="code-function">BooleanField</span>(<span class="code-property">default</span>=<span class="code-keyword">True</span>)</span>
+<span class="code-line">    bio = fields.<span class="code-function">TextField</span>(<span class="code-property">null</span>=<span class="code-keyword">True</span>)</span>
+<span class="code-line">    created_at = fields.<span class="code-function">DateTimeField</span>(<span class="code-property">auto_now_add</span>=<span class="code-keyword">True</span>)</span>
+<span class="code-line"></span>
+<span class="code-line">    <span class="code-keyword">class</span> <span class="code-function">Meta</span>:</span>
+<span class="code-line">        table_name = <span class="code-string">"users"</span></span>
+<span class="code-line">        ordering = [<span class="code-string">"-created_at"</span>]</span></code></pre>
+          </div>
+          <div class="translation-english">
+            <span class="translation-label">PLAIN ENGLISH</span>
+            <div class="translation-lines">
+              <p class="tl">Describe a kind of thing we want to store — a User.</p>
+              <p class="tl">A human-readable note about what this is.</p>
+              <p class="tl">Every user has a name — up to 100 letters long.</p>
+              <p class="tl">…and an email, which must be unique — no two users can share one.</p>
+              <p class="tl">…and an age, which is optional (<code>null=True</code> means "can be blank").</p>
+              <p class="tl">…and an on/off switch for whether the account is active — on by default.</p>
+              <p class="tl">…and a free-text bio, also optional.</p>
+              <p class="tl">…and a timestamp that fills itself in the moment the user is created.</p>
+              <p class="tl"><code>Meta</code> is a settings panel for this model.</p>
+              <p class="tl">Store these in a database <span class="term" data-definition="A table is a grid inside the database, like a spreadsheet. Each column is a field; each row is one record. This model becomes a table literally named users.">table</span> literally named "users".</p>
+              <p class="tl">When listing users, show newest first (the minus means "descending").</p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- SCREEN 6: Translation B — creating a record -->
+      <section class="screen animate-in">
+        <h2 class="screen-heading">Step 2 — Save an actual user</h2>
+        <p>Now you fill in the blanks and hit save. The word <span class="term" data-definition="await pauses your code just long enough to let a slow task — like talking to a database — finish, without freezing everything else. It is how async code waits politely.">await</span> tells your code to wait for the database to finish, because that work is <span class="term" data-definition="Async (asynchronous) means the program can start a slow task and keep doing other useful work while it waits, instead of sitting idle. zeebpy is async-first.">async</span>.</p>
+
+        <div class="translation-block animate-in">
+          <div class="translation-code">
+            <span class="translation-label">CODE</span>
+            <pre><code><span class="code-line">alice = <span class="code-keyword">await</span> User.objects.<span class="code-function">create</span>(</span>
+<span class="code-line">    <span class="code-property">name</span>=<span class="code-string">"Alice Smith"</span>,</span>
+<span class="code-line">    <span class="code-property">email</span>=<span class="code-string">"alice@example.com"</span>,</span>
+<span class="code-line">    <span class="code-property">age</span>=<span class="code-number">28</span>,</span>
+<span class="code-line">    <span class="code-property">bio</span>=<span class="code-string">"Software engineer"</span></span>
+<span class="code-line">)</span></code></pre>
+          </div>
+          <div class="translation-english">
+            <span class="translation-label">PLAIN ENGLISH</span>
+            <div class="translation-lines">
+              <p class="tl">Ask the User "front desk" (<code>objects</code>) to create a new user, and wait for it to finish (<code>await</code>).</p>
+              <p class="tl">Her name is Alice Smith.</p>
+              <p class="tl">Her email is alice@example.com.</p>
+              <p class="tl">She is 28.</p>
+              <p class="tl">Her bio says "Software engineer." zeebpy writes all of this into the database as one new <span class="term" data-definition="A row is a single record in a table — one complete entry. Saving Alice creates one row in the users table.">row</span>.</p>
+            </div>
+          </div>
+        </div>
+
+        <div class="callout callout-info">
+          <div class="callout-icon">🔑</div>
+          <div class="callout-content">
+            <strong class="callout-title">You did not set an ID</strong>
+            <p>zeebpy quietly gives every new row a unique <span class="term" data-definition="A primary key is the unique ID that labels each row in a table, so the database can always tell one record from another. zeebpy adds one automatically.">primary key</span> so it can always tell Alice apart from every other user — you never have to manage it.</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- SCREEN 7: The three packages teaser -->
+      <section class="screen animate-in">
+        <h2 class="screen-heading">The ORM has two siblings</h2>
+        <p>The translator you just met is one of three packages that ship together. We will go deep in Module 2 — here is the quick roster.</p>
+        <div class="pattern-cards stagger-children">
+          <div class="pattern-card animate-in" style="border-top: 3px solid var(--color-actor-1)">
+            <div class="pattern-icon" style="background: var(--color-actor-1)">🔄</div>
+            <h4 class="pattern-title">zeeb_orm</h4>
+            <p class="pattern-desc">The interpreter. Talks to the database so you write Python, not SQL.</p>
+          </div>
+          <div class="pattern-card animate-in" style="border-top: 3px solid var(--color-actor-2)">
+            <div class="pattern-icon" style="background: var(--color-actor-2)">🌐</div>
+            <h4 class="pattern-title">zeeb_api</h4>
+            <p class="pattern-desc">Turns your data into a REST API other apps can call over the web.</p>
+          </div>
+          <div class="pattern-card animate-in" style="border-top: 3px solid var(--color-actor-4)">
+            <div class="pattern-icon" style="background: var(--color-actor-4)">🤖</div>
+            <h4 class="pattern-title">zeeb_agents</h4>
+            <p class="pattern-desc">Helper functions an AI assistant can call to build and inspect your project.</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- SCREEN 8: Why care -->
+      <section class="screen animate-in">
+        <h2 class="screen-heading">Why this matters for you</h2>
+        <p>Knowing there is a translation layer changes how you work with your app — and with AI assistants.</p>
+        <div class="step-cards stagger-children">
+          <div class="step-card animate-in">
+            <div class="step-num">1</div>
+            <div class="step-body">
+              <strong>You steer AI better</strong>
+              <p>You can say "use the ORM, do not hand-write SQL" — and know exactly why that is the right call.</p>
+            </div>
+          </div>
+          <div class="step-card animate-in">
+            <div class="step-num">2</div>
+            <div class="step-body">
+              <strong>You can debug the translation</strong>
+              <p>When a save misbehaves, you know there is an interpreter in the middle to look at.</p>
+            </div>
+          </div>
+          <div class="step-card animate-in">
+            <div class="step-num">3</div>
+            <div class="step-body">
+              <strong>You reason about speed</strong>
+              <p>Every Python call quietly becomes real database work — so more calls means more work.</p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- SCREEN 9: Quiz -->
+      <section class="screen animate-in">
+        <h2 class="screen-heading">Check your understanding</h2>
+        <p>No memorizing — just think through each situation.</p>
+
+        <div class="quiz-container" id="quiz-module1">
+          <div class="quiz-question-block"
+               data-correct="opt-b"
+               data-explanation-right="Exactly. Generating the SQL is the ORM&apos;s entire job — you described the User in Python, and the translator turned your create() call into an INSERT statement for you."
+               data-explanation-wrong="Not quite. You never wrote any SQL, and the database only runs SQL it is handed. Think about who sits in the middle translating Python into SQL.">
+            <h3 class="quiz-question">You ran <code>User.objects.create(...)</code> but never saw any SQL. Where did the SQL come from?</h3>
+            <div class="quiz-options">
+              <button class="quiz-option" data-value="opt-a" onclick="selectOption(this)">
+                <div class="quiz-option-radio"></div>
+                <span>The database wrote it itself before saving</span>
+              </button>
+              <button class="quiz-option" data-value="opt-b" onclick="selectOption(this)">
+                <div class="quiz-option-radio"></div>
+                <span>zeebpy generated it for you — that is the ORM's whole job</span>
+              </button>
+              <button class="quiz-option" data-value="opt-c" onclick="selectOption(this)">
+                <div class="quiz-option-radio"></div>
+                <span>There was no SQL — Python talks to databases directly</span>
+              </button>
+            </div>
+            <div class="quiz-feedback"></div>
+          </div>
+
+          <div class="quiz-question-block"
+               data-correct="opt-b"
+               data-explanation-right="Right. Adding unique=True to the email field tells the database to reject any second user with the same email — the rule lives right there in your model."
+               data-explanation-wrong="Not quite. This rule is declared on the field itself when you describe the model. Look back at how the email line was written.">
+            <h3 class="quiz-question">You want the database to reject two users sharing the same email. Which part of the model handles that?</h3>
+            <div class="quiz-options">
+              <button class="quiz-option" data-value="opt-a" onclick="selectOption(this)">
+                <div class="quiz-option-radio"></div>
+                <span>The <code>ordering</code> setting inside <code>Meta</code></span>
+              </button>
+              <button class="quiz-option" data-value="opt-b" onclick="selectOption(this)">
+                <div class="quiz-option-radio"></div>
+                <span><code>unique=True</code> on the email field</span>
+              </button>
+              <button class="quiz-option" data-value="opt-c" onclick="selectOption(this)">
+                <div class="quiz-option-radio"></div>
+                <span>The <code>await</code> keyword when you save</span>
+              </button>
+            </div>
+            <div class="quiz-feedback"></div>
+          </div>
+
+          <div class="quiz-question-block"
+               data-correct="opt-c"
+               data-explanation-right="Exactly. The ORM already writes safe INSERT statements and runs your model&apos;s checks (like unique emails and validation). Hand-written SQL skips all of that and bypasses the translation layer."
+               data-explanation-wrong="Reconsider. The ORM already does this job and enforces your model&apos;s rules along the way. Writing raw SQL by hand would skip those safeguards.">
+            <h3 class="quiz-question">An AI assistant offers to "write raw SQL INSERT statements" to save your users. Good idea here?</h3>
+            <div class="quiz-options">
+              <button class="quiz-option" data-value="opt-a" onclick="selectOption(this)">
+                <div class="quiz-option-radio"></div>
+                <span>Yes — raw SQL is always faster and cleaner</span>
+              </button>
+              <button class="quiz-option" data-value="opt-b" onclick="selectOption(this)">
+                <div class="quiz-option-radio"></div>
+                <span>Yes — the ORM cannot handle new users</span>
+              </button>
+              <button class="quiz-option" data-value="opt-c" onclick="selectOption(this)">
+                <div class="quiz-option-radio"></div>
+                <span>No — the ORM already does this and hand-written SQL bypasses <span class="term" data-definition="Validation is the automatic checking of your data before it is saved — like making sure an email is really an email. zeebpy runs these checks for you on save.">validation</span> and the translation layer</span>
+              </button>
+            </div>
+            <div class="quiz-feedback"></div>
+          </div>
+
+          <button class="quiz-check-btn" onclick="checkQuiz('quiz-module1')">Check Answers</button>
+          <button class="quiz-reset-btn" onclick="resetQuiz('quiz-module1')">Try Again</button>
+        </div>
+      </section>
+
+      <!-- SCREEN 10: Next module teaser -->
+      <section class="screen animate-in">
+        <div class="callout callout-accent">
+          <div class="callout-icon">➡️</div>
+          <div class="callout-content">
+            <strong class="callout-title">Up next: The Three Packages</strong>
+            <p>You just met the ORM in action — but it has two siblings. Let us meet the whole family.</p>
+          </div>
+        </div>
+      </section>
+
+    </div>
+  </div>
+</section>

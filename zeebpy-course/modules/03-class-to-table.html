@@ -1,0 +1,319 @@
+<section class="module" id="module-3" style="background: var(--color-bg-warm)">
+  <div class="module-content">
+    <header class="module-header animate-in">
+      <span class="module-number">03</span>
+      <h1 class="module-title">From a Python Class to a Database Table</h1>
+      <p class="module-subtitle">We are on the ground floor now — the Database Brain (<code>zeeb_orm</code>). Let us watch a class become a real table.</p>
+    </header>
+
+    <div class="module-body">
+
+      <!-- SCREEN 1: The hook + metaphor -->
+      <section class="screen animate-in">
+        <h2 class="screen-heading">Who actually builds the table — and when?</h2>
+        <p>In Module 1 you saw <code>class User(Model)</code> turn into a real table. But a plain Python <span class="term" data-definition="A class is a blueprint that describes what something is and what it can do. In code you write it once, then create many real copies from it. Here, a class describes one kind of thing you want to store.">class</span> has no idea what a database is.</p>
+
+        <div class="callout callout-accent">
+          <div class="callout-icon">🏛️</div>
+          <div class="callout-content">
+            <strong class="callout-title">The metaphor: a blueprint becoming a building</strong>
+            <p>Your Python class is the <strong>blueprint</strong>. A hidden construction crew reads it the instant the class is defined. The database <span class="term" data-definition="A table is a grid of data in a database — rows and columns, like a spreadsheet. Each row is one record (one user), each column is one piece of info (their name, their email).">table</span> is the finished building. And <span class="term" data-definition="A migration is a dated, saved record of one change to your database's structure — like a renovation permit that documents exactly what was altered and when.">migrations</span> are the renovation permits: a logbook of every change you make over time.</p>
+          </div>
+        </div>
+
+        <div class="icon-rows stagger-children">
+          <div class="icon-row animate-in">
+            <div class="icon-circle" style="background: var(--color-actor-1)">📄</div>
+            <div>
+              <strong>The blueprint — your model</strong>
+              <p>A Python class listing the fields you want to store.</p>
+            </div>
+          </div>
+          <div class="icon-row animate-in">
+            <div class="icon-circle" style="background: var(--color-actor-2)">🏗️</div>
+            <div>
+              <strong>The construction crew — the metaclass</strong>
+              <p>Runs the moment the class is defined and assembles the table plan.</p>
+            </div>
+          </div>
+          <div class="icon-row animate-in">
+            <div class="icon-circle" style="background: var(--color-actor-3)">🗄️</div>
+            <div>
+              <strong>The finished building — the table</strong>
+              <p>A real grid in the database, ready to hold your data.</p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- SCREEN 2: Fields become columns (Snippet A translation) -->
+      <section class="screen animate-in">
+        <h2 class="screen-heading">Each field is one column</h2>
+        <p>Inside the model, every line declares a <span class="term" data-definition="A column is one vertical slice of a table — a single kind of information stored for every row, like the email address for every user.">column</span>. You are not just naming things — each field also sets a <span class="term" data-definition="A data type is the kind of value a column holds: text, a whole number, true/false, a date. It tells the database what is and is not allowed in that slot.">data type</span> and its rules.</p>
+
+        <div class="translation-block animate-in">
+          <div class="translation-code">
+            <span class="translation-label">CODE</span>
+            <pre><code><span class="code-line">    name = fields.<span class="code-function">CharField</span>(<span class="code-property">max_length</span>=<span class="code-number">100</span>)</span>
+<span class="code-line">    email = fields.<span class="code-function">EmailField</span>(<span class="code-property">unique</span>=<span class="code-keyword">True</span>)</span>
+<span class="code-line">    age = fields.<span class="code-function">IntegerField</span>(<span class="code-property">null</span>=<span class="code-keyword">True</span>)</span>
+<span class="code-line">    is_active = fields.<span class="code-function">BooleanField</span>(<span class="code-property">default</span>=<span class="code-keyword">True</span>)</span>
+<span class="code-line">    bio = fields.<span class="code-function">TextField</span>(<span class="code-property">null</span>=<span class="code-keyword">True</span>)</span>
+<span class="code-line">    created_at = fields.<span class="code-function">DateTimeField</span>(<span class="code-property">auto_now_add</span>=<span class="code-keyword">True</span>)</span></code></pre>
+          </div>
+          <div class="translation-english">
+            <span class="translation-label">PLAIN ENGLISH</span>
+            <div class="translation-lines">
+              <p class="tl"><strong>name</strong> becomes a text column, at most 100 characters.</p>
+              <p class="tl"><strong>email</strong> becomes a text column that must be unique across the whole table.</p>
+              <p class="tl"><strong>age</strong> becomes a whole-number column that is allowed to be empty.</p>
+              <p class="tl"><strong>is_active</strong> becomes a true/false column, defaulting to true.</p>
+              <p class="tl"><strong>bio</strong> becomes a long-text column, optional.</p>
+              <p class="tl"><strong>created_at</strong> becomes a date-and-time column that stamps itself automatically.</p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- SCREEN 3: The metaclass (Snippet B translation) -->
+      <section class="screen animate-in">
+        <h2 class="screen-heading">Meet the construction crew: the metaclass</h2>
+        <p>A special piece of machinery called a <span class="term" data-definition="A metaclass is code that runs the moment a class is defined — a class that builds other classes. Here it reads your model and wires up the matching database table before you ever create a single record.">metaclass</span> (<code>ModelBase</code>) runs the instant your class is defined. It scans the class for fields, collects them, and assembles the table blueprint.</p>
+
+        <div class="translation-block animate-in">
+          <div class="translation-code">
+            <span class="translation-label">CODE</span>
+            <pre><code><span class="code-line">        <span class="code-comment"># Collect fields from this class</span></span>
+<span class="code-line">        <span class="code-keyword">for</span> attr_name, attr_value <span class="code-keyword">in</span> <span class="code-function">list</span>(namespace.items()):</span>
+<span class="code-line">            <span class="code-keyword">if</span> <span class="code-function">isinstance</span>(attr_value, Field):</span>
+<span class="code-line">                attr_value.<span class="code-function">contribute_to_class</span>(new_class, attr_name)</span>
+<span class="code-line">                fields.<span class="code-function">append</span>(attr_value)</span>
+<span class="code-line">                <span class="code-keyword">if</span> attr_value.primary_key:</span>
+<span class="code-line">                    has_pk = <span class="code-keyword">True</span></span>
+<span class="code-line">                    new_class._meta.pk = attr_value</span>
+<span class="code-line">                    new_class._meta.pk_name = attr_name</span></code></pre>
+          </div>
+          <div class="translation-english">
+            <span class="translation-label">PLAIN ENGLISH</span>
+            <div class="translation-lines">
+              <p class="tl">Now gather every field defined on the class.</p>
+              <p class="tl">Walk through everything written inside the class, one item at a time.</p>
+              <p class="tl">If this item is a Field (like CharField or IntegerField)…</p>
+              <p class="tl">…officially register it as a column of the new table…</p>
+              <p class="tl">…add it to the running list of fields.</p>
+              <p class="tl">If this field was marked as the <span class="term" data-definition="A primary key is the column that uniquely identifies each row — the fingerprint the database uses to find one exact record. In zeebpy every model gets one automatically.">primary key</span>…</p>
+              <p class="tl">…remember that the table has one…</p>
+              <p class="tl">…and record which field it is…</p>
+              <p class="tl">…so the ORM always knows how to find a single row.</p>
+            </div>
+          </div>
+        </div>
+
+        <div class="callout callout-accent">
+          <div class="callout-icon">💡</div>
+          <div class="callout-content">
+            <strong class="callout-title">Declarative, not imperative</strong>
+            <p>Notice you never wrote <code>CREATE TABLE</code>. You <em>declared</em> what a User is, and the metaclass figured out the step-by-step build for you. Migrations do the exact same thing for <em>changes</em> to that model.</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- SCREEN 4: The migration loop — HERO FLOW ANIMATION -->
+      <section class="screen animate-in">
+        <h2 class="screen-heading">The migration loop: how a change reaches the database</h2>
+        <p>Changing your model does not change the database by itself. Two commands close the gap: <span class="term" data-definition="makemigrations is a command that looks at your models, notices what changed, and writes those changes into a new saved file. It does NOT touch the real database yet.">makemigrations</span> writes down the change, then <span class="term" data-definition="migrate is a command that reads the saved migration files and applies their changes to the real database, so the table structure finally matches your models.">migrate</span> applies it.</p>
+
+        <div class="flow-animation animate-in" data-steps='[
+          {"highlight":"flow-actor-1","label":"You add a new field to your model"},
+          {"highlight":"flow-actor-1","label":"You run: zeeb-manage makemigrations","packet":true,"from":"actor-1","to":"actor-2"},
+          {"highlight":"flow-actor-2","label":"The detective compares your models to the last known state"},
+          {"highlight":"flow-actor-2","label":"It writes down exactly what changed","packet":true,"from":"actor-2","to":"actor-3"},
+          {"highlight":"flow-actor-3","label":"A dated migration file is saved — a permanent record"},
+          {"highlight":"flow-actor-3","label":"You run: zeeb-manage migrate","packet":true,"from":"actor-3","to":"actor-4"},
+          {"highlight":"flow-actor-4","label":"The database applies the change — the new column now exists"}
+        ]'>
+          <div class="flow-actors">
+            <div class="flow-actor" id="flow-actor-1">
+              <div class="flow-actor-icon">📄</div>
+              <span>Your models.py</span>
+            </div>
+            <div class="flow-actor" id="flow-actor-2">
+              <div class="flow-actor-icon">🔍</div>
+              <span>makemigrations (the detective)</span>
+            </div>
+            <div class="flow-actor" id="flow-actor-3">
+              <div class="flow-actor-icon">📜</div>
+              <span>Migration file (the permit)</span>
+            </div>
+            <div class="flow-actor" id="flow-actor-4">
+              <div class="flow-actor-icon">🗄️</div>
+              <span>migrate → Database</span>
+            </div>
+          </div>
+
+          <div class="flow-packet" id="flow-packet"></div>
+
+          <div class="flow-step-label" id="flow-label">Click "Next Step" to trace a change through the loop</div>
+
+          <div class="flow-controls">
+            <button class="btn flow-next-btn">Next Step</button>
+            <button class="btn flow-reset-btn">Restart</button>
+            <span class="flow-progress"></span>
+          </div>
+        </div>
+      </section>
+
+      <!-- SCREEN 5: How the detective knows what changed (Snippet C docstring) -->
+      <section class="screen animate-in">
+        <h2 class="screen-heading">How does the detective know what changed?</h2>
+        <p>You might expect it to peek at the live database. It does something smarter and safer instead — it replays the history of every past <span class="term" data-definition="A migration is a dated, saved record of one change to your database's structure. Replaying them in order rebuilds the full history of how your tables were shaped.">migration</span> into a throwaway copy and compares against that.</p>
+
+        <div class="callout callout-info">
+          <div class="callout-icon">🔍</div>
+          <div class="callout-content">
+            <strong class="callout-title">From the source (autodetector.py)</strong>
+            <p style="font-style: italic;">"Compare current model state against existing migration state and return operations. This is the core of makemigrations — it detects what changed. Instead of comparing against the live database (which would re-detect already-migrated changes if migrations have not been applied yet), this replays all existing migration files into an in-memory SQLite database and compares the model metadata against that state."</p>
+          </div>
+        </div>
+
+        <div class="badge-list">
+          <div class="badge-item">
+            <code class="badge-code">schema</code>
+            <span class="badge-desc">The overall <span class="term" data-definition="A schema is the blueprint of a database's structure — which tables exist, and which columns and types each one has. Not the data itself, just the shape it lives in.">shape</span> of your database: its tables and columns.</span>
+          </div>
+          <div class="badge-item">
+            <code class="badge-code">in-memory SQLite</code>
+            <span class="badge-desc">A tiny throwaway <span class="term" data-definition="SQLite is a small self-contained database that needs no separate server — perfect for quick local checks. An in-memory database lives only in RAM and vanishes when the check is done.">database that lives only in memory</span> — used just for this comparison, then discarded.</span>
+          </div>
+        </div>
+      </section>
+
+      <!-- SCREEN 6: The warning — the classic beginner bug -->
+      <section class="screen animate-in">
+        <h2 class="screen-heading">The single most common beginner bug</h2>
+
+        <div class="callout callout-warning">
+          <div class="callout-icon">⚠️</div>
+          <div class="callout-content">
+            <strong class="callout-title">The "no such column" trap</strong>
+            <p>Whenever you change a model, you must run <code>makemigrations</code> <em>then</em> <code>migrate</code>. Forget it, and the app crashes with errors like <code>no such column: phone</code> — because the model changed but the real table never did. This is the #1 thing vibe coders get stuck on.</p>
+          </div>
+        </div>
+
+        <div class="step-cards stagger-children">
+          <div class="step-card animate-in">
+            <div class="step-num">1</div>
+            <div class="step-body">
+              <strong>Change your model</strong>
+              <p>Add, remove, or edit a field in <code>models.py</code>.</p>
+            </div>
+          </div>
+          <div class="step-card animate-in">
+            <div class="step-num">2</div>
+            <div class="step-body">
+              <strong>Run <span class="term" data-definition="The CLI (command-line interface) is the text window where you type commands to your project instead of clicking buttons. A command is one typed instruction, like zeeb-manage makemigrations.">makemigrations</span></strong>
+              <p>The change gets written into a new dated file.</p>
+            </div>
+          </div>
+          <div class="step-card animate-in">
+            <div class="step-num">3</div>
+            <div class="step-body">
+              <strong>Run <code>migrate</code></strong>
+              <p>That file is applied — the real table finally matches your model.</p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- SCREEN 7: Quiz -->
+      <section class="screen animate-in">
+        <h2 class="screen-heading">Check your understanding</h2>
+        <p>No memorizing — each question is a real situation. Pick what you would actually do.</p>
+
+        <div class="quiz-container" id="quiz-module3">
+
+          <div class="quiz-question-block"
+               data-correct="option-c"
+               data-explanation-right="Exactly. The model in your code changed, but the real database table was never updated. makemigrations writes the change down, and migrate applies it. Run both and the column will exist."
+               data-explanation-wrong="Not quite. Restarting the app or editing the model again does not touch the database structure. The error means the table is missing the column — you need to write the change down (makemigrations) and apply it (migrate).">
+            <h3 class="quiz-question">You added <code>phone = fields.CharField(...)</code> to your model, restarted the app, and now every request errors with "no such column: phone." What did you forget?</h3>
+            <div class="quiz-options">
+              <button class="quiz-option" data-value="option-a" onclick="selectOption(this)">
+                <div class="quiz-option-radio"></div>
+                <span>Restart the database server so it reloads the model.</span>
+              </button>
+              <button class="quiz-option" data-value="option-b" onclick="selectOption(this)">
+                <div class="quiz-option-radio"></div>
+                <span>Delete the phone field again — CharField is not allowed on User.</span>
+              </button>
+              <button class="quiz-option" data-value="option-c" onclick="selectOption(this)">
+                <div class="quiz-option-radio"></div>
+                <span>Run makemigrations, then migrate — the model changed but the database was never updated.</span>
+              </button>
+            </div>
+            <div class="quiz-feedback"></div>
+          </div>
+
+          <div class="quiz-question-block"
+               data-correct="option-b"
+               data-explanation-right="Right. makemigrations comes first and only writes the change into a file. migrate comes second and applies that file to the real database. Two distinct jobs, always in that order."
+               data-explanation-wrong="Not quite. makemigrations does not touch the real database — it only records the change in a file. migrate is the step that actually applies that file to the database. So it is makemigrations first, migrate second.">
+            <h3 class="quiz-question">In what order do the two commands run, and what does each one do?</h3>
+            <div class="quiz-options">
+              <button class="quiz-option" data-value="option-a" onclick="selectOption(this)">
+                <div class="quiz-option-radio"></div>
+                <span>migrate first (it plans the change), then makemigrations (it saves the plan).</span>
+              </button>
+              <button class="quiz-option" data-value="option-b" onclick="selectOption(this)">
+                <div class="quiz-option-radio"></div>
+                <span>makemigrations first — it writes the change into a file; then migrate — it applies that file to the real database.</span>
+              </button>
+              <button class="quiz-option" data-value="option-c" onclick="selectOption(this)">
+                <div class="quiz-option-radio"></div>
+                <span>They do the same thing, so the order does not matter.</span>
+              </button>
+            </div>
+            <div class="quiz-feedback"></div>
+          </div>
+
+          <div class="quiz-question-block"
+               data-correct="option-a"
+               data-explanation-right="Exactly. Migration files are an ordered history that can be replayed safely on any database — your laptop, the test server, production — without wiping the data that already lives there."
+               data-explanation-wrong="Not quite. Rebuilding tables from scratch would throw away all existing data every time. The real value of keeping migration files is that they are a safe, ordered history you can replay on any database while preserving what is already there.">
+            <h3 class="quiz-question">Why keep migration files in your project instead of just rebuilding the tables from scratch each time?</h3>
+            <div class="quiz-options">
+              <button class="quiz-option" data-value="option-a" onclick="selectOption(this)">
+                <div class="quiz-option-radio"></div>
+                <span>They are an ordered history that can be replayed safely on any database — dev, test, production — without losing existing data.</span>
+              </button>
+              <button class="quiz-option" data-value="option-b" onclick="selectOption(this)">
+                <div class="quiz-option-radio"></div>
+                <span>They make the app run faster because the database is smaller.</span>
+              </button>
+              <button class="quiz-option" data-value="option-c" onclick="selectOption(this)">
+                <div class="quiz-option-radio"></div>
+                <span>They are only needed for SQLite and can be deleted on other databases.</span>
+              </button>
+            </div>
+            <div class="quiz-feedback"></div>
+          </div>
+
+          <button class="quiz-check-btn" onclick="checkQuiz('quiz-module3')">Check Answers</button>
+          <button class="quiz-reset-btn" onclick="resetQuiz('quiz-module3')">Try Again</button>
+        </div>
+      </section>
+
+      <!-- SCREEN 8: Bridge to next module -->
+      <section class="screen animate-in">
+        <div class="callout callout-accent">
+          <div class="callout-icon">➡️</div>
+          <div class="callout-content">
+            <strong class="callout-title">Your data now lives in a table</strong>
+            <p>Next: how do you <em>ask questions</em> of it — "give me every active user, newest first" — without writing a single word of SQL? That is Module 4, Asking the Database Questions.</p>
+          </div>
+        </div>
+      </section>
+
+    </div>
+  </div>
+</section>

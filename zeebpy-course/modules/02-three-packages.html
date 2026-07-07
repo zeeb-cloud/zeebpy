@@ -1,0 +1,332 @@
+<section class="module" id="module-2" style="background: var(--color-bg)">
+  <div class="module-content">
+
+    <header class="module-header animate-in">
+      <span class="module-number">02</span>
+      <h1 class="module-title">The Cast of Characters</h1>
+      <p class="module-subtitle">Three separate packages, stacked like floors of a building — and one strict rule about who is allowed to call whom.</p>
+    </header>
+
+    <div class="module-body">
+
+      <!-- SCREEN 1: Hook + metaphor -->
+      <section class="screen animate-in">
+        <h2 class="screen-heading">Meet the whole family</h2>
+        <p>Last module you met one of the three characters — the <span class="term" data-definition="The ORM (Object-Relational Mapper) is the piece that talks to the database. It turns Python objects into database rows and back again — you met it saving a record in Module 1.">ORM</span>, which saved a record for you. It turns out it has two siblings.</p>
+        <p>zeebpy isn't one giant blob of code. It's three separate <span class="term" data-definition="A package is a bundle of related code shipped as one unit — like an app you install. zeebpy ships three of them together, each with its own job.">packages</span> stacked like the floors of a building, connected by a strict <strong>one-way elevator</strong>: the top floor can call down to the floors below, but no floor can ever call <em>up</em>.</p>
+
+        <div class="callout callout-info">
+          <div class="callout-icon">🏢</div>
+          <div class="callout-content">
+            <strong class="callout-title">The metaphor: a three-story building</strong>
+            <p>Each floor has exactly one job and depends only on the floors beneath it. The elevator runs one way — down. Keep that picture in your head; the whole module hangs on it.</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- SCREEN 2: The hero — interactive architecture diagram -->
+      <section class="screen animate-in">
+        <h2 class="screen-heading">The building, floor by floor</h2>
+        <p>Here's the actual structure. The top floor uses the ones below it; the arrows only ever point <strong>down</strong>. Click any floor to see what it does.</p>
+
+        <div class="arch-diagram">
+
+          <div class="arch-zone arch-zone-external" style="border-color: var(--color-actor-3)">
+            <h4 class="arch-zone-label" style="color: var(--color-actor-3)">Top floor — the Robot Helpers</h4>
+            <div class="arch-component" data-desc="zeeb_agents: about 43 helper functions an AI assistant can call — to scaffold new code, run migrations, and inspect the database. It sits on top and uses BOTH siblings below it."
+                 onclick="showArchDesc(this)" style="border-left: 4px solid var(--color-actor-3)">
+              <div class="arch-icon">🤖</div>
+              <span><code>zeeb_agents</code> — the Robot Helpers</span>
+            </div>
+          </div>
+
+          <div class="arch-arrow" style="text-align:center; font-size:1.5rem; color: var(--color-actor-3)">↓ calls down ↓</div>
+
+          <div class="arch-zone arch-zone-browser" style="border-color: var(--color-actor-2)">
+            <h4 class="arch-zone-label" style="color: var(--color-actor-2)">Middle floor — the Web Front Desk</h4>
+            <div class="arch-component" data-desc="zeeb_api: the layer that faces the outside world. It turns your data into a REST API — web addresses other apps can call — and uses the ORM below it to fetch and save data. It never touches the database directly."
+                 onclick="showArchDesc(this)" style="border-left: 4px solid var(--color-actor-2)">
+              <div class="arch-icon">🏢</div>
+              <span><code>zeeb_api</code> — the Web Front Desk</span>
+            </div>
+          </div>
+
+          <div class="arch-arrow" style="text-align:center; font-size:1.5rem; color: var(--color-actor-2)">↓ calls down ↓</div>
+
+          <div class="arch-zone arch-zone-external" style="border-color: var(--color-actor-1)">
+            <h4 class="arch-zone-label" style="color: var(--color-actor-1)">Ground floor — the Database Brain</h4>
+            <div class="arch-component" data-desc="zeeb_orm: the piece that knows how to talk to the database. It turns Python classes into tables and your queries into SQL. It's the foundation — it depends on nothing above it."
+                 onclick="showArchDesc(this)" style="border-left: 4px solid var(--color-actor-1)">
+              <div class="arch-icon">🧠</div>
+              <span><code>zeeb_orm</code> — the Database Brain</span>
+            </div>
+          </div>
+
+          <div class="arch-description" id="arch-desc">Click any floor to learn what it does — and notice the elevator only goes down.</div>
+        </div>
+      </section>
+
+      <!-- SCREEN 3: The three characters as cards -->
+      <section class="screen animate-in">
+        <h2 class="screen-heading">The three characters</h2>
+        <p>Each package is a character with one clear job. Their colors stay the same for the rest of the course, so you'll always know who's speaking.</p>
+
+        <div class="pattern-cards">
+          <div class="pattern-card" style="border-top: 3px solid var(--color-actor-1)">
+            <div class="pattern-icon" style="background: var(--color-actor-1)">🧠</div>
+            <h4 class="pattern-title"><code>zeeb_orm</code></h4>
+            <p class="pattern-desc"><strong>The Database Brain.</strong> Knows how to talk to the database. Turns Python classes into tables and queries into <span class="term" data-definition="SQL is the standard language databases speak. You write Python; the ORM translates it into SQL behind the scenes so you never have to.">SQL</span>. Depends on nothing above it.</p>
+          </div>
+          <div class="pattern-card" style="border-top: 3px solid var(--color-actor-2)">
+            <div class="pattern-icon" style="background: var(--color-actor-2)">🏢</div>
+            <h4 class="pattern-title"><code>zeeb_api</code></h4>
+            <p class="pattern-desc"><strong>The Web Front Desk.</strong> Faces the outside world. Turns your data into a <span class="term" data-definition="A REST API is a set of web addresses (URLs) other programs can call to read or change your data — the standard way apps talk to each other over the internet.">REST API</span> — web addresses other apps can call. Uses the ORM to fetch and save data.</p>
+          </div>
+          <div class="pattern-card" style="border-top: 3px solid var(--color-actor-3)">
+            <div class="pattern-icon" style="background: var(--color-actor-3)">🤖</div>
+            <h4 class="pattern-title"><code>zeeb_agents</code></h4>
+            <p class="pattern-desc"><strong>The Robot Helpers.</strong> ~43 helper functions an AI assistant can call to <span class="term" data-definition="To scaffold means to auto-generate the starter files and folders for a new piece of code — like a template that saves you writing boilerplate by hand.">scaffold</span> code, run migrations, inspect the database. Sits on top and uses both siblings.</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- SCREEN 4: Group chat (MANDATORY) -->
+      <section class="screen animate-in">
+        <h2 class="screen-heading">Watch them work together</h2>
+        <p>A web request just arrived — someone wants a list of books. Play the conversation and watch the packages hand work down the elevator, then back up.</p>
+
+        <div class="chat-window" id="chat-packages">
+          <div class="chat-messages">
+
+            <div class="chat-message" data-msg="0" data-sender="actor-2" style="display:none">
+              <div class="chat-avatar" style="background: var(--color-actor-2)">🏢</div>
+              <div class="chat-bubble">
+                <span class="chat-sender" style="color: var(--color-actor-2)">Web Front Desk · zeeb_api</span>
+                <p>Someone just asked for a list of books. I handle the web side — but I do not touch the database myself.</p>
+              </div>
+            </div>
+
+            <div class="chat-message" data-msg="1" data-sender="actor-2" style="display:none">
+              <div class="chat-avatar" style="background: var(--color-actor-2)">🏢</div>
+              <div class="chat-bubble">
+                <span class="chat-sender" style="color: var(--color-actor-2)">Web Front Desk · zeeb_api</span>
+                <p>Hey ORM, can you fetch all the books?</p>
+              </div>
+            </div>
+
+            <div class="chat-message" data-msg="2" data-sender="actor-1" style="display:none">
+              <div class="chat-avatar" style="background: var(--color-actor-1)">🧠</div>
+              <div class="chat-bubble">
+                <span class="chat-sender" style="color: var(--color-actor-1)">Database Brain · zeeb_orm</span>
+                <p>On it. I will turn that into SQL, ask the database, and hand you back the results.</p>
+              </div>
+            </div>
+
+            <div class="chat-message" data-msg="3" data-sender="actor-1" style="display:none">
+              <div class="chat-avatar" style="background: var(--color-actor-1)">🧠</div>
+              <div class="chat-bubble">
+                <span class="chat-sender" style="color: var(--color-actor-1)">Database Brain · zeeb_orm</span>
+                <p>Here you go — 12 books.</p>
+              </div>
+            </div>
+
+            <div class="chat-message" data-msg="4" data-sender="actor-2" style="display:none">
+              <div class="chat-avatar" style="background: var(--color-actor-2)">🏢</div>
+              <div class="chat-bubble">
+                <span class="chat-sender" style="color: var(--color-actor-2)">Web Front Desk · zeeb_api</span>
+                <p>Thanks. I will package these as <span class="term" data-definition="JSON is a simple, text-based format for sending structured data between programs — a list of books, say. It's the common language apps use to talk over the web.">JSON</span> and send them back out to the browser.</p>
+              </div>
+            </div>
+
+            <div class="chat-message" data-msg="5" data-sender="actor-3" style="display:none">
+              <div class="chat-avatar" style="background: var(--color-actor-3)">🤖</div>
+              <div class="chat-bubble">
+                <span class="chat-sender" style="color: var(--color-actor-3)">Robot Helper · zeeb_agents</span>
+                <p>And when you build a brand-new app, I am the one who scaffolds these files for you — I sit on top and use you both.</p>
+              </div>
+            </div>
+
+          </div>
+
+          <div class="chat-typing" id="chat-packages-typing" style="display:none">
+            <div class="chat-avatar" id="chat-packages-typing-avatar">?</div>
+            <div class="chat-typing-dots">
+              <span class="typing-dot"></span>
+              <span class="typing-dot"></span>
+              <span class="typing-dot"></span>
+            </div>
+          </div>
+
+          <div class="chat-controls">
+            <button class="btn chat-next-btn">Next Message</button>
+            <button class="btn chat-all-btn">Play All</button>
+            <button class="btn chat-reset-btn">Replay</button>
+            <span class="chat-progress"></span>
+          </div>
+        </div>
+      </section>
+
+      <!-- SCREEN 5: Code to English translation -->
+      <section class="screen animate-in">
+        <h2 class="screen-heading">The one-way rule, in real code</h2>
+        <p>Here's the top of <code>example_api.py</code>. When one package uses another, it <span class="term" data-definition="To import means to pull in code from another package so you can use it. An import line at the top of a file lists exactly which pieces it borrows from where.">imports</span> it. Watch which direction the imports point.</p>
+
+        <div class="translation-block animate-in">
+          <div class="translation-code">
+            <span class="translation-label">CODE</span>
+            <pre><code><span class="code-line"><span class="code-comment"># Zeeb ORM imports</span></span>
+<span class="code-line"><span class="code-keyword">from</span> zeeb_orm <span class="code-keyword">import</span> (</span>
+<span class="code-line">    Model, fields, Q,</span>
+<span class="code-line">    configure, setup_database, close_all_connections,</span>
+<span class="code-line">)</span>
+<span class="code-line"></span>
+<span class="code-line"><span class="code-comment"># Zeeb API imports</span></span>
+<span class="code-line"><span class="code-keyword">from</span> zeeb_api <span class="code-keyword">import</span> (</span>
+<span class="code-line">    ModelSerializer, ModelViewSet, DefaultRouter,</span>
+<span class="code-line">    ...</span>
+<span class="code-line">)</span></code></pre>
+          </div>
+          <div class="translation-english">
+            <span class="translation-label">PLAIN ENGLISH</span>
+            <div class="translation-lines">
+              <p class="tl">The comment marks where the database-layer tools come from.</p>
+              <p class="tl">From <code>zeeb_orm</code> we borrow the building blocks for data: Model, fields, and query tools.</p>
+              <p class="tl">&hellip;the pieces that set up and talk to the database.</p>
+              <p class="tl">&nbsp;</p>
+              <p class="tl">The comment marks the web-layer tools.</p>
+              <p class="tl">From <code>zeeb_api</code> we borrow the tools that turn that data into a web API.</p>
+              <p class="tl"><strong>Notice the direction:</strong> the API file reaches <em>down</em> into the ORM. The ORM never reaches <em>up</em> into the API — that is the one-way elevator rule.</p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- SCREEN 6: Callout — separation of concerns + why care -->
+      <section class="screen animate-in">
+        <h2 class="screen-heading">Why this matters to you</h2>
+
+        <div class="callout callout-accent">
+          <div class="callout-icon">💡</div>
+          <div class="callout-content">
+            <strong class="callout-title">Separation of concerns</strong>
+            <p>Splitting a system into <span class="term" data-definition="A layer is one horizontal slice of a system that handles a single job — like a floor of the building. Layers stack, and each one only relies on the layers beneath it.">layers</span> that each do one job — and only depend downward — is one of software's most important ideas. It's why you can change how data is stored without touching how the web API looks.</p>
+          </div>
+        </div>
+
+        <p>When you can name which layer owns what, you can steer an AI precisely and debug faster:</p>
+
+        <div class="icon-rows">
+          <div class="icon-row">
+            <div class="icon-circle" style="background: var(--color-actor-1)">🧠</div>
+            <div>
+              <strong>Data is wrong?</strong>
+              <p>Look in the ORM — the Database Brain owns how data is fetched and stored.</p>
+            </div>
+          </div>
+          <div class="icon-row">
+            <div class="icon-circle" style="background: var(--color-actor-2)">🏢</div>
+            <div>
+              <strong>A web request 404s?</strong>
+              <p>Look in the API — the Web Front Desk owns the web addresses.</p>
+            </div>
+          </div>
+          <div class="icon-row">
+            <div class="icon-circle" style="background: var(--color-actor-3)">🤖</div>
+            <div>
+              <strong>Scaffolding or migrations?</strong>
+              <p>That's the Robot Helpers on the top floor.</p>
+            </div>
+          </div>
+        </div>
+
+        <p style="margin-top: var(--space-6)">Engineers call this whole idea <span class="term" data-definition="Separation of concerns means each part of a system handles one job and stays out of the others' business. It makes code easier to change, test, and reason about.">separation of concerns</span>. Say it to an AI — "put this database logic in the ORM layer, not the API layer" — and you'll get sharper results.</p>
+      </section>
+
+      <!-- SCREEN 7: Quiz -->
+      <section class="screen animate-in">
+        <h2 class="screen-heading">Check your intuition</h2>
+        <p>No memorizing — just think through where things live.</p>
+
+        <div class="quiz-container" id="quiz-module2">
+
+          <div class="quiz-question-block"
+               data-correct="orm"
+               data-explanation-right="Exactly. The web request working means the Web Front Desk (API) did its job — it found the address and answered. If the numbers are wrong, the problem is in how the data was fetched, which is the Database Brain's job."
+               data-explanation-wrong="Not quite. The web request itself works fine — so the API found the right address and responded. When the values are wrong but the request succeeds, the trouble is in the data layer: the ORM.">
+            <h3 class="quiz-question">Your API returns the <em>wrong data</em> — the numbers are off, but the web request itself works fine. Which layer do you investigate first?</h3>
+            <div class="quiz-options">
+              <button class="quiz-option" data-value="api" onclick="selectOption(this)">
+                <div class="quiz-option-radio"></div>
+                <span>The API layer (Web Front Desk)</span>
+              </button>
+              <button class="quiz-option" data-value="orm" onclick="selectOption(this)">
+                <div class="quiz-option-radio"></div>
+                <span>The ORM layer (Database Brain)</span>
+              </button>
+              <button class="quiz-option" data-value="agents" onclick="selectOption(this)">
+                <div class="quiz-option-radio"></div>
+                <span>The agents layer (Robot Helpers)</span>
+              </button>
+            </div>
+            <div class="quiz-feedback"></div>
+          </div>
+
+          <div class="quiz-question-block"
+               data-correct="no"
+               data-explanation-right="Right. The elevator only goes down. zeeb_orm is the ground floor — it depends on nothing above it. If it imported from zeeb_api, that would be reaching up, breaking the one-way rule."
+               data-explanation-wrong="Think about the one-way elevator. zeeb_orm is the ground floor; zeeb_api sits above it. Lower layers are never allowed to reach up into higher ones — so no, the ORM can't import from the API.">
+            <h3 class="quiz-question">Could <code>zeeb_orm</code> import something from <code>zeeb_api</code>?</h3>
+            <div class="quiz-options">
+              <button class="quiz-option" data-value="yes" onclick="selectOption(this)">
+                <div class="quiz-option-radio"></div>
+                <span>Yes — packages can freely import each other</span>
+              </button>
+              <button class="quiz-option" data-value="no" onclick="selectOption(this)">
+                <div class="quiz-option-radio"></div>
+                <span>No — that would break the one-way rule</span>
+              </button>
+              <button class="quiz-option" data-value="sometimes" onclick="selectOption(this)">
+                <div class="quiz-option-radio"></div>
+                <span>Only when handling a web request</span>
+              </button>
+            </div>
+            <div class="quiz-feedback"></div>
+          </div>
+
+          <div class="quiz-question-block"
+               data-correct="api"
+               data-explanation-right="Exactly. Rate limiting is about how the outside world hits your web endpoints — that's the Web Front Desk's territory. It belongs in zeeb_api."
+               data-explanation-wrong="Think about what a rate limit protects: your web endpoints, the doors the outside world knocks on. Those doors belong to the Web Front Desk — so this lives in zeeb_api, not the database or agents layer.">
+            <h3 class="quiz-question">You ask an AI to add a rate limit to your web endpoints. Which package should that live in?</h3>
+            <div class="quiz-options">
+              <button class="quiz-option" data-value="orm" onclick="selectOption(this)">
+                <div class="quiz-option-radio"></div>
+                <span><code>zeeb_orm</code> — the database layer</span>
+              </button>
+              <button class="quiz-option" data-value="api" onclick="selectOption(this)">
+                <div class="quiz-option-radio"></div>
+                <span><code>zeeb_api</code> — the web layer</span>
+              </button>
+              <button class="quiz-option" data-value="agents" onclick="selectOption(this)">
+                <div class="quiz-option-radio"></div>
+                <span><code>zeeb_agents</code> — the helper layer</span>
+              </button>
+            </div>
+            <div class="quiz-feedback"></div>
+          </div>
+
+          <button class="quiz-check-btn" onclick="checkQuiz('quiz-module2')">Check Answers</button>
+          <button class="quiz-reset-btn" onclick="resetQuiz('quiz-module2')">Try Again</button>
+        </div>
+      </section>
+
+      <!-- SCREEN 8: Handoff -->
+      <section class="screen animate-in">
+        <h2 class="screen-heading">Next stop: the ground floor</h2>
+        <p>You've met the whole family and learned the one rule that binds them: dependencies only ever point down. Every technical term you met here — <span class="term" data-definition="A module is a single file of code (or a small group of them). Several modules together make up a package. Confusingly, this course also calls its lessons 'modules' — here we mean the code kind.">module</span>, <span class="term" data-definition="A dependency is code that another piece of code relies on. If A depends on B, A can't work without B — and A is said to 'depend on' B.">dependency</span>, package — is now yours to use with an AI.</p>
+        <p>Let's take the elevator down to the ground floor — the Database Brain, <code>zeeb_orm</code> — and see how a plain Python class becomes a real database table.</p>
+      </section>
+
+    </div>
+  </div>
+</section>
