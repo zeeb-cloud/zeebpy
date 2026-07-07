@@ -253,7 +253,7 @@ async def get_current_user(
     Raises AuthenticationException if not authenticated.
     
     Usage:
-        @app.get("/me/")
+        @app.get("/me")
         async def get_me(user: AuthenticatedUser = Depends(get_current_user)):
             return {"id": user.id}
     """

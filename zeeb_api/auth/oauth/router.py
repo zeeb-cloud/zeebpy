@@ -392,4 +392,12 @@ def create_oauth_router(
             nonce=nonce,
         )
 
+    # Serve both slash variants directly (no 307 redirect). Canonical OAuth
+    # paths keep their trailing slash: url_for("oauth_callback") feeds the
+    # redirect_uri that IdP app registrations match exactly, so the canonical
+    # form must not change.
+    from zeeb_api.routers.default import add_slash_alias_routes
+
+    add_slash_alias_routes(router)
+
     return router

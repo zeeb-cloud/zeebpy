@@ -10,6 +10,46 @@ from fastapi.responses import JSONResponse
 from zeeb_api.viewsets.base import ViewSet
 
 
+def add_slash_alias_routes(router: APIRouter) -> None:
+    """Register a hidden trailing-slash alias for every route on the router.
+
+    Canonical paths have no trailing slash. Without an alias, a client that
+    appends one gets FastAPI's 307 redirect, which browsers reject on
+    CORS-preflighted requests ("Load failed" with a working backend). The
+    alias serves both variants directly; ``include_in_schema=False`` keeps
+    the OpenAPI schema canonical (slash-less only).
+
+    Idempotent: paths that already exist on the router are skipped, so this
+    can run both on a sub-router (e.g. the auth router) and again on the
+    router that includes it.
+    """
+    from fastapi.routing import APIRoute
+
+    existing = {route.path for route in router.routes}
+    for route in list(router.routes):
+        if not isinstance(route, APIRoute):
+            continue
+        path = route.path
+        if not path or path == "/":
+            continue
+        alias = path[:-1] if path.endswith("/") else path + "/"
+        if alias == "/" or alias in existing:
+            continue
+        existing.add(alias)
+        # add_api_route() re-prepends the router prefix, so strip it here.
+        sub_path = alias[len(router.prefix):] if router.prefix else alias
+        router.add_api_route(
+            sub_path,
+            route.endpoint,
+            methods=sorted(route.methods or []),
+            name=f"{route.name}-slash" if route.name else None,
+            response_model=route.response_model,
+            status_code=route.status_code,
+            dependencies=list(route.dependencies or []),
+            include_in_schema=False,
+        )
+
+
 class Route:
     """Route configuration for a ViewSet action."""
     
@@ -32,12 +72,13 @@ class SimpleRouter:
     """
     Simple router that generates routes for ViewSets.
     
-    Routes generated:
-    - {prefix}/query/ (query with Q filters) - POST
-    - {prefix}/ (create) - POST
-    - {prefix}/{lookup}/ (retrieve, update, partial_update, destroy)
-    - {prefix}/{lookup}/{action}/ (custom detail actions)
-    - {prefix}/{action}/ (custom list actions)
+    Routes generated (canonical paths have no trailing slash; a hidden
+    trailing-slash alias is registered for each so both variants work):
+    - {prefix}/query (query with Q filters) - POST
+    - {prefix} (create) - POST
+    - {prefix}/{lookup} (retrieve, update, partial_update, destroy)
+    - {prefix}/{lookup}/{action} (custom detail actions)
+    - {prefix}/{action} (custom list actions)
     """
     
     # Default route patterns
@@ -166,11 +207,12 @@ class SimpleRouter:
     def get_urls(self) -> list[APIRouter]:
         """Generate FastAPI routers for all registered ViewSets."""
         routers = []
-        
+
         for prefix, viewset, basename in self._registry:
             router = self._get_router_for_viewset(prefix, viewset, basename)
+            add_slash_alias_routes(router)
             routers.append(router)
-        
+
         return routers
     
     def _get_router_for_viewset(
@@ -575,8 +617,10 @@ class DefaultRouter(SimpleRouter):
                 # Create a wrapper router with the prefix
                 wrapper = APIRouter(prefix=f"/{prefix.strip('/')}")
                 wrapper.include_router(api_router)
+                add_slash_alias_routes(wrapper)
                 urls.append(wrapper)
             else:
+                add_slash_alias_routes(api_router)
                 urls.append(api_router)
         
         if self.include_root_view:

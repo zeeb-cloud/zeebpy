@@ -25,7 +25,7 @@ def get_auth_patterns(
     Get auth URL patterns with custom configuration.
     
     Args:
-        enable_registration: Include /register/ endpoint
+        enable_registration: Include /register endpoint
         use_database: Use database-backed authentication
         prefix: URL prefix (usually set via include())
         tags: OpenAPI tags

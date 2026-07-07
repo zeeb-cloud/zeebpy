@@ -70,7 +70,7 @@ This registers (default prefix `/auth`):
 
 A successful login returns the standard `TokenResponse`
 (`access_token`, `refresh_token`, `token_type`, `expires_in`) — the same shape
-as `/auth/login/`.
+as `/auth/login`.
 
 ## Azure AD (Microsoft Entra ID) Walkthrough
 
