@@ -52,7 +52,9 @@ Common options on any field: `null`, `default`, `unique`, `index`,
 `db_column`. Values must be plain literals; for validators or callable
 defaults use the reserved `"raw"` key (verbatim Python per kwarg).
 Relation rules: `on_delete` ∈ CASCADE / PROTECT / RESTRICT / SET_NULL /
-SET_DEFAULT / DO_NOTHING; `SET_NULL` requires `null=True`.
+SET_DEFAULT / DO_NOTHING; `SET_NULL` requires `null=True`. `to` accepts a
+bare model name (`"User"`), a Django-style dotted label (`"accounts.User"`),
+or `"self"`.
 
 ### Creating Models
 

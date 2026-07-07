@@ -107,6 +107,17 @@ class FieldError(Exception):
     pass
 
 
+class ModelRegistrationError(Exception):
+    """Raised when models from an installed app cannot be registered.
+
+    Surfaced by ``makemigrations``/``migrate`` model loading instead of a
+    warning, so schema tooling never runs against an incomplete model state
+    (which could otherwise generate destructive migrations).
+    """
+
+    pass
+
+
 # Re-exported for convenience — these are defined in zeeb_orm.models.base
 # (imported at the bottom to avoid import cycles at module load time).
 from zeeb_orm.models.base import (  # noqa: E402
@@ -123,6 +134,7 @@ __all__ = [
     "TransactionManagementError",
     "FieldDoesNotExist",
     "FieldError",
+    "ModelRegistrationError",
     "DoesNotExist",
     "MultipleObjectsReturned",
 ]

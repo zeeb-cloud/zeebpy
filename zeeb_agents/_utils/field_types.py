@@ -185,7 +185,7 @@ def validate_field_spec(spec: object) -> tuple[str, str]:
         if not to_val or not isinstance(to_val, str):
             raise AgentError(
                 f"Field '{name}' ({field_type}) requires 'to' — the target model "
-                "name (e.g. \"User\" or \"self\")",
+                "name (e.g. \"User\", \"accounts.User\" or \"self\")",
                 code="invalid_field_spec",
             )
         if field_type == "ManyToManyField":

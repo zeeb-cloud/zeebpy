@@ -501,7 +501,8 @@ class ForeignKeyField(Field[ModelT]):
 
         Supports three forms for ``to``:
         - A model **class** (returned as-is).
-        - A **string** name looked up in the model registry (e.g. ``"User"``).
+        - A **string** name looked up in the model registry (``"User"`` or a
+          Django-style dotted label like ``"accounts.User"``).
         - A **callable** that returns the model class (lazy resolution,
           useful for swappable models like ``AUTH_USER_MODEL``).
         """
@@ -511,8 +512,8 @@ class ForeignKeyField(Field[ModelT]):
             # Handle self-referential ForeignKey
             if self.to == "self":
                 return self._owner_model
-            from zeeb_orm.models.base import _model_registry
-            return _model_registry[self.to]
+            from zeeb_orm.models.base import resolve_model_ref
+            return resolve_model_ref(self.to)
         return self.to
     
     def __set_name__(self, owner: type, name: str) -> None:
@@ -690,9 +691,9 @@ class ManyToManyField(Generic[ModelT]):
             if self.to == "self":
                 assert self.model is not None
                 return self.model
-            from zeeb_orm.models.base import _model_registry
+            from zeeb_orm.models.base import resolve_model_ref
 
-            return _model_registry[self.to]
+            return resolve_model_ref(self.to)
         return self.to
 
     @property
@@ -705,9 +706,9 @@ class ManyToManyField(Generic[ModelT]):
         if self.through is None:
             return None
         if isinstance(self.through, str):
-            from zeeb_orm.models.base import _model_registry
+            from zeeb_orm.models.base import resolve_model_ref
 
-            return _model_registry[self.through]
+            return resolve_model_ref(self.through)
         return self.through
 
     def get_through_table_name(self) -> str:

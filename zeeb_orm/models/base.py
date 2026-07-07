@@ -47,6 +47,32 @@ _model_registry: dict[str, type[Model]] = {}
 ModelT = TypeVar("ModelT", bound="Model")
 
 
+def resolve_model_ref(ref: str) -> type[Model]:
+    """Resolve a string model reference to the registered class.
+
+    Accepts a bare class name (``"User"``) or a Django-style dotted label
+    (``"accounts.User"``, ``"apps.accounts.User"``) — the registry is keyed
+    by class name, so dotted references fall back to their last segment.
+
+    Raises ``KeyError`` (kept for callers that defer on unresolved
+    references) with the known model names when nothing matches.
+    """
+    try:
+        return _model_registry[ref]
+    except KeyError:
+        pass
+    if "." in ref:
+        bare = ref.rsplit(".", 1)[1]
+        try:
+            return _model_registry[bare]
+        except KeyError:
+            pass
+    raise KeyError(
+        f"Model {ref!r} is not registered. Known models: "
+        f"{', '.join(sorted(_model_registry)) or '(none)'}"
+    )
+
+
 class ModelBase(type):
     """
     Metaclass for Model that handles:
