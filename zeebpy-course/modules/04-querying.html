@@ -1,0 +1,356 @@
+<section class="module" id="module-4" style="background: var(--color-bg)">
+  <div class="module-content">
+
+    <header class="module-header animate-in">
+      <span class="module-number">04</span>
+      <h1 class="module-title">Asking the Database Questions</h1>
+      <p class="module-subtitle">Your data lives in a table now. Time to ask it questions — without writing a single line of SQL.</p>
+    </header>
+
+    <div class="module-body">
+
+      <!-- SCREEN 1 — The metaphor / hook -->
+      <section class="screen animate-in">
+        <h2 class="screen-heading">You are just writing down the question</h2>
+        <p>Think of refining filters on a shopping site. You tick <em>"under $30,"</em> then <em>"in stock,"</em> then <em>"newest first."</em> Nothing loads. The page only fetches results when you finally press the button.</p>
+
+        <div class="callout callout-info">
+          <div class="callout-icon">🛒</div>
+          <div class="callout-content">
+            <strong class="callout-title">The hook</strong>
+            <p><code>User.objects.filter(age__lt=30)</code> — you have not asked the database anything yet. You have only <em>written down the question</em>. It runs the moment you <code>await</code> it, and not a nanosecond before.</p>
+          </div>
+        </div>
+
+        <p>A zeebpy
+          <span class="term" data-definition="A QuerySet is a saved-up database question. It remembers the conditions you stacked up (filters, sorting) but does not touch the database until you ask for the results.">QuerySet</span>
+          works exactly like those shopping filters: you stack conditions, and the database is only bothered when you press "go."</p>
+
+        <div class="flow-steps">
+          <div class="flow-step">
+            <div class="flow-step-num">1</div>
+            <p>Tick "is active"</p>
+          </div>
+          <div class="flow-arrow">→</div>
+          <div class="flow-step">
+            <div class="flow-step-num">2</div>
+            <p>Tick "under 30"</p>
+          </div>
+          <div class="flow-arrow">→</div>
+          <div class="flow-step">
+            <div class="flow-step-num">3</div>
+            <p>Press <code>await</code></p>
+          </div>
+          <div class="flow-arrow">→</div>
+          <div class="flow-step">
+            <div class="flow-step-num">4</div>
+            <p>Results load</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- SCREEN 2 — Snippet A: lookups → SQL -->
+      <section class="screen animate-in">
+        <h2 class="screen-heading">From plain words to a database question</h2>
+        <p>Here is real code from <code>example_basic.py</code>. Each line is a
+          <span class="term" data-definition="A lookup is the little suffix after a double underscore — like __lt or __gte — that tells the database HOW to compare. __lt means 'less than,' __gte means 'greater than or equal to.'">lookup</span>
+          that zeebpy translates into a
+          <span class="term" data-definition="The WHERE clause is the part of a database question that filters rows — 'only give me the ones WHERE this condition is true.' You never write it by hand here; zeebpy writes it for you.">WHERE clause</span>.</p>
+
+        <div class="translation-block animate-in">
+          <div class="translation-code">
+            <span class="translation-label">CODE</span>
+            <pre><code><span class="code-line">    <span class="code-comment"># Filter users</span></span>
+<span class="code-line">    active_users = <span class="code-keyword">await</span> User.objects.<span class="code-function">filter</span>(is_active=<span class="code-keyword">True</span>)</span>
+<span class="code-line"></span>
+<span class="code-line">    <span class="code-comment"># Filter with lookups</span></span>
+<span class="code-line">    young_users = <span class="code-keyword">await</span> User.objects.<span class="code-function">filter</span>(age__lt=<span class="code-number">30</span>)</span>
+<span class="code-line"></span>
+<span class="code-line">    adults = <span class="code-keyword">await</span> User.objects.<span class="code-function">filter</span>(age__gte=<span class="code-number">25</span>, age__lte=<span class="code-number">40</span>)</span></code></pre>
+          </div>
+          <div class="translation-english">
+            <span class="translation-label">PLAIN ENGLISH</span>
+            <div class="translation-lines">
+              <p class="tl">Find users matching a condition.</p>
+              <p class="tl">Ask for users whose <code>is_active</code> switch is on → SQL: <code>WHERE is_active = true</code>.</p>
+              <p class="tl">&nbsp;</p>
+              <p class="tl">Conditions can be comparisons, not just equals.</p>
+              <p class="tl"><code>age__lt=30</code> means "age less than 30" → SQL: <code>WHERE age &lt; 30</code>. The <code>__lt</code> is the magic word for "less than."</p>
+              <p class="tl">&nbsp;</p>
+              <p class="tl"><code>age__gte=25, age__lte=40</code> means "at least 25 AND at most 40" → SQL: <code>WHERE age &gt;= 25 AND age &lt;= 40</code>.</p>
+            </div>
+          </div>
+        </div>
+
+        <p>Those <code>age__lt=30</code> pairs are
+          <span class="term" data-definition="A keyword argument is a named input to a function, written as name=value. Here the name (age__lt) carries the field AND the comparison, and the value (30) is what to compare against.">keyword arguments</span>
+          — the name carries both the field and the comparison, the value is what to match.</p>
+      </section>
+
+      <!-- SCREEN 3 — Snippet B: filter returns a clone (why lazy) -->
+      <section class="screen animate-in">
+        <h2 class="screen-heading">Why nothing runs yet: <code>filter</code> hands back a copy</h2>
+        <p>This is the heart of the trick, from <code>zeeb_orm/query/queryset.py</code>. When you call <code>.filter()</code>, zeebpy does <strong>not</strong> touch the database — it makes a fresh
+          <span class="term" data-definition="A clone is an exact copy. zeebpy copies your question before adding a condition, so the original question is never changed — this is what 'immutable' means.">clone</span>
+          of your question and hands that back.</p>
+
+        <div class="translation-block animate-in">
+          <div class="translation-code">
+            <span class="translation-label">CODE</span>
+            <pre><code><span class="code-line">        self.<span class="code-function">_check_combinator</span>(<span class="code-string">"filter"</span>)</span>
+<span class="code-line">        clone = self.<span class="code-function">_clone</span>()</span>
+<span class="code-line">        <span class="code-keyword">if</span> args:</span>
+<span class="code-line">            <span class="code-keyword">for</span> arg <span class="code-keyword">in</span> args:</span>
+<span class="code-line">                <span class="code-keyword">if</span> <span class="code-function">isinstance</span>(arg, Q):</span>
+<span class="code-line">                    clone._filters.<span class="code-function">append</span>(arg)</span>
+<span class="code-line">        <span class="code-keyword">if</span> kwargs:</span>
+<span class="code-line">            clone._filters.<span class="code-function">append</span>(<span class="code-function">Q</span>(**kwargs))</span>
+<span class="code-line">        <span class="code-keyword">return</span> clone</span></code></pre>
+          </div>
+          <div class="translation-english">
+            <span class="translation-label">PLAIN ENGLISH</span>
+            <div class="translation-lines">
+              <p class="tl">First a safety check that filtering is allowed here.</p>
+              <p class="tl">Make a fresh copy of the question — never modify the original.</p>
+              <p class="tl">If you passed any <code>Q</code> objects…</p>
+              <p class="tl">…go through them one by one…</p>
+              <p class="tl">&nbsp;</p>
+              <p class="tl">…and add each as a new condition on the copy.</p>
+              <p class="tl">If you passed plain keywords like <code>age__lt=30</code>…</p>
+              <p class="tl">…bundle them into a condition and add that too.</p>
+              <p class="tl">Hand back the <em>copy</em>. Notice: it talked to no database. It just remembered your condition and returned a new question.</p>
+            </div>
+          </div>
+        </div>
+
+        <p>Because each <code>.filter()</code> returns a brand-new copy, QuerySets are
+          <span class="term" data-definition="Chainable (or 'method chaining') means you can stick calls end to end — .filter().filter().order_by() — because each one hands back a new object ready for the next call.">chainable</span>:
+          you can stack <code>.filter().filter()</code> forever, and every earlier question stays untouched.</p>
+      </section>
+
+      <!-- SCREEN 4 — The lazy-eval callout + Snippet C: the moment it runs -->
+      <section class="screen animate-in">
+        <h2 class="screen-heading">The exact moment it runs</h2>
+
+        <div class="callout callout-accent">
+          <div class="callout-icon">💡</div>
+          <div class="callout-content">
+            <strong class="callout-title">Lazy evaluation</strong>
+            <p>Building a query costs <em>nothing</em> — only <code>await</code> (or looping over it) actually triggers the database. This is a deliberate design: you can pass an unfinished query around, tack on more filters, and run it just once at the very end.</p>
+          </div>
+        </div>
+
+        <p>Deep in <code>queryset.py</code> lives the switch that fires only when you put <code>await</code> in front of a query. This is where a saved-up question finally becomes real rows.</p>
+
+        <div class="translation-block animate-in">
+          <div class="translation-code">
+            <span class="translation-label">CODE</span>
+            <pre><code><span class="code-line">    <span class="code-keyword">def</span> <span class="code-function">__await__</span>(self) -&gt; Any:</span>
+<span class="code-line">        <span class="code-comment">"""Allow awaiting QuerySet directly to get list of results."""</span></span>
+<span class="code-line">        <span class="code-keyword">return</span> self.<span class="code-function">_fetch_all</span>().<span class="code-function">__await__</span>()</span></code></pre>
+          </div>
+          <div class="translation-english">
+            <span class="translation-label">PLAIN ENGLISH</span>
+            <div class="translation-lines">
+              <p class="tl">This special method fires only when you put <code>await</code> in front of the query.</p>
+              <p class="tl">Awaiting the query is what turns it into a real list of results.</p>
+              <p class="tl"><em>Now</em> — and only now — it runs <code>_fetch_all</code>, which sends the SQL to the database and brings back the rows. This is what it means to
+                <span class="term" data-definition="To 'execute a query' means to actually send the question to the database and get rows back. Until you execute it, a QuerySet is only a plan on paper.">execute a query</span>.</p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- SCREEN 5 — Flow animation -->
+      <section class="screen animate-in">
+        <h2 class="screen-heading">Watch a filter chain build, then fire</h2>
+        <p>Step through it. Notice how the first two steps are silent — the database is only contacted at step three.</p>
+
+        <div class="flow-animation" data-steps='[
+          {"highlight":"flow-actor-1","label":"filter(is_active=True) — a condition is written down. No database yet."},
+          {"highlight":"flow-actor-2","label":"filter(age__lt=30) — a second condition stacks on. Still no database.","packet":true,"from":"actor-1","to":"actor-2"},
+          {"highlight":"flow-actor-3","label":"await — NOW the question is sent as SQL.","packet":true,"from":"actor-2","to":"actor-3"},
+          {"highlight":"flow-actor-4","label":"The database runs the query and returns matching rows.","packet":true,"from":"actor-3","to":"actor-4"}
+        ]'>
+          <div class="flow-actors">
+            <div class="flow-actor" id="flow-actor-1">
+              <div class="flow-actor-icon" style="background: var(--color-actor-1)">1</div>
+              <span>filter(is_active=True)</span>
+            </div>
+            <div class="flow-actor" id="flow-actor-2">
+              <div class="flow-actor-icon" style="background: var(--color-actor-1)">2</div>
+              <span>filter(age__lt=30)</span>
+            </div>
+            <div class="flow-actor" id="flow-actor-3">
+              <div class="flow-actor-icon" style="background: var(--color-accent)">3</div>
+              <span>await → SQL sent</span>
+            </div>
+            <div class="flow-actor" id="flow-actor-4">
+              <div class="flow-actor-icon" style="background: var(--color-actor-2)">4</div>
+              <span>Database returns rows</span>
+            </div>
+          </div>
+
+          <div class="flow-packet" id="flow-packet"></div>
+
+          <div class="flow-step-label" id="flow-label">Click "Next Step" to begin</div>
+
+          <div class="flow-controls">
+            <button class="btn flow-next-btn">Next Step</button>
+            <button class="btn flow-reset-btn">Restart</button>
+            <span class="flow-progress"></span>
+          </div>
+        </div>
+      </section>
+
+      <!-- SCREEN 6 — Spot the Bug -->
+      <section class="screen animate-in">
+        <h2 class="screen-heading">Spot the bug</h2>
+        <p>This is the single most common "why is my data not showing up?" mistake. One line quietly breaks everything below it. Click the line you think is the culprit.</p>
+
+        <div class="bug-challenge">
+          <h3>Find the bug in this code:</h3>
+          <div class="bug-code">
+            <div class="bug-line bug-target" data-line="1" onclick="checkBugLine(this, true)">
+              <span class="line-num">1</span>
+              <code>young = User.objects.filter(age__lt=30)</code>
+            </div>
+            <div class="bug-line" data-line="2" onclick="checkBugLine(this, false)">
+              <span class="line-num">2</span>
+              <code>print("Found:", len(young))</code>
+            </div>
+            <div class="bug-line" data-line="3" onclick="checkBugLine(this, false)">
+              <span class="line-num">3</span>
+              <code>for u in young:</code>
+            </div>
+            <div class="bug-line" data-line="4" onclick="checkBugLine(this, false)">
+              <span class="line-num">4</span>
+              <code>    print(u.name)</code>
+            </div>
+          </div>
+          <div class="bug-feedback" id="bug-feedback"></div>
+        </div>
+
+        <div class="callout callout-warning">
+          <div class="callout-icon">⚠️</div>
+          <div class="callout-content">
+            <strong class="callout-title">The tell-tale symptom</strong>
+            <p>If a query gives you a weird object instead of a list of results, the very first thing to check is: did you forget <code>await</code>?</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- SCREEN 7 — Q operators badge list -->
+      <section class="screen animate-in">
+        <h2 class="screen-heading">Combining conditions with <code>Q</code></h2>
+        <p>Plain filters are joined with AND. When you need OR or NOT, you reach for a
+          <span class="term" data-definition="A Q object is a reusable, combinable condition. Unlike plain filters, Q objects can be joined with OR and negated, so you can express 'this OR that' logic.">Q object</span>.
+          These four examples come straight from the code's own documentation in <code>zeeb_orm/query/q.py</code>.</p>
+
+        <div class="badge-list">
+          <div class="badge-item">
+            <code class="badge-code">Q(name='John')</code>
+            <span class="badge-desc">A single plain condition, ready to reuse or combine.</span>
+          </div>
+          <div class="badge-item">
+            <code class="badge-code">Q(age__gte=18) &amp; Q(age__lte=65)</code>
+            <span class="badge-desc"><strong>&amp; = AND</strong> — both must be true: at least 18 <em>and</em> at most 65.</span>
+          </div>
+          <div class="badge-item">
+            <code class="badge-code">Q(status='active') | Q(status='pending')</code>
+            <span class="badge-desc"><strong>| = OR</strong> — either one counts: active <em>or</em> pending.</span>
+          </div>
+          <div class="badge-item">
+            <code class="badge-code">~Q(deleted=True)</code>
+            <span class="badge-desc"><strong>~ = NOT</strong> — flips it: everything that is <em>not</em> deleted.</span>
+          </div>
+        </div>
+      </section>
+
+      <!-- SCREEN 8 — Quiz -->
+      <section class="screen animate-in">
+        <h2 class="screen-heading">Check your understanding</h2>
+
+        <div class="quiz-container" id="quiz-module4">
+          <div class="quiz-question-block"
+               data-correct="missing-await"
+               data-explanation-right="Exactly — a QuerySet is lazy. Without await, the query never runs, so 'users' is just the unexecuted question, not a list of rows. Add await and it springs to life."
+               data-explanation-wrong="Not quite. The filter syntax and field name are fine here. Think about what makes a QuerySet actually run — it is lazy until one specific keyword is present.">
+            <h3 class="quiz-question">You wrote <code>users = User.objects.filter(is_active=True)</code> and got a strange object instead of a list of users. What is most likely wrong?</h3>
+            <div class="quiz-options">
+              <button class="quiz-option" data-value="wrong-field" onclick="selectOption(this)">
+                <div class="quiz-option-radio"></div>
+                <span>The field name <code>is_active</code> is spelled wrong.</span>
+              </button>
+              <button class="quiz-option" data-value="missing-await" onclick="selectOption(this)">
+                <div class="quiz-option-radio"></div>
+                <span>You forgot <code>await</code> — the query is lazy and never executed.</span>
+              </button>
+              <button class="quiz-option" data-value="db-empty" onclick="selectOption(this)">
+                <div class="quiz-option-radio"></div>
+                <span>The database table is empty.</span>
+              </button>
+            </div>
+            <div class="quiz-feedback"></div>
+          </div>
+
+          <div class="quiz-question-block"
+               data-correct="zero-then-one"
+               data-explanation-right="Right! Building a chain runs zero queries — each .filter() just returns a new copy. The single database trip happens only when you finally await the whole thing."
+               data-explanation-wrong="Not quite. Remember, each .filter() only makes a copy of the question — it does not talk to the database. Building the chain costs zero queries; awaiting it costs one.">
+            <h3 class="quiz-question"><code>User.objects.filter(age__gte=18).filter(is_active=True)</code> — how many database queries does <em>building</em> this chain run?</h3>
+            <div class="quiz-options">
+              <button class="quiz-option" data-value="two" onclick="selectOption(this)">
+                <div class="quiz-option-radio"></div>
+                <span>Two — one per <code>.filter()</code> call.</span>
+              </button>
+              <button class="quiz-option" data-value="one" onclick="selectOption(this)">
+                <div class="quiz-option-radio"></div>
+                <span>One — the chain runs immediately.</span>
+              </button>
+              <button class="quiz-option" data-value="zero-then-one" onclick="selectOption(this)">
+                <div class="quiz-option-radio"></div>
+                <span>Zero — until you <code>await</code> it; then one.</span>
+              </button>
+            </div>
+            <div class="quiz-feedback"></div>
+          </div>
+
+          <div class="quiz-question-block"
+               data-correct="q-or"
+               data-explanation-right="Exactly! Plain filters only AND together. To say 'this OR that,' you combine two Q objects with the | operator: Q(role='admin') | Q(age__gte=65)."
+               data-explanation-wrong="Not quite. Stacking plain filters always means AND, which would require BOTH to be true. To express OR, you need Q objects joined with the | operator.">
+            <h3 class="quiz-question">You want "admins OR anyone over 65." Which tool combines those two conditions?</h3>
+            <div class="quiz-options">
+              <button class="quiz-option" data-value="two-filters" onclick="selectOption(this)">
+                <div class="quiz-option-radio"></div>
+                <span>Two chained <code>.filter()</code> calls.</span>
+              </button>
+              <button class="quiz-option" data-value="q-or" onclick="selectOption(this)">
+                <div class="quiz-option-radio"></div>
+                <span>A <code>Q</code> object with <code>|</code> — <code>Q(role='admin') | Q(age__gte=65)</code>.</span>
+              </button>
+              <button class="quiz-option" data-value="q-and" onclick="selectOption(this)">
+                <div class="quiz-option-radio"></div>
+                <span>A <code>Q</code> object with <code>&amp;</code> — <code>Q(role='admin') &amp; Q(age__gte=65)</code>.</span>
+              </button>
+            </div>
+            <div class="quiz-feedback"></div>
+          </div>
+
+          <button class="quiz-check-btn" onclick="checkQuiz('quiz-module4')">Check Answers</button>
+          <button class="quiz-reset-btn" onclick="resetQuiz('quiz-module4')">Try Again</button>
+        </div>
+
+        <div class="callout callout-info">
+          <div class="callout-icon">🔜</div>
+          <div class="callout-content">
+            <strong class="callout-title">Coming up next</strong>
+            <p>So far this all runs <em>inside</em> your program. Next: how does a stranger on the internet trigger one of these queries and get JSON back?</p>
+          </div>
+        </div>
+      </section>
+
+    </div>
+  </div>
+</section>

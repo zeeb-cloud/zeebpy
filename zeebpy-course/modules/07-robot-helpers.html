@@ -1,0 +1,370 @@
+<section class="module" id="module-7" style="background: var(--color-bg-warm)">
+  <div class="module-content">
+    <header class="module-header animate-in">
+      <span class="module-number">07</span>
+      <h1 class="module-title">The Robot Helpers</h1>
+      <p class="module-subtitle">Meet the layer an AI uses to build your app — safely. And take a victory lap across everything you've learned.</p>
+    </header>
+
+    <div class="module-body">
+
+      <!-- ===================== SCREEN 1: HOOK ===================== -->
+      <section class="screen animate-in">
+        <h2 class="screen-heading">From the human's door to the robot's help desk</h2>
+        <p>In Module 6 you saw the whole framework a <em>human</em> uses. Now meet the layer an <em>AI</em> uses.</p>
+        <p>zeebpy ships about <strong>43 helper functions</strong> an AI assistant can call to
+          <span class="term" data-definition="Scaffolding means auto-generating the starter files and folders for a new piece of your app — like a template kit that lays the foundation so you don't type it all by hand.">scaffold</span>
+          apps, run
+          <span class="term" data-definition="A migration is a recorded change to your database's structure — like a numbered save point that adds a table or column and can be applied or rolled back.">migrations</span>,
+          and inspect your database. Every single one obeys two unbreakable rules.</p>
+
+        <div class="callout callout-info">
+          <div class="callout-icon">🏢</div>
+          <div class="callout-content">
+            <strong class="callout-title">The metaphor: a help desk with one standard form</strong>
+            <p>Imagine a help desk where every request — no matter how it goes — comes back on the same tidy slip: <em>done ✓ or not done ✗, here's why, here's the data.</em> No confusing pile of errors ever gets thrown back at you across the counter.</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- ===================== SCREEN 2: THE TWO RULES ===================== -->
+      <section class="screen animate-in">
+        <h2 class="screen-heading">Two rules, and they're a masterclass in careful design</h2>
+        <div class="icon-rows">
+          <div class="icon-row">
+            <div class="icon-circle" style="background: var(--color-actor-3)">📋</div>
+            <div>
+              <strong>Rule 1 — Uniform result</strong>
+              <p>Every function hands back the exact same shape:
+                <span class="term" data-definition="AgentResult is the standard result slip every helper returns. It always has three parts: success (did it work?), message (a sentence for humans), and data (the structured details).">AgentResult</span>(success, message, data). Callers never have to guess.</p>
+            </div>
+          </div>
+          <div class="icon-row">
+            <div class="icon-circle" style="background: var(--color-actor-3)">🛡️</div>
+            <div>
+              <strong>Rule 2 — Never raises</strong>
+              <p>A
+                <span class="term" data-definition="A decorator is a wrapper you place on top of a function (written as @name above it) that adds behavior without changing the function's own code — like slipping a document into a protective sleeve.">decorator</span>
+                catches <em>any</em>
+                <span class="term" data-definition="An exception is an error that interrupts a program. To 'raise' one is to throw that error up to whoever called you — which, unhandled, crashes the program.">error</span>
+                and turns it into a friendly failed result instead of crashing the caller.</p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ===================== SCREEN 3: THE UNIFORM SHAPE ===================== -->
+      <section class="screen animate-in">
+        <h2 class="screen-heading">Rule 1 up close: one shape, every time</h2>
+        <p>Whatever you ask for, the slip has the same three fields. That predictability is the whole point.</p>
+
+        <div class="badge-list stagger-children">
+          <div class="badge-item animate-in">
+            <code class="badge-code">success</code>
+            <span class="badge-desc">Did it work? A simple true / false. This is what the caller checks first.</span>
+          </div>
+          <div class="badge-item animate-in">
+            <code class="badge-code">message</code>
+            <span class="badge-desc">A human-readable sentence — "Created app 'blog'." or "Project folder not found."</span>
+          </div>
+          <div class="badge-item animate-in">
+            <code class="badge-code">data</code>
+            <span class="badge-desc">A bag of structured details (file paths, row counts, names). May be empty — but it's always there.</span>
+          </div>
+        </div>
+
+        <div class="callout callout-accent">
+          <div class="callout-icon">💡</div>
+          <div class="callout-content">
+            <strong class="callout-title">Why a fixed shape matters</strong>
+            <p>Because the
+              <span class="term" data-definition="A return value is whatever a function hands back to the code that called it — the answer you get after asking a question.">return value</span>
+              never changes shape, the code calling 43 different functions can be written once and trusted everywhere. This is called a
+              <span class="term" data-definition="A contract in software is a promise about how a piece of code behaves — what it takes in and what it hands back. Keep the contract and everyone who relies on you keeps working.">contract</span>.</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- ===================== SCREEN 4: THE SAFETY WRAPPER (code↔english) ===================== -->
+      <section class="screen animate-in">
+        <h2 class="screen-heading">Rule 2 up close: the safety net that never lets go</h2>
+        <p>This is the real wrapper. It looks long, but it's doing one calm thing: <em>catch everything, hand back a slip.</em></p>
+
+        <div class="translation-block animate-in">
+          <div class="translation-code">
+            <span class="translation-label">CODE</span>
+<pre><code><span class="code-line">        <span class="code-comment">@functools.wraps(fn)</span></span>
+<span class="code-line">        <span class="code-keyword">async def</span> <span class="code-function">wrapper</span>(*args: Any, **kwargs: Any) -> AgentResult:</span>
+<span class="code-line">            <span class="code-keyword">try</span>:</span>
+<span class="code-line">                <span class="code-keyword">if</span> needs_root:</span>
+<span class="code-line">                    bound = signature.<span class="code-function">bind</span>(*args, **kwargs)</span>
+<span class="code-line">                    bound.<span class="code-function">apply_defaults</span>()</span>
+<span class="code-line">                    given = bound.arguments.<span class="code-function">get</span>(<span class="code-string">"project_root"</span>)</span>
+<span class="code-line">                    <span class="code-keyword">if</span> <span class="code-function">isinstance</span>(given, str):</span>
+<span class="code-line">                        given = <span class="code-function">Path</span>(given)</span>
+<span class="code-line">                    <span class="code-keyword">try</span>:</span>
+<span class="code-line">                        bound.arguments[<span class="code-string">"project_root"</span>] = <span class="code-function">require_project_root</span>(given)</span>
+<span class="code-line">                    <span class="code-keyword">except</span> RuntimeError <span class="code-keyword">as</span> exc:</span>
+<span class="code-line">                        logger.<span class="code-function">info</span>(<span class="code-string">"%s failed: %s"</span>, fn.__qualname__, exc)</span>
+<span class="code-line">                        <span class="code-keyword">return</span> <span class="code-function">fail</span>(<span class="code-function">str</span>(exc), code=<span class="code-string">"no_project_root"</span>)</span>
+<span class="code-line">                    args, kwargs = bound.args, bound.kwargs</span>
+<span class="code-line">                <span class="code-keyword">return await</span> <span class="code-function">fn</span>(*args, **kwargs)</span>
+<span class="code-line">            <span class="code-keyword">except</span> AgentError <span class="code-keyword">as</span> exc:</span>
+<span class="code-line">                <span class="code-comment"># Expected, targeted failure — no traceback needed.</span></span>
+<span class="code-line">                logger.<span class="code-function">info</span>(<span class="code-string">"%s failed: %s"</span>, fn.__qualname__, exc)</span>
+<span class="code-line">                <span class="code-keyword">return</span> exc.result</span>
+<span class="code-line">            <span class="code-keyword">except</span> FileNotFoundError <span class="code-keyword">as</span> exc:</span>
+<span class="code-line">                logger.<span class="code-function">exception</span>(<span class="code-string">"%s failed"</span>, fn.__qualname__)</span>
+<span class="code-line">                <span class="code-keyword">return</span> <span class="code-function">fail</span>(<span class="code-string">f"FileNotFoundError: {exc}"</span>, code=<span class="code-string">"file_not_found"</span>)</span>
+<span class="code-line">            <span class="code-keyword">except</span> PermissionError <span class="code-keyword">as</span> exc:</span>
+<span class="code-line">                logger.<span class="code-function">exception</span>(<span class="code-string">"%s failed"</span>, fn.__qualname__)</span>
+<span class="code-line">                <span class="code-keyword">return</span> <span class="code-function">fail</span>(<span class="code-string">f"PermissionError: {exc}"</span>, code=<span class="code-string">"permission_denied"</span>)</span>
+<span class="code-line">            <span class="code-keyword">except</span> Exception <span class="code-keyword">as</span> exc:</span>
+<span class="code-line">                logger.<span class="code-function">exception</span>(<span class="code-string">"%s failed"</span>, fn.__qualname__)</span>
+<span class="code-line">                <span class="code-keyword">return</span> <span class="code-function">AgentResult</span>(</span>
+<span class="code-line">                    success=False, message=<span class="code-string">f"{type(exc).__name__}: {exc}"</span></span>
+<span class="code-line">                )</span></code></pre>
+          </div>
+          <div class="translation-english">
+            <span class="translation-label">PLAIN ENGLISH</span>
+            <div class="translation-lines">
+              <p class="tl">Wrap the real function so callers still see its name and docs — but with our safety net around the whole body.</p>
+              <p class="tl"><strong><span class="term" data-definition="'try' starts a block that attempts risky work while standing ready to catch anything that goes wrong inside it.">try</span></strong> = attempt the real work, ready to catch <em>anything</em> that goes wrong.</p>
+              <p class="tl">First, resolve and sanity-check the project folder. If that step fails, hand back a clean failure slip — don't crash.</p>
+              <p class="tl">Now run the actual function and return whatever it produced.</p>
+              <p class="tl">If it raised an <em>expected</em> error, return the friendly failure it already prepared.</p>
+              <p class="tl">If a file was missing, return a "file not found" slip — not a crash.</p>
+              <p class="tl">If a permission was denied, return a "permission denied" slip.</p>
+              <p class="tl">And the catch-all: <em>any</em> other error at all becomes an AgentResult with success = False. Nothing ever escapes as an
+                <span class="term" data-definition="To 'except' an error means to catch it and handle it gracefully instead of letting it crash the program.">exception</span>.</p>
+            </div>
+          </div>
+        </div>
+
+        <div class="callout callout-accent">
+          <div class="callout-icon">🪤</div>
+          <div class="callout-content">
+            <strong class="callout-title">The whole trick in one sentence</strong>
+            <p>No matter what breaks — missing file, denied permission, or a bug nobody predicted — the last net catches it and turns it into a normal result. The caller <em>cannot</em> be crashed.</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- ===================== SCREEN 5: THE CLEVER TRICKS (pattern cards) ===================== -->
+      <section class="screen animate-in">
+        <h2 class="screen-heading">Five clever tricks worth stealing</h2>
+        <p>These patterns are why an AI can operate on your codebase without you holding your breath.</p>
+
+        <div class="pattern-cards stagger-children">
+          <div class="pattern-card animate-in" style="border-top: 3px solid var(--color-actor-1)">
+            <div class="pattern-icon" style="background: var(--color-actor-1)">📋</div>
+            <h4 class="pattern-title">Uniform Result</h4>
+            <p class="pattern-desc">Every function hands back the same slip: success, message, data. Callers never guess the shape.</p>
+          </div>
+          <div class="pattern-card animate-in" style="border-top: 3px solid var(--color-actor-2)">
+            <div class="pattern-icon" style="background: var(--color-actor-2)">🛡️</div>
+            <h4 class="pattern-title">Never Raises</h4>
+            <p class="pattern-desc">A decorator catches every error and converts it to a failed result. One bad call cannot crash the whole agent.</p>
+          </div>
+          <div class="pattern-card animate-in" style="border-top: 3px solid var(--color-actor-3)">
+            <div class="pattern-icon" style="background: var(--color-actor-3)">🔌</div>
+            <h4 class="pattern-title">Zero MCP Dependency</h4>
+            <p class="pattern-desc">Ready to plug into an AI tool protocol
+              (<span class="term" data-definition="MCP (Model Context Protocol) is a shared standard that lets AI assistants safely call external tools and read resources. Think of it as a universal power outlet for AI tools.">MCP</span>),
+              but needs none of it installed. You can import and call these from plain Python.</p>
+          </div>
+          <div class="pattern-card animate-in" style="border-top: 3px solid var(--color-actor-4)">
+            <div class="pattern-icon" style="background: var(--color-actor-4)">🔒</div>
+            <h4 class="pattern-title">Read-Only SQL Gate</h4>
+            <p class="pattern-desc">The query helper
+              <span class="term" data-definition="To sanitize input is to clean and check it before use — stripping out anything dangerous so a bad request can't cause harm.">strips</span>
+              comments, allows a single statement, blocks dangerous keywords, and always
+              <span class="term" data-definition="To roll back is to undo everything a database operation did, returning to the state from before it started — as if it never happened.">rolls back</span>
+              — so an AI can <em>look</em> but never <em>break</em>.</p>
+          </div>
+          <div class="pattern-card animate-in" style="border-top: 3px solid var(--color-actor-5)">
+            <div class="pattern-icon" style="background: var(--color-actor-5)">🚧</div>
+            <h4 class="pattern-title">No Escaping the Project</h4>
+            <p class="pattern-desc">File helpers reject any path that tries to climb out of the project folder.</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- ===================== SCREEN 6: THE SQL GATE zoom ===================== -->
+      <section class="screen animate-in">
+        <h2 class="screen-heading">Why the query gate always rolls back</h2>
+        <p>When an AI wants to peek at your data, this gate lets it look through the glass — never touch the merchandise.</p>
+
+        <div class="flow-steps">
+          <div class="flow-step">
+            <div class="flow-step-num">1</div>
+            <p>Strip out comments that could hide sneaky code</p>
+          </div>
+          <div class="flow-arrow">→</div>
+          <div class="flow-step">
+            <div class="flow-step-num">2</div>
+            <p>Allow one statement only — no chaining a second command</p>
+          </div>
+          <div class="flow-arrow">→</div>
+          <div class="flow-step">
+            <div class="flow-step-num">3</div>
+            <p>Block a
+              <span class="term" data-definition="A keyword denylist is a list of forbidden words (like DROP or DELETE) that a request is checked against and rejected if it contains any of them.">denylist</span>
+              of dangerous words (DROP, DELETE…)</p>
+          </div>
+          <div class="flow-arrow">→</div>
+          <div class="flow-step">
+            <div class="flow-step-num">4</div>
+            <p>Always roll back, so nothing is ever saved</p>
+          </div>
+        </div>
+
+        <div class="callout callout-info">
+          <div class="callout-icon">🔎</div>
+          <div class="callout-content">
+            <strong class="callout-title">Read-only by construction</strong>
+            <p>It isn't "please be careful." The data <em>literally cannot</em> change, because the last step undoes any write before it can stick. Safety built into the machinery, not left to good intentions.</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- ===================== SCREEN 7: DEFENSIVE DESIGN callout ===================== -->
+      <section class="screen animate-in">
+        <h2 class="screen-heading">The big idea: defensive design</h2>
+        <div class="callout callout-accent">
+          <div class="callout-icon">🧱</div>
+          <div class="callout-content">
+            <strong class="callout-title">Predictability is what makes automation trustworthy</strong>
+            <p>By <em>guaranteeing</em> the return shape and <em>guaranteeing</em> no exception escapes, zeebpy turns 43 different functions into one predictable, safe contract. That's the difference between an AI helper you can leave running and one you have to babysit.</p>
+          </div>
+        </div>
+        <p>This "always return a result object, never throw" pattern is something you can ask an AI to build for <em>you</em> — in any language, for any set of tools.</p>
+      </section>
+
+      <!-- ===================== SCREEN 8: QUIZ ===================== -->
+      <section class="screen animate-in">
+        <h2 class="screen-heading">Think it through</h2>
+        <div class="quiz-container" id="quiz-module7">
+
+          <div class="quiz-question-block"
+               data-correct="opt-uniform"
+               data-explanation-right="Exactly. Making every tool return a uniform result and never throw means one failure can't cascade into a crash — the agent just reads the slip and moves on. Both 'uniform return' and 'never raise' are the gold-standard rules here."
+               data-explanation-wrong="Not quite. Pretty output and fast speed are nice, but the rule that actually makes an AI's tools safe is: return the SAME result shape every time and never let an error escape as a crash.">
+            <h3 class="quiz-question">You're designing your own set of tools for an AI to call. What's one rule from zeebpy worth copying?</h3>
+            <div class="quiz-options">
+              <button class="quiz-option" data-value="opt-uniform" onclick="selectOption(this)">
+                <div class="quiz-option-radio"></div>
+                <span>Make every tool return a uniform result object and never throw — one failure can't crash the agent</span>
+              </button>
+              <button class="quiz-option" data-value="opt-pretty" onclick="selectOption(this)">
+                <div class="quiz-option-radio"></div>
+                <span>Make each tool print colorful, nicely formatted output</span>
+              </button>
+              <button class="quiz-option" data-value="opt-fast" onclick="selectOption(this)">
+                <div class="quiz-option-radio"></div>
+                <span>Make each tool as fast as possible, even if results vary in shape</span>
+              </button>
+            </div>
+            <div class="quiz-feedback"></div>
+          </div>
+
+          <div class="quiz-question-block"
+               data-correct="opt-readonly"
+               data-explanation-right="Right. Blocking words like DROP and always rolling back means an AI exploring your database can read freely but can never delete or alter anything — read-only by construction, not by politeness."
+               data-explanation-wrong="Not the main reason. It isn't about speed or logging — the rollback and keyword block exist so an AI can look at data safely but has no power to change or destroy it.">
+            <h3 class="quiz-question">Why does the SQL helper <em>always roll back</em> and block keywords like DROP?</h3>
+            <div class="quiz-options">
+              <button class="quiz-option" data-value="opt-readonly" onclick="selectOption(this)">
+                <div class="quiz-option-radio"></div>
+                <span>So an AI can read the database safely but can never delete or alter data — read-only by construction</span>
+              </button>
+              <button class="quiz-option" data-value="opt-speed" onclick="selectOption(this)">
+                <div class="quiz-option-radio"></div>
+                <span>To make queries run faster by skipping the save step</span>
+              </button>
+              <button class="quiz-option" data-value="opt-log" onclick="selectOption(this)">
+                <div class="quiz-option-radio"></div>
+                <span>To keep a neat log of every query for later</span>
+              </button>
+            </div>
+            <div class="quiz-feedback"></div>
+          </div>
+
+          <div class="quiz-question-block"
+               data-correct="opt-result"
+               data-explanation-right="Exactly. The catch-all in the decorator scoops up any unexpected error and hands back an AgentResult with success=False and a message. The caller gets a slip, never a crash."
+               data-explanation-wrong="Not quite. The whole point of the decorator's safety net is that the caller NEVER sees a raw crash or stack trace — even a totally unexpected bug comes back as a normal AgentResult with success=False.">
+            <h3 class="quiz-question">An agent function hits an unexpected error deep inside. What does the <em>caller</em> receive?</h3>
+            <div class="quiz-options">
+              <button class="quiz-option" data-value="opt-result" onclick="selectOption(this)">
+                <div class="quiz-option-radio"></div>
+                <span>A normal AgentResult with success=False and a message — never an exception or crash</span>
+              </button>
+              <button class="quiz-option" data-value="opt-crash" onclick="selectOption(this)">
+                <div class="quiz-option-radio"></div>
+                <span>A raw crash with a stack trace they have to debug</span>
+              </button>
+              <button class="quiz-option" data-value="opt-nothing" onclick="selectOption(this)">
+                <div class="quiz-option-radio"></div>
+                <span>Nothing at all — the function just silently stops</span>
+              </button>
+            </div>
+            <div class="quiz-feedback"></div>
+          </div>
+
+          <button class="quiz-check-btn" onclick="checkQuiz('quiz-module7')">Check Answers</button>
+          <button class="quiz-reset-btn" onclick="resetQuiz('quiz-module7')">Try Again</button>
+        </div>
+      </section>
+
+      <!-- ===================== SCREEN 9: COURSE RECAP ===================== -->
+      <section class="screen animate-in">
+        <h2 class="screen-heading">The victory lap: everything you've learned</h2>
+        <p>You started with a Python class and followed it all the way to an AI that can build the whole thing. Trace the journey.</p>
+
+        <div class="flow-steps stagger-children">
+          <div class="flow-step animate-in">
+            <div class="flow-step-num">1</div>
+            <p><strong>Python class</strong><br>You describe your data as a plain class</p>
+          </div>
+          <div class="flow-arrow">→</div>
+          <div class="flow-step animate-in">
+            <div class="flow-step-num">2</div>
+            <p><strong>Database table</strong><br>zeebpy turns it into a real table</p>
+          </div>
+          <div class="flow-arrow">→</div>
+          <div class="flow-step animate-in">
+            <div class="flow-step-num">3</div>
+            <p><strong>Query</strong><br>You ask for exactly the rows you want</p>
+          </div>
+          <div class="flow-arrow">→</div>
+          <div class="flow-step animate-in">
+            <div class="flow-step-num">4</div>
+            <p><strong>Web API</strong><br>Those rows become live web endpoints</p>
+          </div>
+          <div class="flow-arrow">→</div>
+          <div class="flow-step animate-in">
+            <div class="flow-step-num">5</div>
+            <p><strong>Auth</strong><br>A door checks who's allowed in</p>
+          </div>
+          <div class="flow-arrow">→</div>
+          <div class="flow-step animate-in">
+            <div class="flow-step-num">6</div>
+            <p><strong>Agents</strong><br>An AI can now build and inspect it all — safely</p>
+          </div>
+        </div>
+
+        <div class="callout callout-accent">
+          <div class="callout-icon">🎓</div>
+          <div class="callout-content">
+            <strong class="callout-title">You now have the map — and the words</strong>
+            <p>Class, table, query, endpoint, auth, agent, contract, rollback. These aren't just words anymore — they're the vocabulary that lets you steer an AI across every layer of a real app and know what it's doing.</p>
+          </div>
+        </div>
+
+        <p style="text-align:center; font-size: var(--text-lg); margin-top: var(--space-8)">You came in a vibe coder. You're leaving able to read the machine. Go build something. 🚀</p>
+      </section>
+
+    </div>
+  </div>
+</section>

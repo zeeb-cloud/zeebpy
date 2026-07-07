@@ -1,0 +1,464 @@
+<section class="module" id="module-5" style="background: var(--color-bg-warm)">
+  <div class="module-content">
+
+    <header class="module-header animate-in">
+      <span class="module-number">05</span>
+      <h1 class="module-title">From the Database to the Web</h1>
+      <p class="module-subtitle">Serializers, viewsets, and routers — the airport that moves a web request in and a tidy reply back out.</p>
+    </header>
+
+    <div class="module-body">
+
+      <!-- SCREEN 1 — Hook + metaphor -->
+      <section class="screen animate-in">
+        <h2 class="screen-heading">Those queries you wrote? Now the whole world can trigger them.</h2>
+        <p>In the last module you ran queries inside your own program. But real apps get poked from the <em>outside</em> — someone opens a browser or a phone app and does something.</p>
+        <p>So: when someone visits
+          <span class="term" data-definition="An HTTP request is a message your browser or app sends to a server asking it to do something — load a page, save a form, delete an item. It is the basic unit of talking to a web app.">HTTP request</span>
+          like
+          <code>POST /books/</code> to add a new book, how does that become a real row in your database — and a clean reply on the way back? Follow the request through the airport.</p>
+
+        <div class="callout callout-info">
+          <div class="callout-icon">✈️</div>
+          <div class="callout-content">
+            <strong class="callout-title">The metaphor: an airport</strong>
+            <p>A request is a passenger with a ticket. Three staff members get it to the right place and back — you will meet them next.</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- SCREEN 2 — The three characters -->
+      <section class="screen animate-in">
+        <h2 class="screen-heading">Meet the three airport staff</h2>
+        <p>Every web request is handled by the same three roles. Learn who does what, and debugging stops being guesswork.</p>
+
+        <div class="icon-rows stagger-children">
+          <div class="icon-row animate-in">
+            <div class="icon-circle" style="background: var(--color-actor-2)">🪧</div>
+            <div>
+              <strong>The
+                <span class="term" data-definition="A router is the part of a web app that reads the address of an incoming request and decides which piece of code should handle it. Like terminal signage pointing you to the right gate.">router</span>
+                — terminal signage</strong>
+              <p>Reads the address on the ticket (<code>/books/</code>) and points the passenger to the correct gate.</p>
+            </div>
+          </div>
+          <div class="icon-row animate-in">
+            <div class="icon-circle" style="background: var(--color-actor-3)">🧑‍✈️</div>
+            <div>
+              <strong>The
+                <span class="term" data-definition="A viewset is a bundle of code that handles all the standard actions for one kind of thing — create, read, update, delete. Like a gate agent who handles everything for one flight.">viewset</span>
+                — the gate agent</strong>
+              <p>Handles everything you can do to Books: create one, read one, update one, delete one.</p>
+            </div>
+          </div>
+          <div class="icon-row animate-in">
+            <div class="icon-circle" style="background: var(--color-actor-5)">🛂</div>
+            <div>
+              <strong>The
+                <span class="term" data-definition="A serializer inspects and converts data as it enters or leaves a web app: it checks that incoming data is valid, and it shapes database rows into clean output. Like passport control and customs.">serializer</span>
+                — passport control</strong>
+              <p>Inspects everything coming <em>in</em> (is this valid?) and shapes everything going <em>out</em> (into clean JSON).</p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- SCREEN 3 — HERO: message flow animation -->
+      <section class="screen animate-in">
+        <h2 class="screen-heading">Watch one request make the whole round trip</h2>
+        <p>A request flows <strong>Browser → Router → ViewSet → Serializer → ORM → Database</strong> — and the reply comes back the same way. Step through it.</p>
+
+        <div class="flow-animation" data-steps='[
+          {"highlight":"flow-actor-1","label":"Browser sends POST /books/ with a new book"},
+          {"highlight":"flow-actor-1","label":"The request reaches the router","packet":true,"from":"actor-1","to":"actor-2"},
+          {"highlight":"flow-actor-2","label":"The router reads the address and picks the Book viewset","packet":true,"from":"actor-2","to":"actor-3"},
+          {"highlight":"flow-actor-3","label":"The viewset hands the data to the serializer to check it","packet":true,"from":"actor-3","to":"actor-4"},
+          {"highlight":"flow-actor-4","label":"Passport control: is the data valid? If yes, it passes through","packet":true,"from":"actor-4","to":"actor-5"},
+          {"highlight":"flow-actor-5","label":"The ORM turns it into SQL and saves it","packet":true,"from":"actor-5","to":"actor-6"},
+          {"highlight":"flow-actor-6","label":"The database stores the new row and returns it"},
+          {"highlight":"flow-actor-4","label":"On the way out, the serializer shapes the row into clean JSON"},
+          {"highlight":"flow-actor-1","label":"The browser receives 201 Created with the new book as JSON"}
+        ]'>
+          <div class="flow-actors">
+            <div class="flow-actor" id="flow-actor-1">
+              <div class="flow-actor-icon" style="background: var(--color-actor-4)">🌐</div>
+              <span>Browser / App</span>
+            </div>
+            <div class="flow-actor" id="flow-actor-2">
+              <div class="flow-actor-icon" style="background: var(--color-actor-2)">🪧</div>
+              <span>Router</span>
+            </div>
+            <div class="flow-actor" id="flow-actor-3">
+              <div class="flow-actor-icon" style="background: var(--color-actor-3)">🧑‍✈️</div>
+              <span>ViewSet</span>
+            </div>
+            <div class="flow-actor" id="flow-actor-4">
+              <div class="flow-actor-icon" style="background: var(--color-actor-5)">🛂</div>
+              <span>Serializer</span>
+            </div>
+            <div class="flow-actor" id="flow-actor-5">
+              <div class="flow-actor-icon" style="background: var(--color-actor-1)">🔄</div>
+              <span>ORM</span>
+            </div>
+            <div class="flow-actor" id="flow-actor-6">
+              <div class="flow-actor-icon" style="background: var(--color-text-secondary)">🗄️</div>
+              <span>Database</span>
+            </div>
+          </div>
+
+          <div class="flow-packet" id="flow-packet"></div>
+          <div class="flow-step-label" id="flow-label">Click "Next Step" to begin</div>
+
+          <div class="flow-controls">
+            <button class="btn flow-next-btn">Next Step</button>
+            <button class="btn flow-reset-btn">Restart</button>
+            <span class="flow-progress"></span>
+          </div>
+        </div>
+
+        <div class="callout callout-accent">
+          <div class="callout-icon">💡</div>
+          <div class="callout-content">
+            <strong class="callout-title">Why this matters</strong>
+            <p>Each layer has one job. When something breaks, the layer tells you where to look — no more staring at the whole app at once.</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- SCREEN 4 — Serializer translation (Snippet A) -->
+      <section class="screen animate-in">
+        <h2 class="screen-heading">Passport control, in code</h2>
+        <p>Here is a real serializer. It declares exactly which fields are allowed through the gate — nothing else gets in or out.</p>
+
+        <div class="translation-block animate-in">
+          <div class="translation-code">
+            <span class="translation-label">CODE</span>
+<pre><code><span class="code-line"><span class="code-keyword">class</span> <span class="code-function">BookSerializer</span>(ModelSerializer):</span>
+<span class="code-line">    <span class="code-string">"""Serializer for Book model."""</span></span>
+<span class="code-line">    author_name = <span class="code-function">SerializerMethodField</span>()</span>
+<span class="code-line"></span>
+<span class="code-line">    <span class="code-keyword">class</span> <span class="code-function">Meta</span>:</span>
+<span class="code-line">        model = Book</span>
+<span class="code-line">        fields = [<span class="code-string">"id"</span>, <span class="code-string">"title"</span>, <span class="code-string">"author_id"</span>, <span class="code-string">"author_name"</span>, <span class="code-string">"published_year"</span>,</span>
+<span class="code-line">                  <span class="code-string">"genre"</span>, <span class="code-string">"price"</span>, <span class="code-string">"in_stock"</span>]</span>
+<span class="code-line">        read_only_fields = [<span class="code-string">"id"</span>]</span>
+</code></pre>
+          </div>
+          <div class="translation-english">
+            <span class="translation-label">PLAIN ENGLISH</span>
+            <div class="translation-lines">
+              <p class="tl">Define how a Book is checked and shaped as it enters or leaves the web.</p>
+              <p class="tl">A short note about what this does.</p>
+              <p class="tl">Add an extra computed field — a friendly author name that is not stored directly.</p>
+              <p class="tl">&nbsp;</p>
+              <p class="tl">The settings panel for this serializer.</p>
+              <p class="tl">It is based on the Book model from the database.</p>
+              <p class="tl">These are the only fields allowed through the gate — anything else is ignored.</p>
+              <p class="tl">(the rest of that field list)</p>
+              <p class="tl"><code>id</code> is a
+                <span class="term" data-definition="A read-only field can be seen by clients but never set by them. The server owns it — like a boarding-pass number you can read but not write.">read-only field</span>
+                — clients can see it but never set it themselves.</p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- SCREEN 5 — Viewset (Snippet B) -->
+      <section class="screen animate-in">
+        <h2 class="screen-heading">The gate agent, in code</h2>
+        <p>The viewset is almost embarrassingly short. You point it at some data and at a serializer — and full
+          <span class="term" data-definition="CRUD stands for Create, Read, Update, Delete — the four basic things you can do to stored data. Almost every app is mostly CRUD under the hood.">CRUD</span>
+          comes free.</p>
+
+        <div class="translation-block animate-in">
+          <div class="translation-code">
+            <span class="translation-label">CODE</span>
+<pre><code><span class="code-line"><span class="code-keyword">class</span> <span class="code-function">BookViewSet</span>(ModelViewSet):</span>
+<span class="code-line">    <span class="code-string">"""</span></span>
+<span class="code-line">    <span class="code-string">ViewSet for Book CRUD operations.</span></span>
+<span class="code-line"></span>
+<span class="code-line">    <span class="code-string">Query with Q filters via POST /books/query/</span></span>
+<span class="code-line">    <span class="code-string">"""</span></span>
+<span class="code-line">    queryset = Book.objects</span>
+<span class="code-line">    serializer_class = BookSerializer</span>
+</code></pre>
+          </div>
+          <div class="translation-english">
+            <span class="translation-label">PLAIN ENGLISH</span>
+            <div class="translation-lines">
+              <p class="tl">Define the handler for everything you can do to Books over the web.</p>
+              <p class="tl">A description of this handler...</p>
+              <p class="tl">It provides full create / read / update / delete out of the box...</p>
+              <p class="tl">&nbsp;</p>
+              <p class="tl">...plus a bonus query endpoint for advanced filtering.</p>
+              <p class="tl">(end of the description)</p>
+              <p class="tl">Point it at the Book data — which set of rows it manages.</p>
+              <p class="tl">Tell it which serializer to use for checking and shaping data. That is all — the CRUD web addresses come for free.</p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- SCREEN 6 — Router (Snippet C) + callout -->
+      <section class="screen animate-in">
+        <h2 class="screen-heading">The signage that wires it all up</h2>
+        <p>The
+          <span class="term" data-definition="A route (or endpoint) is one web address plus method that your app responds to — for example GET /books/ or DELETE /books/3/. It is a single door into your app.">router</span>
+          connects addresses to handlers. Two lines here create dozens of working web addresses.</p>
+
+        <div class="translation-block animate-in">
+          <div class="translation-code">
+            <span class="translation-label">CODE</span>
+<pre><code><span class="code-line">router = <span class="code-function">DefaultRouter</span>()</span>
+<span class="code-line">router.<span class="code-function">register</span>(<span class="code-string">"authors"</span>, AuthorViewSet, basename=<span class="code-string">"author"</span>)</span>
+<span class="code-line">router.<span class="code-function">register</span>(<span class="code-string">"books"</span>, BookViewSet, basename=<span class="code-string">"book"</span>)</span>
+</code></pre>
+          </div>
+          <div class="translation-english">
+            <span class="translation-label">PLAIN ENGLISH</span>
+            <div class="translation-lines">
+              <p class="tl">Create a router — the thing that maps web addresses to handlers.</p>
+              <p class="tl">Register the Author handler under the <code>/authors/</code> addresses.</p>
+              <p class="tl">Register the Book handler under the <code>/books/</code> addresses. From these two lines, zeebpy generates GET / POST / PUT / PATCH / DELETE routes automatically.</p>
+            </div>
+          </div>
+        </div>
+
+        <div class="callout callout-accent">
+          <div class="callout-icon">🚪</div>
+          <div class="callout-content">
+            <strong class="callout-title">One definition, many endpoints</strong>
+            <p>From a serializer + a viewset + one <code>register()</code> line, zeebpy generates a whole family of
+              <span class="term" data-definition="An endpoint (or route) is a single web address your app answers, like /books/ or /books/3/. Together they form the app's public surface.">endpoints</span>.
+              That is the payoff of a framework — you describe the shape, it builds the doors.</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- SCREEN 7 — What endpoints exist -->
+      <section class="screen animate-in">
+        <h2 class="screen-heading">The doors you just built for free</h2>
+        <p>That single <code>register("books", ...)</code> line opened all of these — no extra code:</p>
+
+        <div class="badge-list stagger-children">
+          <div class="badge-item animate-in">
+            <code class="badge-code">GET /books/</code>
+            <span class="badge-desc">List every book</span>
+          </div>
+          <div class="badge-item animate-in">
+            <code class="badge-code">POST /books/</code>
+            <span class="badge-desc">
+              <span class="term" data-definition="POST is the HTTP method for creating something new — it sends data to the server to be saved. GET only asks for data; POST changes things.">Create</span>
+              a new book</span>
+          </div>
+          <div class="badge-item animate-in">
+            <code class="badge-code">GET /books/{id}/</code>
+            <span class="badge-desc">
+              <span class="term" data-definition="GET is the HTTP method for asking the server for data without changing anything. Loading a page or fetching one item uses GET.">Read</span>
+              one book by its id</span>
+          </div>
+          <div class="badge-item animate-in">
+            <code class="badge-code">PUT /books/{id}/</code>
+            <span class="badge-desc">
+              <span class="term" data-definition="PUT replaces an entire item with new data. PATCH updates only the fields you send. Both change an existing record.">Replace</span>
+              a book fully</span>
+          </div>
+          <div class="badge-item animate-in">
+            <code class="badge-code">PATCH /books/{id}/</code>
+            <span class="badge-desc">Update just a few fields</span>
+          </div>
+          <div class="badge-item animate-in">
+            <code class="badge-code">DELETE /books/{id}/</code>
+            <span class="badge-desc">
+              <span class="term" data-definition="DELETE is the HTTP method that asks the server to remove an item permanently.">Remove</span>
+              a book</span>
+          </div>
+        </div>
+      </section>
+
+      <!-- SCREEN 8 — Group chat -->
+      <section class="screen animate-in">
+        <h2 class="screen-heading">Listen in: the staff handling GET /books/1/</h2>
+        <p>Someone just asked to read book number 1. Here is the conversation behind the scenes.</p>
+
+        <div class="chat-window" id="chat-request">
+          <div class="chat-messages">
+            <div class="chat-message" data-msg="0" data-sender="actor-2" style="display:none">
+              <div class="chat-avatar" style="background: var(--color-actor-2)">🪧</div>
+              <div class="chat-bubble">
+                <span class="chat-sender" style="color: var(--color-actor-2)">Router</span>
+                <p>Address is /books/1/ — that is the Book viewset, action: retrieve item 1.</p>
+              </div>
+            </div>
+            <div class="chat-message" data-msg="1" data-sender="actor-3" style="display:none">
+              <div class="chat-avatar" style="background: var(--color-actor-3)">🧑‍✈️</div>
+              <div class="chat-bubble">
+                <span class="chat-sender" style="color: var(--color-actor-3)">ViewSet</span>
+                <p>Got it. ORM, fetch book number 1 please.</p>
+              </div>
+            </div>
+            <div class="chat-message" data-msg="2" data-sender="actor-1" style="display:none">
+              <div class="chat-avatar" style="background: var(--color-actor-1)">🔄</div>
+              <div class="chat-bubble">
+                <span class="chat-sender" style="color: var(--color-actor-1)">ORM</span>
+                <p>SELECT * FROM books WHERE id = 1 … here is the row.</p>
+              </div>
+            </div>
+            <div class="chat-message" data-msg="3" data-sender="actor-5" style="display:none">
+              <div class="chat-avatar" style="background: var(--color-actor-5)">🛂</div>
+              <div class="chat-bubble">
+                <span class="chat-sender" style="color: var(--color-actor-5)">Serializer</span>
+                <p>Let me strip out anything private and format the rest as
+                  <span class="term" data-definition="JSON is a plain-text way of writing structured data that both apps and humans can read — names paired with values inside braces. It is the common language web apps use to exchange data.">JSON</span>.</p>
+              </div>
+            </div>
+            <div class="chat-message" data-msg="4" data-sender="actor-2" style="display:none">
+              <div class="chat-avatar" style="background: var(--color-actor-2)">🪧</div>
+              <div class="chat-bubble">
+                <span class="chat-sender" style="color: var(--color-actor-2)">Router</span>
+                <p>Sending
+                  <span class="term" data-definition="A status code is a 3-digit number a server sends back to say how a request went. 200 OK means success, 201 Created means a new item was made, 404 Not Found means the address did not match, 422 means the data was rejected.">200 OK</span>
+                  back to the browser with the JSON.</p>
+              </div>
+            </div>
+          </div>
+
+          <div class="chat-typing" id="chat-request-typing" style="display:none">
+            <div class="chat-avatar" id="chat-request-typing-avatar">?</div>
+            <div class="chat-typing-dots">
+              <span class="typing-dot"></span>
+              <span class="typing-dot"></span>
+              <span class="typing-dot"></span>
+            </div>
+          </div>
+
+          <div class="chat-controls">
+            <button class="btn chat-next-btn">Next Message</button>
+            <button class="btn chat-all-btn">Play All</button>
+            <button class="btn chat-reset-btn">Replay</button>
+            <span class="chat-progress"></span>
+          </div>
+        </div>
+      </section>
+
+      <!-- SCREEN 9 — Debugging map -->
+      <section class="screen animate-in">
+        <h2 class="screen-heading">The error tells you which layer to blame</h2>
+        <p>Because each layer has one job, the
+          <span class="term" data-definition="A status code is the 3-digit number a server returns to describe the outcome of a request — 201 created, 404 not found, 422 the data was invalid.">status code</span>
+          points straight at the culprit. This is your debugging cheat sheet.</p>
+
+        <div class="pattern-cards stagger-children">
+          <div class="pattern-card animate-in" style="border-top: 3px solid var(--color-actor-5)">
+            <div class="pattern-icon" style="background: var(--color-actor-5)">🛂</div>
+            <h4 class="pattern-title">422 Unprocessable</h4>
+            <p class="pattern-desc">The serializer rejected your data.
+              <span class="term" data-definition="Validation is the step of checking incoming data is correct before it is used — right type, nothing required missing. Like a form that will not submit until you fix the red fields.">Validation</span>
+              failed — a missing or wrong-typed field. Look at the serializer.</p>
+          </div>
+          <div class="pattern-card animate-in" style="border-top: 3px solid var(--color-actor-2)">
+            <div class="pattern-icon" style="background: var(--color-actor-2)">🪧</div>
+            <h4 class="pattern-title">404 Not Found</h4>
+            <p class="pattern-desc">The router did not recognize the address (or the id does not exist). Check the route and the URL you called.</p>
+          </div>
+          <div class="pattern-card animate-in" style="border-top: 3px solid var(--color-actor-1)">
+            <div class="pattern-icon" style="background: var(--color-actor-1)">✅</div>
+            <h4 class="pattern-title">201 Created</h4>
+            <p class="pattern-desc">Everything worked and a new row was saved. The reply carries the fresh item as JSON.</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- SCREEN 10 — Quiz -->
+      <section class="screen animate-in">
+        <h2 class="screen-heading">Check your instincts</h2>
+        <p>No memorizing — each question is a real situation. Pick where <em>you</em> would look.</p>
+
+        <div class="quiz-container" id="quiz-module5">
+          <div class="quiz-question-block"
+               data-correct="opt-serializer"
+               data-explanation-right="Exactly. A 422 means the incoming data failed validation — the serializer is passport control, and it turned the data away at the gate. Check the field types and required fields in the serializer."
+               data-explanation-wrong="Not quite. A 422 is specifically about invalid data, and only one layer inspects data on the way in. The router would give a 404 for a bad address; the database is never even reached.">
+            <h3 class="quiz-question">Your API returns <code>422 Unprocessable Entity</code> when a user submits a new book. Which layer rejected it, and why?</h3>
+            <div class="quiz-options">
+              <button class="quiz-option" data-value="opt-router" onclick="selectOption(this)">
+                <div class="quiz-option-radio"></div>
+                <span>The router — it could not find the address</span>
+              </button>
+              <button class="quiz-option" data-value="opt-serializer" onclick="selectOption(this)">
+                <div class="quiz-option-radio"></div>
+                <span>The serializer — the incoming data failed validation (a missing or wrong-typed field)</span>
+              </button>
+              <button class="quiz-option" data-value="opt-database" onclick="selectOption(this)">
+                <div class="quiz-option-radio"></div>
+                <span>The database — it ran out of storage space</span>
+              </button>
+            </div>
+            <div class="quiz-feedback"></div>
+          </div>
+
+          <div class="quiz-question-block"
+               data-correct="opt-crud"
+               data-explanation-right="Right. That one register() line generates the full CRUD set automatically: list and create at /books/, and retrieve, update, and delete at /books/{id}/. You describe the shape; the framework builds the doors."
+               data-explanation-wrong="Not quite. The whole point of registering a viewset is that you do NOT write each route by hand — the router generates the standard CRUD family for you from that single line.">
+            <h3 class="quiz-question">You registered <code>BookViewSet</code> under <code>router.register("books", ...)</code>. Without writing any more code, which web addresses now exist?</h3>
+            <div class="quiz-options">
+              <button class="quiz-option" data-value="opt-none" onclick="selectOption(this)">
+                <div class="quiz-option-radio"></div>
+                <span>None yet — you still have to write each route by hand</span>
+              </button>
+              <button class="quiz-option" data-value="opt-list" onclick="selectOption(this)">
+                <div class="quiz-option-radio"></div>
+                <span>Only <code>GET /books/</code> to list them</span>
+              </button>
+              <button class="quiz-option" data-value="opt-crud" onclick="selectOption(this)">
+                <div class="quiz-option-radio"></div>
+                <span>The full CRUD set — list/create at <code>/books/</code>, retrieve/update/delete at <code>/books/{id}/</code></span>
+              </button>
+            </div>
+            <div class="quiz-feedback"></div>
+          </div>
+
+          <div class="quiz-question-block"
+               data-correct="opt-fields"
+               data-explanation-right="Exactly. The serializer's fields list controls precisely what goes out. Drop cost from the list and keep price, and cost never appears in the JSON — no other layer needs to change."
+               data-explanation-wrong="Not quite. The router only deals with addresses and the database just stores everything. What appears in the outgoing JSON is decided by the serializer's fields list.">
+            <h3 class="quiz-question">You want the API response to hide a book's internal <code>cost</code> field but keep showing <code>price</code>. Where do you make that change?</h3>
+            <div class="quiz-options">
+              <button class="quiz-option" data-value="opt-router" onclick="selectOption(this)">
+                <div class="quiz-option-radio"></div>
+                <span>In the router, by renaming the route</span>
+              </button>
+              <button class="quiz-option" data-value="opt-fields" onclick="selectOption(this)">
+                <div class="quiz-option-radio"></div>
+                <span>In the serializer's <code>fields</code> list — it controls exactly what goes out</span>
+              </button>
+              <button class="quiz-option" data-value="opt-db" onclick="selectOption(this)">
+                <div class="quiz-option-radio"></div>
+                <span>In the database, by deleting the cost column</span>
+              </button>
+            </div>
+            <div class="quiz-feedback"></div>
+          </div>
+
+          <button class="quiz-check-btn" onclick="checkQuiz('quiz-module5')">Check Answers</button>
+          <button class="quiz-reset-btn" onclick="resetQuiz('quiz-module5')">Try Again</button>
+        </div>
+      </section>
+
+      <!-- SCREEN 11 — Next -->
+      <section class="screen animate-in">
+        <h2 class="screen-heading">But should <em>anyone</em> be allowed through?</h2>
+        <p>You now have a full set of doors into your data — create, read, update, delete, all wide open.</p>
+        <div class="callout callout-warning">
+          <div class="callout-icon">🚧</div>
+          <div class="callout-content">
+            <strong class="callout-title">Next: Guarding the Door</strong>
+            <p>Should <em>anyone</em> be allowed to delete any book? Next we put a bouncer on the door — authentication and permissions.</p>
+          </div>
+        </div>
+      </section>
+
+    </div>
+  </div>
+</section>
