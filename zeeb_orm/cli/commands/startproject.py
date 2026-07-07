@@ -68,8 +68,12 @@ LOGGING = {{
 }}
 
 # Middleware (for FastAPI)
+# JWTAuthMiddleware resolves the Bearer token and sets request.state.user so
+# ViewSet permission classes (IsAuthenticated, ...) work; it is a no-op when no
+# token is sent. CORSMiddleware only activates once CORS_ALLOW_ORIGINS is set.
 MIDDLEWARE = [
-    # "zeeb_api.middleware.CORSMiddleware",
+    "zeeb_api.middleware.CORSMiddleware",
+    "zeeb_api.middleware.JWTAuthMiddleware",
 ]
 
 # CORS settings

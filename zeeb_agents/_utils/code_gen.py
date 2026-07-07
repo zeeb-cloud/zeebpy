@@ -445,6 +445,59 @@ def ensure_import(path: Path, import_line: str) -> None:
     path.write_text("".join(lines), encoding="utf-8")
 
 
+def ensure_middleware(settings_path: Path, dotted_path: str) -> bool:
+    """Ensure *dotted_path* is an active entry in ``settings.MIDDLEWARE``.
+
+    Returns ``True`` when the entry was added, ``False`` when it was already
+    present (an uncommented occurrence inside the ``MIDDLEWARE`` list). A
+    commented-out entry (``# "..."``) does not count as present and is left
+    untouched. When no ``MIDDLEWARE`` assignment exists at all, a new one is
+    appended.
+    """
+    content = settings_path.read_text(encoding="utf-8")
+    lines = content.splitlines(keepends=True)
+
+    start = next(
+        (i for i, ln in enumerate(lines) if re.match(r"^MIDDLEWARE\s*=\s*\[", ln)),
+        None,
+    )
+    if start is None:
+        new = content.rstrip("\n") + f'\n\nMIDDLEWARE = [\n    "{dotted_path}",\n]\n'
+        settings_path.write_text(new, encoding="utf-8")
+        return True
+
+    # Extend the span until the opened bracket is balanced again.
+    depth = 0
+    end = start
+    for j in range(start, len(lines)):
+        depth += lines[j].count("[") - lines[j].count("]")
+        end = j
+        if depth <= 0:
+            break
+
+    # Already an active (non-commented) entry anywhere in the list?
+    for ln in lines[start : end + 1]:
+        if dotted_path in ln.split("#", 1)[0]:
+            return False
+
+    close_line = lines[end]
+    idx = close_line.rfind("]")
+    before, after = close_line[:idx], close_line[idx:]
+    if before.strip() == "":
+        # Closing bracket sits on its own line — insert an entry above it.
+        lines.insert(end, f'    "{dotted_path}",\n')
+    else:
+        # Content shares the closing-bracket line, e.g. ``["a", "b"]``.
+        head = before.rstrip()
+        if head.endswith("["):
+            joined = f'"{dotted_path}"'
+        else:
+            joined = head.rstrip(",") + f', "{dotted_path}"'
+        lines[end] = joined + after
+    settings_path.write_text("".join(lines), encoding="utf-8")
+    return True
+
+
 def class_exists(content: str, class_name: str) -> bool:
     """Return True if a class named *class_name* is defined in *content*."""
     return bool(re.search(rf"^class {re.escape(class_name)}\b", content, re.MULTILINE))

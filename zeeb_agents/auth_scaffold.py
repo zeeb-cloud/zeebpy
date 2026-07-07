@@ -11,6 +11,7 @@ from zeeb_agents._utils.code_gen import (
     append_block,
     class_exists,
     ensure_import,
+    ensure_middleware,
     find_settings_file,
     render_field_line,
     set_or_append_setting,
@@ -58,8 +59,11 @@ async def setup_auth(
 
     Adds ``router.include(create_auth_router(...))`` to the project package's
     ``urls.py``, exposing ``POST {prefix}/login/``, ``/refresh/``, ``/logout/``,
-    ``GET /me/`` and (optionally) ``POST /register/``.  Optionally updates the
-    JWT token-lifetime settings.
+    ``GET /me/`` and (optionally) ``POST /register/``.  Also installs
+    ``zeeb_api.middleware.JWTAuthMiddleware`` in ``settings.MIDDLEWARE`` so that
+    generated ViewSets (whose permission classes read ``request.state.user``)
+    actually see the authenticated user.  Optionally updates the JWT
+    token-lifetime settings.
 
     Args:
         enable_registration: Expose the ``POST {prefix}/register/`` endpoint.
@@ -77,13 +81,17 @@ async def setup_auth(
             was already present)
         already_wired (bool): inverse of ``wired`` — present for idempotent
             re-runs
-        settings_updated (list[str]): JWT settings keys written (empty when
-            neither token lifetime was given)
+        settings_updated (list[str]): settings keys written — includes
+            ``"MIDDLEWARE"`` when the auth middleware was newly installed and
+            the JWT lifetime keys when those args were given (empty when
+            nothing changed)
 
     Notes:
         - Idempotent: an existing ``create_auth_router`` include leaves
           ``urls.py`` untouched (``already_wired=True``, still
-          ``success=True``).
+          ``success=True``). The ``MIDDLEWARE`` install is also idempotent, so
+          re-running ``setup_auth`` repairs a project whose ViewSets 403 with a
+          valid token because ``JWTAuthMiddleware`` was missing.
         - Fails with ``error_code="file_not_found"`` when the project
           ``settings.py``/``urls.py`` cannot be located.
         - Remember to set a real ``JWT_SECRET_KEY`` (e.g. via
@@ -107,17 +115,25 @@ async def setup_auth(
             urls_path.write_text(content, encoding="utf-8")
 
         updated: list[str] = []
+        settings_path = find_settings_file(root)
+        if settings_path is None:
+            raise AgentError("settings.py not found in project", code="file_not_found")
+
+        # Install the JWT auth middleware. The auth router endpoints
+        # (/login, /me, ...) self-authenticate via Depends(get_current_user),
+        # but every generated ViewSet enforces auth through permission classes
+        # that read request.state.user — which ONLY JWTAuthMiddleware sets.
+        # Without this, protected ViewSets 403 even with a valid Bearer token.
+        # Idempotent, so re-running setup_auth repairs a project missing it.
+        if ensure_middleware(settings_path, "zeeb_api.middleware.JWTAuthMiddleware"):
+            updated.append("MIDDLEWARE")
+
         jwt_updates = {
             "JWT_ACCESS_TOKEN_EXPIRE_MINUTES": access_token_minutes,
             "JWT_REFRESH_TOKEN_EXPIRE_DAYS": refresh_token_days,
         }
         wanted = {k: v for k, v in jwt_updates.items() if v is not None}
         if wanted:
-            settings_path = find_settings_file(root)
-            if settings_path is None:
-                raise AgentError(
-                    "settings.py not found in project", code="file_not_found"
-                )
             settings_content = settings_path.read_text(encoding="utf-8")
             for key, value in wanted.items():
                 settings_content = set_or_append_setting(settings_content, key, str(value))
