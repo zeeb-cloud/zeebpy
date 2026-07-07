@@ -1190,6 +1190,10 @@ async def test_setup_auth_wires_router_idempotent(project):
     assert "create_auth_router" in urls
     settings = (project / "demo" / "settings.py").read_text()
     assert "JWT_ACCESS_TOKEN_EXPIRE_MINUTES = 30" in settings
+    # The auth middleware that populates request.state.user for ViewSets must
+    # be installed, else protected ViewSets 403 with a valid Bearer token.
+    assert "zeeb_api.middleware.JWTAuthMiddleware" in settings
+    compile(settings, "settings.py", "exec")
 
     again = await agents.setup_auth(project_root=project)
     assert again.success
@@ -1199,6 +1203,83 @@ async def test_setup_auth_wires_router_idempotent(project):
         (project / "demo" / "urls.py").read_text().count("router.include(create_auth_router(")
         == 1
     )
+    # Nor is the middleware entry duplicated on re-run.
+    assert (
+        (project / "demo" / "settings.py")
+        .read_text()
+        .count('"zeeb_api.middleware.JWTAuthMiddleware"')
+        == 1
+    )
+
+
+async def test_setup_auth_installs_missing_middleware(project):
+    """A project scaffolded before the middleware fix self-heals on re-run."""
+    settings_path = project / "demo" / "settings.py"
+    # Simulate a legacy project: strip JWTAuthMiddleware out of MIDDLEWARE.
+    settings_path.write_text(
+        settings_path.read_text().replace(
+            '    "zeeb_api.middleware.JWTAuthMiddleware",\n', ""
+        )
+    )
+    assert "zeeb_api.middleware.JWTAuthMiddleware" not in settings_path.read_text()
+
+    result = await agents.setup_auth(project_root=project)
+    assert result.success, result.message
+    assert "MIDDLEWARE" in result.data["settings_updated"]
+    settings = settings_path.read_text()
+    assert '"zeeb_api.middleware.JWTAuthMiddleware"' in settings
+    compile(settings, "settings.py", "exec")
+
+
+def test_ensure_middleware_adds_and_is_idempotent(tmp_path: Path):
+    from zeeb_agents._utils.code_gen import ensure_middleware
+
+    settings = tmp_path / "settings.py"
+    settings.write_text(
+        'MIDDLEWARE = [\n    "zeeb_api.middleware.CORSMiddleware",\n]\n'
+    )
+    dotted = "zeeb_api.middleware.JWTAuthMiddleware"
+
+    assert ensure_middleware(settings, dotted) is True
+    body = settings.read_text()
+    assert body.count(f'"{dotted}"') == 1
+    assert '"zeeb_api.middleware.CORSMiddleware"' in body  # existing entry kept
+    compile(body, "settings.py", "exec")
+
+    # Second call is a no-op.
+    assert ensure_middleware(settings, dotted) is False
+    assert settings.read_text().count(f'"{dotted}"') == 1
+
+
+def test_ensure_middleware_ignores_commented_and_creates_list(tmp_path: Path):
+    from zeeb_agents._utils.code_gen import ensure_middleware
+
+    dotted = "zeeb_api.middleware.JWTAuthMiddleware"
+
+    # A commented-out entry does not count as present.
+    commented = tmp_path / "commented.py"
+    commented.write_text(f'MIDDLEWARE = [\n    # "{dotted}",\n]\n')
+    assert ensure_middleware(commented, dotted) is True
+    body = commented.read_text()
+    assert f'    # "{dotted}",' in body  # comment preserved
+    assert body.count(f'    "{dotted}",') == 1  # active entry added
+    compile(body, "settings.py", "exec")
+
+    # No MIDDLEWARE assignment at all -> one is appended.
+    empty = tmp_path / "empty.py"
+    empty.write_text("DEBUG = True\n")
+    assert ensure_middleware(empty, dotted) is True
+    body = empty.read_text()
+    assert f'"{dotted}"' in body
+    compile(body, "settings.py", "exec")
+
+    # Single-line, non-empty list.
+    inline = tmp_path / "inline.py"
+    inline.write_text('MIDDLEWARE = ["a.B"]\n')
+    assert ensure_middleware(inline, dotted) is True
+    body = inline.read_text()
+    assert '"a.B"' in body and f'"{dotted}"' in body
+    compile(body, "settings.py", "exec")
 
 
 async def test_setup_oauth_configures_provider(project):
