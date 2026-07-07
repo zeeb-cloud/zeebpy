@@ -348,7 +348,7 @@ def create_app() -> FastAPI:
     # No need to provide authenticate function - uses database by default
     auth_router = create_auth_router(
         use_database=True,        # Uses User model from database
-        enable_registration=True,  # Enables POST /auth/register/
+        enable_registration=True,  # Enables POST /auth/register
     )
     app.include_router(auth_router)
     
@@ -364,7 +364,7 @@ def create_app() -> FastAPI:
         
         The user object is the full User model from the database.
         
-        Use the access_token from /auth/login/ in the Authorization header:
+        Use the access_token from /auth/login in the Authorization header:
         Authorization: Bearer <access_token>
         """
         return {
@@ -443,11 +443,11 @@ def create_app() -> FastAPI:
                 "books": "/api/books/",
             },
             "auth_endpoints": {
-                "register": "POST /auth/register/ (body: {email, password})",
-                "login": "POST /auth/login/ (body: {email, password})",
-                "refresh": "POST /auth/refresh/ (body: {refresh_token})",
-                "logout": "POST /auth/logout/ (requires auth)",
-                "me": "GET /auth/me/ (requires auth)",
+                "register": "POST /auth/register (body: {email, password})",
+                "login": "POST /auth/login (body: {email, password})",
+                "refresh": "POST /auth/refresh (body: {refresh_token})",
+                "logout": "POST /auth/logout (requires auth)",
+                "me": "GET /auth/me (requires auth)",
             },
             "protected_demo": {
                 "protected": "GET /api/protected/ (requires auth - returns full user)",
@@ -462,7 +462,7 @@ def create_app() -> FastAPI:
             "demo_credentials": {
                 "email": "demo@example.com",
                 "password": "demo123",
-                "note": "Or register a new account at /auth/register/"
+                "note": "Or register a new account at /auth/register"
             }
         }
     
@@ -479,13 +479,13 @@ if __name__ == "__main__":
     print("\nStarting server at http://127.0.0.1:9000")
     print("API docs at http://127.0.0.1:9000/docs")
     print("\nAuth Endpoints (database-backed):")
-    print("  POST /auth/register/         - Register new user")
-    print("  POST /auth/login/            - Login (email + password)")
-    print("  POST /auth/refresh/          - Refresh access token")
-    print("  POST /auth/logout/           - Logout (requires auth)")
-    print("  GET  /auth/me/               - Get current user (requires auth)")
+    print("  POST /auth/register         - Register new user")
+    print("  POST /auth/login            - Login (email + password)")
+    print("  POST /auth/refresh          - Refresh access token")
+    print("  POST /auth/logout           - Logout (requires auth)")
+    print("  GET  /auth/me               - Get current user (requires auth)")
     print("\nDemo User: demo@example.com / demo123")
-    print("Or register a new account at /auth/register/")
+    print("Or register a new account at /auth/register")
     print("\nProtected Endpoints:")
     print("  GET /api/protected/          - Requires auth (returns full user)")
     print("  GET /api/maybe-protected/    - Optional auth")

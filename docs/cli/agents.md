@@ -984,8 +984,8 @@ result = await list_permission_classes("blog")
 
 ### `setup_auth(enable_registration=True, url_prefix="/auth", access_token_minutes=None, refresh_token_days=None, project_root=None)`
 Wire zeeb_api's JWT auth router into the project `urls.py` — exposes
-`POST {prefix}/login/`, `/refresh/`, `/logout/`, `GET /me/`, and (optionally)
-`POST /register/`. Idempotent: re-running reports `data["already_wired"]=True`.
+`POST {prefix}/login`, `/refresh`, `/logout`, `GET /me`, and (optionally)
+`POST /register`. Idempotent: re-running reports `data["already_wired"]=True`.
 Optionally writes `JWT_ACCESS_TOKEN_EXPIRE_MINUTES` /
 `JWT_REFRESH_TOKEN_EXPIRE_DAYS`.
 

@@ -37,13 +37,13 @@ Read current CORS settings:
 
 Zeeb API ships with JWT authentication out of the box.
 
-**Obtain tokens** — `POST /auth/token/`:
+**Obtain tokens** — `POST /auth/login`:
 ```json
 { "email": "user@example.com", "password": "secret" }
 ```
 Response:
 ```json
-{ "access": "<jwt_access_token>", "refresh": "<jwt_refresh_token>" }
+{ "access_token": "<jwt>", "refresh_token": "<jwt>", "token_type": "bearer", "expires_in": 900 }
 ```
 
 **Use the token**:
@@ -51,10 +51,13 @@ Response:
 Authorization: Bearer <jwt_access_token>
 ```
 
-**Refresh** — `POST /auth/token/refresh/`:
+**Refresh** — `POST /auth/refresh`:
 ```json
-{ "refresh": "<jwt_refresh_token>" }
+{ "refresh_token": "<jwt_refresh_token>" }
 ```
+
+Also available: `POST /auth/logout`, `GET /auth/me`, and (when registration is
+enabled) `POST /auth/register`.
 
 The auth URLs are registered automatically when `zeeb_api.auth` is in `INSTALLED_APPS`.
 
@@ -91,7 +94,7 @@ Codes a generated client must handle:
 
 | `error.code` | Status | Client behaviour |
 |---|---|---|
-| `AUTH_TOKEN_EXPIRED` | 401 | `POST /auth/token/refresh/` with the refresh token, then retry once. |
+| `AUTH_TOKEN_EXPIRED` | 401 | `POST /auth/refresh` with the refresh token, then retry once. |
 | `AUTH_TOKEN_MISSING` / `AUTH_TOKEN_INVALID` / `AUTH_INVALID_CREDENTIALS` | 401 | Clear stored tokens; send the user to login. |
 | `PERM_DENIED` (and other `PERM_*`) | 403 | Show a "no access" state — do not retry. |
 | `VALIDATION_ERROR` | 400/422 | Map `error.details[]` onto form fields via each detail's `field` (dotted for nested, `null` = non-field) and `code` (`FIELD_REQUIRED`, `FIELD_TOO_SHORT`, `FIELD_INVALID_EMAIL`, …); `meta` carries constraint context (`min_length`, `input`, …). |
@@ -164,12 +167,19 @@ Discover all available endpoints without a running server:
 Standard ViewSet `{prefix}` expands to these REST endpoints:
 | Method | Path | Action |
 |---|---|---|
-| GET    | `/{route_prefix}/`      | list |
-| POST   | `/{route_prefix}/`      | create |
-| GET    | `/{route_prefix}/{id}/` | retrieve |
-| PUT    | `/{route_prefix}/{id}/` | update |
-| PATCH  | `/{route_prefix}/{id}/` | partial_update |
-| DELETE | `/{route_prefix}/{id}/` | destroy |
+| POST   | `/{route_prefix}/query` | list (Q-filter body, `{}` for all) |
+| POST   | `/{route_prefix}`       | create |
+| GET    | `/{route_prefix}/{id}`  | retrieve |
+| PUT    | `/{route_prefix}/{id}`  | update |
+| PATCH  | `/{route_prefix}/{id}`  | partial_update |
+| DELETE | `/{route_prefix}/{id}`  | destroy |
+
+**Path conventions:** canonical paths have **no trailing slash** — generated
+clients must copy paths verbatim from `/openapi.json`, never generalize a
+pattern from one endpoint to another. There is no `GET` list endpoint; lists go
+through `POST /{route_prefix}/query`. (The backend also serves every route with
+a trailing slash appended — no redirect — so a client that adds one still
+works, but the slash-less form is canonical.)
 
 ## 7 — Health / Status Endpoints
 

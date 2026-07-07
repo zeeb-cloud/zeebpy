@@ -598,16 +598,16 @@ app.include_router(auth_router, prefix="/api/auth", tags=["auth"])
 ```
 
 Endpoints:
-- `POST /api/auth/login/` - Get tokens from credentials
-- `POST /api/auth/refresh/` - Refresh access token
-- `POST /api/auth/logout/` - Invalidate tokens
-- `GET /api/auth/me/` - Get current user
+- `POST /api/auth/login` - Get tokens from credentials
+- `POST /api/auth/refresh` - Refresh access token
+- `POST /api/auth/logout` - Invalidate tokens
+- `GET /api/auth/me` - Get current user
 
 ### Login Request/Response
 
 ```python
 # Request
-POST /api/auth/login/
+POST /api/auth/login
 {"email": "user@example.com", "password": "secret123"}
 
 # Response

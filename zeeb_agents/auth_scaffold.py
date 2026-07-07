@@ -58,15 +58,15 @@ async def setup_auth(
     """Wire zeeb_api's JWT auth router into the project ``urls.py``.
 
     Adds ``router.include(create_auth_router(...))`` to the project package's
-    ``urls.py``, exposing ``POST {prefix}/login/``, ``/refresh/``, ``/logout/``,
-    ``GET /me/`` and (optionally) ``POST /register/``.  Also installs
+    ``urls.py``, exposing ``POST {prefix}/login``, ``/refresh``, ``/logout``,
+    ``GET /me`` and (optionally) ``POST /register``.  Also installs
     ``zeeb_api.middleware.JWTAuthMiddleware`` in ``settings.MIDDLEWARE`` so that
     generated ViewSets (whose permission classes read ``request.state.user``)
     actually see the authenticated user.  Optionally updates the JWT
     token-lifetime settings.
 
     Args:
-        enable_registration: Expose the ``POST {prefix}/register/`` endpoint.
+        enable_registration: Expose the ``POST {prefix}/register`` endpoint.
         url_prefix: URL prefix for the auth endpoints (default ``"/auth"``).
         access_token_minutes: If given, sets ``JWT_ACCESS_TOKEN_EXPIRE_MINUTES``
             in ``settings.py``.

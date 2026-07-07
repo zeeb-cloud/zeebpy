@@ -77,7 +77,7 @@ def create_auth_router(
         prefix: URL prefix for auth routes
         tags: OpenAPI tags
         on_logout: Optional async callback when user logs out
-        enable_registration: Whether to include /register/ endpoint
+        enable_registration: Whether to include /register endpoint
         use_database: If True, uses database-backed authentication
     
     Returns:
@@ -125,7 +125,7 @@ def create_auth_router(
     # Login endpoint
     if auth_func:
         @router.post(
-            "/login/",
+            "/login",
             response_model=TokenResponse,
             responses={
                 401: {"model": ErrorResponse, "description": "Invalid credentials"},
@@ -159,7 +159,7 @@ def create_auth_router(
     # Registration endpoint
     if enable_registration and use_database:
         @router.post(
-            "/register/",
+            "/register",
             response_model=RegisterResponse,
             responses={
                 400: {"model": ErrorResponse, "description": "Validation error"},
@@ -209,7 +209,7 @@ def create_auth_router(
             )
     
     @router.post(
-        "/refresh/",
+        "/refresh",
         response_model=TokenResponse,
         responses={
             401: {"model": ErrorResponse, "description": "Invalid or expired refresh token"},
@@ -250,7 +250,7 @@ def create_auth_router(
         )
     
     @router.post(
-        "/logout/",
+        "/logout",
         response_model=LogoutResponse,
         summary="Logout",
         description="Logout and optionally invalidate tokens.",
@@ -275,7 +275,7 @@ def create_auth_router(
         )
     
     @router.get(
-        "/me/",
+        "/me",
         response_model=UserInfo,
         responses={
             401: {"model": ErrorResponse, "description": "Not authenticated"},
@@ -312,5 +312,11 @@ def create_auth_router(
             is_authenticated=True,
             claims=claims,
         )
-    
+
+    # Canonical paths are slash-less; serve trailing-slash variants directly
+    # (no 307 redirect, which browsers reject on CORS-preflighted requests).
+    from zeeb_api.routers.default import add_slash_alias_routes
+
+    add_slash_alias_routes(router)
+
     return router
