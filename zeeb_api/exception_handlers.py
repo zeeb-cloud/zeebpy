@@ -327,10 +327,45 @@ def create_orm_exception_handlers() -> dict[type[Exception], Callable]:
         
         handlers[DoesNotExist] = does_not_exist_handler
         handlers[MultipleObjectsReturned] = multiple_objects_handler
-        
+
     except ImportError:
         pass
-    
+
+    try:
+        from zeeb_orm.exceptions import ValidationError as ORMValidationError
+
+        async def orm_validation_handler(
+            request: Request,
+            exc: ORMValidationError,
+        ) -> JSONResponse:
+            """Handle ORM model validation errors (full_clean) as 400s.
+
+            Without this handler an ORM ValidationError raised inside
+            create/update falls through to the generic 500 handler even
+            though it is an ordinary client error.
+            """
+            details = [
+                ErrorDetail(
+                    code=ErrorCode.FIELD_INVALID_VALUE.value,
+                    field=None if field == "__all__" else field,
+                    message=message,
+                )
+                for field, messages in exc.message_dict.items()
+                for message in messages
+            ]
+            return _create_error_response(
+                code=ErrorCode.VALIDATION_ERROR.value,
+                message="Validation failed",
+                status_code=400,
+                request=request,
+                details=details,
+            )
+
+        handlers[ORMValidationError] = orm_validation_handler
+
+    except ImportError:
+        pass
+
     return handlers
 
 
@@ -363,10 +398,86 @@ def install_exception_handlers(app: FastAPI) -> None:
     app.add_exception_handler(Exception, generic_exception_handler)
 
 
+# HTTP status codes that return the standardized ErrorResponse envelope.
+# Used to rewrite the generated OpenAPI so the documented schema matches the
+# runtime body produced by the exception handlers above.
+_ERROR_STATUS_CODES = frozenset({"400", "401", "403", "404", "409", "422", "429", "500"})
+
+
+def install_error_response_schema(app: FastAPI) -> None:
+    """
+    Override ``app.openapi`` so error responses document the ErrorResponse envelope.
+
+    The runtime handlers installed by :func:`install_exception_handlers` return the
+    standardized ``ErrorResponse`` body for 4xx/5xx errors, but FastAPI still
+    auto-generates a ``HTTPValidationError`` schema for 422 responses. This makes
+    the published ``openapi.json`` advertise a shape the server never returns.
+
+    This function patches the OpenAPI generation to:
+    - inject ``ErrorResponse`` (and its nested models) into ``components.schemas``;
+    - point every error-status response (400/401/403/404/409/422/429/500) at
+      ``#/components/schemas/ErrorResponse``;
+    - drop the now-unreferenced ``HTTPValidationError`` / ``ValidationError`` schemas.
+
+    Idempotent and lazy: the schema is built (and cached on ``app.openapi_schema``)
+    the first time ``openapi.json`` is requested, after all routes are registered.
+
+    Usage:
+        install_exception_handlers(app)
+        install_error_response_schema(app)
+    """
+    from fastapi.openapi.utils import get_openapi
+
+    def custom_openapi() -> dict[str, Any]:
+        if app.openapi_schema:
+            return app.openapi_schema
+
+        schema = get_openapi(
+            title=app.title,
+            version=app.version,
+            openapi_version=app.openapi_version,
+            description=app.description,
+            routes=app.routes,
+            tags=app.openapi_tags,
+            servers=app.servers,
+        )
+
+        # Inject ErrorResponse and its nested models into components.schemas.
+        error_schema = ErrorResponse.model_json_schema(
+            ref_template="#/components/schemas/{model}"
+        )
+        nested_defs = error_schema.pop("$defs", {})
+        components = schema.setdefault("components", {}).setdefault("schemas", {})
+        components["ErrorResponse"] = error_schema
+        for name, definition in nested_defs.items():
+            components.setdefault(name, definition)
+
+        # Point every error-status response at ErrorResponse.
+        error_ref = {"$ref": "#/components/schemas/ErrorResponse"}
+        for path_item in schema.get("paths", {}).values():
+            for operation in path_item.values():
+                if not isinstance(operation, dict):
+                    continue
+                for status_code, response in operation.get("responses", {}).items():
+                    if str(status_code) not in _ERROR_STATUS_CODES:
+                        continue
+                    for media_type in response.get("content", {}).values():
+                        media_type["schema"] = error_ref
+
+        # Drop the default validation schemas now that nothing references them.
+        components.pop("HTTPValidationError", None)
+        components.pop("ValidationError", None)
+
+        app.openapi_schema = schema
+        return schema
+
+    app.openapi = custom_openapi
+
+
 def get_error_responses() -> dict[int | str, dict[str, Any]]:
     """
     Get OpenAPI response schemas for common error codes.
-    
+
     Usage in router:
         @app.get("/items/{id}", responses=get_error_responses())
         async def get_item(id: int): ...

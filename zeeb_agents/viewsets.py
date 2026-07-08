@@ -265,17 +265,25 @@ async def add_viewset_action(
             f'{body_block}\n'
         )
 
-        # Insert before the last line of the class (before next class or EOF)
+        # Insert before the end of the class body (before the next top-level
+        # statement or EOF). The ``^`` anchors are essential: without them the
+        # pattern also matches the commented example ViewSet in the scaffolded
+        # views.py and splices the action into a comment block.
         pattern = re.compile(
-            rf"(class {re.escape(class_name)}\b.*?)(\nclass |\Z)",
-            re.DOTALL,
+            rf"(^class {re.escape(class_name)}\b.*?)(?=^\S|\Z)",
+            re.DOTALL | re.MULTILINE,
         )
         def _replace(m: re.Match) -> str:
-            return m.group(1) + "\n" + action_code + m.group(2)
+            block = m.group(1)
+            if not block.endswith("\n"):
+                block += "\n"
+            return block + "\n" + action_code
 
         new_content = pattern.sub(_replace, content, count=1)
-        ensure_import(path, "from zeeb_api.viewsets import action")
         path.write_text(new_content, encoding="utf-8")
+        # After writing the new content — ensure_import edits the file on disk,
+        # so it must run last or the write above clobbers the added import.
+        ensure_import(path, "from zeeb_api.viewsets import action")
 
     await asyncio.to_thread(_insert)
     return AgentResult(
@@ -665,7 +673,7 @@ async def list_endpoints(project_root: Path | None = None) -> AgentResult:
             if not urls_path.exists():
                 continue
             content = urls_path.read_text(encoding="utf-8")
-            for m in re.finditer(r'router\.register\(["\']([^"\']+)["\'],\s*(\w+)', content):
+            for m in re.finditer(r'^[ \t]*router\.register\(["\']([^"\']+)["\'],\s*(\w+)', content, re.MULTILINE):
                 endpoints.append({
                     "app": app,
                     "prefix": m.group(1),

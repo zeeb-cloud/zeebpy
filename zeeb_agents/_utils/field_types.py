@@ -92,8 +92,13 @@ RELATION_FIELDS = {"ForeignKey", "OneToOneField", "ManyToManyField"}
 # constants are plain strings, so quoted rendering is the API).
 ON_DELETE_VALUES = {"CASCADE", "PROTECT", "RESTRICT", "SET_NULL", "SET_DEFAULT", "DO_NOTHING"}
 
-# Kwargs zeeb_orm's ManyToManyField.__init__ does not accept.
-_M2M_REJECTED = {"on_delete", "null"}
+# zeeb_orm's ManyToManyField.__init__ accepts ONLY these kwargs (besides the
+# positional target) — anything else raises TypeError at import time and takes
+# the whole generated app down.
+_M2M_ALLOWED = {"related_name", "through", "through_fields", "db_table"}
+# Django-parity kwargs that are meaningless for zeeb_orm M2Ms; silently
+# dropped instead of rejected because Django users pass blank=True habitually.
+_M2M_IGNORED = {"blank"}
 
 
 def known_field_types() -> list[str]:
@@ -189,11 +194,17 @@ def validate_field_spec(spec: object) -> tuple[str, str]:
                 code="invalid_field_spec",
             )
         if field_type == "ManyToManyField":
-            rejected = _M2M_REJECTED & set(spec)
+            rejected = (
+                set(spec)
+                - {"name", "type", "to", "raw"}
+                - _M2M_ALLOWED
+                - _M2M_IGNORED
+            )
             if rejected:
                 raise AgentError(
                     f"Field '{name}': ManyToManyField does not accept "
-                    f"{', '.join(sorted(rejected))}",
+                    f"{', '.join(sorted(rejected))}. Allowed: "
+                    f"{', '.join(sorted(_M2M_ALLOWED))}",
                     code="invalid_field_spec",
                 )
         else:
@@ -264,6 +275,9 @@ def render_field_line(field: dict) -> str:
         parts.append(render_py_literal(spec.pop("to")))
         if "through_fields" in spec and isinstance(spec["through_fields"], list):
             spec["through_fields"] = tuple(spec["through_fields"])
+        if field_type == "ManyToManyField":
+            for ignored in _M2M_IGNORED:
+                spec.pop(ignored, None)
 
     for key, val in spec.items():
         if key in raw:

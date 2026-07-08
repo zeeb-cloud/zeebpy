@@ -129,7 +129,7 @@ class QueryModelMixin:
 
 
 class ListModelMixin:
-    """Mixin for list (GET collection) operation - DEPRECATED, use QueryModelMixin."""
+    """Mixin for list (GET collection) operation."""
     
     async def list(self, request: Request, **kwargs: Any) -> dict[str, Any]:
         """List all model instances."""

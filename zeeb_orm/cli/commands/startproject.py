@@ -132,6 +132,10 @@ from contextlib import asynccontextmanager
 
 from zeeb_orm import setup_database, close_all_connections, check_migrations_applied, MigrationError
 from zeeb_api.logging import configure_logging, get_logger
+from zeeb_api.exception_handlers import (
+    install_exception_handlers,
+    install_error_response_schema,
+)
 
 # Import settings
 from {project_name}.settings import (
@@ -216,9 +220,50 @@ def create_app() -> FastAPI:
             allow_headers=["*"],
         )
 
+    # Apply MIDDLEWARE from settings (CORS is handled explicitly above).
+    # Without this, entries like JWTAuthMiddleware are never installed and
+    # request.state.user stays unset for every protected ViewSet.
+    import importlib
+
+    for middleware_path in reversed(MIDDLEWARE):
+        if middleware_path == "zeeb_api.middleware.CORSMiddleware":
+            continue
+        module_name, _, class_name = middleware_path.rpartition(".")
+        middleware_cls = getattr(importlib.import_module(module_name), class_name)
+        app.add_middleware(middleware_cls)
+
     # Include routes with API prefix
     for route in get_routes():
         app.include_router(route, prefix=API_PREFIX)
+
+    # Root liveness/readiness probes (hosting healthchecks expect /health)
+    @app.get("/health", include_in_schema=False)
+    async def _health() -> dict:
+        return {{"status": "ok"}}
+
+    @app.get("/ready", include_in_schema=False)
+    async def _ready():
+        from fastapi.responses import JSONResponse
+        from sqlalchemy import text
+        from zeeb_orm.db import get_database
+
+        db = get_database()
+        if db is None:
+            return JSONResponse(
+                {{"status": "not_ready", "db": "not configured"}}, status_code=503
+            )
+        try:
+            async with db.session() as session:
+                await session.execute(text("SELECT 1"))
+        except Exception:
+            return JSONResponse(
+                {{"status": "not_ready", "db": "unreachable"}}, status_code=503
+            )
+        return {{"status": "ready", "db": "ok"}}
+
+    # Standardized error contract: envelope at runtime + matching OpenAPI schema
+    install_exception_handlers(app)
+    install_error_response_schema(app)
 
     logger.info("Application configured", routes=len(get_routes()))
     return app

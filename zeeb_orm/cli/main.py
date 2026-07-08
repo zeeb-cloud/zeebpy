@@ -89,6 +89,13 @@ def main() -> int:
         action="store_true",
         help="Show which migrations would be applied without running them.",
     )
+    sp_migrate.add_argument(
+        "--noinput",
+        "--no-input",
+        action="store_true",
+        dest="noinput",
+        help="Django-compat no-op: migrate never prompts for input.",
+    )
 
     # showmigrations
     sp_showmig = subparsers.add_parser("showmigrations", help="Show migration status")

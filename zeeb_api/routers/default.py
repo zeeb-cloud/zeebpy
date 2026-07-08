@@ -75,6 +75,7 @@ class SimpleRouter:
     Routes generated (canonical paths have no trailing slash; a hidden
     trailing-slash alias is registered for each so both variants work):
     - {prefix}/query (query with Q filters) - POST
+    - {prefix} (list) - GET
     - {prefix} (create) - POST
     - {prefix}/{lookup} (retrieve, update, partial_update, destroy)
     - {prefix}/{lookup}/{action} (custom detail actions)
@@ -90,6 +91,15 @@ class SimpleRouter:
                 "post": "query",
             },
             name="{basename}-query",
+            detail=False,
+        ),
+        # List route (GET collection; filters/pagination via ListModelMixin)
+        Route(
+            url="",
+            mapping={
+                "get": "list",
+            },
+            name="{basename}-list",
             detail=False,
         ),
         # Create route
@@ -402,7 +412,35 @@ class SimpleRouter:
         from pydantic import BaseModel
         
         lookup_field = lookup.strip("{}")
-        
+
+        def _adapt_action_kwargs(func: Callable, path_params: dict[str, Any]) -> dict[str, Any]:
+            """Match path params to the action's signature.
+
+            Custom actions conventionally accept ``pk`` (see the ``@action``
+            docstring) while routes are generated with the viewset's
+            ``lookup_field`` (default ``id``). Map between the two and drop
+            params the action doesn't accept — handlers can always read
+            ``self.kwargs`` instead.
+            """
+            import inspect
+
+            try:
+                sig = inspect.signature(func)
+            except (TypeError, ValueError):
+                return dict(path_params)
+            params = sig.parameters
+            if any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values()):
+                return dict(path_params)
+            adapted: dict[str, Any] = {}
+            for key, value in path_params.items():
+                if key in params:
+                    adapted[key] = value
+                elif key == "id" and "pk" in params:
+                    adapted["pk"] = value
+                elif key == "pk" and "id" in params:
+                    adapted["id"] = value
+            return adapted
+
         if detail:
             if request_schema:
                 # Detail endpoint with request body
@@ -425,9 +463,9 @@ class SimpleRouter:
 
                     # Store body data for action
                     viewset._request_body = body.model_dump()
-                    
+
                     action = getattr(viewset, action_name)
-                    result = await action(request, **path_params)
+                    result = await action(request, **_adapt_action_kwargs(action, path_params))
                     
                     if result is None:
                         return Response(status_code=204)
@@ -457,12 +495,12 @@ class SimpleRouter:
                     await viewset.check_throttles(request)
 
                     action = getattr(viewset, action_name)
-                    result = await action(request, **path_params)
-                    
+                    result = await action(request, **_adapt_action_kwargs(action, path_params))
+
                     if result is None:
                         return Response(status_code=204)
                     return result
-                
+
                 from inspect import Parameter, Signature
                 params = [
                     Parameter("request", Parameter.POSITIONAL_OR_KEYWORD, annotation=Request),

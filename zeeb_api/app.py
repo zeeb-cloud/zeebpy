@@ -66,7 +66,10 @@ def create_app(
     """
     from zeeb_api.auth.jwt import INSECURE_SECRETS, configure_jwt
     from zeeb_api.conf import configure_settings, settings
-    from zeeb_api.exception_handlers import install_exception_handlers
+    from zeeb_api.exception_handlers import (
+        install_error_response_schema,
+        install_exception_handlers,
+    )
     from zeeb_api.exceptions import ImproperlyConfigured
     from zeeb_api.middleware import install_middleware
     from zeeb_api.routers import load_urlconf
@@ -119,6 +122,7 @@ def create_app(
     # Install exception handlers
     if getattr(settings, 'INSTALL_EXCEPTION_HANDLERS', True):
         install_exception_handlers(app)
+        install_error_response_schema(app)
     
     # Load and include URL routes
     root_urlconf = getattr(settings, 'ROOT_URLCONF', None)
