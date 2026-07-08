@@ -732,7 +732,13 @@ class ModelSerializer(Serializer, Generic[ModelT]):
         # Build field definitions
         response_fields: dict[str, tuple[type, Any]] = {}
         request_fields: dict[str, tuple[type, Any]] = {}
-        
+
+        # Forward M2M fields declared on the model. Auto-through M2Ms are
+        # writable (as lists of target PKs) via the related manager's set();
+        # custom-through M2Ms stay read-only (set() raises NotSupportedError).
+        m2m_fields = {f.name: f for f in getattr(model, "_m2m_fields", [])}
+        writable_m2m: list[str] = []
+
         for field_name in field_names:
             # Check for SerializerMethodField
             if field_name in cls._declared_fields:
@@ -770,10 +776,25 @@ class ModelSerializer(Serializer, Generic[ModelT]):
             if model_field is None:
                 # Not a local column: it may be a to-many / reverse relation
                 # (forward M2M, reverse FK/O2O, reverse M2M). Serialize those as
-                # related primary keys (read-only).
+                # related primary keys.
                 rel_type = _relation_response_type(model, field_name)
                 if rel_type is not None:
                     response_fields[field_name] = rel_type
+                m2m_field = m2m_fields.get(field_name)
+                if (
+                    m2m_field is not None
+                    and not m2m_field.has_custom_through
+                    and field_name not in read_only
+                ):
+                    # Accept a list of target PKs on write.
+                    target_pk_type: type = Any  # type: ignore[assignment]
+                    try:
+                        target_pk = m2m_field.get_target_model()._meta.pk
+                        target_pk_type = getattr(target_pk, "_python_type", Any)
+                    except Exception:
+                        pass
+                    request_fields[field_name] = (list[target_pk_type], None)
+                    writable_m2m.append(field_name)
                 continue
 
             # Determine Python type
@@ -876,20 +897,41 @@ class ModelSerializer(Serializer, Generic[ModelT]):
         
         # Default Schema is ResponseSchema
         cls.Schema = cls.ResponseSchema
-    
+
+        # M2M fields (list-of-PKs) applied after create/update via .set()
+        cls._writable_m2m = writable_m2m
+
+    def _pop_m2m_values(self, validated_data: dict[str, Any]) -> dict[str, list[Any]]:
+        """Extract writable M2M values; they can't go through objects.create()."""
+        m2m_values: dict[str, list[Any]] = {}
+        for name in getattr(self, "_writable_m2m", []):
+            value = validated_data.pop(name, None)
+            if value is not None:
+                m2m_values[name] = value
+        return m2m_values
+
+    async def _apply_m2m(self, instance: ModelT, m2m_values: dict[str, list[Any]]) -> None:
+        for name, pks in m2m_values.items():
+            await getattr(instance, name).set(pks)
+
     async def create(self, validated_data: dict[str, Any]) -> ModelT:
         """Create new model instance."""
         model = self.Meta.model
         if model is None:
             raise ValueError("Meta.model is required")
-        
-        return await model.objects.create(**validated_data)
-    
+
+        m2m_values = self._pop_m2m_values(validated_data)
+        instance = await model.objects.create(**validated_data)
+        await self._apply_m2m(instance, m2m_values)
+        return instance
+
     async def update(self, instance: ModelT, validated_data: dict[str, Any]) -> ModelT:
         """Update existing model instance."""
+        m2m_values = self._pop_m2m_values(validated_data)
         for attr, value in validated_data.items():
             setattr(instance, attr, value)
         await instance.save()
+        await self._apply_m2m(instance, m2m_values)
         return instance
 
 

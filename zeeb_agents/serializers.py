@@ -153,33 +153,51 @@ async def update_serializer(
                 serializer=class_name,
             )
         changes: list[str] = []
+        # Scope every substitution to the target class block — a file-wide
+        # re.sub would rewrite the Meta of *every* serializer in the file.
+        block_pattern = re.compile(
+            rf"(^class {re.escape(class_name)}\b.*?)(?=^\S|\Z)",
+            re.DOTALL | re.MULTILINE,
+        )
+        match = block_pattern.search(content)
+        if match is None:
+            raise AgentError(
+                f"'{class_name}' not found in {path}",
+                code="model_not_found",
+                serializer=class_name,
+            )
+        block = match.group(1)
         if fields is not None:
             fields_repr = ", ".join(f'"{f}"' for f in fields)
-            content = re.sub(
+            block = re.sub(
                 r"(^\s+fields\s*=\s*).*$",
                 rf"\g<1>[{fields_repr}]",
-                content,
+                block,
+                count=1,
                 flags=re.MULTILINE,
             )
             changes.append("fields updated")
         if read_only_fields is not None:
             ro_repr = ", ".join(f'"{f}"' for f in read_only_fields)
-            if re.search(r"^\s+read_only_fields\s*=", content, re.MULTILINE):
-                content = re.sub(
+            if re.search(r"^\s+read_only_fields\s*=", block, re.MULTILINE):
+                block = re.sub(
                     r"(^\s+read_only_fields\s*=\s*).*$",
                     rf"\g<1>[{ro_repr}]",
-                    content,
+                    block,
+                    count=1,
                     flags=re.MULTILINE,
                 )
             else:
                 # Insert after the fields line
-                content = re.sub(
+                block = re.sub(
                     r"(^\s+fields\s*=.*$)",
                     rf"\g<1>\n        read_only_fields = [{ro_repr}]",
-                    content,
+                    block,
+                    count=1,
                     flags=re.MULTILINE,
                 )
             changes.append("read_only_fields updated")
+        content = content[: match.start(1)] + block + content[match.end(1) :]
         path.write_text(content, encoding="utf-8")
         return changes
 

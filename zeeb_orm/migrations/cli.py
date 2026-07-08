@@ -103,6 +103,7 @@ def _register_models(project_root: Path | None = None) -> None:
 
             imported = False
             last_error: Exception | None = None
+            module_missing = False
             for import_path in import_paths:
                 try:
                     models_module = importlib.import_module(import_path)
@@ -116,14 +117,21 @@ def _register_models(project_root: Path | None = None) -> None:
                             app_models.append((app, obj))
                     imported = True
                     break
-                except ImportError as e:
+                except ModuleNotFoundError as e:
                     last_error = e
+                    # Only the models module itself (or its package) being
+                    # absent is skippable; a ModuleNotFoundError raised by an
+                    # import *inside* an existing models.py is a real failure
+                    # that must not silently yield "No changes detected".
+                    module_missing = e.name is not None and import_path.startswith(e.name)
+                    if not module_missing:
+                        break
                 except Exception as e:
                     last_error = e
-                    break  # Non-import errors are real problems
+                    break  # Errors inside an existing module are real problems
 
             if not imported and last_error is not None:
-                if isinstance(last_error, ImportError):
+                if module_missing:
                     # App without an importable models module — skippable.
                     warnings.warn(
                         f"Could not import models from app '{app}': {last_error}",

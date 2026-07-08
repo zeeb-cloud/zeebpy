@@ -27,7 +27,7 @@ class ModelViewSet(
     
     Provides:
     - query (POST /items/query/) - Query with Q filters, ordering, pagination
-    - list (GET /items/) - DEPRECATED, use query instead
+    - list (GET /items/) - filterable, paginated collection
     - create (POST /items/)
     - retrieve (GET /items/{id}/)
     - update (PUT /items/{id}/)
@@ -54,7 +54,7 @@ class ReadOnlyModelViewSet(
     
     Provides:
     - query (POST /items/query/) - Query with Q filters, ordering, pagination
-    - list (GET /items/) - DEPRECATED, use query instead
+    - list (GET /items/) - filterable, paginated collection
     - retrieve (GET /items/{id}/)
     
     Usage:

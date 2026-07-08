@@ -7,7 +7,12 @@ from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from zeeb_api.exception_handlers import install_exception_handlers
+from pydantic import BaseModel
+
+from zeeb_api.exception_handlers import (
+    install_error_response_schema,
+    install_exception_handlers,
+)
 from zeeb_api.exceptions import (
     APIException,
     AuthenticationException,
@@ -168,6 +173,67 @@ class TestWithoutHandlers:
         resp = client.get(path)
         assert resp.status_code == status
         assert "detail" in resp.json()
+
+
+def _make_openapi_app() -> TestClient:
+    """App with a body-validated route, using the standard error contract."""
+    app = FastAPI(title="probe", version="1.0.0")
+    install_exception_handlers(app)
+    install_error_response_schema(app)
+
+    class LoginIn(BaseModel):
+        email: str
+        password: str
+
+    @app.post("/login")
+    async def login(body: LoginIn):
+        return {"ok": True}
+
+    return TestClient(app, raise_server_exceptions=False)
+
+
+class TestErrorResponseSchema:
+    """install_error_response_schema makes the OpenAPI match the runtime envelope."""
+
+    def test_runtime_422_uses_envelope(self):
+        client = _make_openapi_app()
+        resp = client.post("/login", json={})
+        assert resp.status_code == 422
+        body = resp.json()
+        assert body["success"] is False
+        assert body["error"]["code"] == "VALIDATION_ERROR"
+        fields = {d["field"] for d in body["error"]["details"]}
+        assert {"email", "password"} <= fields
+
+    def test_openapi_422_references_error_response(self):
+        client = _make_openapi_app()
+        spec = client.get("/openapi.json").json()
+        schema = spec["paths"]["/login"]["post"]["responses"]["422"]["content"][
+            "application/json"
+        ]["schema"]
+        assert schema == {"$ref": "#/components/schemas/ErrorResponse"}
+
+    def test_openapi_components_and_stale_schemas(self):
+        client = _make_openapi_app()
+        comps = client.get("/openapi.json").json()["components"]["schemas"]
+        assert {"ErrorResponse", "ErrorBody", "ErrorDetail", "ErrorMeta"} <= set(comps)
+        # The default FastAPI validation schemas must be gone — the server never
+        # returns that shape once the envelope handlers are installed.
+        assert "HTTPValidationError" not in comps
+        assert "ValidationError" not in comps
+
+
+class TestScaffoldAsgiTemplate:
+    """The generated asgi.py wires up the standard error contract."""
+
+    def test_asgi_template_installs_error_contract(self):
+        from zeeb_orm.cli.commands.startproject import ASGI_PY
+
+        rendered = ASGI_PY.format(project_name="probe_api")
+        assert "install_exception_handlers(app)" in rendered
+        assert "install_error_response_schema(app)" in rendered
+        # Rendered template must be valid Python.
+        compile(rendered, "asgi.py", "exec")
 
 
 class TestDeprecatedResponseImports:

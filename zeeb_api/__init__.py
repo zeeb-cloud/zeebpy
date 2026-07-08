@@ -50,6 +50,7 @@ from zeeb_api.auth import (
 from zeeb_api.conf import configure_settings, get_settings, settings
 from zeeb_api.exception_handlers import (
     get_error_responses,
+    install_error_response_schema,
     install_exception_handlers,
 )
 from zeeb_api.exceptions import (
@@ -286,6 +287,7 @@ __all__ = [
     "validation_error",
     # Exception handlers
     "install_exception_handlers",
+    "install_error_response_schema",
     "get_error_responses",
     # Authentication
     "JWTConfig",

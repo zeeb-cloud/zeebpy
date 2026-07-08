@@ -184,11 +184,15 @@ def render_serializer_class(
         for name in declared_names:
             if name not in meta_fields:
                 meta_fields.append(name)
-    fields_repr = (
-        ", ".join(f'"{f}"' for f in meta_fields)
-        if meta_fields
-        else '"__all__"'
-    )
+    if meta_fields:
+        fields_line = "        fields = [{}]".format(
+            ", ".join(f'"{f}"' for f in meta_fields)
+        )
+    else:
+        # Must be the bare string, not a one-element list: the serializer
+        # Meta compares ``fields == "__all__"`` — ``["__all__"]`` would be
+        # treated as a literal field named __all__ and yield empty schemas.
+        fields_line = '        fields = "__all__"'
 
     lines = [f"class {class_name}(ModelSerializer):"]
     if declared_lines:
@@ -198,7 +202,7 @@ def render_serializer_class(
         [
             "    class Meta:",
             f"        model = {model_name}",
-            f"        fields = [{fields_repr}]",
+            fields_line,
         ]
     )
     if read_only_fields:
@@ -584,8 +588,13 @@ def remove_field_from_class(content: str, class_name: str, field_name: str) -> s
 
 
 def extract_model_names(content: str) -> list[str]:
-    """Return class names of all ``Model`` subclasses in *content*."""
-    pattern = re.compile(r"^class (\w+)\(.*?Model.*?\):", re.MULTILINE)
+    """Return class names of all ``Model``/``AbstractUser`` subclasses in *content*."""
+    # AbstractUser must match too: custom user models are generated as
+    # ``class User(AbstractUser):`` and would otherwise vanish from
+    # list_models / schema inspection.
+    pattern = re.compile(
+        r"^class (\w+)\(.*?(?:Model|AbstractUser).*?\):", re.MULTILINE
+    )
     return [m.group(1) for m in pattern.finditer(content)]
 
 

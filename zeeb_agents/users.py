@@ -134,6 +134,25 @@ async def create_user(
                 from datetime import datetime, timezone
 
                 data["date_joined"] = datetime.now(timezone.utc).isoformat()
+            # Custom user models may declare extra NOT NULL columns without a
+            # DB-level default (zeeb field defaults are client-side only and
+            # this INSERT bypasses the ORM). Fill common scalar types with a
+            # neutral value so user creation cannot fail on them.
+            for col in columns:
+                cname = col["name"]
+                if cname in data or cname == "id":
+                    continue
+                if col.get("nullable", True) or col.get("default") is not None:
+                    continue
+                ctype = str(col["type"]).upper()
+                if "CHAR" in ctype or "TEXT" in ctype:
+                    data[cname] = ""
+                elif "BOOL" in ctype:
+                    data[cname] = False
+                elif any(t in ctype for t in ("INT", "NUMERIC", "DECIMAL", "FLOAT", "DOUBLE")):
+                    data[cname] = 0
+                # Other types (dates, json, uuid, …) stay unset — failing
+                # loudly beats inserting a made-up value there.
             # Only include columns that exist in this table
             insert_data = {k: v for k, v in data.items() if k in cols}
             placeholders = ", ".join(f":{k}" for k in insert_data)

@@ -48,8 +48,8 @@ _FIELD_TYPE_MAP: dict[str, dict[str, Any]] = {
 _DEFAULT_SCHEMA_TYPE: dict[str, Any] = {"type": "string"}
 
 # Patterns for route scanning
-_VIEWSET_RE = re.compile(r'router\.register\(\s*["\']([^"\']+)["\']\s*,\s*(\w+)', re.MULTILINE)
-_ROUTE_RE = re.compile(r'@router\.(get|post|put|patch|delete)\(\s*["\']([^"\']+)["\']', re.MULTILINE)
+_VIEWSET_RE = re.compile(r'^[ \t]*router\.register\(\s*["\']([^"\']+)["\']\s*,\s*(\w+)', re.MULTILINE)
+_ROUTE_RE = re.compile(r'^[ \t]*@router\.(get|post|put|patch|delete)\(\s*["\']([^"\']+)["\']', re.MULTILINE)
 # Field lines are single-line in generated code — capture params to EOL so
 # nested parens/brackets (choices, validators) don't truncate the match.
 _FIELD_DEF_RE = re.compile(r"^\s{4}(\w+)\s*=\s*fields\.(\w+)\s*\((.*)$", re.MULTILINE)
