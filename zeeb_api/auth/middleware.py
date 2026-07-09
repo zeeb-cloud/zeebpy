@@ -197,10 +197,20 @@ class JWTAuthMiddleware(BaseHTTPMiddleware):
                 else:
                     request.state.user = AuthenticatedUser(payload)
 
-            except TokenError:
-                # Not a locally-issued token. Give externally-issued tokens
-                # (e.g. Azure AD) a chance, still never raising.
+            except TokenError as exc:
+                # Not a valid locally-issued token. Give externally-issued
+                # tokens (e.g. Azure AD) a chance, still never raising.
                 request.state.user = await self._try_external_validators(token)
+                if request.state.user is None:
+                    # Record why local validation failed so a downstream
+                    # permission denial can distinguish an EXPIRED token (→ the
+                    # frontend should refresh) from an invalid/absent one (→
+                    # re-login), instead of collapsing both to AUTH_TOKEN_MISSING.
+                    request.state.auth_error = (
+                        ErrorCode.AUTH_TOKEN_EXPIRED
+                        if isinstance(exc, TokenExpiredError)
+                        else ErrorCode.AUTH_TOKEN_INVALID
+                    )
 
         return await call_next(request)
 

@@ -11,7 +11,7 @@ How to generate and iterate on all backend components using zeeb_agents tools.
 > dedicated tool that generates valid, correctly-imported, correctly-wired
 > code. **Do not hand-write `views.py`/`urls.py` (or `@router.get(...)`
 > wrappers) with `{prefix}write_file`.** Use `{prefix}create_route` /
-> `{prefix}add_viewset_action` and pass your implementation via their `body=`
+> `{prefix}create_action` and pass your implementation via their `body=`
 > argument. Reserve `{prefix}write_file` for files no tool covers. The argument
 > names and types below are exact — copy them verbatim. When unsure, call
 > `{prefix}list_capabilities(include_docstrings=True)` for the authoritative
@@ -59,7 +59,7 @@ or `"self"`.
 ### Creating Models
 
 ```
-{prefix}create_model(app="shop", model_name="Product", fields=[
+{prefix}create_model(app="shop", name="Product", fields=[
     {"name": "name",        "type": "CharField",   "max_length": 200},
     {"name": "price",       "type": "DecimalField","max_digits": 10, "decimal_places": 2},
     {"name": "stock",       "type": "IntegerField","default": 0},
@@ -77,7 +77,7 @@ The `meta=` dict supports the full `class Meta` surface — values are emitted
 as Python literals, so nested structures work:
 
 ```
-{prefix}create_model(app="shop", model_name="Product", fields=[...], meta={
+{prefix}create_model(app="shop", name="Product", fields=[...], meta={
     "table_name": "shop_products",
     "ordering": ["-created_at"],
     "unique_together": [["name", "category"]],
@@ -97,15 +97,15 @@ suggestions before anything is written.
 {prefix}list_models()
 # result.data["models"] — list of {"app", "model", "fields"} across all apps
 
-{prefix}get_model_json_schema(app="shop", model_name="Product")
+{prefix}get_model_json_schema(app="shop", model="Product")
 # result.data["schema"] — JSON Schema dict usable for validation / SDK gen
 ```
 
 ## Migrations
 
 ```
-{prefix}make_migrations()                 # auto-detect changes across all apps
-{prefix}make_migrations(name="add_stock")  # optional human-readable suffix
+{prefix}create_migration()                 # auto-detect changes across all apps
+{prefix}create_migration(name="add_stock")  # optional human-readable suffix
 
 {prefix}run_migrations()
 
@@ -118,17 +118,17 @@ suggestions before anything is written.
 ## Serializers
 
 Zeeb serializers are Pydantic-like classes that validate and serialize data.
-The model argument is named `model_name` (not `model`).
+The model argument is named `model` (not `model_name`).
 
 ```
 # Generate serializer from model fields (defaults to all fields)
-{prefix}create_serializer(app="shop", model_name="Product")
+{prefix}create_serializer(app="shop", model="Product")
 
 # Override which fields to expose
-{prefix}create_serializer(app="shop", model_name="Product", fields=["id", "name", "price"])
+{prefix}create_serializer(app="shop", model="Product", fields=["id", "name", "price"])
 
 # Add/replace fields later
-{prefix}update_serializer(app="shop", model_name="Product", fields=["id", "name", "price", "stock"])
+{prefix}update_serializer(app="shop", model="Product", fields=["id", "name", "price", "stock"])
 ```
 
 ### Declared fields, nested serializers, validation stubs
@@ -140,7 +140,7 @@ The model argument is named `model_name` (not `model`).
 
 ```
 {prefix}create_serializer(
-    app="shop", model_name="Product",
+    app="shop", model="Product",
     fields=["id", "name", "price"],
     extra_fields=[
         {"name": "display_name", "type": "SerializerMethodField"},
@@ -161,12 +161,12 @@ through as literals.
 
 ## ViewSets
 
-The model argument is named `model_name`. Permissions default to
-`IsAuthenticatedOrReadOnly` — override with `permission=`.
+The model argument is named `model`. Permissions default to
+`IsAuthenticatedOrReadOnly` — override with `permissions=` (a list).
 
 ```
-{prefix}create_viewset(app="shop", model_name="Product")
-{prefix}create_viewset(app="shop", model_name="Order", permission="IsAuthenticated")
+{prefix}create_viewset(app="shop", model="Product")
+{prefix}create_viewset(app="shop", model="Order", permissions=["IsAuthenticated"])
 ```
 
 ### ViewSet options — pagination, throttling, search, ordering, filters
@@ -176,7 +176,7 @@ matching imports:
 
 ```
 {prefix}create_viewset(
-    app="shop", model_name="Product",
+    app="shop", model="Product",
     read_only=False,                      # True → ReadOnlyModelViewSet (query/list/retrieve only)
     lookup_field="slug",                  # detail lookups by slug instead of id
     pagination="page",                    # "page" | "limit_offset" | "cursor"
@@ -190,13 +190,13 @@ matching imports:
 Update an existing viewset with the same option names:
 
 ```
-{prefix}update_viewset(app="shop", model_name="Product", permission="IsAdminUser", pagination="cursor")
+{prefix}update_viewset(app="shop", model="Product", permission="IsAdminUser", pagination="cursor")
 ```
 
 ### FilterSets (query-parameter filtering)
 
 ```
-{prefix}create_filterset(app="shop", model_name="Product", filter_fields={"price": ["gte", "lte"], "status": ["exact", "in"]})
+{prefix}create_filterset(app="shop", model="Product", filter_fields={"price": ["gte", "lte"], "status": ["exact", "in"]})
 # → apps/shop/filters.py with ProductFilter; accepts ?price__gte=10&price__lte=50
 ```
 
@@ -205,13 +205,14 @@ startswith, istartswith, endswith, iendswith, isnull. Attach with
 `create_viewset(filterset="ProductFilter")` or
 `update_viewset(..., search_fields=...)`.
 
-Add a custom action (extra routed endpoint on the ViewSet). `action_name` is
-also the URL segment — this scaffolds `POST /products/{id}/restock/`. Pass the
+Add a custom action (extra routed endpoint on the ViewSet). Identify the target
+ViewSet with `viewset=` (e.g. `ProductViewSet`); the action `name` is also the
+URL segment — this scaffolds `POST /products/{id}/restock/`. Pass the
 implementation via `body=` (flush-left or indented; it is normalized for you):
 
 ```
-{prefix}add_viewset_action(
-    app="shop", model_name="Product", action_name="restock",
+{prefix}create_action(
+    app="shop", viewset="ProductViewSet", name="restock",
     detail=True, methods=["post"],
     body="""
         product = await self.get_object()
@@ -237,7 +238,7 @@ wrapper yourself. Put the logic in `body=` and declare any imports it needs in
 ```
 {prefix}create_route(
     app="shop", path="/products/featured", method="get",
-    function_name="get_featured_products",
+    name="get_featured_products",
     imports=["from .models import Product"],
     body="""
         products = await Product.objects.filter(featured=True).all()
@@ -264,7 +265,7 @@ exception classes from `zeeb_api.exceptions` — never an ad-hoc
 ```
 {prefix}create_route(
     app="shop", path="/products/{product_id}/discount", method="post",
-    function_name="apply_discount",
+    name="apply_discount",
     imports=[
         "from .models import Product",
         "from zeeb_api.exceptions import ResourceNotFoundException, ValidationException",
@@ -293,11 +294,11 @@ docs; the client-side view is in `mcp://docs/frontend-generation`.
 ## Full CRUD in One Call
 
 `{prefix}generate_crud` runs model + serializer + viewset + route registration
-in one shot. It takes `model_name` and a **required** `fields` list (same field
+in one shot. It takes `model` and a **required** `fields` list (same field
 spec dicts as `create_model`); run migrations afterwards.
 
 ```
-{prefix}generate_crud(app="shop", model_name="Product", fields=[
+{prefix}generate_crud(app="shop", model="Product", fields=[
     {"name": "name",  "type": "CharField",    "max_length": 200},
     {"name": "price", "type": "DecimalField", "max_digits": 10, "decimal_places": 2},
     {"name": "stock", "type": "IntegerField", "default": 0},
@@ -344,7 +345,7 @@ spec dicts as `create_model`); run migrations afterwards.
 # {prefix}edit_signal_receiver(app="shop", function_name="on_product_saved", new_body="...")
 
 # See which signals are connected to a model
-{prefix}list_model_signals(app="shop", model_name="Product")
+{prefix}list_signal_receivers(app="shop")
 ```
 
 Signals fire automatically in `Model.save()` / `Model.delete()`:
@@ -388,7 +389,7 @@ Available `logic` presets: `deny_all`, `allow_all`, `owner_only`, `staff_only`, 
 ## Seed Data
 
 ```
-{prefix}generate_seed_script(app="shop", models=["Product", "Category"], count=20)
-# Writes seeds/shop_seed.py — run independently:
-# python seeds/shop_seed.py
+{prefix}seed_data(app="shop", model="Product", count=20)
+# Optional: field_defaults={...} to pin specific column values.
+# Call once per model you want to populate.
 ```

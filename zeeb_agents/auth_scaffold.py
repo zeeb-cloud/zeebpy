@@ -10,6 +10,7 @@ from zeeb_agents._utils import AgentResult, agent_function
 from zeeb_agents._utils.code_gen import (
     append_block,
     class_exists,
+    ensure_asgi_middleware,
     ensure_import,
     ensure_middleware,
     find_settings_file,
@@ -82,9 +83,10 @@ async def setup_auth(
         already_wired (bool): inverse of ``wired`` — present for idempotent
             re-runs
         settings_updated (list[str]): settings keys written — includes
-            ``"MIDDLEWARE"`` when the auth middleware was newly installed and
-            the JWT lifetime keys when those args were given (empty when
-            nothing changed)
+            ``"MIDDLEWARE"`` when the auth middleware was newly installed,
+            ``"asgi.py"`` when a stale ``asgi.py`` was repaired to apply
+            ``MIDDLEWARE``, and the JWT lifetime keys when those args were given
+            (empty when nothing changed)
 
     Notes:
         - Idempotent: an existing ``create_auth_router`` include leaves
@@ -92,6 +94,11 @@ async def setup_auth(
           ``success=True``). The ``MIDDLEWARE`` install is also idempotent, so
           re-running ``setup_auth`` repairs a project whose ViewSets 403 with a
           valid token because ``JWTAuthMiddleware`` was missing.
+        - Repairs both halves of that bug: it adds ``JWTAuthMiddleware`` to
+          ``settings.MIDDLEWARE`` *and* injects the apply-loop into ``asgi.py``
+          when a pre-fix project imports ``MIDDLEWARE`` but never installs it
+          (a hand-customized ``asgi.py`` with an unrecognized layout is left
+          untouched).
         - Fails with ``error_code="file_not_found"`` when the project
           ``settings.py``/``urls.py`` cannot be located.
         - Remember to set a real ``JWT_SECRET_KEY`` (e.g. via
@@ -127,6 +134,13 @@ async def setup_auth(
         # Idempotent, so re-running setup_auth repairs a project missing it.
         if ensure_middleware(settings_path, "zeeb_api.middleware.JWTAuthMiddleware"):
             updated.append("MIDDLEWARE")
+
+        # settings.MIDDLEWARE alone is inert unless asgi.py actually applies it.
+        # Projects scaffolded before the middleware-apply fix import MIDDLEWARE
+        # but never install it, so the middleware above would stay dead. Repair
+        # the asgi.py apply-loop too (idempotent; skips a customized asgi.py).
+        if ensure_asgi_middleware(settings_path.parent / "asgi.py"):
+            updated.append("asgi.py")
 
         jwt_updates = {
             "JWT_ACCESS_TOKEN_EXPIRE_MINUTES": access_token_minutes,

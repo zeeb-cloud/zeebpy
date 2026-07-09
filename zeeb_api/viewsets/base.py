@@ -75,23 +75,53 @@ class ViewSet(metaclass=ViewSetMeta):
             return [permission() for permission in self._action_permission_classes]
         return [permission() for permission in self.permission_classes]
     
+    def _deny(self, request: Request, message: str | None) -> None:
+        """Raise 401 when the caller is unauthenticated, else 403.
+
+        A failed permission check means one of two very different things to a
+        client: "log in / refresh your token" (401) or "you may not do this"
+        (403). Distinguishing them lets a frontend branch correctly (the
+        documented flow refreshes on 401, shows a no-access state on 403).
+        We follow DRF's heuristic: no authenticated user on the request →
+        AuthenticationException (401); otherwise PermissionDenied (403).
+        """
+        from zeeb_api.exceptions import (
+            AuthenticationException,
+            ErrorCode,
+            PermissionDenied,
+        )
+
+        user = getattr(request.state, "user", None)
+        authenticated = user is not None and getattr(user, "is_authenticated", True)
+        if not authenticated:
+            # If JWTAuthMiddleware recorded *why* the token failed, preserve it:
+            # an expired token should tell the client to refresh, not re-login.
+            auth_error = getattr(request.state, "auth_error", None)
+            if auth_error == ErrorCode.AUTH_TOKEN_EXPIRED:
+                raise AuthenticationException(
+                    code=ErrorCode.AUTH_TOKEN_EXPIRED, message="Token has expired"
+                )
+            if auth_error == ErrorCode.AUTH_TOKEN_INVALID:
+                raise AuthenticationException(
+                    code=ErrorCode.AUTH_TOKEN_INVALID,
+                    message="Invalid authentication token",
+                )
+            raise AuthenticationException(
+                message=message or "Authentication credentials were not provided"
+            )
+        raise PermissionDenied(message or "Permission denied")
+
     async def check_permissions(self, request: Request) -> None:
         """Check if the request should be permitted."""
         for permission in self.get_permissions():
             if not await permission.has_permission(request, self):
-                from zeeb_api.exceptions import PermissionDenied
-                raise PermissionDenied(
-                    getattr(permission, "message", "Permission denied")
-                )
-    
+                self._deny(request, getattr(permission, "message", None))
+
     async def check_object_permissions(self, request: Request, obj: Any) -> None:
         """Check if the request should be permitted for a specific object."""
         for permission in self.get_permissions():
             if not await permission.has_object_permission(request, self, obj):
-                from zeeb_api.exceptions import PermissionDenied
-                raise PermissionDenied(
-                    getattr(permission, "message", "Permission denied")
-                )
+                self._deny(request, getattr(permission, "message", None))
 
     def get_throttles(self) -> list[BaseThrottle]:
         """
