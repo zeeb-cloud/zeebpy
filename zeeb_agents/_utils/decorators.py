@@ -39,6 +39,7 @@ def agent_function(
     *,
     resolve_project: bool = True,
     optional_project: bool = False,
+    resolve_project_root: bool | None = None,
 ) -> Callable[[_AgentFunc], _AgentFunc]: ...
 
 
@@ -47,6 +48,7 @@ def agent_function(
     *,
     resolve_project: bool = True,
     optional_project: bool = False,
+    resolve_project_root: bool | None = None,
 ) -> Any:
     """Wrap an async agent function with uniform error handling + the id seam.
 
@@ -74,8 +76,12 @@ def agent_function(
       ``AgentResult``.  :class:`AgentResult` return values pass through unchanged.
 
     Usable bare (``@agent_function``) or with keywords
-    (``@agent_function(resolve_project=False)``).
+    (``@agent_function(resolve_project=False)``).  ``resolve_project_root`` is a
+    deprecated alias for ``resolve_project`` kept for callers written against the
+    pre-seam signature (notably ``django_agents``, which reuses this decorator).
     """
+    if resolve_project_root is not None:
+        resolve_project = resolve_project_root
 
     def decorate(fn: _AgentFunc) -> _AgentFunc:
         signature = inspect.signature(fn)
