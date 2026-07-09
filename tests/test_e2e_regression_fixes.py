@@ -16,7 +16,11 @@ import sys
 import pytest
 
 import zeeb_agents as agents
-from zeeb_agents._utils.code_gen import extract_model_names, render_serializer_class
+from zeeb_agents._utils.code_gen import (
+    ensure_asgi_middleware,
+    extract_model_names,
+    render_serializer_class,
+)
 from zeeb_agents._utils.field_types import render_field_line, validate_field_spec
 from zeeb_agents._utils.errors import AgentError
 from zeeb_orm.models.base import _model_registry, metadata
@@ -306,3 +310,107 @@ def test_asgi_template_applies_middleware_and_health():
     assert "app.add_middleware(middleware_cls)" in rendered
     assert '@app.get("/health"' in rendered
     assert '@app.get("/ready"' in rendered
+
+
+# ---------------------------------------------------------------------------
+# Viewset permission enforcement: an unauthenticated caller gets 401 (so a
+# frontend refreshes its token), an authenticated-but-forbidden caller gets
+# 403 — previously both were collapsed to 403.
+# ---------------------------------------------------------------------------
+
+
+async def test_check_permissions_401_for_unauthenticated_403_for_forbidden():
+    import types
+
+    from zeeb_api.exceptions import (
+        AuthenticationException,
+        ErrorCode,
+        PermissionDenied,
+    )
+    from zeeb_api.permissions.base import IsAdminUser, IsAuthenticated
+    from zeeb_api.viewsets.base import ViewSet
+
+    def _req(user, method="GET", auth_error=None):
+        state = types.SimpleNamespace(user=user)
+        if auth_error is not None:
+            state.auth_error = auth_error
+        return types.SimpleNamespace(state=state, method=method)
+
+    class _AuthVS(ViewSet):
+        permission_classes = [IsAuthenticated]
+
+    with pytest.raises(AuthenticationException) as unauth:
+        await _AuthVS().check_permissions(_req(None))
+    assert unauth.value.status_code == 401
+    assert unauth.value.code == ErrorCode.AUTH_TOKEN_MISSING
+
+    # An expired token (middleware recorded the reason) → 401 AUTH_TOKEN_EXPIRED
+    # so the frontend refreshes instead of forcing a re-login.
+    with pytest.raises(AuthenticationException) as expired:
+        await _AuthVS().check_permissions(_req(None, auth_error=ErrorCode.AUTH_TOKEN_EXPIRED))
+    assert expired.value.status_code == 401
+    assert expired.value.code == ErrorCode.AUTH_TOKEN_EXPIRED
+
+    class _AdminVS(ViewSet):
+        permission_classes = [IsAdminUser]
+
+    non_admin = types.SimpleNamespace(
+        is_authenticated=True, is_staff=False, is_admin=False, is_superuser=False
+    )
+    with pytest.raises(PermissionDenied) as forbidden:
+        await _AdminVS().check_permissions(_req(non_admin, method="POST"))
+    assert forbidden.value.status_code == 403
+
+
+# ---------------------------------------------------------------------------
+# setup_auth repair: a project scaffolded before the middleware-apply fix has
+# an asgi.py that imports MIDDLEWARE but never installs it (JWTAuthMiddleware
+# inert -> ViewSets 403 with a valid token). ensure_asgi_middleware repairs it
+# idempotently and leaves an unrecognized asgi.py untouched.
+# ---------------------------------------------------------------------------
+
+
+_STALE_ASGI = '''from fastapi import FastAPI
+
+from demo.settings import MIDDLEWARE, API_PREFIX
+from demo.urls import get_routes
+
+
+def create_app() -> FastAPI:
+    app = FastAPI()
+
+    for route in get_routes():
+        app.include_router(route, prefix=API_PREFIX)
+
+    return app
+
+
+app = create_app()
+'''
+
+
+def test_ensure_asgi_middleware_repairs_stale_project(tmp_path: Path):
+    asgi = tmp_path / "asgi.py"
+    asgi.write_text(_STALE_ASGI, encoding="utf-8")
+
+    assert ensure_asgi_middleware(asgi) is True
+    repaired = asgi.read_text(encoding="utf-8")
+    assert "for middleware_path in reversed(MIDDLEWARE):" in repaired
+    assert "app.add_middleware(middleware_cls)" in repaired
+    # The apply-loop must sit before the route include, and still compile.
+    assert repaired.index("app.add_middleware(middleware_cls)") < repaired.index(
+        "for route in get_routes():"
+    )
+    compile(repaired, "asgi.py", "exec")
+
+    # Idempotent: a second pass is a no-op.
+    assert ensure_asgi_middleware(asgi) is False
+
+
+def test_ensure_asgi_middleware_leaves_unrecognized_file_untouched(tmp_path: Path):
+    # No recognizable route-include anchor -> return None, do not corrupt.
+    custom = tmp_path / "asgi.py"
+    original = "from demo.settings import MIDDLEWARE\n\napp = build_my_own_app(MIDDLEWARE)\n"
+    custom.write_text(original, encoding="utf-8")
+    assert ensure_asgi_middleware(custom) is None
+    assert custom.read_text(encoding="utf-8") == original

@@ -502,6 +502,58 @@ def ensure_middleware(settings_path: Path, dotted_path: str) -> bool:
     return True
 
 
+_ASGI_MIDDLEWARE_MARKER = "app.add_middleware(middleware_cls)"
+
+
+def ensure_asgi_middleware(asgi_path: Path) -> bool | None:
+    """Ensure a project's ``asgi.py`` actually applies ``settings.MIDDLEWARE``.
+
+    Projects scaffolded before the middleware-apply fix import ``MIDDLEWARE``
+    but never install it, so ``JWTAuthMiddleware`` is inert: ``request.state.user``
+    is never set and every protected ViewSet 403s even with a valid Bearer
+    token. Editing ``settings.MIDDLEWARE`` alone cannot fix that — the loop that
+    reads it lives in ``asgi.py``. This injects the standard apply-loop right
+    before the ``for route in get_routes():`` include.
+
+    Returns ``True`` when the loop was injected, ``False`` when it was already
+    present (idempotent), and ``None`` when the file is absent or its structure
+    was not recognized — in which case it is left untouched, so a hand-customized
+    ``asgi.py`` is never corrupted.
+    """
+    if not asgi_path.exists():
+        return None
+    content = asgi_path.read_text(encoding="utf-8")
+    if _ASGI_MIDDLEWARE_MARKER in content:
+        return False  # already applies MIDDLEWARE
+    if "MIDDLEWARE" not in content:
+        return None  # no MIDDLEWARE symbol to apply — unrecognized layout
+    lines = content.splitlines(keepends=True)
+    anchor = next(
+        (i for i, ln in enumerate(lines) if re.match(r"^\s*for route in get_routes\(\):", ln)),
+        None,
+    )
+    if anchor is None:
+        return None  # unrecognized create_app() body — do not touch
+    indent = re.match(r"^(\s*)", lines[anchor]).group(1)
+    block = [
+        f"{indent}# Apply MIDDLEWARE from settings (CORS is handled explicitly above).\n",
+        f"{indent}# Without this, entries like JWTAuthMiddleware are never installed and\n",
+        f"{indent}# request.state.user stays unset for every protected ViewSet.\n",
+        f"{indent}import importlib\n",
+        "\n",
+        f"{indent}for middleware_path in reversed(MIDDLEWARE):\n",
+        f'{indent}    if middleware_path == "zeeb_api.middleware.CORSMiddleware":\n',
+        f"{indent}        continue\n",
+        f'{indent}    module_name, _, class_name = middleware_path.rpartition(".")\n',
+        f"{indent}    middleware_cls = getattr(importlib.import_module(module_name), class_name)\n",
+        f"{indent}    app.add_middleware(middleware_cls)\n",
+        "\n",
+    ]
+    lines[anchor:anchor] = block
+    asgi_path.write_text("".join(lines), encoding="utf-8")
+    return True
+
+
 def class_exists(content: str, class_name: str) -> bool:
     """Return True if a class named *class_name* is defined in *content*."""
     return bool(re.search(rf"^class {re.escape(class_name)}\b", content, re.MULTILINE))

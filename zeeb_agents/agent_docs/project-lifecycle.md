@@ -9,7 +9,7 @@ End-to-end guide for creating, developing, and running a Zeeb BaaS project.
 ## Step 1 — Create the Project
 
 ```
-{prefix}create_project(name="my_api", directory=".")
+{prefix}create_project(name="my_api")
 ```
 Creates: `my_api/manage.py`, `my_api/my_api/settings.py`, `my_api/my_api/urls.py`, etc.
 (the inner package is named after the project, e.g. `my_api/my_api/`).
@@ -36,7 +36,7 @@ INSTALLED_APPS = [
 ## Step 3 — Define Models
 
 ```
-{prefix}create_model(app="blog", model_name="Post", fields=[
+{prefix}create_model(app="blog", name="Post", fields=[
     {"name": "title",      "type": "CharField",    "max_length": 200},
     {"name": "slug",       "type": "SlugField",    "unique": True},
     {"name": "body",       "type": "TextField"},
@@ -47,7 +47,7 @@ INSTALLED_APPS = [
 
 Add relationships:
 ```
-{prefix}add_relationship(app="blog", model_name="Post", rel={
+{prefix}add_relationship(app="blog", model="Post", rel={
     "name": "author",
     "type": "ForeignKey",
     "to": "User",
@@ -59,7 +59,7 @@ Add relationships:
 ## Step 4 — Run Migrations
 
 ```
-{prefix}make_migrations()
+{prefix}create_migration()
 {prefix}run_migrations()
 ```
 
@@ -77,7 +77,7 @@ serializer + viewset + route) in one call — `fields` is required and creates t
 model for you, so use this *instead of* Step 3 for that model:
 
 ```
-{prefix}generate_crud(app="blog", model_name="Post", fields=[
+{prefix}generate_crud(app="blog", model="Post", fields=[
     {"name": "title", "type": "CharField", "max_length": 200},
     {"name": "body",  "type": "TextField"},
 ])
@@ -85,11 +85,11 @@ model for you, so use this *instead of* Step 3 for that model:
 ```
 
 When the model already exists (as in Step 3 above), build the API piece by
-piece — note `model_name=` and `url_prefix=`:
+piece — `create_viewset` also registers the route in `urls.py`; set the URL
+segment with `prefix=`:
 ```
-{prefix}create_serializer(app="blog", model_name="Post")
-{prefix}create_viewset(app="blog", model_name="Post")
-{prefix}register_route(app="blog", model_name="Post", url_prefix="posts")
+{prefix}create_serializer(app="blog", model="Post")
+{prefix}create_viewset(app="blog", model="Post", prefix="posts")
 ```
 
 ## Step 6 — Configure Auth & Permissions
@@ -105,25 +105,28 @@ piece — note `model_name=` and `url_prefix=`:
 {prefix}create_user(email="admin@example.com", password="admin123", is_superuser=True)
 ```
 
-## Step 8 — Start the Dev Server
+## Step 8 — Preview the API
+
+The preview runtime is always-on and platform-managed — you do not start a dev
+server. After a change, fetch the live URLs and re-read the OpenAPI contract:
 
 ```
-{prefix}start_server(addrport="127.0.0.1:8000")
-# Docs available at http://localhost:8000/docs
+{prefix}get_project_reference(project_id="…")   # preview_url, runtime_api_base_url, openapi_url
+{prefix}get_openapi_url(project_id="…")          # the live OpenAPI URL to build the frontend against
 ```
 
 ## Step 9 — Seed Sample Data
 
 ```
-{prefix}generate_seed_script(app="blog", count=10)
-# Writes seeds/blog_seed.py — run with: python seeds/blog_seed.py
+{prefix}seed_data(app="blog", model="Post", count=10)
+# Call once per model; optional field_defaults={...} pins specific values.
 ```
 
 ## Step 10 — Iterate
 
 ```
-{prefix}add_field(app="blog", model_name="Post", field={"name": "views", "type": "IntegerField", "default": 0})
-{prefix}make_migrations()       # detects changes across all apps
+{prefix}add_field(app="blog", model="Post", field={"name": "views", "type": "IntegerField", "default": 0})
+{prefix}create_migration()       # detects changes across all apps
 {prefix}run_migrations()
 ```
 

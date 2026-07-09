@@ -66,7 +66,7 @@ Rules you can rely on:
   machine-readable codes (`AUTH_*`, `PERM_*`, `FIELD_*`, `RESOURCE_*`,
   `QUERY_*`, `RATE_LIMIT_*`, `SERVER_*`, …). Code you generate *into* the
   project (e.g. `body=` of `{prefix}create_route` /
-  `{prefix}add_viewset_action`) should raise `zeeb_api.exceptions` classes so
+  `{prefix}create_action`) should raise `zeeb_api.exceptions` classes so
   responses stay in that envelope — see `mcp://docs/backend-generation` for
   raising them and `mcp://docs/frontend-generation` for handling them
   client-side.
@@ -136,17 +136,16 @@ Two tools are deliberately sandboxed:
 |---|---|
 | `{prefix}read_logs(level=...)` | `level` matches the log level as a whole token / `[LEVEL]` tag — it will not match it as an incidental substring of another word. |
 | `{prefix}create_route(path=..., body=..., imports=...)` | Writes a FastAPI `@router.<method>` handler to `views.py` on a `router = APIRouter()` (FastAPI's `APIRouter` — `zeeb_api` exposes **no** `Router`) **and** auto-includes it into `urls.py` so it is served. Pass the implementation in `body=` and any imports it needs in `imports=` — don't `write_file` the wrapper. `{name}` segments in the path (e.g. `/items/{item_id}`) are auto-extracted as typed `str` handler params; the handler always gets a typed `request: Request`. |
-| `{prefix}add_viewset_action(body=...)` | Adds a routed `@action` method to an existing ViewSet. Pass the method implementation in `body=`; the action name doubles as the URL segment. |
+| `{prefix}create_action(viewset=..., name=...)` | Scaffolds a routed `@action` method on an existing ViewSet (named by `viewset=`, e.g. `PostViewSet`). `detail=True` operates on one object (`/posts/{id}/<name>/`), `detail=False` on the collection; the action `name` doubles as the URL segment. |
 | `{prefix}get_env` | Returns `success=False` when there is **no `.env` file** (the returned `env` dict is empty). A missing file is reported as a failure, not an empty success. |
-| `{prefix}make_migrations` | Returns `success=True` even when there are **no changes** to migrate (`data["created"]` is then `None`). "Nothing to do" is success. |
+| `{prefix}create_migration` | Returns `success=True` even when there are **no changes** to migrate (`data["created"]` is then `None`). "Nothing to do" is success. |
 | `{prefix}manage_settings` | Dual-mode: pass only `key` (or `read_only=True`) to **read**; pass `key` + `value` to **write**. Both modes return `data={"key": ..., "value": ...}`. |
-| `{prefix}replace_model_fields` | **Destructive** — replaces *all* fields on the model (`class Meta` is preserved). Use `{prefix}add_field` / `{prefix}remove_field` for incremental edits. |
+| `{prefix}add_field` / `{prefix}remove_field` | Incremental model edits — add or drop a single field in place, leaving the rest of the model (and `class Meta`) untouched. |
 | `{prefix}generate_crud` | Best-effort: on partial failure it returns `success=False` with `data["steps_completed"]` and `data["errors"]` so you can see how far it got. |
-| `{prefix}export_openapi` | Needs the dev server running (it fetches the live spec over HTTP). Start it with `{prefix}start_server` first; failure carries `error_code="server_not_reachable"`. |
+| `{prefix}export_openapi` | Writes a static copy of the OpenAPI spec into the project tree. For the live contract prefer `{prefix}get_openapi_url` / `{prefix}get_project_reference` — the preview runtime is always-on and platform-managed, so you do not (and cannot) start a dev server yourself. |
 | Field specs — relations | `ForeignKey` / `OneToOneField` / `ManyToManyField` specs **require `"to"`** (the target model name); `on_delete="SET_NULL"` requires `null=True`; M2M rejects `on_delete`/`null` but accepts `through`/`through_fields`. Invalid specs are rejected *before* anything is written. |
 | Field specs — the `"raw"` escape hatch | Any field-spec value must be a plain literal (str/num/bool/None/list/tuple/dict). For validators, callables, or other arbitrary Python, use the reserved `"raw"` key: a dict of kwarg name → verbatim source, e.g. `{"name": "score", "type": "IntegerField", "raw": {"validators": "[validators.MinValueValidator(0)]"}}`. Raw entries win over same-named plain keys; `from zeeb_orm import validators` is imported automatically when referenced. |
 | `{prefix}setup_auth` / `{prefix}setup_oauth` | Idempotent wiring: re-running reports `already_wired=True` instead of duplicating includes. OAuth credentials are read from env vars (`data["client_id_env"]` / `data["client_secret_env"]`) — set them with `{prefix}set_env`. |
-| `{prefix}start_server` | Server output goes to `.zeeb_server.log` in the project root; an immediate exit returns the last log lines in `data["output"]`. |
 
 ## 6. Framework concepts a coding agent needs
 
@@ -171,25 +170,28 @@ The normal order to build a resource end-to-end:
 3. `{prefix}create_serializer(...)` — a DRF-style `ModelSerializer` in
    `serializers.py`.
 4. `{prefix}create_viewset(...)` — a `ModelViewSet` (CRUD) in `views.py`.
-5. `{prefix}register_route(...)` — wire the ViewSet into routing (see below).
-6. `{prefix}make_migrations()` then `{prefix}run_migrations()` — apply schema.
+   This step also wires the ViewSet into `apps/<app>/urls.py` for you (see below);
+   there is no separate route-registration call.
+5. `{prefix}create_migration()` then `{prefix}run_migrations()` — apply schema.
 
-`{prefix}generate_crud(...)` does steps 2–5 in one shot; you still run the
-migrations afterwards.
+`{prefix}generate_crud(...)` does the model + serializer + viewset (with routing)
+in one shot; you still run the migrations afterwards.
 
 ### How URLs get registered
 
 Routing is two-tiered, mirroring Django:
 
-- `{prefix}register_route(app, model_name, url_prefix=None)` appends
+- `{prefix}create_viewset(...)` (and `{prefix}generate_crud(...)`) appends
   `router.register("<prefix>", <Model>ViewSet)` to **`apps/<app>/urls.py`** and
-  ensures the ViewSet is imported there. `url_prefix` defaults to the app name.
+  ensures the ViewSet is imported there — route registration is automatic, there
+  is no separate register-route tool. Override the URL segment with the
+  `prefix=` argument (it defaults to the lowercase model name + `s`).
 - The app's router is in turn included by the **project's `myproject/urls.py`**,
   which mounts each app and the auth routes. A `ModelViewSet` registered this
   way exposes the full CRUD set plus a `POST /<prefix>/query/` endpoint that
   accepts serialized `Q` filter strings.
 - For a single function endpoint instead of a ViewSet, use
-  `{prefix}create_route(app, path, method, function_name, body=..., imports=...)`.
+  `{prefix}create_route(app, path, method, name, body=..., imports=...)`.
   It appends a plain `@router.<method>(path)` handler (on a FastAPI
   `APIRouter`) to `views.py` **and** wires that router into `apps/<app>/urls.py`
   for you, so the endpoint is served once the app router is included by the
@@ -248,8 +250,8 @@ emits valid, correctly-imported, correctly-wired code:
 |---|---|---|
 | a model / field / relation | `{prefix}create_model` / `{prefix}add_field` / `{prefix}add_relationship` | editing `models.py` |
 | a serializer | `{prefix}create_serializer` / `{prefix}update_serializer` | editing `serializers.py` |
-| a CRUD ViewSet | `{prefix}create_viewset` (+ `{prefix}register_route`) | editing `views.py` / `urls.py` |
-| a custom ViewSet action | `{prefix}add_viewset_action(..., body=...)` | a hand-written `@action` |
+| a CRUD ViewSet (auto-wired into `urls.py`) | `{prefix}create_viewset` | editing `views.py` / `urls.py` |
+| a custom ViewSet action | `{prefix}create_action(viewset=..., name=...)` | a hand-written `@action` |
 | a standalone `@router.get/post` endpoint | `{prefix}create_route(..., body=..., imports=...)` | a hand-written `@router.<m>` wrapper |
 | a signal receiver | `{prefix}create_signal_receiver` (+ `{prefix}edit_signal_receiver`) | editing `signals.py` |
 | a permission class | `{prefix}create_permission_class` | editing `permissions.py` |
