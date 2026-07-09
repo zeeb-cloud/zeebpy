@@ -117,7 +117,7 @@ async def create_permission_class(
             - ``"authenticated"`` — allow any authenticated user
 
             Defaults to ``"deny_all"``.
-        project_root: Auto-detected if ``None``.
+        project_id: The host-assigned project id (required).
 
     Example::
 
@@ -198,7 +198,7 @@ async def list_permission_classes(
 
     Args:
         app: App directory name.
-        project_root: Auto-detected if ``None``.
+        project_id: The host-assigned project id (required).
 
     Returns data (on success):
         app (str): echoes *app* (omitted when ``permissions.py`` is absent)

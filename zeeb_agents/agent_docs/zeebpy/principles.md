@@ -47,13 +47,13 @@ Rules you can rely on:
 `data["error_code"]` (when present) is one of:
 
 `already_exists`, `app_not_found`, `dependency_missing`, `env_key_not_found`,
-`field_not_found`, `file_not_found`, `function_not_found`,
-`invalid_field_spec`, `invalid_field_type`, `invalid_identifier`,
-`invalid_input`, `invalid_meta`, `invalid_permission`, `invalid_regex`,
-`invalid_sql`, `log_file_not_found`, `model_not_found`, `no_project_root`,
-`no_user_table`, `outside_project_root`, `permission_denied`,
-`server_not_reachable`, `server_not_running`, `setting_not_found`,
-`table_not_found`, `user_not_found`.
+`field_not_found`, `file_not_found`, `function_not_found`, `invalid_field_spec`,
+`invalid_field_type`, `invalid_identifier`, `invalid_input`, `invalid_meta`,
+`invalid_permission`, `invalid_regex`, `invalid_sql`, `log_file_not_found`,
+`model_not_found`, `no_project_id`, `no_user_table`,
+`outside_project_root`, `permission_denied`, `project_not_found`, `runtime_not_configured`,
+`server_not_reachable`, `setting_not_found`, `table_not_found`,
+`user_not_found`.
 
 ### Two error layers — don't confuse them
 
@@ -66,7 +66,7 @@ Rules you can rely on:
   machine-readable codes (`AUTH_*`, `PERM_*`, `FIELD_*`, `RESOURCE_*`,
   `QUERY_*`, `RATE_LIMIT_*`, `SERVER_*`, …). Code you generate *into* the
   project (e.g. `body=` of `{prefix}create_route` /
-  `{prefix}create_action`) should raise `zeeb_api.exceptions` classes so
+  `{prefix}add_viewset_action`) should raise `zeeb_api.exceptions` classes so
   responses stay in that envelope — see `mcp://docs/backend-generation` for
   raising them and `mcp://docs/frontend-generation` for handling them
   client-side.
@@ -82,15 +82,16 @@ two guarantees:
    `data["error_code"]`; unexpected exceptions keep the
    `"<ErrorType>: <details>"` message format. You handle failures by
    inspecting `success`, not with `try/except`.
-2. **`project_root` is auto-resolved.** Every tool that touches a project takes
-   a trailing `project_root` argument. **You normally omit it** — when it is
-   `None`, the decorator walks up from the current working directory to find
-   the nearest directory containing `manage.py` and uses that. Pass an explicit
-   path only when operating on a project that is not under the CWD. If no
-   `manage.py` is found, the tool returns a failure `AgentResult`.
+2. **`project_id` addresses the project.** Every tool that touches a project
+   takes a trailing `project_id` — the opaque id the host assigns to a project.
+   **Always pass it.** The library resolves the id to a location through a
+   resolver the host registers (`configure(project_resolver=…)`); you never deal
+   in filesystem paths. A missing id fails with `no_project_id`; an id no
+   project is registered under fails with `project_not_found`. (Creating a
+   project is the one bootstrapping exception — see `{prefix}create_project`.)
 
-Because `project_root` is auto-resolved, `{prefix}list_capabilities()` hides it
-from the reported signatures.
+`{prefix}list_capabilities()` reports `project_id` as the trailing argument of
+each project-operating tool.
 
 ## 3. Return-shape conventions
 
@@ -136,9 +137,9 @@ Two tools are deliberately sandboxed:
 |---|---|
 | `{prefix}read_logs(level=...)` | `level` matches the log level as a whole token / `[LEVEL]` tag — it will not match it as an incidental substring of another word. |
 | `{prefix}create_route(path=..., body=..., imports=...)` | Writes a FastAPI `@router.<method>` handler to `views.py` on a `router = APIRouter()` (FastAPI's `APIRouter` — `zeeb_api` exposes **no** `Router`) **and** auto-includes it into `urls.py` so it is served. Pass the implementation in `body=` and any imports it needs in `imports=` — don't `write_file` the wrapper. `{name}` segments in the path (e.g. `/items/{item_id}`) are auto-extracted as typed `str` handler params; the handler always gets a typed `request: Request`. |
-| `{prefix}create_action(viewset=..., name=...)` | Scaffolds a routed `@action` method on an existing ViewSet (named by `viewset=`, e.g. `PostViewSet`). `detail=True` operates on one object (`/posts/{id}/<name>/`), `detail=False` on the collection; the action `name` doubles as the URL segment. |
+| `{prefix}add_viewset_action(model_name=..., action_name=...)` | Scaffolds a routed `@action` method on `<model_name>ViewSet` (e.g. `model_name="Post"` → `PostViewSet`). `detail=True` operates on one object (`/posts/{id}/<action_name>/`), `detail=False` on the collection; `action_name` doubles as the URL segment (override with `url_path=`). Wire `request_serializer=`/`response_serializer=` (or `request_schema=`/`response_schema=`) to validate and shape the body, and `permission=` for a per-action permission. |
 | `{prefix}get_env` | Returns `success=False` when there is **no `.env` file** (the returned `env` dict is empty). A missing file is reported as a failure, not an empty success. |
-| `{prefix}create_migration` | Returns `success=True` even when there are **no changes** to migrate (`data["created"]` is then `None`). "Nothing to do" is success. |
+| `{prefix}make_migrations` | Returns `success=True` even when there are **no changes** to migrate (`data["created"]` is then `None`). "Nothing to do" is success. |
 | `{prefix}manage_settings` | Dual-mode: pass only `key` (or `read_only=True`) to **read**; pass `key` + `value` to **write**. Both modes return `data={"key": ..., "value": ...}`. |
 | `{prefix}add_field` / `{prefix}remove_field` | Incremental model edits — add or drop a single field in place, leaving the rest of the model (and `class Meta`) untouched. |
 | `{prefix}generate_crud` | Best-effort: on partial failure it returns `success=False` with `data["steps_completed"]` and `data["errors"]` so you can see how far it got. |
@@ -169,10 +170,9 @@ The normal order to build a resource end-to-end:
 2. `{prefix}create_model(...)` — append a `Model` to `apps/blog/models.py`.
 3. `{prefix}create_serializer(...)` — a DRF-style `ModelSerializer` in
    `serializers.py`.
-4. `{prefix}create_viewset(...)` — a `ModelViewSet` (CRUD) in `views.py`.
-   This step also wires the ViewSet into `apps/<app>/urls.py` for you (see below);
-   there is no separate route-registration call.
-5. `{prefix}create_migration()` then `{prefix}run_migrations()` — apply schema.
+4. `{prefix}create_viewset(...)` — a `ModelViewSet` (CRUD) in `views.py`, then
+   `{prefix}register_route(...)` to mount it in `apps/<app>/urls.py` (see below).
+5. `{prefix}make_migrations()` then `{prefix}run_migrations()` — apply schema.
 
 `{prefix}generate_crud(...)` does the model + serializer + viewset (with routing)
 in one shot; you still run the migrations afterwards.
@@ -181,17 +181,19 @@ in one shot; you still run the migrations afterwards.
 
 Routing is two-tiered, mirroring Django:
 
-- `{prefix}create_viewset(...)` (and `{prefix}generate_crud(...)`) appends
+- `{prefix}create_viewset(...)` writes the ViewSet class to
+  **`apps/<app>/views.py`** but does **not** register its route. Register it with
+  `{prefix}register_route(app, model_name, url_prefix=...)`, which appends
   `router.register("<prefix>", <Model>ViewSet)` to **`apps/<app>/urls.py`** and
-  ensures the ViewSet is imported there — route registration is automatic, there
-  is no separate register-route tool. Override the URL segment with the
-  `prefix=` argument (it defaults to the lowercase model name + `s`).
+  imports the ViewSet there. The URL segment defaults to the **app name**;
+  override it with `url_prefix=`. `{prefix}generate_crud(...)` does both
+  (model + serializer + viewset + `register_route`) in one shot.
 - The app's router is in turn included by the **project's `myproject/urls.py`**,
   which mounts each app and the auth routes. A `ModelViewSet` registered this
   way exposes the full CRUD set plus a `POST /<prefix>/query/` endpoint that
   accepts serialized `Q` filter strings.
 - For a single function endpoint instead of a ViewSet, use
-  `{prefix}create_route(app, path, method, name, body=..., imports=...)`.
+  `{prefix}create_route(app, path, method, function_name, body=..., imports=...)`.
   It appends a plain `@router.<method>(path)` handler (on a FastAPI
   `APIRouter`) to `views.py` **and** wires that router into `apps/<app>/urls.py`
   for you, so the endpoint is served once the app router is included by the
@@ -250,8 +252,8 @@ emits valid, correctly-imported, correctly-wired code:
 |---|---|---|
 | a model / field / relation | `{prefix}create_model` / `{prefix}add_field` / `{prefix}add_relationship` | editing `models.py` |
 | a serializer | `{prefix}create_serializer` / `{prefix}update_serializer` | editing `serializers.py` |
-| a CRUD ViewSet (auto-wired into `urls.py`) | `{prefix}create_viewset` | editing `views.py` / `urls.py` |
-| a custom ViewSet action | `{prefix}create_action(viewset=..., name=...)` | a hand-written `@action` |
+| a CRUD ViewSet (then `{prefix}register_route`, or use `{prefix}generate_crud`) | `{prefix}create_viewset` | editing `views.py` / `urls.py` |
+| a custom ViewSet action | `{prefix}add_viewset_action(model_name=..., action_name=...)` | a hand-written `@action` |
 | a standalone `@router.get/post` endpoint | `{prefix}create_route(..., body=..., imports=...)` | a hand-written `@router.<m>` wrapper |
 | a signal receiver | `{prefix}create_signal_receiver` (+ `{prefix}edit_signal_receiver`) | editing `signals.py` |
 | a permission class | `{prefix}create_permission_class` | editing `permissions.py` |

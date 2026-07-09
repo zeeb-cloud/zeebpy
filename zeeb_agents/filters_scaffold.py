@@ -65,7 +65,7 @@ async def create_filterset(
             ``{"status": ["exact", "in"], "price": ["gte", "lte"]}``.
             Valid lookups: exact, iexact, contains, icontains, in, gt, gte,
             lt, lte, startswith, istartswith, endswith, iendswith, isnull.
-        project_root: Auto-detected if ``None``.
+        project_id: The host-assigned project id (required).
 
     Returns data (on success):
         app (str): the app name

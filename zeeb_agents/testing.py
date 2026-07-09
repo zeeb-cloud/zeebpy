@@ -45,7 +45,7 @@ async def run_tests(
         path: Path to a specific test file or directory.  Runs all tests
               in the project if ``None``.
         verbose: Pass ``-v`` to pytest for detailed output.
-        project_root: Auto-detected if ``None``.
+        project_id: The host-assigned project id (required).
 
     Returns data (always):
         passed (int), failed (int), errors (int), skipped (int): counts parsed

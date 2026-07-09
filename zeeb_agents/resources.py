@@ -41,6 +41,7 @@ import asyncio
 from pathlib import Path
 
 from zeeb_agents._utils import AgentResult, agent_function
+from zeeb_agents._utils.project import detect_framework
 
 # ---------------------------------------------------------------------------
 # URI registry
@@ -53,26 +54,27 @@ RESOURCE_URIS = {
     "backend-generation":  "mcp://docs/backend-generation",
     "frontend-generation": "mcp://docs/frontend-generation",
     "deployment":          "mcp://docs/deployment",
+    "recipes":             "mcp://docs/recipes",
+    "error-recovery":      "mcp://docs/error-recovery",
 }
 
 _MIME = "text/markdown"
 
-# agent_docs/ lives next to this file
+# agent_docs/ lives next to this file; each framework has its own subdirectory
+# (agent_docs/<framework>/<key>.md).  zeebpy is the built-in fallback set.
 _DOCS_DIR = Path(__file__).parent / "agent_docs"
-
-_DOC_FILES = {
-    "principles":          _DOCS_DIR / "principles.md",
-    "capabilities":        _DOCS_DIR / "capabilities.md",
-    "project-lifecycle":   _DOCS_DIR / "project-lifecycle.md",
-    "backend-generation":  _DOCS_DIR / "backend-generation.md",
-    "frontend-generation": _DOCS_DIR / "frontend-generation.md",
-    "deployment":          _DOCS_DIR / "deployment.md",
-}
+_FALLBACK_FRAMEWORK = "zeebpy"
 
 
-def _read_doc(key: str) -> str:
-    """Read and return a markdown doc file by key."""
-    path = _DOC_FILES[key]
+def _read_doc(key: str, framework: str = _FALLBACK_FRAMEWORK) -> str:
+    """Read a markdown doc *key* for *framework*, falling back to zeebpy.
+
+    Serves ``agent_docs/<framework>/<key>.md`` when it exists, otherwise the
+    built-in ``agent_docs/zeebpy/<key>.md``.
+    """
+    path = _DOCS_DIR / framework / f"{key}.md"
+    if not path.exists():
+        path = _DOCS_DIR / _FALLBACK_FRAMEWORK / f"{key}.md"
     return path.read_text(encoding="utf-8")
 
 
@@ -141,10 +143,11 @@ async def _build_deployment_context(project_root: Path) -> str:
 # Public resource functions
 # ---------------------------------------------------------------------------
 
-@agent_function(resolve_project_root=False)
+@agent_function(optional_project=True)
 async def get_principles_doc(
     project_root: Path | None = None,
     tool_prefix: str = "",
+    framework: str | None = None,
 ) -> AgentResult:
     """Return the operating-principles and special-cases guide.
 
@@ -159,7 +162,7 @@ async def get_principles_doc(
     Maps to MCP resource ``mcp://docs/principles``.
 
     Args:
-        project_root: When provided, a live project context section is appended.
+        project_id: When provided, a live project context section is appended.
         tool_prefix: String prepended to every ``{prefix}`` placeholder in the
             markdown.  Defaults to ``""`` (no prefix).
 
@@ -169,7 +172,8 @@ async def get_principles_doc(
         uri (str): ``"mcp://docs/principles"``.
         mime_type (str): ``"text/markdown"``.
     """
-    content = await asyncio.to_thread(_read_doc, "principles")
+    framework = framework or detect_framework(project_root)
+    content = await asyncio.to_thread(_read_doc, "principles", framework)
     content = content.replace("{prefix}", tool_prefix)
     if project_root is not None:
         content += await _build_project_context(project_root)
@@ -180,10 +184,11 @@ async def get_principles_doc(
     )
 
 
-@agent_function(resolve_project_root=False)
+@agent_function(optional_project=True)
 async def get_capabilities_doc(
     project_root: Path | None = None,
     tool_prefix: str = "",
+    framework: str | None = None,
 ) -> AgentResult:
     """Return the full `zeeb_agents` capability reference.
 
@@ -194,7 +199,7 @@ async def get_capabilities_doc(
     Maps to MCP resource ``mcp://docs/capabilities``.
 
     Args:
-        project_root: When provided, a live project context section is appended.
+        project_id: When provided, a live project context section is appended.
         tool_prefix: String prepended to every ``{prefix}`` placeholder in the
             markdown, matching the tool name prefix your MCP server uses.
             For example ``"zeeb_"`` turns ``{prefix}create_model`` into
@@ -206,7 +211,8 @@ async def get_capabilities_doc(
         uri (str): ``"mcp://docs/capabilities"``.
         mime_type (str): ``"text/markdown"``.
     """
-    content = await asyncio.to_thread(_read_doc, "capabilities")
+    framework = framework or detect_framework(project_root)
+    content = await asyncio.to_thread(_read_doc, "capabilities", framework)
     content = content.replace("{prefix}", tool_prefix)
     if project_root is not None:
         content += await _build_project_context(project_root)
@@ -217,10 +223,11 @@ async def get_capabilities_doc(
     )
 
 
-@agent_function(resolve_project_root=False)
+@agent_function(optional_project=True)
 async def get_project_lifecycle_doc(
     project_root: Path | None = None,
     tool_prefix: str = "",
+    framework: str | None = None,
 ) -> AgentResult:
     """Return the end-to-end project lifecycle guide.
 
@@ -231,7 +238,7 @@ async def get_project_lifecycle_doc(
     Maps to MCP resource ``mcp://docs/project-lifecycle``.
 
     Args:
-        project_root: When provided, current app list and migration status
+        project_id: When provided, current app list and migration status
             are appended.
         tool_prefix: String prepended to every ``{prefix}`` placeholder in the
             markdown.  Defaults to ``""`` (no prefix).
@@ -242,7 +249,8 @@ async def get_project_lifecycle_doc(
         uri (str): ``"mcp://docs/project-lifecycle"``.
         mime_type (str): ``"text/markdown"``.
     """
-    content = await asyncio.to_thread(_read_doc, "project-lifecycle")
+    framework = framework or detect_framework(project_root)
+    content = await asyncio.to_thread(_read_doc, "project-lifecycle", framework)
     content = content.replace("{prefix}", tool_prefix)
     if project_root is not None:
         content += await _build_project_context(project_root)
@@ -253,10 +261,11 @@ async def get_project_lifecycle_doc(
     )
 
 
-@agent_function(resolve_project_root=False)
+@agent_function(optional_project=True)
 async def get_backend_generation_doc(
     project_root: Path | None = None,
     tool_prefix: str = "",
+    framework: str | None = None,
 ) -> AgentResult:
     """Return the backend code-generation guide.
 
@@ -267,7 +276,7 @@ async def get_backend_generation_doc(
     Maps to MCP resource ``mcp://docs/backend-generation``.
 
     Args:
-        project_root: When provided, current app list is appended.
+        project_id: When provided, current app list is appended.
         tool_prefix: String prepended to every ``{prefix}`` placeholder in the
             markdown.  Defaults to ``""`` (no prefix).
 
@@ -277,7 +286,8 @@ async def get_backend_generation_doc(
         uri (str): ``"mcp://docs/backend-generation"``.
         mime_type (str): ``"text/markdown"``.
     """
-    content = await asyncio.to_thread(_read_doc, "backend-generation")
+    framework = framework or detect_framework(project_root)
+    content = await asyncio.to_thread(_read_doc, "backend-generation", framework)
     content = content.replace("{prefix}", tool_prefix)
     if project_root is not None:
         content += await _build_project_context(project_root)
@@ -288,10 +298,11 @@ async def get_backend_generation_doc(
     )
 
 
-@agent_function(resolve_project_root=False)
+@agent_function(optional_project=True)
 async def get_frontend_generation_doc(
     project_root: Path | None = None,
     tool_prefix: str = "",
+    framework: str | None = None,
 ) -> AgentResult:
     """Return the frontend integration guide.
 
@@ -302,7 +313,7 @@ async def get_frontend_generation_doc(
     Maps to MCP resource ``mcp://docs/frontend-generation``.
 
     Args:
-        project_root: When provided, current CORS settings and route
+        project_id: When provided, current CORS settings and route
             inventory are appended.
         tool_prefix: String prepended to every ``{prefix}`` placeholder in the
             markdown.  Defaults to ``""`` (no prefix).
@@ -313,7 +324,8 @@ async def get_frontend_generation_doc(
         uri (str): ``"mcp://docs/frontend-generation"``.
         mime_type (str): ``"text/markdown"``.
     """
-    content = await asyncio.to_thread(_read_doc, "frontend-generation")
+    framework = framework or detect_framework(project_root)
+    content = await asyncio.to_thread(_read_doc, "frontend-generation", framework)
     content = content.replace("{prefix}", tool_prefix)
     if project_root is not None:
         extra_lines: list[str] = ["\n---\n\n## Current Project State\n"]
@@ -343,10 +355,11 @@ async def get_frontend_generation_doc(
     )
 
 
-@agent_function(resolve_project_root=False)
+@agent_function(optional_project=True)
 async def get_deployment_doc(
     project_root: Path | None = None,
     tool_prefix: str = "",
+    framework: str | None = None,
 ) -> AgentResult:
     """Return the deployment guide.
 
@@ -357,7 +370,7 @@ async def get_deployment_doc(
     Maps to MCP resource ``mcp://docs/deployment``.
 
     Args:
-        project_root: When provided, the current production readiness check
+        project_id: When provided, the current production readiness check
             result is appended.
         tool_prefix: String prepended to every ``{prefix}`` placeholder in the
             markdown.  Defaults to ``""`` (no prefix).
@@ -368,7 +381,8 @@ async def get_deployment_doc(
         uri (str): ``"mcp://docs/deployment"``.
         mime_type (str): ``"text/markdown"``.
     """
-    content = await asyncio.to_thread(_read_doc, "deployment")
+    framework = framework or detect_framework(project_root)
+    content = await asyncio.to_thread(_read_doc, "deployment", framework)
     content = content.replace("{prefix}", tool_prefix)
     if project_root is not None:
         content += await _build_deployment_context(project_root)
@@ -376,6 +390,75 @@ async def get_deployment_doc(
         success=True,
         message="Deployment documentation ready.",
         data={"content": content, "uri": RESOURCE_URIS["deployment"], "mime_type": _MIME},
+    )
+
+
+@agent_function(optional_project=True)
+async def get_recipes_doc(
+    project_root: Path | None = None,
+    tool_prefix: str = "",
+    framework: str | None = None,
+) -> AgentResult:
+    """Return the copy-paste task recipes.
+
+    Reads ``zeeb_agents/agent_docs/<framework>/recipes.md``.
+    End-to-end recipes (CRUD resource, custom action, standalone route, auth,
+    seed, preview) using the exact, current tool calls.
+
+    Maps to MCP resource ``mcp://docs/recipes``.
+
+    Args:
+        project_id: When provided, a live project context section is appended.
+        tool_prefix: String prepended to every ``{prefix}`` placeholder.
+        framework: Doc set to serve; auto-detected from the project otherwise.
+
+    Returns data (on success):
+        content (str): the recipes as markdown, ``{prefix}`` substituted.
+        uri (str): ``"mcp://docs/recipes"``.
+        mime_type (str): ``"text/markdown"``.
+    """
+    framework = framework or detect_framework(project_root)
+    content = await asyncio.to_thread(_read_doc, "recipes", framework)
+    content = content.replace("{prefix}", tool_prefix)
+    if project_root is not None:
+        content += await _build_project_context(project_root)
+    return AgentResult(
+        success=True,
+        message="Recipes documentation ready.",
+        data={"content": content, "uri": RESOURCE_URIS["recipes"], "mime_type": _MIME},
+    )
+
+
+@agent_function(optional_project=True)
+async def get_error_recovery_doc(
+    project_root: Path | None = None,
+    tool_prefix: str = "",
+    framework: str | None = None,
+) -> AgentResult:
+    """Return the error-recovery playbook.
+
+    Reads ``zeeb_agents/agent_docs/<framework>/error-recovery.md``.
+    A table keyed by every ``error_code`` → what it means → the corrective call.
+
+    Maps to MCP resource ``mcp://docs/error-recovery``.
+
+    Args:
+        project_id: Accepted for uniformity; no live context is appended.
+        tool_prefix: String prepended to every ``{prefix}`` placeholder.
+        framework: Doc set to serve; auto-detected from the project otherwise.
+
+    Returns data (on success):
+        content (str): the playbook as markdown, ``{prefix}`` substituted.
+        uri (str): ``"mcp://docs/error-recovery"``.
+        mime_type (str): ``"text/markdown"``.
+    """
+    framework = framework or detect_framework(project_root)
+    content = await asyncio.to_thread(_read_doc, "error-recovery", framework)
+    content = content.replace("{prefix}", tool_prefix)
+    return AgentResult(
+        success=True,
+        message="Error-recovery documentation ready.",
+        data={"content": content, "uri": RESOURCE_URIS["error-recovery"], "mime_type": _MIME},
     )
 
 
@@ -390,14 +473,17 @@ _URI_MAP = {
     RESOURCE_URIS["backend-generation"]:  get_backend_generation_doc,
     RESOURCE_URIS["frontend-generation"]: get_frontend_generation_doc,
     RESOURCE_URIS["deployment"]:          get_deployment_doc,
+    RESOURCE_URIS["recipes"]:             get_recipes_doc,
+    RESOURCE_URIS["error-recovery"]:      get_error_recovery_doc,
 }
 
 
-@agent_function(resolve_project_root=False)
+@agent_function(resolve_project=False)
 async def get_resource(
     uri: str,
-    project_root: Path | None = None,
+    project_id: str | None = None,
     tool_prefix: str = "",
+    framework: str | None = None,
 ) -> AgentResult:
     """Fetch MCP resource content by URI.
 
@@ -415,7 +501,7 @@ async def get_resource(
 
     Args:
         uri: The ``mcp://`` resource URI.
-        project_root: Passed through to the underlying documentation function.
+        project_id: Passed through to the underlying documentation function.
             When supplied, live project context is appended to the static docs.
         tool_prefix: String prepended to every ``{prefix}`` placeholder in the
             returned markdown, matching the tool name prefix your MCP server
@@ -449,4 +535,4 @@ async def get_resource(
                 f"Available: {', '.join(sorted(_URI_MAP))}."
             ),
         )
-    return await fn(project_root, tool_prefix)
+    return await fn(project_id, tool_prefix, framework)

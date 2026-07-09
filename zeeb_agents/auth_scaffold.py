@@ -73,7 +73,7 @@ async def setup_auth(
             in ``settings.py``.
         refresh_token_days: If given, sets ``JWT_REFRESH_TOKEN_EXPIRE_DAYS``
             in ``settings.py``.
-        project_root: Auto-detected if ``None``.
+        project_id: The host-assigned project id (required).
 
     Returns data (on success):
         prefix (str): the URL prefix the auth router is mounted under
@@ -198,7 +198,7 @@ async def setup_oauth(
             Default: ``"<PROVIDER>_CLIENT_SECRET"``.
         scopes: Optional OAuth scopes to request.
         redirect_uri: If given, sets ``OAUTH_REDIRECT_URI`` in ``settings.py``.
-        project_root: Auto-detected if ``None``.
+        project_id: The host-assigned project id (required).
 
     Returns data (on success):
         provider (str): the provider name configured
@@ -337,7 +337,7 @@ async def create_user_model(
             :func:`~zeeb_agents.models.create_model`).
         set_auth_user_model: Also set ``AUTH_USER_MODEL = "<app>.<model>"`` in
             ``settings.py``.
-        project_root: Auto-detected if ``None``.
+        project_id: The host-assigned project id (required).
 
     Returns data (on success):
         app (str): the app name

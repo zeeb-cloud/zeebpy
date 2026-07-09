@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import re
-import textwrap
 from pathlib import Path
 
 from zeeb_agents._utils import AgentResult, agent_function
@@ -12,6 +11,7 @@ from zeeb_agents._utils.code_gen import (
     append_block,
     class_exists,
     ensure_import,
+    render_action_method,
     render_viewset_class,
     resolve_pagination,
     validate_permission,
@@ -81,7 +81,7 @@ async def create_viewset(
         filterset: ``FilterSet`` class name to add to ``filter_backends``
             (imported from the app's ``filters.py`` — create it with
             :func:`~zeeb_agents.filters_scaffold.create_filterset`).
-        project_root: Auto-detected if ``None``.
+        project_id: The host-assigned project id (required).
 
     Returns data (on success):
         app (str): the app directory name
@@ -181,6 +181,12 @@ async def add_viewset_action(
     detail: bool = True,
     methods: list[str] | None = None,
     body: str | None = None,
+    url_path: str | None = None,
+    request_serializer: str | None = None,
+    response_serializer: str | None = None,
+    request_schema: str | None = None,
+    response_schema: str | None = None,
+    permission: str | None = None,
     project_root: Path | None = None,
 ) -> AgentResult:
     """Append a custom ``@action`` method to an existing ViewSet.
@@ -189,11 +195,18 @@ async def add_viewset_action(
     /<prefix>/{id}/publish/`` for a detail action named ``publish``). Prefer
     this over editing ``views.py`` with ``write_file``.
 
+    Wire request/response serializers (or plain Pydantic schemas) so the
+    endpoint validates its request body and documents/shapes its response —
+    the router turns these into FastAPI request-body validation and the
+    OpenAPI ``response_model``. Inside the action, read the validated body with
+    ``self.get_action_request_body()``.
+
     Args:
         app: App directory name.
         model_name: The model whose ``<ModelName>ViewSet`` to extend.
-        action_name: Snake-case method name (e.g. ``"publish"``). Also used as
-            the URL segment (``/<prefix>/{id}/publish/``).
+        action_name: Snake-case method name (e.g. ``"publish"``). Also the
+            default URL segment (``/<prefix>/{id}/publish/``) unless *url_path*
+            overrides it.
         detail: Whether the action operates on a single instance (``pk`` in URL).
         methods: HTTP methods (default: ``["get"]``).
         body: The action implementation, as Python source. Pass the real logic
@@ -201,28 +214,50 @@ async def add_viewset_action(
             snippet is dedented and indented automatically (you may pass it
             flush-left or pre-indented) and should ``return`` a JSON-serializable
             value. The method receives ``self``, ``request`` and (for detail
-            actions) ``pk``; use ``await self.get_object()`` to load the
-            instance. When omitted, a ``pass  # TODO`` placeholder is generated.
-        project_root: Auto-detected if ``None``.
+            actions) ``pk``; use ``await self.get_object()`` to load the instance
+            and ``self.get_action_request_body()`` to read the validated request
+            body. When omitted, a serializer-aware scaffold is generated (or a
+            ``pass  # TODO`` placeholder if no serializer/schema is wired).
+        url_path: Override the URL segment (defaults to *action_name*), e.g.
+            ``"publish-now"``.
+        request_serializer: Serializer class name (from the app's
+            ``serializers.py``) used to validate the request body.
+        response_serializer: Serializer class name used for the response
+            model / OpenAPI schema.
+        request_schema: Pydantic model name (from the app's ``serializers.py``)
+            for request-body validation — an alternative to *request_serializer*.
+        response_schema: Pydantic model name for the response model — an
+            alternative to *response_serializer*.
+        permission: Per-action permission class name from
+            ``zeeb_api.permissions`` (overrides the ViewSet's class-level
+            permissions for this action only).
+        project_id: The host-assigned project id (required).
 
     Returns data (on success):
         app (str): the app directory name
         viewset (str): the target class name (``"<ModelName>ViewSet"``)
         action (str): the action method name added
+        url_path (str): the URL segment (``url_path`` or *action_name*)
+        wiring (dict): the serializer/schema/permission names that were wired
+            (only keys that were set — e.g. ``{"response_serializer": "..."}``)
 
     Notes:
         - On failure (missing ``views.py``, or the ViewSet class is not found)
-          ``data`` is ``None``.
+          ``data`` is ``None``; invalid method/permission/identifier inputs fail
+          with ``error_code`` (and ``suggestions`` for permissions).
+        - Serializer/schema classes are imported from ``.serializers`` — define
+          them in ``apps/<app>/serializers.py`` (or add the import yourself).
 
     Example::
 
         await add_viewset_action(
             "blog", "Post", "publish", detail=True, methods=["post"],
+            response_serializer="PostSerializer", permission="IsAdminUser",
             body='''
                 post = await self.get_object()
                 post.published = True
                 await post.save()
-                return {"status": "published", "id": str(post.id)}
+                return PostSerializer(post).data
             ''',
         )
     """
@@ -238,6 +273,19 @@ async def add_viewset_action(
             ),
             data={"error_code": "invalid_input"},
         )
+    if permission:
+        validate_permission(permission)
+    # Serializer/schema references must be importable class names.
+    serializer_refs = {
+        "request_serializer": request_serializer,
+        "response_serializer": response_serializer,
+        "request_schema": request_schema,
+        "response_schema": response_schema,
+    }
+    for label, ref in serializer_refs.items():
+        if ref:
+            ensure_identifier(ref, label)
+
     path = _views_file(app, project_root)
     if not path.exists():
         return AgentResult(success=False, message=f"views.py not found at {path}")
@@ -253,16 +301,17 @@ async def add_viewset_action(
                 viewset=class_name,
             )
 
-        methods_repr = ", ".join(f'"{m}"' for m in action_methods)
-        if body is None or not body.strip():
-            body_block = f"        pass  # TODO: implement {action_name}"
-        else:
-            dedented = textwrap.dedent(body).strip("\n")
-            body_block = textwrap.indent(dedented, "        ")
-        action_code = (
-            f'    @action(detail={detail}, methods=[{methods_repr}])\n'
-            f'    async def {action_name}(self, request, pk=None):\n'
-            f'{body_block}\n'
+        action_code = render_action_method(
+            action_name,
+            detail=detail,
+            methods=action_methods,
+            body=body,
+            url_path=url_path,
+            request_serializer=request_serializer,
+            response_serializer=response_serializer,
+            request_schema=request_schema,
+            response_schema=response_schema,
+            permission=permission,
         )
 
         # Insert before the end of the class body (before the next top-level
@@ -282,14 +331,28 @@ async def add_viewset_action(
         new_content = pattern.sub(_replace, content, count=1)
         path.write_text(new_content, encoding="utf-8")
         # After writing the new content — ensure_import edits the file on disk,
-        # so it must run last or the write above clobbers the added import.
+        # so imports must run last or the write above clobbers them.
         ensure_import(path, "from zeeb_api.viewsets import action")
+        if permission:
+            ensure_import(path, "from zeeb_api import viewsets, permissions")
+        for ref in serializer_refs.values():
+            if ref:
+                ensure_import(path, f"from .serializers import {ref}")
 
     await asyncio.to_thread(_insert)
+    wiring = {label: ref for label, ref in serializer_refs.items() if ref}
+    if permission:
+        wiring["permission"] = permission
     return AgentResult(
         success=True,
         message=f"Action '{action_name}' added to '{class_name}'",
-        data={"app": app, "viewset": class_name, "action": action_name},
+        data={
+            "app": app,
+            "viewset": class_name,
+            "action": action_name,
+            "url_path": url_path or action_name,
+            "wiring": wiring,
+        },
     )
 
 
@@ -341,7 +404,7 @@ async def update_viewset(
         throttles: Throttle class names from ``zeeb_api.throttling``.
         search_fields: Fields for ``?search=…`` full-text search.
         ordering_fields: Fields allowed in ``?ordering=…``.
-        project_root: Auto-detected if ``None``.
+        project_id: The host-assigned project id (required).
 
     Returns data (on success):
         app (str): the app directory name
@@ -481,7 +544,7 @@ async def register_route(
         model_name: The model whose ``<ModelName>ViewSet`` to register.
         url_prefix: URL segment to mount the ViewSet under. Defaults to the app
             name when ``None``.
-        project_root: Auto-detected if ``None``.
+        project_id: The host-assigned project id (required).
 
     Returns data (on success):
         app (str): the app name.
@@ -568,7 +631,7 @@ async def generate_crud(
         search_fields: Search fields (forwarded to :func:`create_viewset`).
         ordering_fields: Ordering fields (forwarded to :func:`create_viewset`).
         filterset: FilterSet class name (forwarded to :func:`create_viewset`).
-        project_root: Auto-detected if ``None``.
+        project_id: The host-assigned project id (required).
 
     Returns data (on success):
         steps (list[str]): human-readable description of each completed step
@@ -588,7 +651,7 @@ async def generate_crud(
     root = project_root
 
     # 1. Model
-    result = await create_model(app, model_name, fields, meta=meta, project_root=root)
+    result = await create_model(app, model_name, fields, meta=meta, project_id=root)
     if result.success:
         steps.append(f"Created model '{model_name}'")
     else:
@@ -603,7 +666,7 @@ async def generate_crud(
         read_only_fields,
         extra_fields=extra_fields,
         validate_fields=validate_fields,
-        project_root=root,
+        project_id=root,
     )
     if result.success:
         steps.append(f"Created serializer '{model_name}Serializer'")
@@ -622,7 +685,7 @@ async def generate_crud(
         search_fields=search_fields,
         ordering_fields=ordering_fields,
         filterset=filterset,
-        project_root=root,
+        project_id=root,
     )
     if result.success:
         steps.append(f"Created viewset '{model_name}ViewSet'")
@@ -630,7 +693,7 @@ async def generate_crud(
         errors.append(f"viewset: {result.message}")
 
     # 4. Route
-    result = await register_route(app, model_name, project_root=root)
+    result = await register_route(app, model_name, project_id=root)
     if result.success:
         steps.append(f"Registered route '{app}/'")
     else:

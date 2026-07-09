@@ -67,7 +67,7 @@ async def generate_dockerfile(
         python_version: Python version tag to base the image on.
             Defaults to ``"3.12"``.
         port: Port the application listens on.  Defaults to ``8000``.
-        project_root: Auto-detected if ``None``.
+        project_id: The host-assigned project id (required).
 
     Example::
 
@@ -135,7 +135,7 @@ async def generate_requirements(
     Args:
         output_path: Output file name/path, relative to project root.
             Defaults to ``"requirements.txt"``.
-        project_root: Auto-detected if ``None``.
+        project_id: The host-assigned project id (required).
 
     Returns data (on success):
         path (str): the output path (echoes *output_path*)
@@ -189,7 +189,7 @@ async def check_production_readiness(
     - A ``Dockerfile`` exists.
 
     Args:
-        project_root: Auto-detected if ``None``.
+        project_id: The host-assigned project id (required).
 
     Returns:
         ``AgentResult`` with ``issues`` (list of problem strings) and

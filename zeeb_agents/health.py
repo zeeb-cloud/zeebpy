@@ -90,7 +90,7 @@ async def create_health_endpoint(
         app.include_router(health_router)
 
     Args:
-        project_root: Auto-detected if ``None``.
+        project_id: The host-assigned project id (required).
 
     Returns data (on success):
         path (str): the ``health.py`` path relative to the project root.
@@ -147,7 +147,7 @@ async def check_system_health(
     - **migrations** — are all ORM tables present in the DB?
 
     Args:
-        project_root: Auto-detected if ``None``.
+        project_id: The host-assigned project id (required).
 
     Returns data (always):
         checks (dict): with these keys —

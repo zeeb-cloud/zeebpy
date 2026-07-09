@@ -34,7 +34,7 @@ async def read_file(
 
     Args:
         path: Absolute path or path relative to ``project_root``.
-        project_root: Auto-detected if ``None``.
+        project_id: The host-assigned project id (required).
 
     Returns data (on success):
         path (str): the file path, relative to the project root.
@@ -78,7 +78,7 @@ async def write_file(
     Args:
         path: Absolute path or path relative to ``project_root``.
         content: File content to write.
-        project_root: Auto-detected if ``None``.
+        project_id: The host-assigned project id (required).
 
     Returns data (on success):
         path (str): the file path, relative to the project root.
@@ -121,7 +121,7 @@ async def list_files(
         directory: Directory relative to ``project_root`` (default: project root).
         pattern: Glob pattern to filter files (e.g. ``"*.py"``).  Matches
                  file names only, not full paths.
-        project_root: Auto-detected if ``None``.
+        project_id: The host-assigned project id (required).
 
     Returns data (on success):
         directory (str): the listed directory, relative to the project root.
@@ -181,7 +181,7 @@ async def search_code(
     Args:
         pattern: Regular expression to search for.
         glob: Glob pattern for files to search (default: ``"**/*.py"``).
-        project_root: Auto-detected if ``None``.
+        project_id: The host-assigned project id (required).
 
     Returns data (on success):
         pattern (str): the search pattern that was used.

@@ -3,6 +3,13 @@
 All public ``zeeb_agents`` functions return :class:`AgentResult` and must
 never raise.  Instead of repeating the same ``try/except`` boilerplate in
 every function, decorate them with :func:`agent_function`.
+
+The decorator also implements the **public ``project_id`` seam**: function
+bodies are written against a resolved ``project_root: Path``, while the public
+tool signature exposes ``project_id: str`` (owned by the hosting MCP server).
+The decorator renames the parameter in the reported signature and resolves the
+id to a path via :func:`~zeeb_agents._utils.resolver.resolve_project_id` before
+the body runs — so no function body needs to know about ``project_id``.
 """
 
 from __future__ import annotations
@@ -11,16 +18,13 @@ import functools
 import inspect
 import logging
 from collections.abc import Awaitable, Callable
-from pathlib import Path
-from typing import Any, ParamSpec, overload
+from typing import Any, overload
 
 from zeeb_agents._utils import AgentResult
 from zeeb_agents._utils.errors import AgentError, fail
-from zeeb_agents._utils.project import require_project_root
+from zeeb_agents._utils.resolver import resolve_project_id
 
 logger = logging.getLogger("zeeb_agents")
-
-P = ParamSpec("P")
 
 _AgentFunc = Callable[..., Awaitable[AgentResult]]
 
@@ -31,57 +35,93 @@ def agent_function(func: _AgentFunc) -> _AgentFunc: ...
 
 @overload
 def agent_function(
-    func: None = None, *, resolve_project_root: bool = True
+    func: None = None,
+    *,
+    resolve_project: bool = True,
+    optional_project: bool = False,
 ) -> Callable[[_AgentFunc], _AgentFunc]: ...
 
 
 def agent_function(
     func: _AgentFunc | None = None,
     *,
-    resolve_project_root: bool = True,
+    resolve_project: bool = True,
+    optional_project: bool = False,
 ) -> Any:
-    """Wrap an async agent function with uniform error handling.
+    """Wrap an async agent function with uniform error handling + the id seam.
 
-    - If *resolve_project_root* is true and the wrapped function's signature
-      has a ``project_root`` parameter, its value is replaced with
-      ``require_project_root(value)`` before the call.  The function body may
-      then assume an already-resolved :class:`~pathlib.Path`, while the public
-      signature stays ``Path | str | None = None``.
+    - When *resolve_project* is true and the wrapped function has a
+      ``project_root`` parameter, the **public** signature renames it to
+      ``project_id: str | None`` and the decorator resolves that id to a
+      ``Path`` (via :func:`resolve_project_id`) before calling the body, which
+      still receives a ``project_root: Path``.  A ``Path`` passed straight
+      through (internal forwarding between tools) is left as-is.
+    - ``project_root`` remains accepted as a caller keyword even though the
+      advertised (MCP) signature only names ``project_id``.  This is the bridge
+      for the framework-neutral codegen engine and other path-first callers,
+      which pass a resolved ``project_root=<Path>``: it is treated exactly like
+      a ``Path`` handed to ``project_id`` (passthrough).  An explicit
+      ``project_id`` wins if both are supplied.
+    - When *optional_project* is true (doc / live-context tools), a missing or
+      unresolvable id yields ``project_root=None`` instead of failing — the body
+      decides whether to append live context.  Otherwise a missing id fails with
+      ``no_project_id`` and an unknown id with ``project_not_found``.
     - :class:`AgentError` (an expected, targeted failure) is logged at info
-      level and its prebuilt failure result is returned — the ``data`` dict
-      carries ``error_code`` and optional ``suggestions``.
-    - ``FileNotFoundError`` / ``PermissionError`` keep the
-      ``'<ErrorType>: <details>'`` message format but gain ``error_code``
-      ``file_not_found`` / ``permission_denied`` in ``data``.
-    - Any other :class:`Exception` is logged via
-      ``logger.exception('%s failed', func.__qualname__)`` (logger name:
-      ``"zeeb_agents"``) and converted to
-      ``AgentResult(success=False, message=f'{type(exc).__name__}: {exc}')``.
-    - :class:`AgentResult` return values pass through unchanged.
+      level and its prebuilt failure result is returned.
+    - ``FileNotFoundError`` / ``PermissionError`` gain ``error_code``
+      ``file_not_found`` / ``permission_denied``.
+    - Any other :class:`Exception` is logged and converted to a failure
+      ``AgentResult``.  :class:`AgentResult` return values pass through unchanged.
 
-    Usable both bare (``@agent_function``) and with keyword arguments
-    (``@agent_function(resolve_project_root=False)``).
+    Usable bare (``@agent_function``) or with keywords
+    (``@agent_function(resolve_project=False)``).
     """
 
     def decorate(fn: _AgentFunc) -> _AgentFunc:
         signature = inspect.signature(fn)
-        needs_root = resolve_project_root and "project_root" in signature.parameters
+        do_resolve = resolve_project and "project_root" in signature.parameters
+
+        public_sig: inspect.Signature | None = None
+        if do_resolve:
+            new_params = [
+                (
+                    p.replace(name="project_id", annotation="str | None", default=None)
+                    if name == "project_root"
+                    else p
+                )
+                for name, p in signature.parameters.items()
+            ]
+            public_sig = signature.replace(parameters=new_params)
 
         @functools.wraps(fn)
         async def wrapper(*args: Any, **kwargs: Any) -> AgentResult:
             try:
-                if needs_root:
-                    bound = signature.bind(*args, **kwargs)
+                if do_resolve:
+                    assert public_sig is not None
+                    # Accept a caller-supplied ``project_root`` (the codegen
+                    # engine / internal forwarding pass a resolved Path this
+                    # way) as an alias for ``project_id``; an explicit
+                    # ``project_id`` takes precedence.
+                    if "project_root" in kwargs:
+                        alias_root = kwargs.pop("project_root")
+                        kwargs.setdefault("project_id", alias_root)
+                    bound = public_sig.bind(*args, **kwargs)
                     bound.apply_defaults()
-                    given = bound.arguments.get("project_root")
-                    if isinstance(given, str):
-                        given = Path(given)
-                    try:
-                        bound.arguments["project_root"] = require_project_root(given)
-                    except RuntimeError as exc:
-                        logger.info("%s failed: %s", fn.__qualname__, exc)
-                        return fail(str(exc), code="no_project_root")
-                    args, kwargs = bound.args, bound.kwargs
+                    call_kwargs = dict(bound.arguments)
+                    project_id = call_kwargs.pop("project_id", None)
+                    if optional_project:
+                        try:
+                            root = (
+                                resolve_project_id(project_id)
+                                if project_id is not None
+                                else None
+                            )
+                        except AgentError:
+                            root = None
+                    else:
+                        root = resolve_project_id(project_id)
+                    call_kwargs["project_root"] = root
+                    return await fn(**call_kwargs)
                 return await fn(*args, **kwargs)
             except AgentError as exc:
                 # Expected, targeted failure — no traceback needed.
@@ -99,6 +139,8 @@ def agent_function(
                     success=False, message=f"{type(exc).__name__}: {exc}"
                 )
 
+        if public_sig is not None:
+            wrapper.__signature__ = public_sig  # type: ignore[attr-defined]
         return wrapper
 
     if func is not None:

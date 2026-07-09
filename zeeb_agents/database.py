@@ -79,7 +79,7 @@ async def list_tables(project_root: Path | None = None) -> AgentResult:
     """Return the names of all tables in the project database.
 
     Args:
-        project_root: Auto-detected if ``None``.
+        project_id: The host-assigned project id (required).
 
     Returns data (on success):
         tables (list[str]): sorted table names.
@@ -111,7 +111,7 @@ async def describe_table(
 
     Args:
         table_name: Exact table name as stored in the database.
-        project_root: Auto-detected if ``None``.
+        project_id: The host-assigned project id (required).
 
     Returns data (on success):
         table (str): the table name that was inspected.
@@ -175,7 +175,7 @@ async def run_query(
 
     Args:
         sql: A SQL query string.
-        project_root: Auto-detected if ``None``.
+        project_id: The host-assigned project id (required).
 
     Returns data (on success):
         rows (list[dict]): result rows, each mapping column name to value.

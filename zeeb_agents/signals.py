@@ -144,7 +144,7 @@ async def create_signal_receiver(
         signal_name: One of ``pre_save``, ``post_save``, ``pre_delete``, ``post_delete``.
         model_name: Model class name the receiver listens on.
         function_name: Name for the new receiver function.
-        project_root: Auto-detected if ``None``.
+        project_id: The host-assigned project id (required).
 
     Returns data (on success):
         path (str): signals.py path relative to the project root
@@ -221,7 +221,7 @@ async def list_signal_receivers(
 
     Args:
         app: App name.
-        project_root: Auto-detected if ``None``.
+        project_id: The host-assigned project id (required).
 
     Returns data (on success):
         app (str): the app name
@@ -265,7 +265,7 @@ async def read_signal_receiver(
     Args:
         app: App name.
         function_name: Name of the receiver function.
-        project_root: Auto-detected if ``None``.
+        project_id: The host-assigned project id (required).
 
     Returns data (on success):
         func_name (str): the receiver function name
@@ -320,7 +320,7 @@ async def edit_signal_receiver(
         app: App name.
         function_name: Name of the receiver function to edit.
         new_body: New function body (indented with 4 spaces).
-        project_root: Auto-detected if ``None``.
+        project_id: The host-assigned project id (required).
 
     Returns data (on success):
         path (str): signals.py path relative to the project root
@@ -379,7 +379,7 @@ async def delete_signal_receiver(
     Args:
         app: App name.
         function_name: Name of the receiver function to remove.
-        project_root: Auto-detected if ``None``.
+        project_id: The host-assigned project id (required).
 
     Returns data (on success):
         path (str): signals.py path relative to the project root
@@ -427,7 +427,7 @@ async def list_model_signals(
     Args:
         app: App name.
         model_name: Model class name to filter by.
-        project_root: Auto-detected if ``None``.
+        project_id: The host-assigned project id (required).
 
     Returns data (on success):
         app (str): the app name

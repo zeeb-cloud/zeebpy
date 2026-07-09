@@ -31,12 +31,22 @@ class AgentResult:
     data: dict | None      # Structured output (model names, paths, etc.)
 ```
 
+The host addresses projects by an opaque `project_id`. Register a resolver once
+at startup so the library can map an id to a location:
+
+```python
+import zeeb_agents
+zeeb_agents.configure(project_resolver=lambda pid: Path("/srv/projects") / pid)
+```
+
+Every project-scoped call then takes a trailing `project_id`:
+
 ```python
 result = await create_model("blog", "Post", [
     {"name": "title", "type": "CharField", "max_length": 200},
     {"name": "body",  "type": "TextField"},
     {"name": "author", "type": "ForeignKey", "to": "User", "on_delete": "CASCADE"},
-])
+], project_id="<id>")
 if result:   # AgentResult is truthy on success
     print(result.message)
 ```
@@ -53,7 +63,8 @@ vocabulary: `app_not_found`, `model_not_found`, `already_exists`,
 `setting_not_found`, `env_key_not_found`, `field_not_found`,
 `function_not_found`, `file_not_found`, `log_file_not_found`,
 `outside_project_root`, `server_not_running`, `server_not_reachable`,
-`dependency_missing`, `permission_denied`, `no_project_root`) plus
+`dependency_missing`, `permission_denied`, `no_project_root`,
+`no_project_id`, `project_not_found`, `runtime_not_configured`) plus
 `data["suggestions"]` (close-match candidates) where applicable. Any
 *unexpected* exception is caught and returned as
 `AgentResult(success=False, message="ExceptionType: details")`.
@@ -83,12 +94,15 @@ under a `Returns data:` block), but they follow consistent conventions:
   failures, and may be `None` for unexpected ones. Always guard with
   `if result.success and result.data:` before indexing.
 
-### `project_root` auto-detection
+### `project_id`
 
-Every project-scoped function takes a trailing `project_root` argument that you
-normally omit. When it is `None`, the `@agent_function` decorator walks up from
-the current working directory to the nearest `manage.py` and uses that
-directory. Pass an explicit path only to target a project outside the CWD.
+Every project-scoped function takes a trailing `project_id` — the opaque id the
+host assigns to a project. **Always pass it.** The `@agent_function` decorator
+resolves the id to a location through a resolver the host registers once
+(`configure(project_resolver=…)`); you never deal in filesystem paths. A missing
+id fails with `no_project_id`; an id no project is registered under fails with
+`project_not_found`. (Creating a project is the one bootstrapping exception —
+see `create_project`.)
 
 ### Special cases & gotchas
 
@@ -101,11 +115,10 @@ directory. Pass an explicit path only to target a project outside the CWD.
 | `manage_settings(key, value=...)` | Read mode = only `key`; write mode = `key` + `value`. Write only updates keys that already exist. |
 | `replace_model_fields(...)` | Destructive — replaces **all** fields. Use `add_field`/`remove_field` for incremental edits. |
 | `run_query(sql)` | Read-only: SELECT/WITH/EXPLAIN only, single statement, always rolled back. |
-| `export_openapi(...)` | Requires the dev server to be running (fetches the live spec). |
+| `export_openapi(...)` | Writes a static snapshot of the spec. For the live contract use `get_openapi_url()` / `get_project_reference()` (platform-managed runtime). |
 | Relation field specs | `to` is **required**; `on_delete="SET_NULL"` needs `null=True`; M2M rejects `on_delete`/`null`. Invalid specs are rejected before anything is written. |
 | Field spec `"raw"` key | Escape hatch for non-literal kwargs (validators, callables): a dict of kwarg → verbatim Python source. |
 | `setup_auth` / `setup_oauth` | Idempotent — re-running reports `already_wired` instead of duplicating includes. |
-| `start_server(...)` | Server output goes to `.zeeb_server.log`; an immediate exit returns the last log lines in `data["output"]`. |
 
 ### Tool discovery — `list_capabilities()`
 
@@ -116,9 +129,11 @@ For programmatic discovery of the entire tool surface, call
 ```python
 result = await list_capabilities(include_docstrings=True)
 for tool in result.data["tools"]:
-    print(tool["module"], tool["name"], tool["signature"])
-    # tool["summary"] (first docstring line) and tool["doc"] (full docstring,
-    # incl. the Returns data: block) are also available
+    print(tool["category"], tool["name"], tool["signature"])
+    # Also per tool: "summary", "params" [{name, annotation, default, required}],
+    # "returns" [{key, type, description}] (parsed from the Returns data: block),
+    # and "doc" (full docstring, when include_docstrings=True).
+# result.data also carries "count", "modules", and "categories".
 ```
 
 Pass `module="models"` to filter to one module. This is the function an MCP
@@ -136,27 +151,27 @@ the structure is always in sync.
 await create_project("myapp", directory="/projects")
 ```
 
-### `create_app(name, project_root=None)`
+### `create_app(name, project_id=None)`
 Create a new app inside an existing project.
 
 ```python
 await create_app("blog")
 ```
 
-### `delete_app(name, project_root=None)`
+### `delete_app(name, project_id=None)`
 Delete an app directory.
 
-### `rename_app(old_name, new_name, project_root=None)`
+### `rename_app(old_name, new_name, project_id=None)`
 Rename an app directory.
 
-### `get_project_info(project_root=None)`
+### `get_project_info(project_id=None)`
 Returns project root, app list, installed apps, and database URL.
 
 ---
 
 ## Model Management
 
-### `create_model(app, model_name, fields, meta=None, project_root=None)`
+### `create_model(app, model_name, fields, meta=None, project_id=None)`
 Append a `Model` subclass to `apps/<app>/models.py`.
 
 **Field spec dicts:**
@@ -200,22 +215,22 @@ Valid `meta` keys: `table_name`/`db_table`, `abstract`, `managed`, `ordering`,
 `unique_together`, `index_together`, `indexes`, `constraints`,
 `default_permissions`, `app_label`.
 
-### `update_model(app, model_name, rename_to=None, meta_changes=None, project_root=None)`
+### `update_model(app, model_name, rename_to=None, meta_changes=None, project_id=None)`
 Rename a model and/or update its `class Meta` options.
 
-### `delete_model(app, model_name, project_root=None)`
+### `delete_model(app, model_name, project_id=None)`
 Remove a model class from `models.py`.
 
-### `list_models(project_root=None)`
+### `list_models(project_id=None)`
 Return all models (and their fields) across all apps.
 
-### `add_field(app, model_name, field, project_root=None)`
+### `add_field(app, model_name, field, project_id=None)`
 Add a single field to an existing model.
 
-### `remove_field(app, model_name, field_name, project_root=None)`
+### `remove_field(app, model_name, field_name, project_id=None)`
 Remove a field from an existing model.
 
-### `add_relationship(app, model_name, rel, project_root=None)`
+### `add_relationship(app, model_name, rel, project_id=None)`
 Convenience wrapper around `add_field` for relation fields.
 
 ```python
@@ -232,7 +247,7 @@ await add_relationship("blog", "Post", {
 
 ## Serializer Management
 
-### `create_serializer(app, model_name, fields=None, read_only_fields=None, extra_fields=None, validate_fields=None, project_root=None)`
+### `create_serializer(app, model_name, fields=None, read_only_fields=None, extra_fields=None, validate_fields=None, project_id=None)`
 Append a `ModelSerializer` to `apps/<app>/serializers.py`. `extra_fields`
 declares serializer fields (`SerializerMethodField` entries get a `get_<name>`
 stub, `{"type": "nested", "serializer": "UserSerializer"}` renders a nested
@@ -251,14 +266,14 @@ await create_serializer("blog", "Post",
     validate_fields=["title"])
 ```
 
-### `update_serializer(app, model_name, fields=None, read_only_fields=None, project_root=None)`
+### `update_serializer(app, model_name, fields=None, read_only_fields=None, project_id=None)`
 Update the `fields` / `read_only_fields` of an existing serializer.
 
 ---
 
 ## ViewSet & Route Management
 
-### `create_viewset(app, model_name, serializer_class=None, permission="IsAuthenticatedOrReadOnly", read_only=False, lookup_field=None, pagination=None, throttles=None, search_fields=None, ordering_fields=None, filterset=None, project_root=None)`
+### `create_viewset(app, model_name, serializer_class=None, permission="IsAuthenticatedOrReadOnly", read_only=False, lookup_field=None, pagination=None, throttles=None, search_fields=None, ordering_fields=None, filterset=None, project_id=None)`
 Append a `ModelViewSet` (or `ReadOnlyModelViewSet` with `read_only=True`) to
 `apps/<app>/views.py`, with the full viewset option surface:
 
@@ -278,31 +293,41 @@ Permissions are validated against `zeeb_api.permissions` (`AllowAny`,
 `IsOwnerOrReadOnly`, `DjangoModelPermissions`); imports for pagination,
 throttling, and filters are added automatically.
 
-### `update_viewset(app, model_name, permission=None, lookup_field=None, pagination=None, throttles=None, search_fields=None, ordering_fields=None, project_root=None)`
+### `update_viewset(app, model_name, permission=None, lookup_field=None, pagination=None, throttles=None, search_fields=None, ordering_fields=None, project_id=None)`
 Set or update class attributes on an existing ViewSet (same option names as
 `create_viewset`); `filter_backends` is kept in sync when
 `search_fields`/`ordering_fields` are given.
 
-### `add_viewset_action(app, model_name, action_name, detail=True, methods=None, body=None, project_root=None)`
+### `add_viewset_action(app, model_name, action_name, detail=True, methods=None, body=None, url_path=None, request_serializer=None, response_serializer=None, request_schema=None, response_schema=None, permission=None, project_id=None)`
 Add a custom `@action` method to an existing ViewSet. Pass the method body via
 `body=` (dedented/indented automatically) so you don't have to edit `views.py`
-by hand; omit it for a `pass  # TODO` placeholder.
+by hand.
+
+Wire the request/response contract so the endpoint validates and shapes its
+payload: `request_serializer=`/`request_schema=` validate the request body (read
+it inside the action with `self.get_action_request_body()`),
+`response_serializer=`/`response_schema=` set the OpenAPI response model, and
+`permission=` restricts this action only. Override the URL segment with
+`url_path=`. Referenced serializer/schema classes are imported from the app's
+`serializers.py`. Omit `body=` for a serializer-aware scaffold (or a `pass  #
+TODO` placeholder when nothing is wired).
 
 ```python
 await add_viewset_action("blog", "Post", "publish",
     detail=True, methods=["post"],
+    response_serializer="PostSerializer", permission="IsAdminUser",
     body="""
         post = await self.get_object()
         post.published = True
         await post.save()
-        return {"status": "published"}
+        return PostSerializer(post).data
     """)
 ```
 
-### `register_route(app, model_name, url_prefix=None, project_root=None)`
+### `register_route(app, model_name, url_prefix=None, project_id=None)`
 Add a `router.register(...)` line to `apps/<app>/urls.py`.
 
-### `generate_crud(app, model_name, fields, serializer_fields=None, read_only_fields=None, permission=..., meta=None, extra_fields=None, validate_fields=None, read_only=False, lookup_field=None, pagination=None, throttles=None, search_fields=None, ordering_fields=None, filterset=None, project_root=None)`
+### `generate_crud(app, model_name, fields, serializer_fields=None, read_only_fields=None, permission=..., meta=None, extra_fields=None, validate_fields=None, read_only=False, lookup_field=None, pagination=None, throttles=None, search_fields=None, ordering_fields=None, filterset=None, project_id=None)`
 **One-shot scaffold** — creates model + serializer + viewset + registers route.
 Forwards `meta` to `create_model`, `extra_fields`/`validate_fields` to
 `create_serializer`, and all viewset options to `create_viewset`.
@@ -314,38 +339,39 @@ await generate_crud("blog", "Post", fields=[
 ])
 ```
 
-### `list_endpoints(project_root=None)`
+### `list_endpoints(project_id=None)`
 Return all `router.register(...)` calls found across all apps.
 
 ---
 
 ## Migrations
 
-### `make_migrations(name=None, project_root=None)`
+### `make_migrations(name=None, project_id=None)`
 Detect model changes and write a migration file.
 
-### `run_migrations(project_root=None)`
+### `run_migrations(project_id=None)`
 Apply all pending migrations.
 
-### `get_migration_status(project_root=None)`
+### `get_migration_status(project_id=None)`
 Return list of migrations with `applied: bool` for each.
 
-### `rollback_migration(steps=1, project_root=None)`
+### `rollback_migration(steps=1, project_id=None)`
 Roll back the last N migration(s).
 
 ---
 
-## Dev Server
+## Platform Runtime
 
-### `start_server(addrport="127.0.0.1:9000", project_root=None)`
-Start the development server as a background process.
-PID is stored in `.zeeb_server.pid` in the project root.
+The preview runtime is always-on and platform-managed — you do not start a dev
+server. Fetch the live URLs the platform publishes for a project.
 
-### `stop_server(project_root=None)`
-Stop the background server.
+### `get_project_reference(project_id=None)`
+Return `{project_id, preview_url, runtime_api_base_url, openapi_url}` from the
+platform-published env. Fails with `runtime_not_configured` when the runtime is
+not live yet.
 
-### `get_server_status(project_root=None)`
-Check if the server is running.
+### `get_openapi_url(project_id=None)`
+Return `{openapi_url}` — the live OpenAPI document URL to build a client against.
 
 ---
 
@@ -390,7 +416,7 @@ The exact zeeb_orm class name is always accepted too (e.g. `"CharField"`).
 
 ## Logs
 
-### `read_logs(lines=200, level=None, log_file=None, project_root=None)`
+### `read_logs(lines=200, level=None, log_file=None, project_id=None)`
 Return the last *lines* lines from the project log file.  Auto-detects log files in a `logs/` subdirectory or `*.log` files in the project root.
 
 - `level`: Optional filter — only lines containing `DEBUG`, `INFO`, `WARNING`, `ERROR`, or `CRITICAL`.
@@ -401,7 +427,7 @@ result = await read_logs(lines=50, level="ERROR")
 # result.data == {"path": "logs/app.log", "lines": [...], "total_lines": 1200}
 ```
 
-### `search_logs(pattern, log_file=None, project_root=None)`
+### `search_logs(pattern, log_file=None, project_id=None)`
 Search all log files for lines matching a regular expression.
 
 ```python
@@ -409,14 +435,14 @@ result = await search_logs(r"TimeoutError")
 # result.data == {"matches": [{"file": "logs/app.log", "line_no": 42, "content": "..."}], "count": 3}
 ```
 
-### `clear_logs(log_file=None, project_root=None)`
+### `clear_logs(log_file=None, project_id=None)`
 Truncate log file(s) to zero bytes.
 
 ---
 
 ## Configuration & Environment
 
-### `get_settings(project_root=None)`
+### `get_settings(project_id=None)`
 Return the parsed project settings as a dictionary.
 
 ```python
@@ -424,7 +450,7 @@ result = await get_settings()
 # result.data == {"settings": {"DATABASE": {"url": "..."}, "DEBUG": True, ...}}
 ```
 
-### `get_env(project_root=None)`
+### `get_env(project_id=None)`
 Read the project `.env` file and return it as a key-value dict.
 
 ```python
@@ -432,14 +458,14 @@ result = await get_env()
 # result.data == {"path": ".env", "env": {"SECRET_KEY": "...", "DEBUG": "1"}}
 ```
 
-### `set_env(key, value, project_root=None)`
+### `set_env(key, value, project_id=None)`
 Set (or create) an environment variable in `.env`.  Creates the file if it does not exist.
 
 ```python
 await set_env("SECRET_KEY", "my-secret")
 ```
 
-### `delete_env(key, project_root=None)`
+### `delete_env(key, project_id=None)`
 Remove a key from `.env`.
 
 ---
@@ -452,7 +478,7 @@ Remove a key from `.env`.
 > `AgentResult(success=False, message="...outside the project root")` without
 > touching the file.
 
-### `read_file(path, project_root=None)`
+### `read_file(path, project_id=None)`
 Read any project file and return its content.
 
 ```python
@@ -460,14 +486,14 @@ result = await read_file("myapp/apps/post/models.py")
 # result.data == {"path": "...", "content": "...", "size": 512}
 ```
 
-### `write_file(path, content, project_root=None)`
+### `write_file(path, content, project_id=None)`
 Write (or overwrite) a file.  Creates parent directories as needed.
 
 ```python
 await write_file("myapp/apps/post/utils.py", "# utilities\n")
 ```
 
-### `list_files(directory=".", pattern="*", project_root=None)`
+### `list_files(directory=".", pattern="*", project_id=None)`
 List files and directories with an optional glob pattern.
 
 ```python
@@ -475,7 +501,7 @@ result = await list_files("myapp/apps", pattern="*.py")
 # result.data == {"entries": [{"name": "models.py", "path": "...", "type": "file", "size": 512}, ...]}
 ```
 
-### `search_code(pattern, glob="**/*.py", project_root=None)`
+### `search_code(pattern, glob="**/*.py", project_id=None)`
 Search for a regex pattern across project source files.
 
 ```python
@@ -487,7 +513,7 @@ result = await search_code(r"class Post", glob="**/*.py")
 
 ## Database Introspection
 
-### `list_tables(project_root=None)`
+### `list_tables(project_id=None)`
 Return the names of all tables in the project database.
 
 ```python
@@ -495,7 +521,7 @@ result = await list_tables()
 # result.data == {"tables": ["auth_user", "post_post", "migrations"]}
 ```
 
-### `describe_table(table_name, project_root=None)`
+### `describe_table(table_name, project_id=None)`
 Return column names, types, nullability, and defaults for a table.
 
 ```python
@@ -503,7 +529,7 @@ result = await describe_table("post_post")
 # result.data == {"table": "post_post", "columns": [{"name": "id", "type": "INTEGER", ...}, ...]}
 ```
 
-### `run_query(sql, project_root=None)`
+### `run_query(sql, project_id=None)`
 Execute a read-only SQL query (`SELECT`, `WITH`, `EXPLAIN`) and return rows as a list of dicts.
 
 ```python
@@ -533,7 +559,7 @@ result = await run_query("SELECT id, title FROM post_post LIMIT 5")
 
 ## Testing
 
-### `run_tests(path=None, verbose=False, project_root=None)`
+### `run_tests(path=None, verbose=False, project_id=None)`
 Run the project test suite via pytest and return pass/fail counts and output.
 
 - `path`: Specific test file or directory.  Runs all tests if `None`.
@@ -550,7 +576,7 @@ result = await run_tests()
 
 ## Shell / Management Commands
 
-### `run_management_command(command, args=None, project_root=None)`
+### `run_management_command(command, args=None, project_id=None)`
 Run any `manage.py` command and capture its output.
 
 ```python
@@ -565,7 +591,7 @@ result = await run_management_command("createsuperuser", args=["--no-input", "--
 
 Manage `@receiver` decorated functions in `{app}/signals.py` files.
 
-### `create_signal_receiver(app, signal_name, model_name, function_name, project_root=None)`
+### `create_signal_receiver(app, signal_name, model_name, function_name, project_id=None)`
 Create an async receiver stub. Creates `signals.py` if it doesn't exist.
 
 - `signal_name`: One of `pre_save`, `post_save`, `pre_delete`, `post_delete`.
@@ -575,7 +601,7 @@ result = await create_signal_receiver("blog", "post_save", "Article", "on_articl
 # result.data == {"path": "blog/signals.py", "signal": "post_save", "action": "created", ...}
 ```
 
-### `list_signal_receivers(app, project_root=None)`
+### `list_signal_receivers(app, project_id=None)`
 List all `@receiver(...)` decorated functions in `{app}/signals.py`.
 
 ```python
@@ -583,7 +609,7 @@ result = await list_signal_receivers("blog")
 # result.data == {"receivers": [{"func_name": "on_article_saved", "signal": "post_save", "sender": "Article"}], "count": 1}
 ```
 
-### `read_signal_receiver(app, function_name, project_root=None)`
+### `read_signal_receiver(app, function_name, project_id=None)`
 Return the full source (decorator + body) of a specific receiver.
 
 ```python
@@ -591,21 +617,21 @@ result = await read_signal_receiver("blog", "on_article_saved")
 # result.data == {"source": "@receiver(post_save, sender=Article)\nasync def on_article_saved(...): ...", ...}
 ```
 
-### `edit_signal_receiver(app, function_name, new_body, project_root=None)`
+### `edit_signal_receiver(app, function_name, new_body, project_id=None)`
 Replace the body of an existing receiver function (decorator is preserved).
 
 ```python
 result = await edit_signal_receiver("blog", "on_article_saved", "    await notify(instance)")
 ```
 
-### `delete_signal_receiver(app, function_name, project_root=None)`
+### `delete_signal_receiver(app, function_name, project_id=None)`
 Remove a receiver function and its `@receiver(...)` decorator from `signals.py`.
 
 ```python
 result = await delete_signal_receiver("blog", "on_article_saved")
 ```
 
-### `list_model_signals(app, model_name, project_root=None)`
+### `list_model_signals(app, model_name, project_id=None)`
 Filter receivers by `sender=<model_name>` — shows all signals for one model.
 
 ```python
@@ -617,7 +643,7 @@ result = await list_model_signals("blog", "Article")
 
 ## Project Introspection
 
-### `list_apps(project_root=None)`
+### `list_apps(project_id=None)`
 Return all app directory names found under `apps/`.
 
 ```python
@@ -625,7 +651,7 @@ result = await list_apps()
 # result.data == {"apps": ["blog", "users"], "count": 2}
 ```
 
-### `get_project_structure(project_root=None, max_depth=3)`
+### `get_project_structure(project_id=None, max_depth=3)`
 Return a nested directory tree for the project. Skips `__pycache__`, `.git`, `.venv`, etc.
 
 ```python
@@ -638,7 +664,7 @@ result = await get_project_structure(max_depth=2)
 
 ## Standalone Routes
 
-### `create_route(app, path, method, function_name, response_model=None, body=None, imports=None, project_root=None)`
+### `create_route(app, path, method, function_name, response_model=None, body=None, imports=None, project_id=None)`
 Append a standalone `@router.<method>(path)` async handler to `{app}/views.py`
 **and** auto-wire it into `{app}/urls.py` so it is actually served. Unlike
 `create_viewset`, this creates a plain function — not a class-based ViewSet. The
@@ -668,7 +694,7 @@ result = await create_route(
 
 ## Model Field Replacement
 
-### `replace_model_fields(app, model_name, fields, project_root=None)`
+### `replace_model_fields(app, model_name, fields, project_id=None)`
 Destructively replace **all** field lines in a model with a new set.
 `class Meta:` is preserved. Use `add_field`/`remove_field` for incremental changes.
 
@@ -685,7 +711,7 @@ result = await replace_model_fields("blog", "Post", [
 
 ## Settings Management
 
-### `manage_settings(key, value=None, *, read_only=False, project_root=None)`
+### `manage_settings(key, value=None, *, read_only=False, project_id=None)`
 Read or update a top-level scalar setting in `settings.py`.
 
 **Read a setting:**
@@ -708,7 +734,7 @@ For complex types (dict, list), use `read_file`/`write_file` to edit `settings.p
 
 ## Seed Data
 
-### `generate_seed_script(app, models=None, count=5, output_path=None, project_root=None)`
+### `generate_seed_script(app, models=None, count=5, output_path=None, project_id=None)`
 Generate a Python seed script that populates the database with sample records.
 Reads model definitions from `{app}/models.py` and writes `seeds/{app}_seed.py`.
 
@@ -737,7 +763,7 @@ result = await generate_seed_script("blog", count=10)
 Functions for runtime user CRUD against the project's live database.
 Passwords are always hashed via zeeb_api's PBKDF2 hasher.
 
-### `create_user(email, password, is_staff=False, is_superuser=False, project_root=None)`
+### `create_user(email, password, is_staff=False, is_superuser=False, project_id=None)`
 Create a new user.  The user table is auto-detected (first table with `email` + `password` columns).
 
 ```python
@@ -745,7 +771,7 @@ result = await create_user("alice@example.com", "s3cr3t")
 result = await create_user("admin@example.com", "admin123", is_staff=True, is_superuser=True)
 ```
 
-### `list_users(limit=50, offset=0, project_root=None)`
+### `list_users(limit=50, offset=0, project_id=None)`
 List users (passwords omitted from results).
 
 ```python
@@ -753,7 +779,7 @@ result = await list_users(limit=20)
 # result.data == {"users": [...], "total": 42, "limit": 20, "offset": 0}
 ```
 
-### `get_user(email_or_id, project_root=None)`
+### `get_user(email_or_id, project_id=None)`
 Fetch a single user by email or integer ID.
 
 ```python
@@ -761,21 +787,21 @@ result = await get_user("alice@example.com")
 result = await get_user(1)
 ```
 
-### `update_user(email_or_id, changes, project_root=None)`
+### `update_user(email_or_id, changes, project_id=None)`
 Update user fields.  Pass `password` through `set_user_password` instead.
 
 ```python
 result = await update_user("alice@example.com", {"is_staff": True, "is_active": False})
 ```
 
-### `delete_user(email_or_id, project_root=None)`
+### `delete_user(email_or_id, project_id=None)`
 Delete a user by email or integer ID.
 
 ```python
 result = await delete_user("alice@example.com")
 ```
 
-### `set_user_password(email_or_id, new_password, project_root=None)`
+### `set_user_password(email_or_id, new_password, project_id=None)`
 Set a new hashed password for an existing user.
 
 ```python
@@ -786,7 +812,7 @@ result = await set_user_password("alice@example.com", "n3wP@ssword!")
 
 ## BaaS — CORS Configuration
 
-### `configure_cors(origins, methods=None, allow_credentials=True, allow_headers=None, expose_headers=None, project_root=None)`
+### `configure_cors(origins, methods=None, allow_credentials=True, allow_headers=None, expose_headers=None, project_id=None)`
 Write CORS settings to `settings.py`.  `zeeb_api.middleware.CORSMiddleware`
 reads these keys automatically.
 
@@ -805,7 +831,7 @@ MIDDLEWARE = [
 ]
 ```
 
-### `get_cors_config(project_root=None)`
+### `get_cors_config(project_id=None)`
 Read the current CORS settings from the project.
 
 ```python
@@ -817,7 +843,7 @@ result = await get_cors_config()
 
 ## BaaS — Background Tasks
 
-### `create_task(app, function_name, schedule=None, project_root=None)`
+### `create_task(app, function_name, schedule=None, project_id=None)`
 Scaffold an async task function in `apps/{app}/tasks.py`.
 Creates the file with a header if it does not exist.
 
@@ -828,7 +854,7 @@ result = await create_task("billing", "send_monthly_invoices", schedule="0 9 1 *
 result = await create_task("notifications", "cleanup_old_notifications")
 ```
 
-### `list_tasks(app, project_root=None)`
+### `list_tasks(app, project_id=None)`
 List all async task functions in `apps/{app}/tasks.py`.
 
 ```python
@@ -836,7 +862,7 @@ result = await list_tasks("billing")
 # result.data == {"tasks": ["send_monthly_invoices", "retry_failed_payments"], "count": 2}
 ```
 
-### `delete_task(app, function_name, project_root=None)`
+### `delete_task(app, function_name, project_id=None)`
 Remove a task function from `apps/{app}/tasks.py`.
 
 ```python
@@ -847,7 +873,7 @@ result = await delete_task("billing", "send_monthly_invoices")
 
 ## BaaS — Health Endpoints
 
-### `create_health_endpoint(project_root=None)`
+### `create_health_endpoint(project_id=None)`
 Scaffold `/health` (liveness) and `/ready` (readiness + DB ping) route handlers
 in `health.py` at the project root.
 
@@ -860,7 +886,7 @@ result = await create_health_endpoint()
 # app.include_router(health_router)
 ```
 
-### `check_system_health(project_root=None)`
+### `check_system_health(project_id=None)`
 Run runtime health checks: settings load, DB connectivity, table inventory.
 
 ```python
@@ -875,7 +901,7 @@ result = await check_system_health()
 
 ## BaaS — API Schema & Route Introspection
 
-### `get_model_json_schema(app, model_name, project_root=None)`
+### `get_model_json_schema(app, model_name, project_id=None)`
 Return a JSON Schema object for a zeeb_orm model — useful for client SDK
 generation or frontend form validation.
 
@@ -888,7 +914,7 @@ result = await get_model_json_schema("blog", "Post")
 # }
 ```
 
-### `list_all_routes(project_root=None)`
+### `list_all_routes(project_id=None)`
 Scan all apps for both ViewSet registrations and standalone route decorators.
 
 ```python
@@ -899,7 +925,7 @@ result = await list_all_routes()
 # ]
 ```
 
-### `export_openapi(output_path=None, port=8000, project_root=None)`
+### `export_openapi(output_path=None, port=8000, project_id=None)`
 Fetch the live OpenAPI spec from the running dev server and save to `openapi.json`.
 The dev server must be running (`zeeb runserver`).
 
@@ -912,7 +938,7 @@ result = await export_openapi(port=8000)
 
 ## BaaS — Deployment Scaffolding
 
-### `generate_dockerfile(python_version="3.12", port=8000, project_root=None)`
+### `generate_dockerfile(python_version="3.12", port=8000, project_id=None)`
 Generate a multi-stage production `Dockerfile` and `.dockerignore`.
 
 ```python
@@ -920,7 +946,7 @@ result = await generate_dockerfile(python_version="3.12", port=8080)
 # result.data == {"files_written": ["Dockerfile", ".dockerignore"], ...}
 ```
 
-### `generate_requirements(output_path="requirements.txt", project_root=None)`
+### `generate_requirements(output_path="requirements.txt", project_id=None)`
 Run `pip freeze` and write `requirements.txt` (filters out editable installs).
 
 ```python
@@ -928,7 +954,7 @@ result = await generate_requirements()
 # result.data == {"path": "requirements.txt", "package_count": 42}
 ```
 
-### `check_production_readiness(project_root=None)`
+### `check_production_readiness(project_id=None)`
 Validate that the project is ready for production.  Checks:
 
 - `DEBUG = False`
@@ -951,7 +977,7 @@ result = await check_production_readiness()
 
 ## BaaS — Permission Class Scaffolding
 
-### `create_permission_class(app, class_name, logic="deny_all", project_root=None)`
+### `create_permission_class(app, class_name, logic="deny_all", project_id=None)`
 Scaffold a `BasePermission` subclass in `apps/{app}/permissions.py`.
 
 Available `logic` presets:
@@ -970,7 +996,7 @@ result = await create_permission_class("admin", "IsStaffUser", logic="staff_only
 #     permission_classes = [IsPostOwner]
 ```
 
-### `list_permission_classes(app, project_root=None)`
+### `list_permission_classes(app, project_id=None)`
 List all permission classes in `apps/{app}/permissions.py`.
 
 ```python
@@ -982,7 +1008,7 @@ result = await list_permission_classes("blog")
 
 ## Auth Scaffolding
 
-### `setup_auth(enable_registration=True, url_prefix="/auth", access_token_minutes=None, refresh_token_days=None, project_root=None)`
+### `setup_auth(enable_registration=True, url_prefix="/auth", access_token_minutes=None, refresh_token_days=None, project_id=None)`
 Wire zeeb_api's JWT auth router into the project `urls.py` — exposes
 `POST {prefix}/login`, `/refresh`, `/logout`, `GET /me`, and (optionally)
 `POST /register`. Idempotent: re-running reports `data["already_wired"]=True`.
@@ -993,7 +1019,7 @@ Optionally writes `JWT_ACCESS_TOKEN_EXPIRE_MINUTES` /
 await setup_auth(enable_registration=True, access_token_minutes=30)
 ```
 
-### `setup_oauth(provider, client_id_env=None, client_secret_env=None, scopes=None, redirect_uri=None, project_root=None)`
+### `setup_oauth(provider, client_id_env=None, client_secret_env=None, scopes=None, redirect_uri=None, project_id=None)`
 Configure an OAuth/OIDC provider preset (`"azure"`, `"github"`, `"google"`)
 in `OAUTH_PROVIDERS` and wire `create_oauth_router()` into `urls.py`.
 Credentials are read from environment variables (default
@@ -1006,7 +1032,7 @@ await set_env("GOOGLE_CLIENT_ID", "…")
 await set_env("GOOGLE_CLIENT_SECRET", "…")
 ```
 
-### `create_user_model(app, model_name="User", extra_fields=None, set_auth_user_model=True, project_root=None)`
+### `create_user_model(app, model_name="User", extra_fields=None, set_auth_user_model=True, project_id=None)`
 Create a custom user model extending `zeeb_api.auth.models.AbstractUser` and
 set `AUTH_USER_MODEL`. Run migrations afterwards; `create_user` etc. then work
 against the new table.
@@ -1021,7 +1047,7 @@ await create_user_model("accounts", "Member", extra_fields=[
 
 ## FilterSet Scaffolding
 
-### `create_filterset(app, model_name, filter_fields, project_root=None)`
+### `create_filterset(app, model_name, filter_fields, project_id=None)`
 Create a `FilterSet` class in `apps/{app}/filters.py` for declarative
 query-parameter filtering; attach it to a viewset via
 `create_viewset(filterset=...)`.
@@ -1040,7 +1066,7 @@ Valid lookups: `exact`, `iexact`, `contains`, `icontains`, `in`, `gt`, `gte`,
 
 ## API Configuration
 
-### `configure_throttling(default_classes=None, rates=None, project_root=None)`
+### `configure_throttling(default_classes=None, rates=None, project_id=None)`
 Write project-wide rate-limit defaults (`DEFAULT_THROTTLE_CLASSES` as
 `zeeb_api.throttling` dotted paths, `DEFAULT_THROTTLE_RATES`). Rate format:
 `"<number>/<period>"` with period `s/sec`, `m/min`, `h/hour`, `d/day`.
@@ -1055,7 +1081,7 @@ await configure_throttling(
 > The default throttle cache is in-memory **per process** — multi-worker
 > deployments need a custom `BaseThrottleCache`.
 
-### `configure_versioning(scheme="url", default_version=None, allowed_versions=None, project_root=None)`
+### `configure_versioning(scheme="url", default_version=None, allowed_versions=None, project_id=None)`
 Write API-versioning settings (`DEFAULT_VERSIONING_CLASS`, `DEFAULT_VERSION`,
 `ALLOWED_VERSIONS`). Schemes: `"url"` (`/v1/…`), `"header"`
 (`X-API-Version`), `"query"` (`?version=`), `"accept"`.
@@ -1077,8 +1103,9 @@ bodies.  Each function maps to one `mcp://` URI and returns an
 - `data["uri"]`       — the canonical `mcp://` URI
 - `data["mime_type"]` — always `"text/markdown"`
 
-When `project_root` is supplied, live project context (app list, migration
-status, readiness check, etc.) is appended to the static documentation.
+When `project_id` is supplied, live project context (app list, migration
+status, readiness check, etc.) is appended to the static documentation, and the
+doc set is chosen by the project's framework (`framework=` overrides it).
 
 ### Tool name prefix
 
@@ -1100,7 +1127,7 @@ result = await get_resource("mcp://docs/capabilities", tool_prefix="")
 The `tool_prefix` parameter is available on every individual doc function and
 on `get_resource()`.
 
-### `get_resource(uri, project_root=None, tool_prefix="")` — URI dispatcher
+### `get_resource(uri, project_id=None, tool_prefix="", framework=None)` — URI dispatcher
 
 ```python
 from zeeb_agents import get_resource, RESOURCE_URIS
@@ -1113,39 +1140,41 @@ from zeeb_agents import get_resource, RESOURCE_URIS
 #   "backend-generation": "mcp://docs/backend-generation",
 #   "frontend-generation":"mcp://docs/frontend-generation",
 #   "deployment":         "mcp://docs/deployment",
+#   "recipes":            "mcp://docs/recipes",
+#   "error-recovery":     "mcp://docs/error-recovery",
 # }
 
 result = await get_resource("mcp://docs/capabilities", tool_prefix="zeeb_")
 print(result.data["content"])   # markdown with zeeb_* tool names
 
-# With live project context
-result = await get_resource("mcp://docs/deployment", project_root=Path("."), tool_prefix="zeeb_")
+# With live project context (framework auto-detected from the project)
+result = await get_resource("mcp://docs/deployment", project_id="<id>", tool_prefix="zeeb_")
 ```
 
-### `get_capabilities_doc(project_root=None, tool_prefix="")` → `mcp://docs/capabilities`
+### `get_capabilities_doc(project_id=None, tool_prefix="")` → `mcp://docs/capabilities`
 
 Complete inventory of all public `zeeb_agents` functions (80+), organised
 by module with signatures and descriptions.  Tool names use `{prefix}` in
 the source file — rendered with the given `tool_prefix` at call time.
 
-### `get_project_lifecycle_doc(project_root=None, tool_prefix="")` → `mcp://docs/project-lifecycle`
+### `get_project_lifecycle_doc(project_id=None, tool_prefix="")` → `mcp://docs/project-lifecycle`
 
 Step-by-step guide from `create_project` → apps → models → migrations →
 API → users → server → tasks → monitoring.  Dynamic context: current app
 list and migration status.
 
-### `get_backend_generation_doc(project_root=None, tool_prefix="")` → `mcp://docs/backend-generation`
+### `get_backend_generation_doc(project_id=None, tool_prefix="")` → `mcp://docs/backend-generation`
 
 How to generate models, serializers, viewsets, routes, migrations, signals,
 permissions, tasks, and seeds.  Includes field type reference table.
 
-### `get_frontend_generation_doc(project_root=None, tool_prefix="")` → `mcp://docs/frontend-generation`
+### `get_frontend_generation_doc(project_id=None, tool_prefix="")` → `mcp://docs/frontend-generation`
 
 Frontend integration: CORS setup, JWT authentication, OpenAPI export, JSON
 Schema for models, route inventory, health endpoints, WebSocket notes.
 Dynamic context: configured CORS origins and registered route count.
 
-### `get_deployment_doc(project_root=None, tool_prefix="")` → `mcp://docs/deployment`
+### `get_deployment_doc(project_id=None, tool_prefix="")` → `mcp://docs/deployment`
 
 Production deployment: readiness check, Dockerfile generation,
 requirements.txt, health probes (k8s/Docker Compose examples), migrations

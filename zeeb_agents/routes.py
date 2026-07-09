@@ -86,7 +86,7 @@ async def create_route(
             ``["from .models import Post", "from .serializers import PostSerializer"]``).
             Each is added to ``views.py`` only if not already present — so the
             route is self-contained and you don't have to edit imports by hand.
-        project_root: Auto-detected if ``None``.
+        project_id: The host-assigned project id (required).
 
     Returns data (on success):
         app (str), path (str), method (str), function_name (str),

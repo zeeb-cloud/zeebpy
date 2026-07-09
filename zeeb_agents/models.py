@@ -52,7 +52,7 @@ async def create_model(
             ``"type"`` keys; additional keys are passed as constructor kwargs.
         meta: Optional ``class Meta`` attributes dict
             (e.g. ``{"table_name": "blog_posts", "ordering": ["-created_at"]}``).
-        project_root: Path to project root.  Auto-detected if ``None``.
+        project_id: The host-assigned project id (required).
 
     Example field specs::
 
@@ -349,7 +349,7 @@ async def replace_model_fields(
         app: App directory name.
         model_name: PascalCase model class name.
         fields: New list of field spec dicts (same format as :func:`create_model`).
-        project_root: Auto-detected if ``None``.
+        project_id: The host-assigned project id (required).
 
     Returns data (on success):
         app (str): the app name.

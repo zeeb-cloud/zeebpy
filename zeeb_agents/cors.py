@@ -52,7 +52,7 @@ async def configure_cors(
         allow_credentials: Whether to allow credentials.  Defaults to ``True``.
         allow_headers: Allowed request headers.  Defaults to ``["*"]``.
         expose_headers: Headers to expose to the browser.  Defaults to ``[]``.
-        project_root: Auto-detected if ``None``.
+        project_id: The host-assigned project id (required).
 
     Example::
 
@@ -110,7 +110,7 @@ async def get_cors_config(
     Returns all ``CORS_*`` keys currently defined in settings.
 
     Args:
-        project_root: Auto-detected if ``None``.
+        project_id: The host-assigned project id (required).
 
     Returns data (always):
         cors (dict): mapping of each defined ``CORS_*`` key to its value;

@@ -54,7 +54,7 @@ async def project(tmp_path: Path) -> Path:
     res = await agents.create_project("demo", directory=str(tmp_path))
     assert res.success, res.message
     root = tmp_path / "demo"
-    res = await agents.create_app("blog", project_root=root)
+    res = await agents.create_app("blog", project_id=root)
     assert res.success, res.message
     return root
 
@@ -66,12 +66,12 @@ async def project(tmp_path: Path) -> Path:
 
 
 async def test_add_viewset_action_lands_in_real_class(project: Path):
-    assert (await agents.create_model("blog", "Post", [{"name": "title", "type": "string", "max_length": 50}], project_root=project)).success
-    assert (await agents.create_serializer("blog", "Post", project_root=project)).success
-    assert (await agents.create_viewset("blog", "Post", project_root=project)).success
+    assert (await agents.create_model("blog", "Post", [{"name": "title", "type": "string", "max_length": 50}], project_id=project)).success
+    assert (await agents.create_serializer("blog", "Post", project_id=project)).success
+    assert (await agents.create_viewset("blog", "Post", project_id=project)).success
 
     res = await agents.add_viewset_action(
-        "blog", "Post", "publish", detail=True, methods=["post"], project_root=project
+        "blog", "Post", "publish", detail=True, methods=["post"], project_id=project
     )
     assert res.success, res.message
 
@@ -98,11 +98,11 @@ async def test_add_viewset_action_lands_in_real_class(project: Path):
 
 async def test_update_serializer_only_touches_target_class(project: Path):
     for model in ("Post", "Tag"):
-        assert (await agents.create_model("blog", model, [{"name": "title", "type": "string", "max_length": 50}], project_root=project)).success
-        assert (await agents.create_serializer("blog", model, fields=["id", "title"], project_root=project)).success
+        assert (await agents.create_model("blog", model, [{"name": "title", "type": "string", "max_length": 50}], project_id=project)).success
+        assert (await agents.create_serializer("blog", model, fields=["id", "title"], project_id=project)).success
 
     res = await agents.update_serializer(
-        "blog", "Post", fields=["id"], read_only_fields=["id"], project_root=project
+        "blog", "Post", fields=["id"], read_only_fields=["id"], project_id=project
     )
     assert res.success, res.message
 
@@ -230,15 +230,15 @@ async def test_missing_models_module_still_skippable(project: Path, monkeypatch)
 
 async def test_list_endpoints_skips_commented_registrations(project: Path):
     # Fresh scaffold contains only the commented example registration.
-    res = await agents.list_endpoints(project_root=project)
+    res = await agents.list_endpoints(project_id=project)
     assert res.success
     assert res.data["count"] == 0, res.data
 
-    assert (await agents.create_model("blog", "Post", [{"name": "title", "type": "string", "max_length": 50}], project_root=project)).success
-    assert (await agents.create_serializer("blog", "Post", project_root=project)).success
-    assert (await agents.create_viewset("blog", "Post", project_root=project)).success
-    assert (await agents.register_route("blog", "Post", project_root=project)).success
-    res = await agents.list_endpoints(project_root=project)
+    assert (await agents.create_model("blog", "Post", [{"name": "title", "type": "string", "max_length": 50}], project_id=project)).success
+    assert (await agents.create_serializer("blog", "Post", project_id=project)).success
+    assert (await agents.create_viewset("blog", "Post", project_id=project)).success
+    assert (await agents.register_route("blog", "Post", project_id=project)).success
+    res = await agents.list_endpoints(project_id=project)
     assert res.success
     assert [e["viewset"] for e in res.data["endpoints"]] == ["PostViewSet"]
 

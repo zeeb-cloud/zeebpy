@@ -44,11 +44,12 @@ ERROR_CODES = frozenset(
         "invalid_regex",
         "outside_project_root",
         "no_user_table",
-        "server_not_running",
         "server_not_reachable",
         "dependency_missing",
         "permission_denied",
-        "no_project_root",
+        "no_project_id",
+        "project_not_found",
+        "runtime_not_configured",
     }
 )
 

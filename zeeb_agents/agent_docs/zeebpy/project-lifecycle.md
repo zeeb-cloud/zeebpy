@@ -47,7 +47,7 @@ INSTALLED_APPS = [
 
 Add relationships:
 ```
-{prefix}add_relationship(app="blog", model="Post", rel={
+{prefix}add_relationship(app="blog", model_name="Post", rel={
     "name": "author",
     "type": "ForeignKey",
     "to": "User",
@@ -59,7 +59,7 @@ Add relationships:
 ## Step 4 — Run Migrations
 
 ```
-{prefix}create_migration()
+{prefix}make_migrations()
 {prefix}run_migrations()
 ```
 
@@ -77,7 +77,7 @@ serializer + viewset + route) in one call — `fields` is required and creates t
 model for you, so use this *instead of* Step 3 for that model:
 
 ```
-{prefix}generate_crud(app="blog", model="Post", fields=[
+{prefix}generate_crud(app="blog", model_name="Post", fields=[
     {"name": "title", "type": "CharField", "max_length": 200},
     {"name": "body",  "type": "TextField"},
 ])
@@ -85,11 +85,13 @@ model for you, so use this *instead of* Step 3 for that model:
 ```
 
 When the model already exists (as in Step 3 above), build the API piece by
-piece — `create_viewset` also registers the route in `urls.py`; set the URL
-segment with `prefix=`:
+piece. `create_viewset` writes the ViewSet; register its route with
+`register_route` (the URL segment defaults to the app name — override it with
+`url_prefix=`):
 ```
-{prefix}create_serializer(app="blog", model="Post")
-{prefix}create_viewset(app="blog", model="Post", prefix="posts")
+{prefix}create_serializer(app="blog", model_name="Post")
+{prefix}create_viewset(app="blog", model_name="Post")
+{prefix}register_route(app="blog", model_name="Post", url_prefix="posts")
 ```
 
 ## Step 6 — Configure Auth & Permissions
@@ -118,15 +120,16 @@ server. After a change, fetch the live URLs and re-read the OpenAPI contract:
 ## Step 9 — Seed Sample Data
 
 ```
-{prefix}seed_data(app="blog", model="Post", count=10)
-# Call once per model; optional field_defaults={...} pins specific values.
+{prefix}generate_seed_script(app="blog", models=["Post"], count=10)
+# Writes a runnable seed script; pass models=[...] for several models at once
+# and output_path=... to choose where it is written.
 ```
 
 ## Step 10 — Iterate
 
 ```
-{prefix}add_field(app="blog", model="Post", field={"name": "views", "type": "IntegerField", "default": 0})
-{prefix}create_migration()       # detects changes across all apps
+{prefix}add_field(app="blog", model_name="Post", field={"name": "views", "type": "IntegerField", "default": 0})
+{prefix}make_migrations()       # detects changes across all apps
 {prefix}run_migrations()
 ```
 

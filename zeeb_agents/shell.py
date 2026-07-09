@@ -25,7 +25,7 @@ async def run_management_command(
         command: Management command name (e.g. ``"migrate"``, ``"shell"``,
                  ``"createsuperuser"``).
         args: Optional list of additional arguments/flags.
-        project_root: Auto-detected if ``None``.
+        project_id: The host-assigned project id (required).
 
     Returns data (always):
         command (str): the command that was run.

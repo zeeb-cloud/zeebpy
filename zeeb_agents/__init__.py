@@ -33,6 +33,12 @@ without any MCP dependency on this package itself.
 
 from zeeb_agents._utils import AgentResult
 
+# Vendor-pluggable project_id → path resolution (configured once at startup).
+from zeeb_agents._utils.resolver import (
+    configure,
+    set_project_resolver,
+)
+
 # API configuration (throttling, versioning)
 from zeeb_agents.api_config import (
     configure_throttling,
@@ -145,14 +151,22 @@ from zeeb_agents.resources import (
     get_backend_generation_doc,
     get_capabilities_doc,
     get_deployment_doc,
+    get_error_recovery_doc,
     get_frontend_generation_doc,
     get_principles_doc,
     get_project_lifecycle_doc,
+    get_recipes_doc,
     get_resource,
 )
 
 # Standalone routes
 from zeeb_agents.routes import create_route
+
+# Platform-managed runtime references (preview URLs, live OpenAPI)
+from zeeb_agents.runtime import (
+    get_openapi_url,
+    get_project_reference,
+)
 
 # API schema & route introspection (BaaS)
 from zeeb_agents.schema import (
@@ -168,13 +182,6 @@ from zeeb_agents.seed import generate_seed_script
 from zeeb_agents.serializers import (
     create_serializer,
     update_serializer,
-)
-
-# Dev server
-from zeeb_agents.server import (
-    get_server_status,
-    start_server,
-    stop_server,
 )
 
 # Shell / management commands
@@ -225,6 +232,9 @@ __version__ = "0.1.0"
 __all__ = [
     # Result type
     "AgentResult",
+    # Library configuration (vendor resolver hook)
+    "configure",
+    "set_project_resolver",
     # Project
     "create_project",
     "create_app",
@@ -259,10 +269,9 @@ __all__ = [
     "run_migrations",
     "get_migration_status",
     "rollback_migration",
-    # Server
-    "start_server",
-    "stop_server",
-    "get_server_status",
+    # Platform-managed runtime references
+    "get_project_reference",
+    "get_openapi_url",
     # Logs
     "read_logs",
     "search_logs",
@@ -343,4 +352,6 @@ __all__ = [
     "get_backend_generation_doc",
     "get_frontend_generation_doc",
     "get_deployment_doc",
+    "get_recipes_doc",
+    "get_error_recovery_doc",
 ]

@@ -163,7 +163,7 @@ async def get_model_json_schema(
     Args:
         app: App directory name.
         model_name: PascalCase model class name.
-        project_root: Auto-detected if ``None``.
+        project_id: The host-assigned project id (required).
 
     Example::
 
@@ -235,7 +235,7 @@ async def list_all_routes(
     - ``@router.<method>(path)`` — standalone route decorators
 
     Args:
-        project_root: Auto-detected if ``None``.
+        project_id: The host-assigned project id (required).
 
     Returns:
         ``AgentResult`` with a ``routes`` list.  Each item has
@@ -300,7 +300,7 @@ async def export_openapi(
     Args:
         output_path: Override output file path.  Relative to project root.
         port: Port the dev server is listening on.  Defaults to ``8000``.
-        project_root: Auto-detected if ``None``.
+        project_id: The host-assigned project id (required).
 
     Returns data (on success):
         path (str): output path, relative to root when inside it, else absolute
@@ -308,11 +308,13 @@ async def export_openapi(
         title (str): the spec's ``info.title`` (``""`` if absent)
 
     Notes:
-        - Requires ``httpx`` and a running dev server.  A missing dependency
+        - Writes a *static* snapshot fetched over HTTP.  For the always-current
+          contract prefer :func:`~zeeb_agents.get_openapi_url`, which returns
+          the platform preview runtime's live OpenAPI URL.
+        - Requires ``httpx`` and a reachable running API.  A missing dependency
           fails with ``error_code="dependency_missing"``; a connection error
           or non-2xx response with ``error_code="server_not_reachable"``
-          (``data`` includes the ``port``) and a hint to run
-          ``start_server()``.
+          (``data`` includes the ``port``).
     """
     root = project_root
 
@@ -344,8 +346,9 @@ async def export_openapi(
             ) from exc
         except httpx.HTTPError as exc:
             raise AgentError(
-                f"Dev server not reachable on port {port} ({exc}) — "
-                "start it with start_server()",
+                f"API not reachable on port {port} ({exc}) — the platform "
+                "preview runtime serves the live contract; use "
+                "get_openapi_url() for its URL.",
                 code="server_not_reachable",
                 port=port,
             ) from exc
