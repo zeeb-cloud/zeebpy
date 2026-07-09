@@ -57,7 +57,7 @@ async def create_serializer(
             explicit ``fields`` list automatically.
         validate_fields: Field names to emit ``validate_<field>(self, value)``
             stub methods for.
-        project_root: Auto-detected if ``None``.
+        project_id: The host-assigned project id (required).
 
     Example::
 

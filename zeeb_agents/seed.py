@@ -172,7 +172,7 @@ async def generate_seed_script(
         count: Number of records to create per model.
         output_path: Override the output file path.  Relative paths are resolved
             from the project root.
-        project_root: Auto-detected if ``None``.
+        project_id: The host-assigned project id (required).
 
     Returns data (on success):
         path (str): script path relative to the project root

@@ -56,7 +56,7 @@ async def make_migrations(
 
     Args:
         name: Optional human-readable suffix for the migration file name.
-        project_root: Auto-detected if ``None``.
+        project_id: The host-assigned project id (required).
 
     Returns data (always):
         created (str | None): the new migration file name, or ``None`` when
@@ -160,7 +160,7 @@ async def rollback_migration(
         steps: How many applied migrations to roll back, counting from the
             most recent (default 1). When ``steps`` >= the number of applied
             migrations, everything is rolled back (target ``zero``).
-        project_root: Auto-detected if ``None``.
+        project_id: The host-assigned project id (required).
 
     Returns data (on success):
         rolled_back (list[str]): names of the migrations that were rolled

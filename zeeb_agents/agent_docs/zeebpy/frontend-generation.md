@@ -128,7 +128,7 @@ The saved `openapi.json` can be used with:
 Get the exact shape of any model for frontend form generation or validation:
 
 ```
-{prefix}get_model_json_schema(app="blog", model="Post")
+{prefix}get_model_json_schema(app="blog", model_name="Post")
 # result.data["schema"] ==
 # {
 #   "title": "Post",

@@ -45,7 +45,7 @@ async def read_logs(
         level: If set, only return lines whose text contains this log level
                (DEBUG, INFO, WARNING, ERROR, CRITICAL).
         log_file: Path to a specific log file.  Auto-detected if ``None``.
-        project_root: Auto-detected if ``None``.
+        project_id: The host-assigned project id (required).
 
     Returns data (on success):
         path (str): log file path relative to the project root
@@ -120,7 +120,7 @@ async def search_logs(
     Args:
         pattern: Regular expression pattern to search for (case-insensitive).
         log_file: Path to a specific log file.  Searches all log files if ``None``.
-        project_root: Auto-detected if ``None``.
+        project_id: The host-assigned project id (required).
 
     Returns data (on success):
         matches (list[dict]): each ``{"file": <rel path>, "line_no": int,
@@ -168,7 +168,7 @@ async def clear_logs(
 
     Args:
         log_file: Path to a specific log file.  Clears all log files if ``None``.
-        project_root: Auto-detected if ``None``.
+        project_id: The host-assigned project id (required).
 
     Returns data (on success):
         cleared (list[str]): paths (relative to root) of the truncated files

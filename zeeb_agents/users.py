@@ -72,7 +72,7 @@ async def create_user(
         password: Plain-text password.
         is_staff: Grant staff privileges.
         is_superuser: Grant superuser privileges.
-        project_root: Auto-detected if ``None``.
+        project_id: The host-assigned project id (required).
 
     Returns data (on success):
         <columns> (Any): every column of the created row, keyed by name, with
@@ -198,7 +198,7 @@ async def list_users(
     Args:
         limit: Maximum number of users to return.
         offset: Number of users to skip.
-        project_root: Auto-detected if ``None``.
+        project_id: The host-assigned project id (required).
 
     Returns data (on success):
         users (list[dict]): each row keyed by column name, ``password`` removed
@@ -242,7 +242,7 @@ async def get_user(
 
     Args:
         email_or_id: Email address (``str``) or integer primary key.
-        project_root: Auto-detected if ``None``.
+        project_id: The host-assigned project id (required).
 
     Returns data (on success):
         <columns> (Any): the matched row keyed by column name, ``password``
@@ -290,7 +290,7 @@ async def update_user(
     Args:
         email_or_id: Email address (``str``) or integer primary key.
         changes: Dict of column → new value.  ``password`` is silently removed.
-        project_root: Auto-detected if ``None``.
+        project_id: The host-assigned project id (required).
 
     Returns data (on success):
         <columns> (Any): the updated row keyed by column name, ``password``
@@ -349,7 +349,7 @@ async def delete_user(
 
     Args:
         email_or_id: Email address (``str``) or integer primary key.
-        project_root: Auto-detected if ``None``.
+        project_id: The host-assigned project id (required).
 
     Returns data (on success):
         deleted (int): number of rows deleted (always ``>= 1`` on success)
@@ -395,7 +395,7 @@ async def set_user_password(
     Args:
         email_or_id: Email address (``str``) or integer primary key.
         new_password: New plain-text password.
-        project_root: Auto-detected if ``None``.
+        project_id: The host-assigned project id (required).
 
     Returns data (always):
         None — this function carries its result only in ``success``/``message``.

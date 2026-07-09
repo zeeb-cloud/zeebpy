@@ -68,7 +68,7 @@ async def get_settings(project_root: Path | None = None) -> AgentResult:
     (whichever is detected by :func:`~zeeb_agents._utils.project.load_project_settings`).
 
     Args:
-        project_root: Auto-detected if ``None``.
+        project_id: The host-assigned project id (required).
 
     Returns data (on success):
         settings (dict): the parsed top-level settings as a dictionary.
@@ -87,7 +87,7 @@ async def get_env(project_root: Path | None = None) -> AgentResult:
     """Read the project ``.env`` file and return it as a key-value dict.
 
     Args:
-        project_root: Auto-detected if ``None``.
+        project_id: The host-assigned project id (required).
 
     Returns data (always):
         path (str): the ``.env`` path (relative to root on success, absolute
@@ -131,7 +131,7 @@ async def set_env(
     Args:
         key: Variable name (e.g. ``"SECRET_KEY"``).
         value: Variable value.
-        project_root: Auto-detected if ``None``.
+        project_id: The host-assigned project id (required).
 
     Returns data (on success):
         key (str): the variable name that was set.
@@ -175,7 +175,7 @@ async def delete_env(
 
     Args:
         key: Variable name to remove.
-        project_root: Auto-detected if ``None``.
+        project_id: The host-assigned project id (required).
 
     Returns data (always):
         key (str): the variable name that was targeted.
@@ -242,7 +242,7 @@ async def manage_settings(
         value: New value for write mode.  Pass ``None`` with ``read_only=True``
             to explicitly read a ``None``-valued setting.
         read_only: Force read mode even when ``value`` is ``None``.
-        project_root: Auto-detected if ``None``.
+        project_id: The host-assigned project id (required).
 
     Returns data:
         Both modes return ``{"key": str, "value": <value>}`` on success

@@ -13,29 +13,50 @@ from zeeb_agents._utils.project import (
     get_app_path,
     load_project_settings,
     require_project_root,
+    write_framework_marker,
 )
 from zeeb_agents._utils.project import (
     list_apps as list_apps_util,
 )
+from zeeb_agents._utils.resolver import resolve_project_id
 from zeeb_agents._utils.validation import ensure_identifier
 
 
-@agent_function
-async def create_project(name: str, directory: str = ".") -> AgentResult:
-    """Create a new Zeeb project at *directory*/*name*.
+@agent_function(resolve_project=False)
+async def create_project(
+    name: str,
+    project_id: str | None = None,
+    framework: str = "zeebpy",
+    directory: str = ".",
+) -> AgentResult:
+    """Create a new Zeeb project and record its framework.
 
     Delegates to the existing ``run_startproject`` CLI logic so the generated
-    project structure is always in sync with the CLI.
+    project structure is always in sync with the CLI, then writes a
+    ``[tool.zeeb] framework`` marker to the project's ``pyproject.toml`` (read
+    back by framework-aware doc serving).
+
+    When *project_id* is given, the project is created at the location the host
+    resolver maps it to (its parent directory is used as the scaffold target, so
+    the resolved path becomes the project root); the resolved basename should
+    equal *name*. When *project_id* is omitted, the project is created at
+    ``directory/name`` and the caller registers the id with the host itself.
 
     Returns data (on success):
         name (str): the project name
+        project_id (str | None): the id passed in (echoed back)
+        framework (str): the recorded framework (default ``"zeebpy"``)
         path (str): absolute path to the created project directory
 
     Notes:
-        - A non-zero CLI exit code returns ``success=False`` with
-          ``data=None``.
+        - A non-zero CLI exit code returns ``success=False`` with ``data=None``.
+        - Unlike other tools, ``project_id`` is optional here (this is the
+          bootstrapping call) and resolves a not-yet-existing location.
     """
     ensure_identifier(name, "project name")
+    if project_id is not None:
+        target = resolve_project_id(project_id, must_exist=False)
+        directory = str(target.parent)
 
     def _run() -> int:
         from zeeb_orm.cli.commands.startproject import run_startproject
@@ -43,11 +64,17 @@ async def create_project(name: str, directory: str = ".") -> AgentResult:
 
     rc = await asyncio.to_thread(_run)
     if rc == 0:
-        project_path = str(Path(directory).resolve() / name)
+        project_path = Path(directory).resolve() / name
+        write_framework_marker(project_path, framework)
         return AgentResult(
             success=True,
             message=f"Project '{name}' created at {project_path}",
-            data={"name": name, "path": project_path},
+            data={
+                "name": name,
+                "project_id": project_id,
+                "framework": framework,
+                "path": str(project_path),
+            },
         )
     return AgentResult(success=False, message=f"Project creation failed (exit code {rc})")
 
@@ -168,7 +195,7 @@ async def list_apps(project_root: Path | None = None) -> AgentResult:
     """Return all app directory names found under ``apps/`` in the project.
 
     Args:
-        project_root: Auto-detected if ``None``.
+        project_id: The host-assigned project id (required).
 
     Returns data (on success):
         apps (list[str]): app directory names under ``apps/``
@@ -193,7 +220,7 @@ async def get_project_structure(
     ``*.pyc`` files, and ``*.egg-info`` directories.
 
     Args:
-        project_root: Auto-detected if ``None``.
+        project_id: The host-assigned project id (required).
         max_depth: Maximum directory depth to traverse (default: 3).
 
     Returns data (on success):

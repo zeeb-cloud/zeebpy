@@ -302,7 +302,7 @@ async def test_make_migrations_with_custom_user_model_and_dotted_fk(tmp_path):
     assert res.success, res.message
     root = tmp_path / "demo"
     for app in ("accounts", "expenses"):
-        res = await agents.create_app(app, project_root=root)
+        res = await agents.create_app(app, project_id=root)
         assert res.success, res.message
 
     # create_app scaffolds but does not register — clients add the apps to
@@ -320,7 +320,7 @@ async def test_make_migrations_with_custom_user_model_and_dotted_fk(tmp_path):
         "accounts",
         "User",
         extra_fields=[{"name": "role", "type": "CharField", "max_length": 32}],
-        project_root=root,
+        project_id=root,
     )
     assert res.success, res.message
     assert res.data["auth_user_model"] == "accounts.User"
@@ -337,11 +337,11 @@ async def test_make_migrations_with_custom_user_model_and_dotted_fk(tmp_path):
                 "on_delete": "CASCADE",
             },
         ],
-        project_root=root,
+        project_id=root,
     )
     assert res.success, res.message
 
-    res = await agents.make_migrations(project_root=root)
+    res = await agents.make_migrations(project_id=root)
     assert res.success, res.message
     assert res.data["created"] is not None
     operations = "\n".join(res.data["operations"])

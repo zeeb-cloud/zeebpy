@@ -52,7 +52,7 @@ async def configure_throttling(
         rates: Mapping of throttle scope → rate string, e.g.
             ``{"anon": "100/hour", "user": "1000/day"}``.  Rate format is
             ``"<number>/<period>"`` with period s/sec, m/min, h/hour, d/day.
-        project_root: Auto-detected if ``None``.
+        project_id: The host-assigned project id (required).
 
     Returns data (on success):
         keys_written (list[str]): the settings keys written
@@ -153,7 +153,7 @@ async def configure_versioning(
             (writes ``DEFAULT_VERSION``).
         allowed_versions: Versions accepted; others get an
             ``API_VERSION_INVALID`` error (writes ``ALLOWED_VERSIONS``).
-        project_root: Auto-detected if ``None``.
+        project_id: The host-assigned project id (required).
 
     Returns data (on success):
         scheme (str): the scheme configured

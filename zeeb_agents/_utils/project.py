@@ -29,6 +29,50 @@ def require_project_root(project_root: Path | None) -> Path:
     return root
 
 
+DEFAULT_FRAMEWORK = "zeebpy"
+
+
+def write_framework_marker(project_root: Path, framework: str) -> None:
+    """Record ``framework`` under ``[tool.zeeb]`` in the project's pyproject.toml.
+
+    Creates ``pyproject.toml`` if absent; otherwise ensures a ``[tool.zeeb]``
+    section with a ``framework`` key (a light, dependency-free text edit — no
+    TOML writer needed for this one key).
+    """
+    path = project_root / "pyproject.toml"
+    marker = f'[tool.zeeb]\nframework = "{framework}"\n'
+    if not path.exists():
+        path.write_text(marker, encoding="utf-8")
+        return
+    text = path.read_text(encoding="utf-8")
+    if "[tool.zeeb]" not in text:
+        sep = "" if text.endswith("\n") else "\n"
+        path.write_text(f"{text}{sep}\n{marker}", encoding="utf-8")
+
+
+def detect_framework(project_root: Path | None) -> str:
+    """Return the project's framework id, defaulting to ``"zeebpy"``.
+
+    Reads ``[tool.zeeb] framework`` from the project's ``pyproject.toml`` when
+    present; otherwise falls back to :data:`DEFAULT_FRAMEWORK`. Never raises.
+    """
+    if project_root is None:
+        return DEFAULT_FRAMEWORK
+    path = project_root / "pyproject.toml"
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return DEFAULT_FRAMEWORK
+    import re
+
+    m = re.search(
+        r"\[tool\.zeeb\][^\[]*?\bframework\s*=\s*[\"']([^\"']+)[\"']",
+        text,
+        re.DOTALL,
+    )
+    return m.group(1) if m else DEFAULT_FRAMEWORK
+
+
 def load_project_settings(project_root: Path) -> dict[str, Any]:
     """Dynamically load the project settings module and return its attributes."""
     settings: dict[str, Any] = {

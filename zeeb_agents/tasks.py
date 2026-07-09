@@ -67,7 +67,7 @@ async def create_task(
         function_name: Snake-case function name for the task.
         schedule: Optional cron expression (e.g. ``"0 * * * *"`` for every hour)
             or human-readable description.  Used only as a comment in the stub.
-        project_root: Auto-detected if ``None``.
+        project_id: The host-assigned project id (required).
 
     Example::
 
@@ -137,7 +137,7 @@ async def list_tasks(
 
     Args:
         app: App directory name.
-        project_root: Auto-detected if ``None``.
+        project_id: The host-assigned project id (required).
 
     Returns data (always):
         app (str): the app directory name (omitted when ``tasks.py`` is missing)
@@ -184,7 +184,7 @@ async def delete_task(
     Args:
         app: App directory name.
         function_name: Name of the task function to remove.
-        project_root: Auto-detected if ``None``.
+        project_id: The host-assigned project id (required).
 
     Returns data (on success):
         app (str): the app directory name

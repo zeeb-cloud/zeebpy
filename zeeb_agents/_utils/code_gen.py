@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import textwrap
 from pathlib import Path
 
 from zeeb_agents._utils.errors import AgentError, close_matches
@@ -380,6 +381,117 @@ def viewset_option_imports(
     if filterset:
         imports.append(f"from .filters import {filterset}")
     return imports
+
+
+def render_action_method(
+    action_name: str,
+    detail: bool = True,
+    methods: list[str] | None = None,
+    body: str | None = None,
+    url_path: str | None = None,
+    request_serializer: str | None = None,
+    response_serializer: str | None = None,
+    request_schema: str | None = None,
+    response_schema: str | None = None,
+    permission: str | None = None,
+) -> str:
+    """Render a custom ``@action`` method (decorator + body) for a ViewSet.
+
+    The decorator carries only the kwargs that were supplied — ``detail`` and
+    ``methods`` always, then optionally ``url_path`` (a string literal),
+    ``request_serializer``/``response_serializer``/``request_schema``/
+    ``response_schema`` (bare class-name references — the caller ensures the
+    imports) and ``permission_classes=[permissions.<Name>]``.
+
+    When *body* is given it is used verbatim (dedented then re-indented). When
+    omitted, a scaffold is generated: a bare ``pass`` placeholder if no
+    serializer/schema is wired, otherwise a serializer-aware skeleton that reads
+    validated input via ``self.get_action_request_body()`` (loading the instance
+    with ``await self.get_object()`` for detail actions) and returns serialized
+    output.
+
+    This function only renders text — validating *permission* and the
+    serializer/schema class names is the caller's job (see
+    :func:`validate_permission` and ``ensure_identifier``).
+    """
+    action_methods = [m.lower() for m in (methods or ["get"])]
+    methods_repr = ", ".join(f'"{m}"' for m in action_methods)
+
+    parts = [f"detail={detail}", f"methods=[{methods_repr}]"]
+    if url_path:
+        parts.append(f'url_path="{url_path}"')
+    if request_serializer:
+        parts.append(f"request_serializer={request_serializer}")
+    if response_serializer:
+        parts.append(f"response_serializer={response_serializer}")
+    if request_schema:
+        parts.append(f"request_schema={request_schema}")
+    if response_schema:
+        parts.append(f"response_schema={response_schema}")
+    if permission:
+        parts.append(f"permission_classes=[permissions.{permission}]")
+    decorator = f"    @action({', '.join(parts)})"
+    signature = f"    async def {action_name}(self, request, pk=None):"
+
+    if body is not None and body.strip():
+        dedented = textwrap.dedent(body).strip("\n")
+        body_block = textwrap.indent(dedented, "        ")
+    else:
+        body_block = _render_action_scaffold(
+            action_name,
+            detail=detail,
+            request_serializer=request_serializer,
+            response_serializer=response_serializer,
+            request_schema=request_schema,
+            response_schema=response_schema,
+        )
+    return f"{decorator}\n{signature}\n{body_block}\n"
+
+
+def _render_action_scaffold(
+    action_name: str,
+    *,
+    detail: bool,
+    request_serializer: str | None,
+    response_serializer: str | None,
+    request_schema: str | None,
+    response_schema: str | None,
+) -> str:
+    """Return the indented method body for a custom action lacking an explicit body.
+
+    With no serializer/schema wired this preserves the historical
+    ``pass  # TODO`` placeholder; otherwise it emits a serializer-aware skeleton
+    the developer fills in.
+    """
+    has_wiring = any(
+        (request_serializer, response_serializer, request_schema, response_schema)
+    )
+    if not has_wiring:
+        return f"        pass  # TODO: implement {action_name}"
+
+    lines: list[str] = []
+    if request_serializer:
+        lines.append(
+            f"serializer = {request_serializer}(data=self.get_action_request_body())"
+        )
+        lines.append("serializer.is_valid(raise_exception=True)")
+        lines.append("data = serializer.validated_data")
+    elif request_schema:
+        lines.append("data = self.get_action_request_body()")
+    if detail:
+        lines.append("instance = await self.get_object()")
+    lines.append(f"# TODO: apply your logic for {action_name}")
+    if response_serializer:
+        if detail:
+            lines.append(f"return {response_serializer}(instance).data")
+        else:
+            lines.append(
+                f"# serialize your result set: {response_serializer}(items, many=True).data"
+            )
+            lines.append('return {"detail": "TODO"}')
+    else:
+        lines.append('return {"detail": "TODO"}')
+    return textwrap.indent("\n".join(lines), "        ")
 
 
 # ---------------------------------------------------------------------------
