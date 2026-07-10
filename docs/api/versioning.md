@@ -1,6 +1,6 @@
 # API Versioning
 
-DRF-style API versioning: a configurable scheme determines the requested API
+Scheme-based API versioning: a configurable scheme determines the requested API
 version for each request and makes it available as `request.state.version`,
 `viewset.version`, or via the `get_api_version` dependency.
 

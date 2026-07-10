@@ -171,8 +171,8 @@ Two tools are deliberately sandboxed:
 
 ## 6. Framework concepts a coding agent needs
 
-Zeeb is a Django-shaped, async-first framework: an ORM (`zeeb_orm`) over
-SQLAlchemy, a DRF-style API layer (`zeeb_api`) over FastAPI, and these agent
+Zeeb is an async-first Python web framework: an ORM (`zeeb_orm`) over
+SQLAlchemy, a declarative API layer (`zeeb_api`) over FastAPI, and these agent
 tools. A generated project looks like:
 
 ```
@@ -189,7 +189,7 @@ The normal order to build a resource end-to-end:
 
 1. `{prefix}create_app("blog")` — scaffold the app under `apps/blog/`.
 2. `{prefix}create_model(...)` — append a `Model` to `apps/blog/models.py`.
-3. `{prefix}create_serializer(...)` — a DRF-style `ModelSerializer` in
+3. `{prefix}create_serializer(...)` — a declarative `ModelSerializer` in
    `serializers.py`.
 4. `{prefix}create_viewset(...)` — a `ModelViewSet` (CRUD) in `views.py`, then
    `{prefix}register_route(...)` to mount it in `apps/<app>/urls.py` (see below).
@@ -200,7 +200,7 @@ in one shot; you still run the migrations afterwards.
 
 ### How URLs get registered
 
-Routing is two-tiered, mirroring Django:
+Routing is two-tiered:
 
 - `{prefix}create_viewset(...)` writes the ViewSet class to
   **`apps/<app>/views.py`** but does **not** register its route. Register it with
@@ -236,7 +236,7 @@ Routing is two-tiered, mirroring Django:
 
 ### How auth works
 
-`zeeb_api` ships Django-like auth that these tools manage:
+`zeeb_api` ships built-in auth that these tools manage:
 
 - **Users**: a `User` model with hashed passwords. Manage it with
   `{prefix}create_user(email, password, is_staff=, is_superuser=)`,
@@ -254,12 +254,12 @@ Routing is two-tiered, mirroring Django:
   OAuth router; credentials are read from env vars.
 - **Custom user model**: `{prefix}create_user_model(app, model_name=, extra_fields=)`
   extends `AbstractUser` and sets `AUTH_USER_MODEL`; run migrations after.
-- **Authorization**: DRF-style permission classes guard ViewSets. ViewSets
+- **Authorization**: declarative permission classes guard ViewSets. ViewSets
   scaffolded by `{prefix}create_viewset` default to
   `IsAuthenticatedOrReadOnly`; pass `permission=` to change it — a single
   name or a list (every listed class must allow the request — AND; valid:
   `AllowAny`, `IsAuthenticated`, `IsAdminUser`, `IsAuthenticatedOrReadOnly`,
-  `IsOwner`, `IsOwnerOrReadOnly`, `DjangoModelPermissions`). Create custom
+  `IsOwner`, `IsOwnerOrReadOnly`, `ModelPermissions`). Create custom
   classes with `{prefix}create_permission_class(app, class_name, logic=...)`
   and list them with `{prefix}list_permission_classes`.
 - **Per-viewset authentication**: pass `authentication=` to

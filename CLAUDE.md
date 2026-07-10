@@ -46,7 +46,7 @@ Demo project: `cd demo_blog && python manage.py runserver`. Runnable examples li
 - `db/connection.py` — `Database` wrapper around AsyncEngine/AsyncSession; configured via `configure(database={...})` or `DATABASE_URL` env var (asyncpg / aiomysql / aiosqlite).
 - `signals.py` — Django-style signals (`pre_save`, `post_save`, `pre_delete`, `post_delete`); `pre_*` fires before flush and can abort, `post_*` fires after commit; `on_commit()` hook available.
 - `migrations/` — Alembic-based: `autodetector.py` diffs models vs. schema state, `writer.py` emits migration files, `executor.py` applies them, `optimizer.py` collapses operations. Driven by the `zeeb-manage` CLI in `cli/commands/`.
-- Feature-parity status vs. Django (incl. deliberate omissions): `docs/orm/django-parity.md`.
+- Feature-parity status vs. Django (incl. deliberate omissions): `docs/orm/feature-reference.md`.
 
 ### zeeb_api
 

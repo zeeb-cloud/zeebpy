@@ -250,7 +250,7 @@ VIEWSET_PERMISSIONS = frozenset(
         "IsAuthenticatedOrReadOnly",
         "IsOwner",
         "IsOwnerOrReadOnly",
-        "DjangoModelPermissions",
+        "ModelPermissions",
     }
 )
 

@@ -175,7 +175,7 @@ After deployment, verify with:
 
 | Variable | Required | Description |
 |---|---|---|
-| `SECRET_KEY` | ✅ | Django-style secret key |
+| `SECRET_KEY` | ✅ | Application secret key used for signing |
 | `DATABASE_URL` | ✅ | Async DB URL (e.g. `postgresql+asyncpg://...`) |
 | `DEBUG` | — | Default `False` in prod |
 | `ALLOWED_HOSTS` | — | Comma-separated hostnames |

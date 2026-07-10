@@ -1,6 +1,6 @@
 # Settings
 
-Configure your Zeeb project through `settings.py`. Zeeb uses Django-style settings with sensible defaults.
+Configure your Zeeb project through `settings.py`. Zeeb reads module-level settings constants with sensible defaults.
 
 ## Quick Start
 

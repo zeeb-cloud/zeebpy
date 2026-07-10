@@ -1,6 +1,6 @@
 # Signals
 
-`zeeb_orm` provides a Django-style signal system for observing model lifecycle events
+`zeeb_orm` provides a signal system for observing model lifecycle events
 without subclassing. Signals decouple the notification from the action — any number of
 receivers can react to a `save()` or `delete()` without the model knowing about them.
 
@@ -167,7 +167,7 @@ async def on_order_saved(sender, instance, created, **kwargs):
         on_commit(lambda: send_confirmation_email(instance.email))
 ```
 
-`post_save` fires per-operation (like Django), not per-transaction.
+`post_save` fires per-operation, not per-transaction.
 `on_commit` defers the callback until the outermost `atomic()` block commits.
 
 ---

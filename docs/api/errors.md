@@ -174,9 +174,9 @@ custom errors. The full set: `ValidationException` (400),
 `InsecureSecretError` (500). `ImproperlyConfigured` is a plain (non-HTTP)
 configuration error.
 
-### DRF-compatible aliases
+### Shorthand aliases
 
-For code ported from Django REST Framework, `zeeb_api.exceptions` also exports
+For convenience, `zeeb_api.exceptions` also exports
 `APIException`, `ValidationError`, `NotFound`, `PermissionDenied`,
 `AuthenticationFailed`, `MethodNotAllowed`, and `Throttled`. They take a
 `detail` argument (string, or `{field: [messages]}` for `ValidationError`,

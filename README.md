@@ -1,25 +1,25 @@
 # Zeeb ORM & API
 
-A Django-like framework for building async APIs with FastAPI. Includes a powerful ORM (SQLAlchemy-based) and DRF-style serializers/viewsets.
+A batteries-included framework for building async APIs with FastAPI. Includes a powerful ORM (SQLAlchemy-based) and declarative serializers/viewsets.
 
 ## Features
 
 ### ORM (zeeb_orm)
-- **Django-style API**: Familiar `Model.objects.filter()` syntax
+- **High-level query API**: Chainable `Model.objects.filter()` syntax
 - **Q Objects**: Complex queries with `Q(a=1) & Q(b=2)`, `Q(x=1) | Q(y=2)`, `~Q(z=3)`
 - **F Expressions**: Reference fields in queries with `F('field_name')`
 - **Async-first**: Built for async Python with sync wrappers
 - **Multi-database**: PostgreSQL, MySQL, SQLite support
-- **Alembic Migrations**: Django-like `makemigrations` and `migrate` commands
+- **Alembic Migrations**: `makemigrations` and `migrate` commands
 - **UUID Primary Keys**: Default UUID PKs for all models
 
 ### API (zeeb_api)
-- **DRF-style Serializers**: Pydantic-based with familiar API
+- **Declarative Serializers**: Pydantic-based, class-driven field definitions
 - **ModelSerializer**: Auto-generate from ORM models
 - **ViewSets**: CRUD operations out of the box
 - **Routers**: Auto URL generation
 - **JWT Authentication**: Built-in auth with refresh tokens
-- **User Model**: Database-backed User/Permission like Django
+- **User Model**: Database-backed User and Permission models built in
 - **Exception Handling**: Standardized error responses with i18n support
 
 ### Agent Functions (zeeb_agents)
@@ -41,7 +41,7 @@ pip install "zeebpy[all] @ git+https://github.com/zeeb-cloud/zeebpy.git"        
 
 ## Quick Start - Project Setup
 
-The recommended way to use Zeeb is with the project structure (like Django):
+The recommended way to use Zeeb is with the generated project structure:
 
 ```bash
 # Create a new project
@@ -273,7 +273,7 @@ async def create_user_with_profile(name: str):
 
 ## Migrations
 
-Zeeb ORM uses Alembic for migrations with Django-like commands.
+Zeeb ORM uses Alembic for migrations behind simple `makemigrations`/`migrate` commands.
 
 ### Initialize Migrations
 
@@ -454,7 +454,7 @@ DATABASE_POOL_SIZE=5
 
 ---
 
-## zeeb_api - DRF-style API Framework
+## zeeb_api - Declarative API Framework
 
 ### Defining Models and Serializers
 
@@ -638,7 +638,7 @@ class ProtectedViewSet(viewsets.ModelViewSet):
 
 ### User Model
 
-Zeeb includes Django-like User and Permission models:
+Zeeb includes built-in User and Permission models:
 
 ```python
 from zeeb_api.auth import get_user_model

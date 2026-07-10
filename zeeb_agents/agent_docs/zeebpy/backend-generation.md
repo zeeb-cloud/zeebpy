@@ -53,7 +53,7 @@ Common options on any field: `null`, `default`, `unique`, `index`,
 defaults use the reserved `"raw"` key (verbatim Python per kwarg).
 Relation rules: `on_delete` ∈ CASCADE / PROTECT / RESTRICT / SET_NULL /
 SET_DEFAULT / DO_NOTHING; `SET_NULL` requires `null=True`. `to` accepts a
-bare model name (`"User"`), a Django-style dotted label (`"accounts.User"`),
+bare model name (`"User"`), a dotted `app.Model` label (`"accounts.User"`),
 or `"self"`.
 
 ### Creating Models
@@ -308,7 +308,7 @@ exception classes from `zeeb_api.exceptions` — never an ad-hoc
 
 Common choices: `ResourceNotFoundException` (404), `ValidationException` (400,
 takes field-level `details`), `PermissionException` (403),
-`ResourceConflictException` (409). DRF-style aliases (`NotFound`,
+`ResourceConflictException` (409). Shorthand aliases (`NotFound`,
 `ValidationError({"field": ["msg"]})`, `PermissionDenied`) also exist. A bare
 `await Model.objects.get(...)` that misses is fine too — the installed
 handlers convert the ORM's `DoesNotExist` to a 404 `RESOURCE_NOT_FOUND`

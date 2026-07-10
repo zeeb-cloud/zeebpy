@@ -5,14 +5,14 @@ build-backend = "hatchling.build"
 [project]
 name = "zeebpy"
 version = "0.1.0"
-description = "A Django-like ORM wrapper built on SQLAlchemy and Alembic"
+description = "An async-first Python web framework: ORM (SQLAlchemy/Alembic), declarative API layer, and agent tooling"
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.10"
 authors = [
     { name = "Zeeb Cloud" }
 ]
-keywords = ["orm", "sqlalchemy", "alembic", "django", "async", "database"]
+keywords = ["orm", "sqlalchemy", "alembic", "async", "database", "api"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",

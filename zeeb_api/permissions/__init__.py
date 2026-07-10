@@ -10,7 +10,7 @@ from zeeb_api.permissions.base import (
     IsAuthenticatedOrReadOnly,
     IsOwner,
     IsOwnerOrReadOnly,
-    DjangoModelPermissions,
+    ModelPermissions,
 )
 
 __all__ = [
@@ -21,5 +21,5 @@ __all__ = [
     "IsAuthenticatedOrReadOnly",
     "IsOwner",
     "IsOwnerOrReadOnly",
-    "DjangoModelPermissions",
+    "ModelPermissions",
 ]

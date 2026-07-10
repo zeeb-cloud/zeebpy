@@ -1,6 +1,6 @@
 # Queries
 
-Zeeb's QuerySet provides a powerful, Django-like interface for querying data.
+Zeeb's QuerySet provides a powerful, chainable interface for querying data.
 
 ## Basic Queries
 
@@ -102,8 +102,8 @@ Article.objects.filter(published_at__isnull=False)
 
 ### Date and Time Lookups
 
-`DateTimeField`, `DateField` and `TimeField` columns support Django-style
-datetime *transforms* between the field name and the (optional) lookup:
+`DateTimeField`, `DateField` and `TimeField` columns support datetime
+*transforms* between the field name and the (optional) lookup:
 
 ```python
 from datetime import date, time
@@ -141,8 +141,8 @@ Article.objects.filter(author__joined_at__year=2023)
 | `time` | Time part (compare with `datetime.time`) | `created_at__time__gte=time(9, 0)` |
 
 All transforms compile to dialect-specific SQL for SQLite, PostgreSQL and
-MySQL (e.g. `strftime` on SQLite, `EXTRACT` on PostgreSQL) and follow
-Django semantics (`week_day` counts Sunday as 1).
+MySQL (e.g. `strftime` on SQLite, `EXTRACT` on PostgreSQL). Note that
+`week_day` counts Sunday as 1.
 
 ### Related Field Lookups
 
@@ -162,7 +162,7 @@ posts = await Post.objects.filter(author__profile__bio__contains="rust")
 authors = await Author.objects.filter(posts__views__gt=100)
 
 # Reverse joins can yield one row per matching related object —
-# use .distinct() to deduplicate (Django parity)
+# use .distinct() to deduplicate
 authors = await Author.objects.filter(posts__published=True).distinct()
 
 # Compare a relation directly with an instance (no JOIN, uses the FK column)
@@ -636,7 +636,7 @@ results = await cheap.difference(popular)
 results = await qs1.union(qs2, qs3)
 ```
 
-After combining, only these operations may be applied (Django parity):
+After combining, only these operations may be applied:
 
 ```python
 combined = cheap.union(popular)

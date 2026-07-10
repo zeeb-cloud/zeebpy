@@ -1,6 +1,6 @@
 # CLI Commands
 
-Zeeb provides Django-style management commands via `manage.py` or the `zeeb` CLI.
+Zeeb provides project management commands via `manage.py` or the `zeeb` CLI.
 
 ## Project Commands
 
