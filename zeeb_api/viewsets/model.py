@@ -25,15 +25,16 @@ class ModelViewSet(
     """
     ViewSet with full CRUD operations.
     
-    Provides:
-    - query (POST /items/query/) - Query with Q filters, ordering, pagination
-    - list (GET /items/) - filterable, paginated collection
-    - create (POST /items/)
-    - retrieve (GET /items/{id}/)
-    - update (PUT /items/{id}/)
-    - partial_update (PATCH /items/{id}/)
-    - destroy (DELETE /items/{id}/)
-    
+    Provides (canonical paths are slash-less; the trailing-slash variant also
+    resolves):
+    - query (POST /items/query) - Query with Q filters, ordering, pagination
+    - list (GET /items) - filterable, paginated collection
+    - create (POST /items)
+    - retrieve (GET /items/{id})
+    - update (PUT /items/{id})
+    - partial_update (PATCH /items/{id})
+    - destroy (DELETE /items/{id})
+
     Usage:
         class UserViewSet(ModelViewSet):
             queryset = User.objects
@@ -52,11 +53,12 @@ class ReadOnlyModelViewSet(
     """
     ViewSet with read-only operations.
     
-    Provides:
-    - query (POST /items/query/) - Query with Q filters, ordering, pagination
-    - list (GET /items/) - filterable, paginated collection
-    - retrieve (GET /items/{id}/)
-    
+    Provides (canonical paths are slash-less; the trailing-slash variant also
+    resolves):
+    - query (POST /items/query) - Query with Q filters, ordering, pagination
+    - list (GET /items) - filterable, paginated collection
+    - retrieve (GET /items/{id})
+
     Usage:
         class PublicUserViewSet(ReadOnlyModelViewSet):
             queryset = User.objects

@@ -244,10 +244,13 @@ async def manage_settings(
         read_only: Force read mode even when ``value`` is ``None``.
         project_id: The host-assigned project id (required).
 
-    Returns data:
-        Both modes return ``{"key": str, "value": <value>}`` on success
-        (read mode → the current value, write mode → the value just written).
-        When the key is missing, ``success=False`` and ``data={"key": key}``.
+    Returns data (on success):
+        key (str): the setting name.
+        value (Any): the current value (read mode) or the value just written
+            (write mode).
+
+    Both modes return the same ``{"key", "value"}`` shape. When the key is
+    missing, ``success=False`` and ``data={"key": key}``.
 
     Notes:
         - Mode is chosen by arguments, not a flag: only ``key`` (or

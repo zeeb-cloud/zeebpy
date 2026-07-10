@@ -59,7 +59,7 @@ or `"self"`.
 ### Creating Models
 
 ```
-{prefix}create_model(app="shop", name="Product", fields=[
+{prefix}create_model(app="shop", model_name="Product", fields=[
     {"name": "name",        "type": "CharField",   "max_length": 200},
     {"name": "price",       "type": "DecimalField","max_digits": 10, "decimal_places": 2},
     {"name": "stock",       "type": "IntegerField","default": 0},
@@ -77,7 +77,7 @@ The `meta=` dict supports the full `class Meta` surface — values are emitted
 as Python literals, so nested structures work:
 
 ```
-{prefix}create_model(app="shop", name="Product", fields=[...], meta={
+{prefix}create_model(app="shop", model_name="Product", fields=[...], meta={
     "table_name": "shop_products",
     "ordering": ["-created_at"],
     "unique_together": [["name", "category"]],
@@ -118,7 +118,7 @@ suggestions before anything is written.
 ## Serializers
 
 Zeeb serializers are Pydantic-like classes that validate and serialize data.
-The model argument is named `model` (not `model_name`).
+The model argument is named `model_name`.
 
 ```
 # Generate serializer from model fields (defaults to all fields)
@@ -162,13 +162,21 @@ through as literals.
 ## ViewSets
 
 The model argument is named `model_name`. The permission defaults to
-`IsAuthenticatedOrReadOnly` — override with `permission=` (a single class name).
-`create_viewset` writes the ViewSet only; register its route separately with
-`register_route` (or use `generate_crud`, which does both).
+`IsAuthenticatedOrReadOnly` — override with `permission=` (a single class name
+or a list; every listed class must allow the request — AND semantics).
+Per-viewset authentication is optional: pass `authentication=` (a name or a
+list of `zeeb_api.authentication` classes, tried in order — first match wins)
+to override the global auth middleware for this endpoint; omit it to keep the
+project-wide default. `create_viewset` writes the ViewSet only; register its
+route separately with `register_route` (or use `generate_crud`, which does
+both).
 
 ```
 {prefix}create_viewset(app="shop", model_name="Product")
 {prefix}create_viewset(app="shop", model_name="Order", permission="IsAuthenticated")
+{prefix}create_viewset(app="shop", model_name="Invoice",
+                       permission=["IsAuthenticated", "IsOwner"],
+                       authentication=["JWTAuthentication"])
 ```
 
 ### ViewSet options — pagination, throttling, search, ordering, filters
@@ -210,7 +218,7 @@ startswith, istartswith, endswith, iendswith, isnull. Attach with
 Add a custom action (extra routed endpoint on the ViewSet). Target the ViewSet
 by its model with `model_name=` (e.g. `"Product"` → `ProductViewSet`); the
 `action_name` is also the URL segment — this scaffolds `POST
-/products/{id}/restock/`. Pass the implementation via `body=` (flush-left or
+/products/{id}/restock`. Pass the implementation via `body=` (flush-left or
 indented; it is normalized for you):
 
 ```
@@ -240,7 +248,8 @@ fill in.
 
 A `detail=True` action receives `pk` and operates on one instance (load it with
 `await self.get_object()`); `detail=False` acts on the collection
-(`/products/restock/`).
+(`/products/restock`). (Routes are served slash-less canonical; the
+trailing-slash variant also resolves.)
 
 ## Standalone Routes
 
@@ -253,7 +262,7 @@ wrapper yourself. Put the logic in `body=` and declare any imports it needs in
 ```
 {prefix}create_route(
     app="shop", path="/products/featured", method="get",
-    name="get_featured_products",
+    function_name="get_featured_products",
     imports=["from .models import Product"],
     body="""
         products = await Product.objects.filter(featured=True).all()
@@ -280,7 +289,7 @@ exception classes from `zeeb_api.exceptions` — never an ad-hoc
 ```
 {prefix}create_route(
     app="shop", path="/products/{product_id}/discount", method="post",
-    name="apply_discount",
+    function_name="apply_discount",
     imports=[
         "from .models import Product",
         "from zeeb_api.exceptions import ResourceNotFoundException, ValidationException",
@@ -309,8 +318,10 @@ docs; the client-side view is in `mcp://docs/frontend-generation`.
 ## Full CRUD in One Call
 
 `{prefix}generate_crud` runs model + serializer + viewset + route registration
-in one shot. It takes `model` and a **required** `fields` list (same field
-spec dicts as `create_model`); run migrations afterwards.
+in one shot. It takes `model_name` and a **required** `fields` list (same field
+spec dicts as `create_model`). It is resumable (each step uses
+`if_exists="skip"`); pass `migrate=True` to also make + apply migrations in the
+same call, or run migrations yourself afterwards.
 
 ```
 {prefix}generate_crud(app="shop", model_name="Product", fields=[

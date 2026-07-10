@@ -457,6 +457,7 @@ class SimpleRouter:
                     if permission_classes is not None:
                         viewset._action_permission_classes = permission_classes
                     
+                    await viewset.perform_authentication(request)
                     await viewset.check_permissions(request)
                     viewset.version = getattr(request.state, "version", None)
                     await viewset.check_throttles(request)
@@ -490,6 +491,7 @@ class SimpleRouter:
                     if permission_classes is not None:
                         viewset._action_permission_classes = permission_classes
                     
+                    await viewset.perform_authentication(request)
                     await viewset.check_permissions(request)
                     viewset.version = getattr(request.state, "version", None)
                     await viewset.check_throttles(request)
@@ -523,6 +525,7 @@ class SimpleRouter:
                     if permission_classes is not None:
                         viewset._action_permission_classes = permission_classes
                     
+                    await viewset.perform_authentication(request)
                     await viewset.check_permissions(request)
                     viewset.version = getattr(request.state, "version", None)
                     await viewset.check_throttles(request)
@@ -554,6 +557,7 @@ class SimpleRouter:
                     if permission_classes is not None:
                         viewset._action_permission_classes = permission_classes
                     
+                    await viewset.perform_authentication(request)
                     await viewset.check_permissions(request)
                     viewset.version = getattr(request.state, "version", None)
                     await viewset.check_throttles(request)
@@ -600,7 +604,7 @@ class DefaultRouter(SimpleRouter):
             base_url = str(request.base_url).rstrip("/")
             
             return {
-                basename: f"{base_url}/{prefix.strip('/')}/"
+                basename: f"{base_url}/{prefix.strip('/')}"
                 for prefix, _, basename in self._registry
             }
         

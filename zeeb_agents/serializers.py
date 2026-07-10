@@ -12,8 +12,10 @@ from zeeb_agents._utils.code_gen import (
     class_exists,
     ensure_import,
     render_serializer_class,
+    skip_result,
+    validate_if_exists,
 )
-from zeeb_agents._utils.errors import AgentError
+from zeeb_agents._utils.errors import AgentError, fail
 from zeeb_agents._utils.validation import ensure_app_exists, ensure_identifier
 
 
@@ -30,6 +32,7 @@ async def create_serializer(
     read_only_fields: list[str] | None = None,
     extra_fields: list[dict] | None = None,
     validate_fields: list[str] | None = None,
+    if_exists: str = "error",
     project_root: Path | None = None,
 ) -> AgentResult:
     """Append a ``ModelSerializer`` subclass to ``apps/<app>/serializers.py``.
@@ -57,6 +60,8 @@ async def create_serializer(
             explicit ``fields`` list automatically.
         validate_fields: Field names to emit ``validate_<field>(self, value)``
             stub methods for.
+        if_exists: ``"error"`` (default) or ``"skip"`` (succeed and change
+            nothing if the serializer already exists — makes retries idempotent).
         project_id: The host-assigned project id (required).
 
     Example::
@@ -79,9 +84,12 @@ async def create_serializer(
           plus close-match ``suggestions`` where applicable.
     """
     ensure_identifier(model_name, "model name")
+    validate_if_exists(if_exists)
     path = _serializers_file(app, project_root)
     if not path.exists():
-        return AgentResult(success=False, message=f"serializers.py not found at {path}")
+        return fail(
+            f"serializers.py not found at {path}", code="file_not_found", missing="serializers.py"
+        )
 
     class_name = f"{model_name}Serializer"
 
@@ -101,7 +109,17 @@ async def create_serializer(
         ensure_import(path, f"from .models import {model_name}")
         append_block(path, class_code)
 
-    await asyncio.to_thread(_write)
+    try:
+        await asyncio.to_thread(_write)
+    except AgentError as exc:
+        if if_exists == "skip" and (exc.result.data or {}).get("error_code") == "already_exists":
+            return skip_result(
+                f"'{class_name}' already exists in apps/{app}/serializers.py; skipped",
+                app=app,
+                model=model_name,
+                serializer=class_name,
+            )
+        raise
     return AgentResult(
         success=True,
         message=f"'{class_name}' created in apps/{app}/serializers.py",
@@ -140,7 +158,9 @@ async def update_serializer(
     """
     path = _serializers_file(app, project_root)
     if not path.exists():
-        return AgentResult(success=False, message=f"serializers.py not found at {path}")
+        return fail(
+            f"serializers.py not found at {path}", code="file_not_found", missing="serializers.py"
+        )
 
     class_name = f"{model_name}Serializer"
 

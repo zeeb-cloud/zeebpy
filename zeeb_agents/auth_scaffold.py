@@ -358,7 +358,9 @@ async def create_user_model(
     root = require_project_root(project_root)
     models_path = ensure_app_exists(app, root) / "models.py"
     if not models_path.exists():
-        return AgentResult(success=False, message=f"models.py not found at {models_path}")
+        return fail(
+            f"models.py not found at {models_path}", code="file_not_found", missing="models.py"
+        )
 
     def _write() -> str | None:
         content = models_path.read_text(encoding="utf-8")

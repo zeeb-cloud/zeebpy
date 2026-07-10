@@ -11,7 +11,7 @@ Provides:
 - Middleware (configurable via settings)
 """
 
-from zeeb_api import permissions
+from zeeb_api import authentication, permissions
 from zeeb_api.app import create_app, get_asgi_application
 from zeeb_api.auth import (
     # Models
@@ -248,6 +248,8 @@ __all__ = [
     "load_urlconf",
     # Permissions
     "permissions",
+    # Authentication (per-viewset)
+    "authentication",
     # Query
     "QueryRequest",
     "QueryResponse",

@@ -770,12 +770,56 @@ def _tool_funcs() -> dict:
 
 
 def _strip_strings(text: str) -> str:
-    """Blank out quoted string contents so ``=``/``,`` inside them don't parse."""
-    return re.sub(r'"[^"]*"|\'[^\']*\'', '', text)
+    """Blank quoted string contents (incl. multi-line triple-quoted) and ``#``
+    comments so code / URLs / ``=`` inside example bodies and trailing comments
+    (e.g. ``# ?search=…``) don't get mis-parsed as call kwargs."""
+    text = re.sub(r'"""(?:.|\n)*?"""', '""', text)
+    text = re.sub(r"'''(?:.|\n)*?'''", "''", text)
+    text = re.sub(r'"[^"\n]*"', '""', text)
+    text = re.sub(r"'[^'\n]*'", "''", text)
+    text = re.sub(r"#[^\n]*", "", text)  # strip comments (strings blanked first)
+    return text
 
 
-# Matches a ``{prefix}name(...)`` call whose parentheses close on one line.
-_CALL_RE = re.compile(r"\{prefix\}(\w+)\(([^()\n]*)\)")
+def _iter_calls(text: str, name_re: str):
+    """Yield ``(name, args)`` for each call matching *name_re* (which captures the
+    tool name and ends at the opening ``(``), balancing parens across newlines."""
+    for m in re.finditer(name_re, text):
+        depth, i, n = 1, m.end(), len(text)
+        while i < n and depth:
+            ch = text[i]
+            if ch == "(":
+                depth += 1
+            elif ch == ")":
+                depth -= 1
+            i += 1
+        yield m.group(1), text[m.end() : i - 1]
+
+
+def _valid_params(func) -> set:
+    """Public signature params plus any accepted-but-hidden aliases."""
+    params = set(inspect.signature(func).parameters)
+    params |= set(getattr(func, "__agent_aliases__", {}))
+    return params
+
+
+def _assert_kwargs_valid(label: str, funcs: dict, text: str, name_re: str) -> None:
+    for name, args in _iter_calls(_strip_strings(text), name_re):
+        if name not in funcs:
+            continue  # non-tool call (framework API, builtin) — skip
+        valid = _valid_params(funcs[name])
+        for kw in re.findall(r"(\w+)\s*=", args):
+            assert kw in valid, (
+                f"{label}: {name}(...) uses unknown keyword '{kw}='; "
+                f"valid params: {sorted(valid)}"
+            )
+
+
+# ``{prefix}name(`` in the MCP-served agent_docs; ``await name(`` in human docs/.
+_PREFIX_CALL = r"\{prefix\}(\w+)\("
+_AWAIT_CALL = r"await\s+(\w+)\("
+
+_HUMAN_DOCS_DIR = Path(agents.__file__).resolve().parents[1] / "docs"
 
 
 def test_capabilities_md_inventory_is_generated():
@@ -791,28 +835,47 @@ def test_capabilities_md_inventory_is_generated():
 
 
 def test_agent_docs_reference_real_tools():
-    """Every ``{prefix}name(`` call across the docs names a real tool."""
+    """Every ``{prefix}name(`` call across the agent_docs names a real tool."""
     funcs = _tool_funcs()
     for md in sorted(_DOCS_DIR.rglob("*.md")):
-        text = md.read_text(encoding="utf-8")
-        for name in {m.group(1) for m in _CALL_RE.finditer(text)}:
+        text = _strip_strings(md.read_text(encoding="utf-8"))
+        for name, _ in _iter_calls(text, _PREFIX_CALL):
             assert name in funcs, f"{md.name} references unknown tool '{name}(...)'"
 
 
 def test_agent_docs_example_kwargs_are_valid():
-    """Keyword args in single-line ``{prefix}name(...)`` examples must be real."""
+    """Keyword args in ``{prefix}name(...)`` examples (multi-line included) must
+    be real params. Guards against the ``create_model(name=...)`` class of drift
+    that the old single-line-only matcher silently skipped."""
     funcs = _tool_funcs()
     for md in sorted(_DOCS_DIR.rglob("*.md")):
-        text = md.read_text(encoding="utf-8")
-        for name, raw_args in _CALL_RE.findall(text):
-            if name not in funcs:
-                continue  # covered by test_agent_docs_reference_real_tools
-            valid = set(inspect.signature(funcs[name]).parameters)
-            for kw in re.findall(r"(\w+)\s*=", _strip_strings(raw_args)):
-                assert kw in valid, (
-                    f"{md.name}: {name}(...) uses unknown keyword '{kw}='; "
-                    f"valid params: {sorted(valid)}"
-                )
+        _assert_kwargs_valid(md.name, funcs, md.read_text(encoding="utf-8"), _PREFIX_CALL)
+
+
+def test_human_docs_awaited_tool_calls_have_valid_kwargs():
+    """`await <tool>(...)` examples in the human docs/ tree must use real params.
+
+    Only awaited bare calls whose name is a known tool are checked, so framework
+    API / builtin calls (``await authenticate(username=...)``) are skipped.
+    """
+    if not _HUMAN_DOCS_DIR.exists():
+        pytest.skip("no docs/ tree")
+    funcs = _tool_funcs()
+    for md in sorted(_HUMAN_DOCS_DIR.rglob("*.md")):
+        _assert_kwargs_valid(
+            f"docs/{md.name}", funcs, md.read_text(encoding="utf-8"), _AWAIT_CALL
+        )
+
+
+def test_error_recovery_codes_are_real():
+    """Every ``error_code`` cell in error-recovery.md is in the ERROR_CODES vocab."""
+    from zeeb_agents._utils.errors import ERROR_CODES
+
+    text = (_DOCS_DIR / "zeebpy" / "error-recovery.md").read_text(encoding="utf-8")
+    documented = set(re.findall(r"\|\s*`([a-z_]+)`\s*/?\s*`?([a-z_]*)`?\s*\|", text))
+    codes = {c for pair in documented for c in pair if c} - {"error_code"}
+    unknown = codes - set(ERROR_CODES)
+    assert not unknown, f"error-recovery.md references unknown error codes: {sorted(unknown)}"
 
 
 # ---------------------------------------------------------------------------
@@ -1283,6 +1346,337 @@ async def test_update_viewset_sets_attrs(project):
     missing = await agents.update_viewset("blog", "Nope", permission="AllowAny",
                                           project_id=project)
     assert not missing.success
+
+
+async def test_create_viewset_custom_permission_same_app(project):
+    await agents.create_model("blog", "Post", POST_FIELDS, project_id=project)
+    await agents.create_serializer("blog", "Post", project_id=project)
+    res = await agents.create_permission_class(
+        "blog", "IsPostOwner", logic="owner_only", project_id=project
+    )
+    assert res.success, res.message
+    result = await agents.create_viewset(
+        "blog", "Post", permission="IsPostOwner", project_id=project
+    )
+    assert result.success, result.message
+    path = project / "apps" / "blog" / "views.py"
+    content = path.read_text()
+    assert "permission_classes = [IsPostOwner]" in content
+    assert "from apps.blog.permissions import IsPostOwner" in content
+    compile(content, str(path), "exec")
+
+
+async def test_create_viewset_custom_permission_dotted_cross_app(project):
+    await agents.create_app("accounts", project_id=project)
+    res = await agents.create_permission_class(
+        "accounts", "IsAccountAdmin", logic="staff_only", project_id=project
+    )
+    assert res.success, res.message
+    await agents.create_model("blog", "Post", POST_FIELDS, project_id=project)
+    await agents.create_serializer("blog", "Post", project_id=project)
+    result = await agents.create_viewset(
+        "blog",
+        "Post",
+        permission="apps.accounts.permissions.IsAccountAdmin",
+        project_id=project,
+    )
+    assert result.success, result.message
+    content = (project / "apps" / "blog" / "views.py").read_text()
+    assert "permission_classes = [IsAccountAdmin]" in content
+    assert "from apps.accounts.permissions import IsAccountAdmin" in content
+
+
+async def test_create_viewset_dotted_permission_missing_class_fails(project):
+    result = await agents.create_viewset(
+        "blog",
+        "Post",
+        permission="apps.blog.permissions.DoesNotExist",
+        project_id=project,
+    )
+    assert not result.success
+    assert result.data["error_code"] == "invalid_permission"
+    assert "create_permission_class" in result.message
+
+
+async def test_create_viewset_unknown_permission_suggests_custom_class(project):
+    await agents.create_permission_class(
+        "blog", "IsPostOwner", logic="owner_only", project_id=project
+    )
+    result = await agents.create_viewset(
+        "blog", "Post", permission="IsPostOwnr", project_id=project
+    )
+    assert not result.success
+    assert result.data["error_code"] == "invalid_permission"
+    assert "IsPostOwner" in result.data["suggestions"]
+
+
+async def test_update_viewset_custom_permission(project):
+    await agents.create_model("blog", "Post", POST_FIELDS, project_id=project)
+    await agents.create_serializer("blog", "Post", project_id=project)
+    await agents.create_viewset("blog", "Post", project_id=project)
+    await agents.create_permission_class(
+        "blog", "IsPostOwner", logic="owner_only", project_id=project
+    )
+    result = await agents.update_viewset(
+        "blog", "Post", permission="IsPostOwner", project_id=project
+    )
+    assert result.success, result.message
+    path = project / "apps" / "blog" / "views.py"
+    content = path.read_text()
+    assert "permission_classes = [IsPostOwner]" in content
+    assert "from apps.blog.permissions import IsPostOwner" in content
+    compile(content, str(path), "exec")
+
+
+async def test_add_viewset_action_custom_permission(project):
+    await agents.create_model("blog", "Post", POST_FIELDS, project_id=project)
+    await agents.create_serializer("blog", "Post", project_id=project)
+    await agents.create_viewset("blog", "Post", project_id=project)
+    await agents.create_permission_class(
+        "blog", "IsPostOwner", logic="owner_only", project_id=project
+    )
+    result = await agents.add_viewset_action(
+        "blog",
+        "Post",
+        "publish",
+        methods=["post"],
+        permission="IsPostOwner",
+        project_id=project,
+    )
+    assert result.success, result.message
+    path = project / "apps" / "blog" / "views.py"
+    content = path.read_text()
+    assert "permission_classes=[IsPostOwner]" in content
+    assert "from apps.blog.permissions import IsPostOwner" in content
+    compile(content, str(path), "exec")
+
+
+# ---------------------------------------------------------------------------
+# Multiple permission / authentication classes per viewset
+# ---------------------------------------------------------------------------
+
+
+async def test_create_viewset_multiple_permissions(project):
+    await agents.create_model("blog", "Post", POST_FIELDS, project_id=project)
+    await agents.create_serializer("blog", "Post", project_id=project)
+    result = await agents.create_viewset(
+        "blog", "Post",
+        permission=["IsAuthenticated", "IsAdminUser"],
+        project_id=project,
+    )
+    assert result.success, result.message
+    path = project / "apps" / "blog" / "views.py"
+    content = path.read_text()
+    assert (
+        "permission_classes = [permissions.IsAuthenticated, permissions.IsAdminUser]"
+        in content
+    )
+    compile(content, str(path), "exec")
+
+
+async def test_create_viewset_permission_list_mixed_builtin_and_custom(project):
+    await agents.create_model("blog", "Post", POST_FIELDS, project_id=project)
+    await agents.create_serializer("blog", "Post", project_id=project)
+    await agents.create_permission_class(
+        "blog", "IsPostOwner", logic="owner_only", project_id=project
+    )
+    result = await agents.create_viewset(
+        "blog", "Post",
+        permission=["IsAuthenticated", "IsPostOwner"],
+        project_id=project,
+    )
+    assert result.success, result.message
+    content = (project / "apps" / "blog" / "views.py").read_text()
+    assert "permission_classes = [permissions.IsAuthenticated, IsPostOwner]" in content
+    assert "from apps.blog.permissions import IsPostOwner" in content
+
+
+async def test_create_viewset_permission_list_dedupes_and_keeps_order(project):
+    await agents.create_model("blog", "Post", POST_FIELDS, project_id=project)
+    await agents.create_serializer("blog", "Post", project_id=project)
+    result = await agents.create_viewset(
+        "blog", "Post",
+        permission=["IsAdminUser", "AllowAny", "IsAdminUser"],
+        project_id=project,
+    )
+    assert result.success, result.message
+    content = (project / "apps" / "blog" / "views.py").read_text()
+    assert "permission_classes = [permissions.IsAdminUser, permissions.AllowAny]" in content
+
+
+async def test_create_viewset_permission_list_bad_entry_names_it(project):
+    result = await agents.create_viewset(
+        "blog", "Post",
+        permission=["IsAuthenticated", "IsOwnr"],
+        project_id=project,
+    )
+    assert not result.success
+    assert result.data["error_code"] == "invalid_permission"
+    assert "'IsOwnr'" in result.message
+    assert "IsOwner" in result.data["suggestions"]
+
+
+async def test_create_viewset_empty_permission_list_fails(project):
+    result = await agents.create_viewset(
+        "blog", "Post", permission=[], project_id=project
+    )
+    assert not result.success
+    assert result.data["error_code"] == "invalid_input"
+
+
+async def test_create_viewset_authentication_single(project):
+    await agents.create_model("blog", "Post", POST_FIELDS, project_id=project)
+    await agents.create_serializer("blog", "Post", project_id=project)
+    result = await agents.create_viewset(
+        "blog", "Post", authentication="JWTAuthentication", project_id=project
+    )
+    assert result.success, result.message
+    assert "authentication_classes" in result.data["options"]
+    path = project / "apps" / "blog" / "views.py"
+    content = path.read_text()
+    assert "authentication_classes = [authentication.JWTAuthentication]" in content
+    assert "from zeeb_api import authentication" in content
+    compile(content, str(path), "exec")
+
+
+async def test_create_viewset_authentication_list(project):
+    await agents.create_model("blog", "Post", POST_FIELDS, project_id=project)
+    await agents.create_serializer("blog", "Post", project_id=project)
+    result = await agents.create_viewset(
+        "blog", "Post",
+        authentication=["JWTAuthentication", "OAuth2BearerAuthentication"],
+        project_id=project,
+    )
+    assert result.success, result.message
+    content = (project / "apps" / "blog" / "views.py").read_text()
+    assert (
+        "authentication_classes = [authentication.JWTAuthentication, "
+        "authentication.OAuth2BearerAuthentication]" in content
+    )
+    assert content.count("from zeeb_api import authentication") == 1
+
+
+async def test_create_viewset_no_authentication_emits_no_attribute(project):
+    await agents.create_model("blog", "Post", POST_FIELDS, project_id=project)
+    await agents.create_serializer("blog", "Post", project_id=project)
+    result = await agents.create_viewset("blog", "Post", project_id=project)
+    assert result.success, result.message
+    content = (project / "apps" / "blog" / "views.py").read_text()
+    assert "authentication_classes" not in content
+
+
+async def test_create_viewset_invalid_authentication_suggests(project):
+    result = await agents.create_viewset(
+        "blog", "Post", authentication="JWTAuthentification", project_id=project
+    )
+    assert not result.success
+    assert result.data["error_code"] == "invalid_authentication"
+    assert "JWTAuthentication" in result.data["suggestions"]
+
+
+async def test_create_viewset_dotted_authentication_cross_app(project):
+    await agents.create_app("accounts", project_id=project)
+    auth_py = project / "apps" / "accounts" / "authentication.py"
+    auth_py.write_text(
+        "from zeeb_api.authentication import BaseAuthentication\n\n\n"
+        "class ApiKeyAuthentication(BaseAuthentication):\n"
+        "    async def authenticate(self, request):\n"
+        "        return None\n"
+    )
+    await agents.create_model("blog", "Post", POST_FIELDS, project_id=project)
+    await agents.create_serializer("blog", "Post", project_id=project)
+    result = await agents.create_viewset(
+        "blog", "Post",
+        authentication="apps.accounts.authentication.ApiKeyAuthentication",
+        project_id=project,
+    )
+    assert result.success, result.message
+    content = (project / "apps" / "blog" / "views.py").read_text()
+    assert "authentication_classes = [ApiKeyAuthentication]" in content
+    assert "from apps.accounts.authentication import ApiKeyAuthentication" in content
+
+
+async def test_create_viewset_dotted_authentication_missing_class_fails(project):
+    result = await agents.create_viewset(
+        "blog", "Post",
+        authentication="apps.blog.authentication.DoesNotExist",
+        project_id=project,
+    )
+    assert not result.success
+    assert result.data["error_code"] == "invalid_authentication"
+
+
+async def test_update_viewset_multiple_permissions_and_authentication(project):
+    await agents.create_model("blog", "Post", POST_FIELDS, project_id=project)
+    await agents.create_serializer("blog", "Post", project_id=project)
+    await agents.create_viewset("blog", "Post", project_id=project)
+    result = await agents.update_viewset(
+        "blog", "Post",
+        permission=["IsAuthenticated", "IsAdminUser"],
+        authentication=["JWTAuthentication"],
+        project_id=project,
+    )
+    assert result.success, result.message
+    path = project / "apps" / "blog" / "views.py"
+    content = path.read_text()
+    assert (
+        "permission_classes = [permissions.IsAuthenticated, permissions.IsAdminUser]"
+        in content
+    )
+    assert "authentication_classes = [authentication.JWTAuthentication]" in content
+    assert "from zeeb_api import authentication" in content
+    compile(content, str(path), "exec")
+
+    # A second call replaces (not duplicates) the attributes.
+    result = await agents.update_viewset(
+        "blog", "Post",
+        authentication=["JWTStatelessAuthentication"],
+        project_id=project,
+    )
+    assert result.success, result.message
+    content = path.read_text()
+    assert content.count("authentication_classes") == 1
+    assert (
+        "authentication_classes = [authentication.JWTStatelessAuthentication]"
+        in content
+    )
+
+
+async def test_add_viewset_action_permission_list(project):
+    await agents.create_model("blog", "Post", POST_FIELDS, project_id=project)
+    await agents.create_serializer("blog", "Post", project_id=project)
+    await agents.create_viewset("blog", "Post", project_id=project)
+    await agents.create_permission_class(
+        "blog", "IsPostOwner", logic="owner_only", project_id=project
+    )
+    result = await agents.add_viewset_action(
+        "blog", "Post", "publish",
+        methods=["post"],
+        permission=["IsAdminUser", "IsPostOwner"],
+        project_id=project,
+    )
+    assert result.success, result.message
+    path = project / "apps" / "blog" / "views.py"
+    content = path.read_text()
+    assert "permission_classes=[permissions.IsAdminUser, IsPostOwner]" in content
+    assert "from apps.blog.permissions import IsPostOwner" in content
+    compile(content, str(path), "exec")
+
+
+async def test_generate_crud_forwards_permission_list_and_authentication(project):
+    result = await agents.generate_crud(
+        "blog", "Post", POST_FIELDS,
+        permission=["IsAuthenticated", "IsAdminUser"],
+        authentication=["JWTAuthentication"],
+        project_id=project,
+    )
+    assert result.success, result.message
+    content = (project / "apps" / "blog" / "views.py").read_text()
+    assert (
+        "permission_classes = [permissions.IsAuthenticated, permissions.IsAdminUser]"
+        in content
+    )
+    assert "authentication_classes = [authentication.JWTAuthentication]" in content
 
 
 # ---------------------------------------------------------------------------

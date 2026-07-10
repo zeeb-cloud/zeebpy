@@ -340,6 +340,19 @@ production, e.g. from an environment variable.
 
 ### Token in ViewSet
 
+> **Prefer the built-in auth router.** The recommended path is the shipped
+> `auth_router` (wire it with the `setup_auth` agent tool, or
+> `zeeb_api.auth.auth_router`). Its **actual** contract is:
+> - `POST /auth/login` — body `{"email", "password"}` → returns
+>   `{"access_token", "refresh_token", "token_type", "expires_in"}`
+> - `POST /auth/refresh`, `POST /auth/logout`, `GET /auth/me`,
+>   `POST /auth/register` (canonical paths are **slash-less**).
+>
+> The hand-rolled `AuthViewSet` below is only an illustration of building a
+> custom flow — it authenticates by `username` and returns a different
+> `{"token", "user"}` shape, which does **not** match the built-in router.
+> Build clients against the router contract above (and `/openapi.json`).
+
 ```python
 from zeeb_api.viewsets import ViewSet
 from zeeb_api.auth.tokens import create_access_token
@@ -349,7 +362,7 @@ from zeeb_api.auth import authenticate
 class AuthViewSet(ViewSet):
     
     async def login(self, request):
-        """POST /auth/login/"""
+        """POST /auth/login/ (custom example — see note above)"""
         data = await request.json()
         
         user = await authenticate(

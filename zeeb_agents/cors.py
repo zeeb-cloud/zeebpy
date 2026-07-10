@@ -7,6 +7,7 @@ from pathlib import Path
 
 from zeeb_agents._utils import AgentResult, agent_function
 from zeeb_agents._utils.code_gen import find_settings_file, set_or_append_setting
+from zeeb_agents._utils.errors import fail
 from zeeb_agents._utils.project import load_project_settings
 
 _CORS_KEYS = (
@@ -73,7 +74,9 @@ async def configure_cors(
     root = project_root
     settings_path = await asyncio.to_thread(_find_settings_file, root)
     if not settings_path:
-        return AgentResult(success=False, message="settings.py not found in project.")
+        return fail(
+            "settings.py not found in project.", code="file_not_found", missing="settings.py"
+        )
 
     def _write() -> dict:
         content = settings_path.read_text(encoding="utf-8")

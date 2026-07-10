@@ -24,7 +24,10 @@ Each logical domain lives in its own app under `apps/`.
 {prefix}create_app(name="billing")
 ```
 
-Register in `my_api/settings.py`:
+`create_app` **auto-wires** each app by default: it appends `"apps.<name>"` to
+`INSTALLED_APPS` (so migrations see its models) and includes the app's router in
+the project `urls.py` (so its endpoints are served). No manual `settings.py` /
+`urls.py` edit is needed. The result:
 ```python
 INSTALLED_APPS = [
     "apps.users",
@@ -32,11 +35,13 @@ INSTALLED_APPS = [
     "apps.billing",
 ]
 ```
+To scaffold the files without wiring, pass `create_app(name=..., wire=False)`
+and wire later with `{prefix}install_app` / `{prefix}wire_app_urls`.
 
 ## Step 3 — Define Models
 
 ```
-{prefix}create_model(app="blog", name="Post", fields=[
+{prefix}create_model(app="blog", model_name="Post", fields=[
     {"name": "title",      "type": "CharField",    "max_length": 200},
     {"name": "slug",       "type": "SlugField",    "unique": True},
     {"name": "body",       "type": "TextField"},

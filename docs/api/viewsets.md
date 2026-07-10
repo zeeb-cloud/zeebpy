@@ -6,7 +6,7 @@ ViewSets combine related views into a single class, automatically generating URL
 
 ```python
 from zeeb_api.viewsets import ViewSet
-from zeeb_api.response import Response
+from zeeb_api import Response
 
 
 class ArticleViewSet(ViewSet):
@@ -60,13 +60,15 @@ class ArticleViewSet(ModelViewSet):
     serializer_class = ArticleSerializer
 ```
 
-This provides:
-- `GET /articles/` - List all articles
-- `POST /articles/` - Create article
-- `GET /articles/{id}/` - Get single article
-- `PUT /articles/{id}/` - Update article
-- `PATCH /articles/{id}/` - Partial update
-- `DELETE /articles/{id}/` - Delete article
+This provides (canonical paths are **slash-less**; the trailing-slash variant
+also resolves without a redirect, so paths below are shown slash-less):
+- `GET /articles` - List all articles (simple query params / pagination)
+- `POST /articles/query` - List with a serialized `Q` filter body
+- `POST /articles` - Create article
+- `GET /articles/{id}` - Get single article
+- `PUT /articles/{id}` - Update article
+- `PATCH /articles/{id}` - Partial update
+- `DELETE /articles/{id}` - Delete article
 
 ## ReadOnlyModelViewSet
 
@@ -479,7 +481,7 @@ class ArticleViewSet(ModelViewSet):
 > emits a `DeprecationWarning`.
 
 ```python
-from zeeb_api.response import Response
+from zeeb_api import Response
 from zeeb_api.exceptions import NotFound, ValidationError
 
 

@@ -138,7 +138,7 @@ async def list_files(
     target = _resolve_path(root, directory)
 
     if not target.exists():
-        return AgentResult(success=False, message=f"Directory not found: {target}")
+        return fail(f"Directory not found: {target}", code="file_not_found")
     if not target.is_dir():
         return AgentResult(success=False, message=f"Path is not a directory: {target}")
 

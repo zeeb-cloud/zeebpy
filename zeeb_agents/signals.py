@@ -369,6 +369,26 @@ async def edit_signal_receiver(
 
 
 @agent_function
+async def update_signal_receiver(
+    app: str,
+    function_name: str,
+    new_body: str,
+    project_root: Path | None = None,
+) -> AgentResult:
+    """Replace a receiver's body — alias of :func:`edit_signal_receiver`.
+
+    Provided so the ``update_*`` verb (``update_model`` / ``update_serializer``
+    / ``update_viewset`` / ``update_user``) also works for signal receivers.
+    Identical behavior and return shape to ``edit_signal_receiver`` (canonical).
+
+    Returns data (on success):
+        path (str): signals.py path relative to the project root
+        func_name (str): the edited receiver function name
+    """
+    return await edit_signal_receiver(app, function_name, new_body, project_id=project_root)
+
+
+@agent_function
 async def delete_signal_receiver(
     app: str,
     function_name: str,
