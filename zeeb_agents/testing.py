@@ -79,16 +79,24 @@ async def run_tests(
     returncode, stdout, stderr = await asyncio.to_thread(_run)
     output = stdout + (f"\n{stderr}" if stderr.strip() else "")
     counts = _parse_pytest_output(output)
-    success = returncode == 0
-    parts = [f"{counts['passed']} passed"]
-    if counts["failed"]:
-        parts.append(f"{counts['failed']} failed")
-    if counts["errors"]:
-        parts.append(f"{counts['errors']} error(s)")
-    if counts["skipped"]:
-        parts.append(f"{counts['skipped']} skipped")
+    # The test RUN completing is the tool's success, not whether tests passed.
+    # pytest exit codes: 0=all passed, 1=some failed, 5=no tests collected — all
+    # are valid, reported results. 2/3/4 (interrupted / internal / usage error)
+    # mean pytest could not run properly, so those stay failures.
+    no_tests = returncode == 5
+    success = returncode in (0, 1, 5)
+    if no_tests:
+        parts = ["no tests collected"]
+    else:
+        parts = [f"{counts['passed']} passed"]
+        if counts["failed"]:
+            parts.append(f"{counts['failed']} failed")
+        if counts["errors"]:
+            parts.append(f"{counts['errors']} error(s)")
+        if counts["skipped"]:
+            parts.append(f"{counts['skipped']} skipped")
     return AgentResult(
         success=success,
         message=", ".join(parts),
-        data={**counts, "output": output, "returncode": returncode},
+        data={**counts, "output": output, "returncode": returncode, "no_tests": no_tests},
     )

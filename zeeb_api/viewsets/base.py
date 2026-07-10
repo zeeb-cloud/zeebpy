@@ -451,7 +451,10 @@ class GenericViewSet(ViewSet):
         """
         pagination_class = self.get_pagination_class()
         if pagination_class is None:
-            items = await queryset.all()
+            # zeeb_orm QuerySet has no .all() (that's a Manager method); awaiting the
+            # queryset materializes it via __await__ -> _fetch_all(). Calling .all()
+            # here raised AttributeError and 500'd every unpaginated GET collection.
+            items = await queryset
             return items, {}
         
         paginator = pagination_class()

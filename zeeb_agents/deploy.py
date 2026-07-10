@@ -254,8 +254,11 @@ async def check_production_readiness(
     result = await asyncio.to_thread(_check)
     ready = result["ready"]
     issue_count = len(result["issues"])
+    # The check itself completed successfully — a not-ready project is a valid
+    # result, not a tool failure. Report ``ready``/``issues`` in ``data`` with
+    # ``success=True`` so callers get the status instead of a hard error.
     return AgentResult(
-        success=ready,
+        success=True,
         message=(
             "Project is production-ready."
             if ready
