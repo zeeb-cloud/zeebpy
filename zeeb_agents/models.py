@@ -70,7 +70,7 @@ async def create_model(
         ]
 
     Relation targets (``"to"``) accept a bare model name (``"User"``), a
-    Django-style dotted label (``"accounts.User"``), or ``"self"``.
+    dotted ``app.Model`` label (``"accounts.User"``), or ``"self"``.
     Field specs support the full zeeb_orm surface: any option renders as a
     proper Python literal (``choices=[["draft", "Draft"]]``, ``default={}``),
     relation fields validate ``on_delete``, and the reserved ``"raw"`` key

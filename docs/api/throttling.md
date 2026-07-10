@@ -1,6 +1,6 @@
 # Throttling
 
-Limit the rate of requests clients can make, with DRF-style throttle classes.
+Limit the rate of requests clients can make, with declarative throttle classes.
 
 Throttles run on every ViewSet request right after permission checks. When a
 limit is exceeded the API returns **429 Too Many Requests** with a
@@ -46,7 +46,7 @@ of global throttling.
 
 ## Rate Format
 
-Rates use the DRF format `"<number>/<period>"`:
+Rates use the format `"<number>/<period>"`:
 
 | Rate | Meaning |
 |------|---------|

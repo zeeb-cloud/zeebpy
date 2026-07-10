@@ -11,7 +11,7 @@ Section wrapper: `<section class="module" id="module-1" style="background: var(-
 
 ## What this module must cover (product intro first!)
 This is Module 1, so OPEN by explaining what zeebpy *is* in plain language before diving into code:
-- zeebpy is a **Django-like async framework** for building the back end of a web app. You write Python classes describing your data; zeebpy gives you a **database** and a ready-made **REST API** (a web address other programs can call) almost for free.
+- zeebpy is an **async Python framework** for building the back end of a web app. You write Python classes describing your data; zeebpy gives you a **database** and a ready-made **REST API** (a web address other programs can call) almost for free.
 - It comes in three packages (name them one line each, they're the subject of Module 2): `zeeb_orm` (talks to the database), `zeeb_api` (turns your data into a web API), `zeeb_agents` (helper functions an AI can call). Keep this to a teaser — Module 2 goes deep.
 - Use an **icon-label rows** element for "what you get" (a database, a REST API, migrations, auth) — do not write it as a paragraph.
 

@@ -75,7 +75,7 @@ without a `default`.
 
 #### How deletion works
 
-`on_delete` is enforced **in Python** by a collector (like Django's), so it
+`on_delete` is enforced **in Python** by a collector, so it
 works regardless of database FK enforcement (e.g. SQLite's `foreign_keys`
 PRAGMA, which is off by default):
 
@@ -328,13 +328,13 @@ articles = await tag.articles.all()  # Uses related_name
 articles = await Article.objects.filter(tags__name="python")
 
 # Articles with any of these tags
-articles = await Article.objects.filter(tags__name__in=["python", "django"])
+articles = await Article.objects.filter(tags__name__in=["python", "async"])
 
 # Articles with ALL of these tags
 from zeeb_orm import Count
 
 articles = await Article.objects.filter(
-    tags__name__in=["python", "django"]
+    tags__name__in=["python", "async"]
 ).annotate(
     tag_count=Count("tags")
 ).filter(tag_count=2)
@@ -346,7 +346,7 @@ multiple links and appear more than once — add `.distinct()` to deduplicate:
 
 ```python
 articles = await Article.objects.filter(
-    tags__name__in=["python", "django"]
+    tags__name__in=["python", "async"]
 ).distinct()
 ```
 
@@ -403,7 +403,7 @@ class Group(Model):
 With a custom through model, **reads work normally** (accessors, traversal,
 prefetching) via the through model's table, but the write helpers
 `add()` / `remove()` / `clear()` / `set()` raise `NotSupportedError` —
-create and delete rows on the through model directly (Django parity):
+create and delete rows on the through model directly:
 
 ```python
 members = await group.members.all()                      # OK

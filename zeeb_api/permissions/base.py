@@ -167,10 +167,10 @@ class IsOwnerOrReadOnly(IsOwner):
         return await super().has_object_permission(request, view, obj)
 
 
-class DjangoModelPermissions(BasePermission):
+class ModelPermissions(BasePermission):
     """
-    Permission class tied to Django-style model permissions.
-    
+    Permission class tied to per-model permissions.
+
     Maps HTTP methods to permission names:
     - GET, HEAD, OPTIONS: view_<model>
     - POST: add_<model>

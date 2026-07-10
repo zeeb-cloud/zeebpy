@@ -71,7 +71,7 @@ async def create_viewset(
             is a built-in ``zeeb_api.permissions`` name (``AllowAny``,
             ``IsAuthenticated``, ``IsAdminUser``,
             ``IsAuthenticatedOrReadOnly``, ``IsOwner``, ``IsOwnerOrReadOnly``,
-            ``DjangoModelPermissions``), a custom class from this app's
+            ``ModelPermissions``), a custom class from this app's
             ``permissions.py`` (scaffold with
             :func:`~zeeb_agents.permissions_scaffold.create_permission_class`),
             or a dotted ``apps.<app>.permissions.<Class>`` reference to
@@ -111,7 +111,8 @@ async def create_viewset(
         register: When true, also register the ViewSet's route in
             ``apps/<app>/urls.py`` (folds in :func:`register_route`) so a single
             call scaffolds *and* mounts it. Default false preserves the two-step
-            Django flow; ``generate_crud`` is the recommended one-shot.
+            scaffold-then-register flow; ``generate_crud`` is the recommended
+            one-shot.
         url_prefix: URL segment to mount under when ``register`` is true
             (defaults to the app name).
         project_id: The host-assigned project id (required).

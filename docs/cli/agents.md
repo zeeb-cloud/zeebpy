@@ -316,7 +316,7 @@ await create_viewset("shop", "Product",
 
 Permissions are validated against `zeeb_api.permissions` (`AllowAny`,
 `IsAuthenticated`, `IsAdminUser`, `IsAuthenticatedOrReadOnly`, `IsOwner`,
-`IsOwnerOrReadOnly`, `DjangoModelPermissions`); imports for pagination,
+`IsOwnerOrReadOnly`, `ModelPermissions`); imports for pagination,
 throttling, and filters are added automatically.
 
 ### `update_viewset(app, model_name, permission=None, lookup_field=None, pagination=None, throttles=None, search_fields=None, ordering_fields=None, project_id=None)`

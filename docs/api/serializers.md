@@ -222,9 +222,9 @@ Output:
 }
 ```
 
-The serializer reads the raw FK id directly (the Django-style `project_id`
-attribute), so serializing a queryset never triggers a lazy database fetch for
-the relation. To embed the full related object instead, declare a nested
+The serializer reads the raw FK id directly (the `project_id`
+column attribute), so serializing a queryset never triggers a lazy database
+fetch for the relation. To embed the full related object instead, declare a nested
 serializer for that field (see below).
 
 ## To-Many & Reverse Relations

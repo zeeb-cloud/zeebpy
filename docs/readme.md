@@ -1,15 +1,15 @@
 # Zeeb Framework
 
-**A Django-like async web framework built on SQLAlchemy and FastAPI**
+**An async-first Python web framework built on SQLAlchemy and FastAPI**
 
-Zeeb provides a familiar Django-style API for building async web applications with Python. It combines the best of Django's developer experience with modern async capabilities.
+Zeeb provides a batteries-included, declarative API for building async web applications with Python: you describe models, serializers, and viewsets as classes, and the framework wires up the database and REST endpoints for you.
 
 ## Features
 
-- **Django-like ORM** - Models, QuerySets, Q objects, F expressions, and migrations
-- **DRF-style API** - Serializers, ViewSets, and automatic routing
+- **Full ORM** - Models, QuerySets, Q objects, F expressions, and migrations
+- **Declarative API layer** - Serializers, ViewSets, and automatic routing
 - **Async-first** - Built on SQLAlchemy async and FastAPI
-- **Full CLI** - Django-style management commands
+- **Full CLI** - Project management commands via `manage.py` and the `zeeb` CLI
 
 ## Quick Example
 
@@ -108,16 +108,14 @@ python manage.py runserver
 - [Field Types](reference/field-types.md) - Complete field reference
 - [QuerySet API](reference/queryset-api.md) - QuerySet methods
 - [Expressions](reference/expressions.md) - Expression reference
+- [ORM Feature Reference](orm/feature-reference.md) - Condensed map of ORM capabilities
 
 ## Why Zeeb?
 
-| Feature | Django | Zeeb |
-|---------|--------|------|
-| Async support | Limited | Native |
-| ORM | Django ORM | SQLAlchemy (async) |
-| API framework | DRF (sync) | FastAPI (async) |
-| Learning curve | Familiar | Django-like API |
-| Performance | Good | Excellent (async) |
+- **Native async end-to-end** — the ORM, the API layer, and the server are async from the ground up
+- **SQLAlchemy-backed ORM** with a high-level, chainable QuerySet API
+- **FastAPI under the hood** — modern performance with a declarative, class-based developer experience
+- **One framework** — models, serializers, viewsets, auth, migrations, and CLI in a single coherent stack
 
 ## License
 

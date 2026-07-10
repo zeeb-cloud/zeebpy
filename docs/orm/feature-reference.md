@@ -1,6 +1,6 @@
-# Django ORM Parity
+# ORM Feature Reference
 
-Status of zeeb_orm features compared to Django's ORM. Implemented features are
+A condensed map of what zeeb_orm supports. Implemented features are
 documented in detail in the other files under `docs/orm/`.
 
 ## Implemented
@@ -13,7 +13,7 @@ documented in detail in the other files under `docs/orm/`.
 | Expressions | `F` (arithmetic), `Value`, `Q` (`&`/`\|`/`~`), `Case`/`When`, `Subquery`/`OuterRef`/`Exists`, `Coalesce`, `Cast`, string/date/math functions, window functions (`Window`, `RowNumber`, `Rank`, `DenseRank`, `PercentRank`, `CumeDist`, `Lag`, `Lead`, `FirstValue`, `LastValue`, `Ntile`), aggregates (`Count`/`Sum`/`Avg`/`Min`/`Max`/`StdDev`/`Variance`/`StringAgg`/`GroupConcat`) |
 | Relations | `ForeignKey` (all `on_delete` variants: CASCADE, PROTECT, RESTRICT, SET_NULL, SET_DEFAULT, DO_NOTHING — DB-level DDL **and** Python-level Collector), `OneToOneField`, full `ManyToManyField` (auto through tables, `add`/`remove`/`set`/`clear`/`create`, reverse accessors, traversal, prefetch; custom `through=` read-only), self-referential FKs |
 | Validation | `full_clean`/`clean_fields`/`clean`, enforced `choices` and `validators` on `save()`/`create()` (`validate=False` opt-out), `zeeb_orm.validators` module |
-| Model | `save(update_fields=...)`, `delete()` (returns Django-style `(count, {model: n})` tuple), `refresh_from_db`, `pk` |
+| Model | `save(update_fields=...)`, `delete()` (returns a `(count, {model: n})` tuple), `refresh_from_db`, `pk` |
 | Managers | custom managers, `Manager.from_queryset`, `QuerySet.as_manager` |
 | Meta | `table_name`/`db_table`, `abstract`, `managed`, `ordering`, `indexes`, `constraints` (Unique/Check incl. partial via condition), `unique_together`, `index_together` — all emitted into DDL |
 | Transactions | `atomic` (nesting via savepoints), `on_commit`, `TransactionManagementError` |
@@ -23,8 +23,8 @@ documented in detail in the other files under `docs/orm/`.
 
 ## Deliberately not implemented (and why)
 
-| Django feature | Reason |
-|----------------|--------|
+| Feature | Reason |
+|---------|--------|
 | `GenericForeignKey` / contenttypes | Requires a contenttypes registry app; polymorphic FKs undermine DB-level integrity. Use explicit nullable FKs or a discriminator column. |
 | Database routers (`allow_relation`/`allow_migrate`) | Multi-DB exists via explicit `.using()`; implicit routing adds magic with little benefit for API backends. |
 | Proxy models / `swappable` | Niche; custom managers + `AUTH_USER_MODEL`-style resolution (zeeb_api) cover the main use cases. |

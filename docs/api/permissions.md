@@ -97,18 +97,18 @@ class ArticleViewSet(ModelViewSet):
     permission_classes = [IsOwnerOrReadOnly]
 ```
 
-### DjangoModelPermissions
+### ModelPermissions
 
-Maps HTTP methods to Django-style model permissions
+Maps HTTP methods to per-model permissions
 (`view_<model>` / `add_<model>` / `change_<model>` / `delete_<model>`)
 checked via the user's permission set.
 
 ```python
-from zeeb_api.permissions import DjangoModelPermissions
+from zeeb_api.permissions import ModelPermissions
 
 
 class ArticleViewSet(ModelViewSet):
-    permission_classes = [DjangoModelPermissions]
+    permission_classes = [ModelPermissions]
 ```
 
 ## Per-Action Permissions
