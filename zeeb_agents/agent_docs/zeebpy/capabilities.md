@@ -48,13 +48,16 @@ data    : dict|None   — structured output (see per-tool docs)
 
 | Tool | Description |
 |---|---|
-| `{prefix}create_app(name)` | Create a new app inside an existing Zeeb project. |
+| `{prefix}create_app(name, wire=True)` | Create a new app inside an existing Zeeb project — wired and served. |
 | `{prefix}create_project(name, framework="zeebpy", directory=".")` | Create a new Zeeb project and record its framework. |
 | `{prefix}delete_app(name)` | Delete an existing app directory from the project. |
+| `{prefix}describe_project()` | Return one computed, cross-checked snapshot of the whole project state. |
 | `{prefix}get_project_info()` | Return a summary of the current project structure and settings. |
 | `{prefix}get_project_structure(max_depth=3)` | Return a nested directory tree for the project. |
+| `{prefix}install_app(app)` | Register an app in ``INSTALLED_APPS`` so migrations see its models. |
 | `{prefix}list_apps()` | Return all app directory names found under ``apps/`` in the project. |
 | `{prefix}rename_app(old_name, new_name)` | Rename an app directory from *old_name* to *new_name*. |
+| `{prefix}wire_app_urls(app, prefix=None)` | Include an app's router in the project ``urls.py`` so its routes are served. |
 
 ### Model Management
 
@@ -62,7 +65,8 @@ data    : dict|None   — structured output (see per-tool docs)
 |---|---|
 | `{prefix}add_field(app, model_name, field)` | Add a field to an existing model. |
 | `{prefix}add_relationship(app, model_name, rel)` | Add a relationship field to an existing model. |
-| `{prefix}create_model(app, model_name, fields, meta=None)` | Append a new ``Model`` subclass to ``apps/<app>/models.py``. |
+| `{prefix}create_model(app, model_name, fields, meta=None, if_exists="error")` | Append a new ``Model`` subclass to ``apps/<app>/models.py``. |
+| `{prefix}delete_field(app, model_name, field_name)` | Drop a single field from a model — alias of :func:`remove_field`. |
 | `{prefix}delete_model(app, model_name)` | Remove a ``Model`` subclass from ``apps/<app>/models.py``. |
 | `{prefix}list_models()` | Return all models defined across all apps. |
 | `{prefix}remove_field(app, model_name, field_name)` | Remove a field from an existing model. |
@@ -73,7 +77,7 @@ data    : dict|None   — structured output (see per-tool docs)
 
 | Tool | Description |
 |---|---|
-| `{prefix}create_serializer(app, model_name, fields=None, read_only_fields=None, extra_fields=None, validate_fields=None)` | Append a ``ModelSerializer`` subclass to ``apps/<app>/serializers.py``. |
+| `{prefix}create_serializer(app, model_name, fields=None, read_only_fields=None, extra_fields=None, validate_fields=None, if_exists="error")` | Append a ``ModelSerializer`` subclass to ``apps/<app>/serializers.py``. |
 | `{prefix}update_serializer(app, model_name, fields=None, read_only_fields=None)` | Update the ``fields`` and/or ``read_only_fields`` of an existing serializer. |
 
 ### ViewSets & Routing
@@ -81,12 +85,12 @@ data    : dict|None   — structured output (see per-tool docs)
 | Tool | Description |
 |---|---|
 | `{prefix}add_viewset_action(app, model_name, action_name, detail=True, methods=None, body=None, url_path=None, request_serializer=None, response_serializer=None, request_schema=None, response_schema=None, permission=None)` | Append a custom ``@action`` method to an existing ViewSet. |
-| `{prefix}create_route(app, path, method, function_name, response_model=None, body=None, imports=None)` | Append a standalone FastAPI route handler to ``apps/{app}/views.py`` **and wire it up**. |
-| `{prefix}create_viewset(app, model_name, serializer_class=None, permission="IsAuthenticatedOrReadOnly", read_only=False, lookup_field=None, pagination=None, throttles=None, search_fields=None, ordering_fields=None, filterset=None)` | Append a ``ModelViewSet`` subclass to ``apps/<app>/views.py``. |
-| `{prefix}generate_crud(app, model_name, fields, serializer_fields=None, read_only_fields=None, permission="IsAuthenticatedOrReadOnly", meta=None, extra_fields=None, validate_fields=None, read_only=False, lookup_field=None, pagination=None, throttles=None, search_fields=None, ordering_fields=None, filterset=None)` | One-shot scaffold: create model + serializer + viewset + register route. |
+| `{prefix}create_route(app, path, method, function_name, response_model=None, body=None, imports=None, if_exists="error")` | Append a standalone FastAPI route handler to ``apps/{app}/views.py`` **and wire it up**. |
+| `{prefix}create_viewset(app, model_name, serializer_class=None, permission="IsAuthenticatedOrReadOnly", read_only=False, lookup_field=None, pagination=None, throttles=None, search_fields=None, ordering_fields=None, filterset=None, authentication=None, if_exists="error", register=False, url_prefix=None)` | Append a ``ModelViewSet`` subclass to ``apps/<app>/views.py``. |
+| `{prefix}generate_crud(app, model_name, fields, serializer_fields=None, read_only_fields=None, permission="IsAuthenticatedOrReadOnly", meta=None, extra_fields=None, validate_fields=None, read_only=False, lookup_field=None, pagination=None, throttles=None, search_fields=None, ordering_fields=None, filterset=None, authentication=None, migrate=False)` | One-shot scaffold: create model + serializer + viewset + register route. |
 | `{prefix}list_endpoints()` | Return all ``router.register(...)`` calls found across all app ``urls.py`` files. |
-| `{prefix}register_route(app, model_name, url_prefix=None)` | Register a ViewSet with the app's router in ``apps/<app>/urls.py``. |
-| `{prefix}update_viewset(app, model_name, permission=None, lookup_field=None, pagination=None, throttles=None, search_fields=None, ordering_fields=None)` | Set or update class attributes on an existing ``<ModelName>ViewSet``. |
+| `{prefix}register_route(app, model_name, url_prefix=None, if_exists="error")` | Register a ViewSet with the app's router in ``apps/<app>/urls.py``. |
+| `{prefix}update_viewset(app, model_name, permission=None, lookup_field=None, pagination=None, throttles=None, search_fields=None, ordering_fields=None, authentication=None)` | Set or update class attributes on an existing ``<ModelName>ViewSet``. |
 
 ### Migrations
 
@@ -167,6 +171,7 @@ data    : dict|None   — structured output (see per-tool docs)
 | `{prefix}list_model_signals(app, model_name)` | Return all receivers registered for a specific model. |
 | `{prefix}list_signal_receivers(app)` | List all ``@receiver(...)`` decorated functions in ``{app}/signals.py``. |
 | `{prefix}read_signal_receiver(app, function_name)` | Return the full source (decorator + function body) of a receiver. |
+| `{prefix}update_signal_receiver(app, function_name, new_body)` | Replace a receiver's body — alias of :func:`edit_signal_receiver`. |
 
 ### Users (BaaS)
 
@@ -205,7 +210,7 @@ data    : dict|None   — structured output (see per-tool docs)
 
 | Tool | Description |
 |---|---|
-| `{prefix}export_openapi(output_path=None, port=8000)` | Fetch the live OpenAPI spec from the running dev server and save it. |
+| `{prefix}export_openapi(output_path=None, port=8000)` | Fetch the OpenAPI spec from a reachable API and save a static snapshot. |
 | `{prefix}get_model_json_schema(app, model_name)` | Return a JSON Schema object for a zeeb_orm model. |
 | `{prefix}list_all_routes()` | Return a full inventory of API routes registered across all apps. |
 
@@ -249,6 +254,7 @@ data    : dict|None   — structured output (see per-tool docs)
 
 | Tool | Description |
 |---|---|
+| `{prefix}get_started()` | Return the canonical build recipe — the one call to make first. |
 | `{prefix}list_capabilities(include_docstrings=False, module=None)` | Return a machine-readable inventory of every ``zeeb_agents`` tool. |
 
 ### Docs & Resources

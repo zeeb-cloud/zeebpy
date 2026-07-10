@@ -8,6 +8,7 @@ from fastapi import Request, HTTPException
 if TYPE_CHECKING:
     from zeeb_api.serializers import Serializer
     from zeeb_api.permissions.base import BasePermission
+    from zeeb_api.authentication.base import BaseAuthentication
     from zeeb_api.pagination.base import BasePagination
     from zeeb_api.filters.base import BaseFilter
     from zeeb_api.throttling.base import BaseThrottle
@@ -53,6 +54,10 @@ class ViewSet(metaclass=ViewSetMeta):
     
     # Configuration
     permission_classes: ClassVar[list[type[BasePermission]]] = []
+    # None means "unset": the user set by the global auth middleware (if any)
+    # stands. A non-empty list takes ownership of authentication for this
+    # viewset (first authenticator to return a user wins).
+    authentication_classes: ClassVar[list[type[BaseAuthentication]] | None] = None
     # None means "use settings.DEFAULT_THROTTLE_CLASSES"; [] disables throttling.
     throttle_classes: ClassVar[list[type[BaseThrottle]] | None] = None
 
@@ -74,7 +79,33 @@ class ViewSet(metaclass=ViewSetMeta):
         if self._action_permission_classes is not None:
             return [permission() for permission in self._action_permission_classes]
         return [permission() for permission in self.permission_classes]
-    
+
+    def get_authenticators(self) -> list[BaseAuthentication]:
+        """Instances of authentication_classes ([] when unset or empty)."""
+        return [auth() for auth in (self.authentication_classes or [])]
+
+    async def perform_authentication(self, request: Request) -> None:
+        """
+        Run view-level authenticators (first success wins) before permissions.
+
+        Unset/empty authentication_classes → no-op: the global auth
+        middleware's ``request.state.user`` stands. A non-empty list takes
+        ownership: the middleware's user/auth_error are discarded and only the
+        listed authenticators may authenticate this request. If none succeeds
+        the request proceeds unauthenticated and the permission layer decides.
+        """
+        authenticators = self.get_authenticators()
+        if not authenticators:
+            return
+        request.state.user = None
+        request.state.auth_error = None
+        for authenticator in authenticators:
+            user = await authenticator.authenticate(request)  # may raise 401
+            if user is not None:
+                request.state.user = user
+                return
+
+
     def _deny(self, request: Request, message: str | None) -> None:
         """Raise 401 when the caller is unauthenticated, else 403.
 

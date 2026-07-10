@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from zeeb_agents._utils import AgentResult, agent_function
+from zeeb_agents._utils.errors import fail
 from zeeb_agents._utils.project import load_project_settings, resolve_db_url
 
 _HEALTH_MODULE = '''\
@@ -105,10 +106,10 @@ async def create_health_endpoint(
     health_file = root / "health.py"
 
     if health_file.exists():
-        return AgentResult(
-            success=False,
-            message="health.py already exists. Edit it manually or delete it first.",
-            data={"path": "health.py"},
+        return fail(
+            "health.py already exists. Edit it manually or delete it first.",
+            code="already_exists",
+            path="health.py",
         )
 
     slug = await asyncio.to_thread(_project_slug, root)

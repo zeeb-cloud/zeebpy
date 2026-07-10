@@ -3,10 +3,44 @@
 from __future__ import annotations
 
 import asyncio
+import re
 from pathlib import Path
 
 from zeeb_agents._utils import AgentResult, agent_function
-from zeeb_agents._utils.project import load_project_settings, resolve_db_url
+from zeeb_agents._utils.project import (
+    list_apps as list_apps_util,
+)
+from zeeb_agents._utils.project import (
+    load_project_settings,
+    require_project_root,
+    resolve_db_url,
+)
+
+# A non-commented ``class Foo(... Model ...):`` line — a real model definition
+# (as opposed to the commented example in the scaffolded models.py).
+_MODEL_CLASS_RE = re.compile(r"^class\s+\w+\s*\([^)]*Model[^)]*\)\s*:", re.MULTILINE)
+
+
+def _unregistered_apps_with_models(root: Path) -> list[str]:
+    """Return apps that define models on disk but are absent from INSTALLED_APPS.
+
+    These are the silent-failure case: ``make_migrations`` walks
+    ``INSTALLED_APPS`` only, so an unregistered app's models are never seen and
+    "No changes detected" is misleadingly reported.
+    """
+    installed = set(load_project_settings(root).get("INSTALLED_APPS", []) or [])
+    unregistered: list[str] = []
+    for app in list_apps_util(root):
+        if f"apps.{app}" in installed:
+            continue
+        models_py = root / "apps" / app / "models.py"
+        try:
+            text = models_py.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        if _MODEL_CLASS_RE.search(text):
+            unregistered.append(app)
+    return unregistered
 
 
 @agent_function
@@ -68,8 +102,13 @@ async def make_migrations(
         - "No changes detected" is reported as ``success=True`` with
           ``created=None`` — it is not a failure. Check ``data["created"]``
           to know whether a file was actually written.
+        - When ``created`` is ``None`` but apps on disk define models that are
+          **not** in ``INSTALLED_APPS`` (so their models were never inspected),
+          ``data["warning"]`` and ``data["unregistered_apps"]`` are populated —
+          register them with ``install_app`` (``create_app`` does this
+          automatically) and re-run.
     """
-    root = project_root
+    root = require_project_root(project_root)
 
     def _run() -> dict:
         from zeeb_orm.migrations.autodetector import detect_changes
@@ -81,8 +120,21 @@ async def make_migrations(
         migrations_dir.mkdir(parents=True, exist_ok=True)
         _register_models(root)
         operations = detect_changes(migrations_dir=str(migrations_dir))
+
+        # An unregistered app's models are never inspected regardless of what
+        # else changed, so surface it whether or not a migration was written.
+        unregistered = _unregistered_apps_with_models(root)
+        result: dict = {"created": None, "operations": []}
+        if unregistered:
+            joined = ", ".join(unregistered)
+            result["unregistered_apps"] = unregistered
+            result["warning"] = (
+                f"App(s) with models are not in INSTALLED_APPS: {joined}. "
+                f"Their models were not inspected — run install_app then "
+                f"make_migrations again."
+            )
         if not operations:
-            return {"created": None, "operations": []}
+            return result
 
         existing = list_migration_files(migrations_dir)
         filepath = write_migration(
@@ -91,23 +143,18 @@ async def make_migrations(
             name=name,
             initial=len(existing) == 0,
         )
-        return {
-            "created": filepath.name,
-            "operations": [op.describe() for op in operations],
-        }
+        result["created"] = filepath.name
+        result["operations"] = [op.describe() for op in operations]
+        return result
 
     result = await asyncio.to_thread(_run)
     if result["created"]:
-        return AgentResult(
-            success=True,
-            message=f"Created migration '{result['created']}'",
-            data=result,
-        )
-    return AgentResult(
-        success=True,
-        message="No changes detected — no migration created",
-        data=result,
-    )
+        message = f"Created migration '{result['created']}'"
+    else:
+        message = "No changes detected — no migration created"
+    if result.get("warning"):
+        message = f"{message}. {result['warning']}"
+    return AgentResult(success=True, message=message, data=result)
 
 
 @agent_function

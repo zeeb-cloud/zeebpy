@@ -8,8 +8,8 @@ import textwrap
 from pathlib import Path
 
 from zeeb_agents._utils import AgentResult, agent_function
-from zeeb_agents._utils.code_gen import ensure_import
-from zeeb_agents._utils.errors import AgentError
+from zeeb_agents._utils.code_gen import ensure_import, skip_result, validate_if_exists
+from zeeb_agents._utils.errors import AgentError, fail
 from zeeb_agents._utils.project import get_app_path, require_project_root
 from zeeb_agents._utils.validation import ensure_identifier
 
@@ -56,6 +56,7 @@ async def create_route(
     response_model: str | None = None,
     body: str | None = None,
     imports: list[str] | None = None,
+    if_exists: str = "error",
     project_root: Path | None = None,
 ) -> AgentResult:
     """Append a standalone FastAPI route handler to ``apps/{app}/views.py`` **and wire it up**.
@@ -86,11 +87,16 @@ async def create_route(
             ``["from .models import Post", "from .serializers import PostSerializer"]``).
             Each is added to ``views.py`` only if not already present — so the
             route is self-contained and you don't have to edit imports by hand.
+        if_exists: ``"error"`` (default) or ``"skip"`` (succeed and change
+            nothing if the handler already exists — makes retries idempotent).
         project_id: The host-assigned project id (required).
 
     Returns data (on success):
-        app (str), path (str), method (str), function_name (str),
-        response_model (str | None): the registered route's details.
+        app (str): the app directory name.
+        path (str): the URL path.
+        method (str): the HTTP method.
+        function_name (str): the handler function name.
+        response_model (str | None): the response model name, if any.
         wired (bool): ``True`` when the handler's router was auto-included into
             ``apps/{app}/urls.py`` (so it is actually served); ``False`` when
             ``urls.py`` was missing and you must include it yourself.
@@ -124,17 +130,17 @@ async def create_route(
         )
     """
     ensure_identifier(function_name, "function name")
+    validate_if_exists(if_exists)
     method = method.lower()
     if method not in _VALID_METHODS:
         allowed = ", ".join(sorted(_VALID_METHODS))
-        return AgentResult(
-            success=False,
-            message=f"Invalid method '{method}'. Must be one of: {allowed}",
-            data={"error_code": "invalid_input"},
+        return fail(
+            f"Invalid method '{method}'. Must be one of: {allowed}",
+            code="invalid_input",
         )
     views = _views_file(app, project_root)
     if not views.exists():
-        return AgentResult(success=False, message=f"views.py not found at {views}")
+        return fail(f"views.py not found at {views}", code="file_not_found", missing="views.py")
 
     def _write() -> bool:
         content = views.read_text(encoding="utf-8")
@@ -206,7 +212,18 @@ async def create_route(
         urls.write_text(content, encoding="utf-8")
         return True
 
-    wired = await asyncio.to_thread(_write)
+    try:
+        wired = await asyncio.to_thread(_write)
+    except AgentError as exc:
+        if if_exists == "skip" and (exc.result.data or {}).get("error_code") == "already_exists":
+            return skip_result(
+                f"Route handler '{function_name}' already exists in apps/{app}/views.py; skipped",
+                app=app,
+                path=path,
+                method=method,
+                function_name=function_name,
+            )
+        raise
     served = (
         "" if wired
         else " (urls.py missing — include the views router manually to serve it)"

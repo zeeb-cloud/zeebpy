@@ -30,6 +30,9 @@ class CrudStubViewSet(ViewSet):
     async def query(self, request):
         return {"results": []}
 
+    async def list(self, request):
+        return {"results": ["listed"]}
+
     async def create(self, request):
         return {}
 
@@ -102,6 +105,26 @@ class TestViewSetSlashAliases:
         schema_paths = app.openapi()["paths"]
         assert "/reports/query" in schema_paths
         assert not [p for p in schema_paths if p != "/" and p.endswith("/")]
+
+    async def test_get_list_endpoint_is_served(self):
+        """A GET collection endpoint exists and maps to ``list`` — the docs
+        (frontend-generation.md) advertise it alongside POST /query."""
+        router = SimpleRouter()
+        router.register("reports", CrudStubViewSet)
+        async with _make_client(router) as client:
+            for path in ("/reports", "/reports/"):
+                response = await client.get(path)
+                assert response.status_code == 200, path
+                assert response.json() == {"results": ["listed"]}
+
+    def test_get_list_in_openapi(self):
+        router = SimpleRouter()
+        router.register("reports", CrudStubViewSet)
+        app = FastAPI()
+        for api_router in router.get_urls():
+            app.include_router(api_router)
+        get_ops = app.openapi()["paths"].get("/reports", {})
+        assert "get" in get_ops  # GET list is a documented operation
 
 
 class TestIncludedRawRouterAliases:

@@ -1,31 +1,19 @@
 """zeeb_agents — Async Python functions for Zeeb project scaffolding and management.
 
-All functions return an :class:`AgentResult` and can be imported directly::
+Every public function returns an :class:`AgentResult` (truthy on success, never
+raises) and is importable directly, e.g.::
 
-    from zeeb_agents import (
-        create_project, create_app, get_project_info, list_apps, get_project_structure,
-        create_model, add_field, remove_field, replace_model_fields, add_relationship,
-        create_serializer, create_viewset, generate_crud, create_route,
-        run_migrations, make_migrations, get_migration_status,
-        generate_seed_script,
-        read_logs, search_logs, clear_logs,
-        get_settings, manage_settings, get_env, set_env, delete_env,
-        read_file, write_file, list_files, search_code,
-        list_tables, describe_table, run_query,
-        run_tests,
-        run_management_command,
-        # BaaS tools
-        create_user, list_users, get_user, update_user, delete_user, set_user_password,
-        configure_cors, get_cors_config,
-        create_task, list_tasks, delete_task,
-        create_health_endpoint, check_system_health,
-        get_model_json_schema, list_all_routes, export_openapi,
-        generate_dockerfile, generate_requirements, check_production_readiness,
-        create_permission_class, list_permission_classes,
-        # MCP resources
-        get_resource, get_capabilities_doc, get_project_lifecycle_doc,
-        get_backend_generation_doc, get_frontend_generation_doc, get_deployment_doc,
-    )
+    from zeeb_agents import create_project, create_app, generate_crud
+
+The full, always-current tool inventory — names, signatures, and per-tool
+``Returns data:`` shapes — is discoverable at runtime; do not rely on a
+hand-maintained list here::
+
+    from zeeb_agents import list_capabilities
+    tools = (await list_capabilities()).data["tools"]
+
+New to a project? ``get_started()`` returns the canonical build recipe (and the
+recommended next action when given a ``project_id``).
 
 Designed to be used from an MCP server, CLI tool, or any other Python code
 without any MCP dependency on this package itself.
@@ -53,7 +41,7 @@ from zeeb_agents.auth_scaffold import (
 )
 
 # Tool discovery
-from zeeb_agents.capabilities import list_capabilities
+from zeeb_agents.capabilities import get_started, list_capabilities
 
 # Configuration & environment
 from zeeb_agents.config import (
@@ -121,6 +109,7 @@ from zeeb_agents.models import (
     add_field,
     add_relationship,
     create_model,
+    delete_field,
     delete_model,
     list_models,
     remove_field,
@@ -139,10 +128,13 @@ from zeeb_agents.project import (
     create_app,
     create_project,
     delete_app,
+    describe_project,
     get_project_info,
     get_project_structure,
+    install_app,
     list_apps,
     rename_app,
+    wire_app_urls,
 )
 
 # MCP resource content
@@ -195,6 +187,7 @@ from zeeb_agents.signals import (
     list_model_signals,
     list_signal_receivers,
     read_signal_receiver,
+    update_signal_receiver,
 )
 
 # Background tasks (BaaS)
@@ -239,10 +232,13 @@ __all__ = [
     "create_project",
     "create_app",
     "delete_app",
+    "install_app",
+    "wire_app_urls",
     "get_project_info",
     "rename_app",
     "list_apps",
     "get_project_structure",
+    "describe_project",
     # Models
     "create_model",
     "update_model",
@@ -251,6 +247,7 @@ __all__ = [
     "list_models",
     "add_field",
     "remove_field",
+    "delete_field",
     "add_relationship",
     # Serializers
     "create_serializer",
@@ -302,6 +299,7 @@ __all__ = [
     "list_signal_receivers",
     "read_signal_receiver",
     "edit_signal_receiver",
+    "update_signal_receiver",
     "delete_signal_receiver",
     "list_model_signals",
     # User management (BaaS)
@@ -343,6 +341,7 @@ __all__ = [
     "configure_versioning",
     # Tool discovery
     "list_capabilities",
+    "get_started",
     # MCP resource content
     "RESOURCE_URIS",
     "get_resource",

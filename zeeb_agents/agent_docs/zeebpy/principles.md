@@ -47,7 +47,8 @@ Rules you can rely on:
 `data["error_code"]` (when present) is one of:
 
 `already_exists`, `app_not_found`, `dependency_missing`, `env_key_not_found`,
-`field_not_found`, `file_not_found`, `function_not_found`, `invalid_field_spec`,
+`field_not_found`, `file_not_found`, `function_not_found`,
+`invalid_authentication`, `invalid_field_spec`,
 `invalid_field_type`, `invalid_identifier`, `invalid_input`, `invalid_meta`,
 `invalid_permission`, `invalid_regex`, `invalid_sql`, `log_file_not_found`,
 `model_not_found`, `no_project_id`, `no_user_table`,
@@ -113,6 +114,26 @@ this is intentional:
 - `{prefix}run_migrations` → `data["applied"]`; `{prefix}get_migration_status`
   → `data["applied"]` and `data["pending"]`
 - `{prefix}update_model` → `data["changes"]`
+
+### Naming conventions & forgiving aliases
+
+Tool names follow verb prefixes — `create_*`, `list_*`, `get_*`, `update_*`,
+`delete_*`, `configure_*`. A few deliberate variations exist, with **additive
+aliases** so a reflexive guess still works:
+
+- The app argument is `app=` on every app-scoped tool. `{prefix}create_app` /
+  `{prefix}delete_app` name it `name=` but **also accept `app=`**.
+- `{prefix}remove_field` is also exposed as `{prefix}delete_field`, and
+  `{prefix}edit_signal_receiver` as `{prefix}update_signal_receiver`, so the
+  `delete_*`/`update_*` verbs work there too.
+- `read_*` (e.g. `read_file`, `read_logs`, `read_signal_receiver`) returns raw
+  **content**; `get_*` returns **structured** data — this split is intentional.
+- Config is split by storage: `{prefix}get_settings` / `{prefix}manage_settings`
+  edit `settings.py`; the `{prefix}get_env` / `{prefix}set_env` /
+  `{prefix}delete_env` triplet edits `.env`.
+
+When unsure of an exact name or argument, call `{prefix}list_capabilities()` —
+it is the authoritative, always-current signature list.
 
 ## 4. Security model
 
@@ -188,10 +209,21 @@ Routing is two-tiered, mirroring Django:
   imports the ViewSet there. The URL segment defaults to the **app name**;
   override it with `url_prefix=`. `{prefix}generate_crud(...)` does both
   (model + serializer + viewset + `register_route`) in one shot.
-- The app's router is in turn included by the **project's `myproject/urls.py`**,
-  which mounts each app and the auth routes. A `ModelViewSet` registered this
-  way exposes the full CRUD set plus a `POST /<prefix>/query/` endpoint that
-  accepts serialized `Q` filter strings.
+- The app's router is in turn included by the **project's `myproject/urls.py`**.
+  `{prefix}create_app` wires this include **automatically** (and adds the app to
+  `INSTALLED_APPS`), so a registered ViewSet is served with no manual step — no
+  more "scaffolded but 404s". (For a pre-existing/unwired app, wire it with
+  `{prefix}install_app` + `{prefix}wire_app_urls`; confirm with
+  `{prefix}describe_project`, whose `served`/`warnings` surface any gap.) A
+  `ModelViewSet` registered this way exposes the full CRUD set: `GET /<prefix>`
+  (list), `POST /<prefix>/query` (list with a serialized `Q` filter body),
+  `POST /<prefix>` (create), and `GET|PUT|PATCH|DELETE /<prefix>/{id}`.
+- **Canonical paths are slash-less** (`/<prefix>`, `/<prefix>/{id}`). The backend
+  also serves each with a trailing slash appended (no redirect), so a client that
+  adds one still works — but generate clients against the slash-less form (copy
+  paths verbatim from OpenAPI). The **one exception is the OAuth routes**
+  (`/auth/<provider>/authorize/`, `/callback/`, …), which keep a trailing slash
+  by design so the IdP-registered `redirect_uri` matches exactly.
 - For a single function endpoint instead of a ViewSet, use
   `{prefix}create_route(app, path, method, function_name, body=..., imports=...)`.
   It appends a plain `@router.<method>(path)` handler (on a FastAPI
@@ -224,11 +256,20 @@ Routing is two-tiered, mirroring Django:
   extends `AbstractUser` and sets `AUTH_USER_MODEL`; run migrations after.
 - **Authorization**: DRF-style permission classes guard ViewSets. ViewSets
   scaffolded by `{prefix}create_viewset` default to
-  `IsAuthenticatedOrReadOnly`; pass `permission=` to change it (valid:
+  `IsAuthenticatedOrReadOnly`; pass `permission=` to change it — a single
+  name or a list (every listed class must allow the request — AND; valid:
   `AllowAny`, `IsAuthenticated`, `IsAdminUser`, `IsAuthenticatedOrReadOnly`,
   `IsOwner`, `IsOwnerOrReadOnly`, `DjangoModelPermissions`). Create custom
   classes with `{prefix}create_permission_class(app, class_name, logic=...)`
   and list them with `{prefix}list_permission_classes`.
+- **Per-viewset authentication**: pass `authentication=` to
+  `{prefix}create_viewset`/`{prefix}update_viewset` to override the global
+  auth middleware for one endpoint — a single name or a list, tried in order
+  (the first class that recognizes the request's credentials wins; valid:
+  `JWTAuthentication`, `JWTStatelessAuthentication`,
+  `OAuth2BearerAuthentication`, or `apps.<app>.authentication.<Class>`).
+  Omitted (the default), the project-wide authentication from
+  `{prefix}setup_auth` stays in charge — most endpoints want exactly that.
 - **Rate limiting & versioning**: set project-wide defaults with
   `{prefix}configure_throttling(default_classes=, rates=)` and
   `{prefix}configure_versioning(scheme=, default_version=, allowed_versions=)`;

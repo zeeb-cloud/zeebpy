@@ -13,12 +13,15 @@ from zeeb_agents._utils.code_gen import (
     ensure_import,
     render_action_method,
     render_viewset_class,
+    resolve_authentication,
     resolve_pagination,
-    validate_permission,
+    resolve_permissions,
+    skip_result,
+    validate_if_exists,
     validate_throttles,
     viewset_option_imports,
 )
-from zeeb_agents._utils.errors import AgentError
+from zeeb_agents._utils.errors import AgentError, fail
 from zeeb_agents._utils.project import require_project_root
 from zeeb_agents._utils.validation import ensure_app_exists, ensure_identifier
 from zeeb_agents.models import create_model
@@ -42,7 +45,7 @@ async def create_viewset(
     app: str,
     model_name: str,
     serializer_class: str | None = None,
-    permission: str = "IsAuthenticatedOrReadOnly",
+    permission: str | list[str] = "IsAuthenticatedOrReadOnly",
     read_only: bool = False,
     lookup_field: str | None = None,
     pagination: str | None = None,
@@ -50,6 +53,10 @@ async def create_viewset(
     search_fields: list[str] | None = None,
     ordering_fields: list[str] | None = None,
     filterset: str | None = None,
+    authentication: str | list[str] | None = None,
+    if_exists: str = "error",
+    register: bool = False,
+    url_prefix: str | None = None,
     project_root: Path | None = None,
 ) -> AgentResult:
     """Append a ``ModelViewSet`` subclass to ``apps/<app>/views.py``.
@@ -59,10 +66,17 @@ async def create_viewset(
         model_name: The model this viewset exposes (e.g. ``"Post"``).
         serializer_class: Override the serializer class name.  Defaults to
             ``"<ModelName>Serializer"``.
-        permission: Permission class name from ``zeeb_api.permissions``
-            (``AllowAny``, ``IsAuthenticated``, ``IsAdminUser``,
+        permission: Permission class(es) — a single name or a list; every
+            listed class must allow the request (AND semantics). Each entry
+            is a built-in ``zeeb_api.permissions`` name (``AllowAny``,
+            ``IsAuthenticated``, ``IsAdminUser``,
             ``IsAuthenticatedOrReadOnly``, ``IsOwner``, ``IsOwnerOrReadOnly``,
-            ``DjangoModelPermissions``).
+            ``DjangoModelPermissions``), a custom class from this app's
+            ``permissions.py`` (scaffold with
+            :func:`~zeeb_agents.permissions_scaffold.create_permission_class`),
+            or a dotted ``apps.<app>.permissions.<Class>`` reference to
+            another app's class. Matching imports are added automatically;
+            for OR-logic compose a custom class instead.
             Default: ``"IsAuthenticatedOrReadOnly"``.
         read_only: Generate a ``ReadOnlyModelViewSet`` (query/list/retrieve
             only) instead of a full-CRUD ``ModelViewSet``.
@@ -81,6 +95,25 @@ async def create_viewset(
         filterset: ``FilterSet`` class name to add to ``filter_backends``
             (imported from the app's ``filters.py`` — create it with
             :func:`~zeeb_agents.filters_scaffold.create_filterset`).
+        authentication: Authentication class(es) for this viewset — a single
+            name or a list, tried in order at request time (the first class
+            that recognizes the request's credentials wins). Each entry is a
+            built-in ``zeeb_api.authentication`` name (``JWTAuthentication``,
+            ``JWTStatelessAuthentication``, ``OAuth2BearerAuthentication``),
+            a hand-written class from this app's ``authentication.py``, or a
+            dotted ``apps.<app>.authentication.<Class>`` reference. Omitted
+            (default), no ``authentication_classes`` attribute is emitted and
+            the project's global auth middleware stays in charge. Note: a
+            non-empty list takes ownership — requests only the middleware
+            would authenticate are treated as anonymous on this viewset.
+        if_exists: ``"error"`` (default) or ``"skip"`` (succeed and change
+            nothing if the ViewSet already exists — makes retries idempotent).
+        register: When true, also register the ViewSet's route in
+            ``apps/<app>/urls.py`` (folds in :func:`register_route`) so a single
+            call scaffolds *and* mounts it. Default false preserves the two-step
+            Django flow; ``generate_crud`` is the recommended one-shot.
+        url_prefix: URL segment to mount under when ``register`` is true
+            (defaults to the app name).
         project_id: The host-assigned project id (required).
 
     Returns data (on success):
@@ -89,6 +122,10 @@ async def create_viewset(
         viewset (str): the generated class name (``"<ModelName>ViewSet"``)
         read_only (bool): whether a ``ReadOnlyModelViewSet`` was generated
         options (list[str]): names of the optional class attributes emitted
+        registered (bool): whether the route was registered (only when
+            ``register=True``)
+        prefix (str): the URL segment registered under (only when
+            ``register=True`` and registration succeeded)
 
     Notes:
         - Failures carry ``error_code`` in ``data`` (``app_not_found``,
@@ -96,7 +133,7 @@ async def create_viewset(
           plus close-match ``suggestions`` where applicable.
     """
     ensure_identifier(model_name, "model name")
-    validate_permission(permission)
+    validate_if_exists(if_exists)
     if pagination:
         resolve_pagination(pagination)
     if throttles:
@@ -105,7 +142,13 @@ async def create_viewset(
         ensure_identifier(filterset, "filterset class name")
     path = _views_file(app, project_root)
     if not path.exists():
-        return AgentResult(success=False, message=f"views.py not found at {path}")
+        return fail(f"views.py not found at {path}", code="file_not_found", missing="views.py")
+    perm_imports, perm_refs = resolve_permissions(permission, path.parent)
+    auth_imports, auth_refs = (
+        resolve_authentication(authentication, path.parent)
+        if authentication is not None
+        else ([], [])
+    )
 
     class_name = f"{model_name}ViewSet"
 
@@ -120,7 +163,7 @@ async def create_viewset(
         class_code = render_viewset_class(
             model_name,
             serializer_class,
-            permission,
+            perm_refs,
             read_only=read_only,
             lookup_field=lookup_field,
             pagination=pagination,
@@ -128,8 +171,11 @@ async def create_viewset(
             search_fields=search_fields,
             ordering_fields=ordering_fields,
             filterset=filterset,
+            authentication=auth_refs or None,
         )
         ensure_import(path, "from zeeb_api import viewsets, permissions")
+        for import_line in (*perm_imports, *auth_imports):
+            ensure_import(path, import_line)
         if not read_only:
             ensure_import(path, "from zeeb_api.viewsets import ModelViewSet")
         for import_line in viewset_option_imports(
@@ -154,23 +200,53 @@ async def create_viewset(
                 ("search_fields", search_fields),
                 ("ordering_fields", ordering_fields),
                 ("filter_backends", filterset or search_fields or ordering_fields),
+                ("authentication_classes", authentication),
             )
             if given
         ]
         return options
 
-    options = await asyncio.to_thread(_write)
-    return AgentResult(
-        success=True,
-        message=f"'{class_name}' created in apps/{app}/views.py",
-        data={
-            "app": app,
-            "model": model_name,
-            "viewset": class_name,
-            "read_only": read_only,
-            "options": options,
-        },
-    )
+    skipped = False
+    try:
+        options = await asyncio.to_thread(_write)
+    except AgentError as exc:
+        if if_exists == "skip" and (exc.result.data or {}).get("error_code") == "already_exists":
+            options, skipped = [], True
+        else:
+            raise
+
+    data: dict = {
+        "app": app,
+        "model": model_name,
+        "viewset": class_name,
+        "read_only": read_only,
+        "options": options,
+    }
+    if skipped:
+        data["skipped"] = True
+    verb = "already exists; skipped" if skipped else "created"
+    message = f"'{class_name}' {verb} in apps/{app}/views.py"
+
+    if register:
+        # Re-registration is idempotent under skip so a resumed create_viewset
+        # still wires a route that a prior run failed to register.
+        reg = await register_route(
+            app,
+            model_name,
+            url_prefix=url_prefix,
+            if_exists="skip",
+            project_id=project_root,
+        )
+        data["registered"] = reg.success
+        if reg.success:
+            prefix = (reg.data or {}).get("prefix")
+            data["prefix"] = prefix
+            message += f"; route registered at '{prefix}/'"
+        else:
+            data["registration_error"] = reg.message
+            message += f"; route registration failed: {reg.message}"
+
+    return AgentResult(success=True, message=message, data=data)
 
 
 @agent_function
@@ -186,7 +262,7 @@ async def add_viewset_action(
     response_serializer: str | None = None,
     request_schema: str | None = None,
     response_schema: str | None = None,
-    permission: str | None = None,
+    permission: str | list[str] | None = None,
     project_root: Path | None = None,
 ) -> AgentResult:
     """Append a custom ``@action`` method to an existing ViewSet.
@@ -228,9 +304,14 @@ async def add_viewset_action(
             for request-body validation — an alternative to *request_serializer*.
         response_schema: Pydantic model name for the response model — an
             alternative to *response_serializer*.
-        permission: Per-action permission class name from
-            ``zeeb_api.permissions`` (overrides the ViewSet's class-level
-            permissions for this action only).
+        permission: Per-action permission class(es) — a single name or a
+            list; every listed class must allow the request (AND semantics).
+            Overrides the ViewSet's class-level permissions for this action
+            only. Each entry is a built-in ``zeeb_api.permissions`` name, a
+            custom class from this app's ``permissions.py``, or a dotted
+            ``apps.<app>.permissions.<Class>`` reference; matching imports
+            are added automatically. (Authentication is viewset-level, not
+            per-action — set it via ``create_viewset``/``update_viewset``.)
         project_id: The host-assigned project id (required).
 
     Returns data (on success):
@@ -265,16 +346,11 @@ async def add_viewset_action(
     action_methods = [m.lower() for m in (methods or ["get"])]
     invalid = [m for m in action_methods if m not in _ACTION_METHODS]
     if invalid:
-        return AgentResult(
-            success=False,
-            message=(
-                f"Invalid method(s) {', '.join(sorted(invalid))}. "
-                f"Must be one of: {', '.join(sorted(_ACTION_METHODS))}"
-            ),
-            data={"error_code": "invalid_input"},
+        return fail(
+            f"Invalid method(s) {', '.join(sorted(invalid))}. "
+            f"Must be one of: {', '.join(sorted(_ACTION_METHODS))}",
+            code="invalid_input",
         )
-    if permission:
-        validate_permission(permission)
     # Serializer/schema references must be importable class names.
     serializer_refs = {
         "request_serializer": request_serializer,
@@ -288,7 +364,10 @@ async def add_viewset_action(
 
     path = _views_file(app, project_root)
     if not path.exists():
-        return AgentResult(success=False, message=f"views.py not found at {path}")
+        return fail(f"views.py not found at {path}", code="file_not_found", missing="views.py")
+    perm_imports, perm_refs = (
+        resolve_permissions(permission, path.parent) if permission else ([], [])
+    )
 
     class_name = f"{model_name}ViewSet"
 
@@ -311,7 +390,7 @@ async def add_viewset_action(
             response_serializer=response_serializer,
             request_schema=request_schema,
             response_schema=response_schema,
-            permission=permission,
+            permission=perm_refs or None,
         )
 
         # Insert before the end of the class body (before the next top-level
@@ -335,6 +414,8 @@ async def add_viewset_action(
         ensure_import(path, "from zeeb_api.viewsets import action")
         if permission:
             ensure_import(path, "from zeeb_api import viewsets, permissions")
+        for import_line in perm_imports:
+            ensure_import(path, import_line)
         for ref in serializer_refs.values():
             if ref:
                 ensure_import(path, f"from .serializers import {ref}")
@@ -379,12 +460,13 @@ def _set_class_attr(block: str, attr: str, rendered: str) -> tuple[str, bool]:
 async def update_viewset(
     app: str,
     model_name: str,
-    permission: str | None = None,
+    permission: str | list[str] | None = None,
     lookup_field: str | None = None,
     pagination: str | None = None,
     throttles: list[str] | None = None,
     search_fields: list[str] | None = None,
     ordering_fields: list[str] | None = None,
+    authentication: str | list[str] | None = None,
     project_root: Path | None = None,
 ) -> AgentResult:
     """Set or update class attributes on an existing ``<ModelName>ViewSet``.
@@ -397,13 +479,28 @@ async def update_viewset(
     Args:
         app: App directory name.
         model_name: The model whose ``<ModelName>ViewSet`` to update.
-        permission: New permission class name from ``zeeb_api.permissions``.
+        permission: New permission class(es) — a single name or a list;
+            every listed class must allow the request (AND semantics).
+            Replaces the existing ``permission_classes``. Each entry is a
+            built-in ``zeeb_api.permissions`` name, a custom class from this
+            app's ``permissions.py``, or a dotted
+            ``apps.<app>.permissions.<Class>`` reference; matching imports
+            are added automatically.
         lookup_field: New detail-lookup field (e.g. ``"slug"``).
         pagination: ``"page"``, ``"limit_offset"``, ``"cursor"`` or a
             ``zeeb_api.pagination`` class name.
         throttles: Throttle class names from ``zeeb_api.throttling``.
         search_fields: Fields for ``?search=…`` full-text search.
         ordering_fields: Fields allowed in ``?ordering=…``.
+        authentication: Authentication class(es) for this viewset — a single
+            name or a list, tried in order (first match wins). Sets or
+            replaces ``authentication_classes``; there is no option to remove
+            the attribute once set — omit to leave it unchanged. Each entry
+            is a built-in ``zeeb_api.authentication`` name
+            (``JWTAuthentication``, ``JWTStatelessAuthentication``,
+            ``OAuth2BearerAuthentication``), a hand-written class from this
+            app's ``authentication.py``, or a dotted
+            ``apps.<app>.authentication.<Class>`` reference.
         project_id: The host-assigned project id (required).
 
     Returns data (on success):
@@ -418,15 +515,21 @@ async def update_viewset(
         - With no options given, ``changes`` is empty and the file is left
           untouched.
     """
-    if permission:
-        validate_permission(permission)
     if pagination:
         resolve_pagination(pagination)
     if throttles:
         validate_throttles(throttles)
     path = _views_file(app, require_project_root(project_root))
     if not path.exists():
-        return AgentResult(success=False, message=f"views.py not found at {path}")
+        return fail(f"views.py not found at {path}", code="file_not_found", missing="views.py")
+    perm_imports, perm_refs = (
+        resolve_permissions(permission, path.parent) if permission else ([], [])
+    )
+    auth_imports, auth_refs = (
+        resolve_authentication(authentication, path.parent)
+        if authentication is not None
+        else ([], [])
+    )
 
     class_name = f"{model_name}ViewSet"
 
@@ -449,11 +552,21 @@ async def update_viewset(
         def quoted_list(values: list[str]) -> str:
             return "[" + ", ".join(f'"{v}"' for v in values) + "]"
 
+        # authentication_classes is set before permission_classes: fresh
+        # insertions of both anchor at the same spot, so setting permission
+        # second lands it above authentication — matching create_viewset's
+        # attribute order.
+        if auth_refs:
+            block, _ = _set_class_attr(
+                block, "authentication_classes", "[" + ", ".join(auth_refs) + "]"
+            )
+            changes.append("authentication_classes set")
         if permission:
             block, _ = _set_class_attr(
-                block, "permission_classes", f"[permissions.{permission}]"
+                block, "permission_classes", "[" + ", ".join(perm_refs) + "]"
             )
-            changes.append(f"permission_classes set to {permission}")
+            perm_names = [permission] if isinstance(permission, str) else permission
+            changes.append(f"permission_classes set to {', '.join(perm_names)}")
         if lookup_field:
             block, _ = _set_class_attr(block, "lookup_field", f'"{lookup_field}"')
             changes.append(f"lookup_field set to '{lookup_field}'")
@@ -505,6 +618,8 @@ async def update_viewset(
                 content[: block_match.start(1)] + block + content[block_match.end(1):]
             )
             path.write_text(content, encoding="utf-8")
+            for import_line in (*perm_imports, *auth_imports):
+                ensure_import(path, import_line)
             for import_line in viewset_option_imports(
                 pagination=pagination,
                 throttles=throttles,
@@ -529,6 +644,7 @@ async def register_route(
     app: str,
     model_name: str,
     url_prefix: str | None = None,
+    if_exists: str = "error",
     project_root: Path | None = None,
 ) -> AgentResult:
     """Register a ViewSet with the app's router in ``apps/<app>/urls.py``.
@@ -544,6 +660,8 @@ async def register_route(
         model_name: The model whose ``<ModelName>ViewSet`` to register.
         url_prefix: URL segment to mount the ViewSet under. Defaults to the app
             name when ``None``.
+        if_exists: ``"error"`` (default) or ``"skip"`` (succeed and change
+            nothing if the route is already registered — makes retries idempotent).
         project_id: The host-assigned project id (required).
 
     Returns data (on success):
@@ -552,12 +670,13 @@ async def register_route(
         prefix (str): the URL segment the ViewSet is mounted under.
 
     Notes:
-        - Fails (``success=False``) when ``apps/<app>/urls.py`` is missing or the
-          ViewSet is already registered.
+        - Fails (``success=False``) when ``apps/<app>/urls.py`` is missing or (with
+          the default ``if_exists="error"``) the ViewSet is already registered.
     """
+    validate_if_exists(if_exists)
     path = _urls_file(app, project_root)
     if not path.exists():
-        return AgentResult(success=False, message=f"urls.py not found at {path}")
+        return fail(f"urls.py not found at {path}", code="file_not_found", missing="urls.py")
 
     prefix = url_prefix or app
     viewset_name = f"{model_name}ViewSet"
@@ -579,7 +698,17 @@ async def register_route(
         content = content.rstrip("\n") + f"\n{register_line}\n"
         path.write_text(content, encoding="utf-8")
 
-    await asyncio.to_thread(_write)
+    try:
+        await asyncio.to_thread(_write)
+    except AgentError as exc:
+        if if_exists == "skip" and (exc.result.data or {}).get("error_code") == "already_exists":
+            return skip_result(
+                f"'{viewset_name}' already registered at '{prefix}/'; skipped",
+                app=app,
+                viewset=viewset_name,
+                prefix=prefix,
+            )
+        raise
     return AgentResult(
         success=True,
         message=f"'{viewset_name}' registered at '{prefix}/'",
@@ -594,7 +723,7 @@ async def generate_crud(
     fields: list[dict],
     serializer_fields: list[str] | None = None,
     read_only_fields: list[str] | None = None,
-    permission: str = "IsAuthenticatedOrReadOnly",
+    permission: str | list[str] = "IsAuthenticatedOrReadOnly",
     meta: dict | None = None,
     extra_fields: list[dict] | None = None,
     validate_fields: list[str] | None = None,
@@ -605,6 +734,8 @@ async def generate_crud(
     search_fields: list[str] | None = None,
     ordering_fields: list[str] | None = None,
     filterset: str | None = None,
+    authentication: str | list[str] | None = None,
+    migrate: bool = False,
     project_root: Path | None = None,
 ) -> AgentResult:
     """One-shot scaffold: create model + serializer + viewset + register route.
@@ -616,7 +747,10 @@ async def generate_crud(
         serializer_fields: Fields to expose.  Defaults to all model field names
             plus ``"id"``.
         read_only_fields: Read-only serializer fields.
-        permission: ViewSet permission class.
+        permission: ViewSet permission class(es) — a single name or a list
+            (AND semantics): built-in names, custom classes from this app's
+            ``permissions.py``, or dotted ``apps.<app>.permissions.<Class>``
+            (see :func:`create_viewset`).
         meta: ``class Meta`` dict forwarded to
             :func:`~zeeb_agents.models.create_model`.
         extra_fields: Declared serializer field specs forwarded to
@@ -631,18 +765,31 @@ async def generate_crud(
         search_fields: Search fields (forwarded to :func:`create_viewset`).
         ordering_fields: Ordering fields (forwarded to :func:`create_viewset`).
         filterset: FilterSet class name (forwarded to :func:`create_viewset`).
+        authentication: Authentication class(es) for the viewset — a single
+            name or a list, tried in order (first match wins); omitted, the
+            project's global auth middleware stays in charge (forwarded to
+            :func:`create_viewset`).
+        migrate: When true, also run ``make_migrations`` + ``run_migrations``
+            after scaffolding so the new table is live in one call. Default false
+            keeps the DB-touching step explicit.
         project_id: The host-assigned project id (required).
 
     Returns data (on success):
         steps (list[str]): human-readable description of each completed step
-            (model, serializer, viewset, route registration).
+            (model, serializer, viewset, route registration, and — when
+            ``migrate=True`` — migration creation/apply).
+        migrated (dict): present only when ``migrate=True`` —
+            ``{"created": str | None, "applied": list[str]}``.
 
     Notes:
+        - Resumable: each step is issued with ``if_exists="skip"``, so re-running
+          after a partial failure completes the missing steps instead of walling
+          on ``already_exists``.
         - Best-effort: on partial failure it returns ``success=False`` with
           ``data={"steps_completed": [...], "errors": [...]}`` so you can see
           how far it got and repair with the individual tools.
-        - Migrations are *not* run — follow up with
-          :func:`~zeeb_agents.migrations.make_migrations` and
+        - With ``migrate=False`` (default) migrations are *not* run — follow up
+          with :func:`~zeeb_agents.migrations.make_migrations` and
           :func:`~zeeb_agents.migrations.run_migrations`.
     """
     steps: list[str] = []
@@ -651,7 +798,9 @@ async def generate_crud(
     root = project_root
 
     # 1. Model
-    result = await create_model(app, model_name, fields, meta=meta, project_id=root)
+    result = await create_model(
+        app, model_name, fields, meta=meta, if_exists="skip", project_id=root
+    )
     if result.success:
         steps.append(f"Created model '{model_name}'")
     else:
@@ -666,6 +815,7 @@ async def generate_crud(
         read_only_fields,
         extra_fields=extra_fields,
         validate_fields=validate_fields,
+        if_exists="skip",
         project_id=root,
     )
     if result.success:
@@ -685,6 +835,8 @@ async def generate_crud(
         search_fields=search_fields,
         ordering_fields=ordering_fields,
         filterset=filterset,
+        authentication=authentication,
+        if_exists="skip",
         project_id=root,
     )
     if result.success:
@@ -693,7 +845,7 @@ async def generate_crud(
         errors.append(f"viewset: {result.message}")
 
     # 4. Route
-    result = await register_route(app, model_name, project_id=root)
+    result = await register_route(app, model_name, if_exists="skip", project_id=root)
     if result.success:
         steps.append(f"Registered route '{app}/'")
     else:
@@ -705,10 +857,39 @@ async def generate_crud(
             message=f"CRUD generation partially failed: {'; '.join(errors)}",
             data={"steps_completed": steps, "errors": errors},
         )
+
+    data: dict = {"steps": steps}
+    if migrate:
+        from zeeb_agents.migrations import make_migrations, run_migrations
+
+        mk = await make_migrations(project_id=root)
+        created = mk.data.get("created") if mk.success and mk.data else None
+        applied: list[str] = []
+        if mk.success:
+            steps.append(
+                f"Created migration '{created}'" if created else "No migration needed"
+            )
+            rn = await run_migrations(project_id=root)
+            if rn.success:
+                applied = rn.data.get("applied", []) if rn.data else []
+                steps.append(f"Applied {len(applied)} migration(s)")
+            else:
+                errors.append(f"run_migrations: {rn.message}")
+        else:
+            errors.append(f"make_migrations: {mk.message}")
+        data["migrated"] = {"created": created, "applied": applied}
+        if errors:
+            data["errors"] = errors
+            return AgentResult(
+                success=False,
+                message=f"CRUD scaffolded but migration failed: {'; '.join(errors)}",
+                data={"steps_completed": steps, **data},
+            )
+
     return AgentResult(
         success=True,
         message=f"CRUD for '{model_name}' generated successfully",
-        data={"steps": steps},
+        data=data,
     )
 
 

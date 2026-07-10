@@ -143,20 +143,36 @@ server typically registers so an agent can discover available tools at runtime.
 
 ## Project & App Management
 
-### `create_project(name, directory=".")`
+### `create_project(name, framework="zeebpy", directory=".")`
 Create a new Zeeb project.  Delegates to the CLI `startproject` command so
-the structure is always in sync.
+the structure is always in sync.  `framework` is recorded in the project's
+`pyproject.toml` (`[tool.zeeb]`) and drives framework-aware doc serving.
 
 ```python
 await create_project("myapp", directory="/projects")
 ```
 
-### `create_app(name, project_id=None)`
-Create a new app inside an existing project.
+### `create_app(name, wire=True, project_id=None)`
+Create a new app inside an existing project — **wired and served by default**.
+Besides scaffolding `apps/<name>/`, it appends `"apps.<name>"` to
+`INSTALLED_APPS` and includes the app's router in the project `urls.py`, so its
+models migrate and its endpoints are routed with no manual step. Returns
+`installed_apps_updated` / `urls_wired` in `data`. Pass `wire=False` to scaffold
+files only.
 
 ```python
-await create_app("blog")
+await create_app("blog")            # scaffolded + wired
+await create_app("blog", wire=False)  # files only
 ```
+
+### `install_app(app, project_id=None)`
+Register a pre-existing app in `INSTALLED_APPS` (idempotent). `create_app` does
+this automatically; use it to wire an app created with `wire=False`.
+
+### `wire_app_urls(app, prefix=None, project_id=None)`
+Include a pre-existing app's router in the project `urls.py` (idempotent). Leave
+`prefix` unset — registered ViewSets carry their own segment and `include` nests
+prefixes.
 
 ### `delete_app(name, project_id=None)`
 Delete an app directory.
@@ -166,6 +182,16 @@ Rename an app directory.
 
 ### `get_project_info(project_id=None)`
 Returns project root, app list, installed apps, and database URL.
+
+### `describe_project(project_id=None)`
+One computed snapshot of the whole project: apps (`installed` / `urls_included` /
+`model_count`), models, endpoints (`served`), migrations, runtime, overall
+`served`, and `warnings` for any wiring/migration gap. The fastest way to orient
+and confirm everything is actually served.
+
+### `get_started(project_id=None)`
+Returns the canonical zero-to-served build recipe and, when a `project_id` is
+given, the recommended next action. The one call to make first.
 
 ---
 
@@ -651,8 +677,9 @@ result = await list_apps()
 # result.data == {"apps": ["blog", "users"], "count": 2}
 ```
 
-### `get_project_structure(project_id=None, max_depth=3)`
+### `get_project_structure(max_depth=3)`
 Return a nested directory tree for the project. Skips `__pycache__`, `.git`, `.venv`, etc.
+(Like every project tool, it takes a trailing `project_id`.)
 
 ```python
 result = await get_project_structure(max_depth=2)

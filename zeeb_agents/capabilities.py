@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import inspect
 import re
+from pathlib import Path
 
 from zeeb_agents._utils import AgentResult, agent_function
 
@@ -135,6 +136,122 @@ def _returns(doc: str | None) -> list[dict]:
         elif stripped and out:
             out[-1]["description"] = f"{out[-1]['description']} {stripped}".strip()
     return out
+
+
+# The canonical zero-to-served build order. One source of truth, surfaced by
+# get_started() and mirrored in agent_docs/project-lifecycle.md.
+_BUILD_STEPS: list[dict] = [
+    {
+        "step": "create_project",
+        "why": "Scaffold the project (bootstrapping call — project_id optional).",
+    },
+    {
+        "step": "create_app",
+        "why": "Scaffold an app AND wire it in (INSTALLED_APPS + project urls) so "
+        "its endpoints are served and its models migrate. Auto-wires by default.",
+    },
+    {
+        "step": "generate_crud",
+        "why": "One shot: model + serializer + viewset + route registration. Or do "
+        "the steps individually: create_model → create_serializer → "
+        "create_viewset → register_route.",
+    },
+    {
+        "step": "make_migrations",
+        "why": "Write a migration for the new models.",
+    },
+    {
+        "step": "run_migrations",
+        "why": "Apply the migration to the database.",
+    },
+    {
+        "step": "describe_project",
+        "why": "Confirm the result: served=True, no unwired apps, no pending "
+        "migrations. Call this any time to orient.",
+    },
+]
+
+
+@agent_function(optional_project=True)
+async def get_started(project_root: Path | None = None) -> AgentResult:
+    """Return the canonical build recipe — the one call to make first.
+
+    Turns discovery from "read three docs first" into a single entrypoint: the
+    ordered zero-to-served sequence every project follows, plus pointers to the
+    reference docs. When a ``project_id`` is given, it also inspects the current
+    state (via :func:`~zeeb_agents.project.describe_project`) and returns the
+    **next recommended action**, so you always know where you are.
+
+    Args:
+        project_id: Optional. When given, the response includes the project's
+            current state and the recommended next action; when omitted, only
+            the generic recipe is returned.
+
+    Returns data (on success):
+        steps (list[dict]): the ordered recipe, each ``{"step", "why"}``.
+        docs (dict): resource URIs to read for depth — ``principles``,
+            ``project_lifecycle``, ``backend_generation``, ``frontend_generation``,
+            ``capabilities``.
+        discover (str): how to enumerate every tool (``"list_capabilities()"``).
+        next_action (str | None): the recommended next call, present only when a
+            ``project_id`` was supplied and its state could be read.
+        state (dict | None): the ``describe_project`` snapshot, when available.
+
+    Notes:
+        - Never fails on an unreadable/absent project — the recipe is always
+          returned; ``next_action`` / ``state`` are simply ``None``.
+    """
+    data: dict = {
+        "steps": _BUILD_STEPS,
+        "docs": {
+            "principles": "mcp://docs/principles",
+            "project_lifecycle": "mcp://docs/project-lifecycle",
+            "backend_generation": "mcp://docs/backend-generation",
+            "frontend_generation": "mcp://docs/frontend-generation",
+            "capabilities": "mcp://docs/capabilities",
+        },
+        "discover": "list_capabilities()",
+        "next_action": None,
+        "state": None,
+    }
+
+    if project_root is not None:
+        from zeeb_agents.project import describe_project
+
+        state_res = await describe_project(project_id=project_root)
+        if state_res.success and state_res.data:
+            state = state_res.data
+            data["state"] = state
+            data["next_action"] = _recommend_next_action(state)
+
+    return AgentResult(
+        success=True,
+        message="Zeeb build recipe" + (
+            f" — next: {data['next_action']}" if data["next_action"] else ""
+        ),
+        data=data,
+    )
+
+
+def _recommend_next_action(state: dict) -> str:
+    """Derive the single most useful next call from a describe_project snapshot."""
+    apps = state.get("apps", [])
+    if not apps:
+        return "create_app('<name>') — no apps yet."
+    for app in apps:
+        if app["model_count"] and not app["installed"]:
+            return f"install_app('{app['name']}') — it has models but is not registered."
+    for ep in state.get("endpoints", []):
+        if not ep.get("served"):
+            return f"wire_app_urls('{ep['app']}') — its endpoints 404."
+    if not state.get("models"):
+        return "generate_crud(app, model_name, fields) — add your first resource."
+    migrations = state.get("migrations", {})
+    if migrations.get("available") and migrations.get("pending_count"):
+        return "run_migrations() — pending migrations."
+    if not state.get("endpoints"):
+        return "generate_crud(...) or register_route(...) — expose your models as an API."
+    return "describe_project() looks healthy — keep building or run_tests()."
 
 
 @agent_function(resolve_project=False)

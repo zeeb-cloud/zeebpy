@@ -40,6 +40,7 @@ def agent_function(
     resolve_project: bool = True,
     optional_project: bool = False,
     resolve_project_root: bool | None = None,
+    aliases: dict[str, str] | None = None,
 ) -> Callable[[_AgentFunc], _AgentFunc]: ...
 
 
@@ -49,6 +50,7 @@ def agent_function(
     resolve_project: bool = True,
     optional_project: bool = False,
     resolve_project_root: bool | None = None,
+    aliases: dict[str, str] | None = None,
 ) -> Any:
     """Wrap an async agent function with uniform error handling + the id seam.
 
@@ -75,6 +77,12 @@ def agent_function(
     - Any other :class:`Exception` is logged and converted to a failure
       ``AgentResult``.  :class:`AgentResult` return values pass through unchanged.
 
+    - ``aliases`` maps an accepted-but-hidden keyword to the real parameter name
+      (e.g. ``{"app": "name"}`` lets a caller pass ``app=`` where the body names
+      the parameter ``name``). Like ``project_root``, aliases are honored as a
+      forgiving input convenience but are **not** added to the advertised
+      signature; an explicit real-name argument wins over its alias.
+
     Usable bare (``@agent_function``) or with keywords
     (``@agent_function(resolve_project=False)``).  ``resolve_project_root`` is a
     deprecated alias for ``resolve_project`` kept for callers written against the
@@ -82,6 +90,7 @@ def agent_function(
     """
     if resolve_project_root is not None:
         resolve_project = resolve_project_root
+    alias_map = aliases or {}
 
     def decorate(fn: _AgentFunc) -> _AgentFunc:
         signature = inspect.signature(fn)
@@ -102,6 +111,13 @@ def agent_function(
         @functools.wraps(fn)
         async def wrapper(*args: Any, **kwargs: Any) -> AgentResult:
             try:
+                # Map accepted-but-hidden aliases to their real parameter names;
+                # an explicit real-name argument always wins over its alias.
+                for alias, real in alias_map.items():
+                    if alias in kwargs:
+                        value = kwargs.pop(alias)
+                        if real not in kwargs:
+                            kwargs[real] = value
                 if do_resolve:
                     assert public_sig is not None
                     # Accept a caller-supplied ``project_root`` (the codegen
@@ -147,6 +163,9 @@ def agent_function(
 
         if public_sig is not None:
             wrapper.__signature__ = public_sig  # type: ignore[attr-defined]
+        # Expose accepted-but-hidden aliases for introspection (docs drift guard,
+        # forgiving-input discovery).
+        wrapper.__agent_aliases__ = dict(alias_map)  # type: ignore[attr-defined]
         return wrapper
 
     if func is not None:

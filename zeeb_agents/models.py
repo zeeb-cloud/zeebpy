@@ -15,8 +15,10 @@ from zeeb_agents._utils.code_gen import (
     extract_model_names,
     remove_field_from_class,
     render_model_class,
+    skip_result,
+    validate_if_exists,
 )
-from zeeb_agents._utils.errors import AgentError, close_matches, did_you_mean
+from zeeb_agents._utils.errors import AgentError, close_matches, did_you_mean, fail
 from zeeb_agents._utils.field_types import field_extra_imports, render_field_line
 from zeeb_agents._utils.project import (
     list_apps,
@@ -41,6 +43,7 @@ async def create_model(
     model_name: str,
     fields: list[dict],
     meta: dict | None = None,
+    if_exists: str = "error",
     project_root: Path | None = None,
 ) -> AgentResult:
     """Append a new ``Model`` subclass to ``apps/<app>/models.py``.
@@ -52,6 +55,9 @@ async def create_model(
             ``"type"`` keys; additional keys are passed as constructor kwargs.
         meta: Optional ``class Meta`` attributes dict
             (e.g. ``{"table_name": "blog_posts", "ordering": ["-created_at"]}``).
+        if_exists: What to do if the model already exists — ``"error"`` (default,
+            fail with ``already_exists``) or ``"skip"`` (succeed, change nothing,
+            return ``data["skipped"]=True``). ``"skip"`` makes retries idempotent.
         project_id: The host-assigned project id (required).
 
     Example field specs::
@@ -87,10 +93,11 @@ async def create_model(
         - Invalid input is rejected before anything is written.
     """
     ensure_identifier(model_name, "model name")
+    validate_if_exists(if_exists)
     validate_field_specs(fields)
     path = _models_file(app, project_root)
     if not path.exists():
-        return AgentResult(success=False, message=f"models.py not found at {path}")
+        return fail(f"models.py not found at {path}", code="file_not_found", missing="models.py")
 
     def _write() -> None:
         content = path.read_text(encoding="utf-8")
@@ -109,7 +116,16 @@ async def create_model(
                 ensure_import(path, import_line)
         append_block(path, class_code)
 
-    await asyncio.to_thread(_write)
+    try:
+        await asyncio.to_thread(_write)
+    except AgentError as exc:
+        if if_exists == "skip" and (exc.result.data or {}).get("error_code") == "already_exists":
+            return skip_result(
+                f"Model '{model_name}' already exists in apps/{app}/models.py; skipped",
+                app=app,
+                model=model_name,
+            )
+        raise
     return AgentResult(
         success=True,
         message=f"Model '{model_name}' created in apps/{app}/models.py",
@@ -135,7 +151,7 @@ async def delete_model(
     """
     path = _models_file(app, project_root)
     if not path.exists():
-        return AgentResult(success=False, message=f"models.py not found at {path}")
+        return fail(f"models.py not found at {path}", code="file_not_found", missing="models.py")
 
     def _remove() -> None:
         content = path.read_text(encoding="utf-8")
@@ -213,7 +229,7 @@ async def add_field(
     """
     path = _models_file(app, project_root)
     if not path.exists():
-        return AgentResult(success=False, message=f"models.py not found at {path}")
+        return fail(f"models.py not found at {path}", code="file_not_found", missing="models.py")
 
     def _insert() -> None:
         content = path.read_text(encoding="utf-8")
@@ -258,7 +274,7 @@ async def remove_field(
     """
     path = _models_file(app, project_root)
     if not path.exists():
-        return AgentResult(success=False, message=f"models.py not found at {path}")
+        return fail(f"models.py not found at {path}", code="file_not_found", missing="models.py")
 
     def _delete() -> None:
         content = path.read_text(encoding="utf-8")
@@ -283,6 +299,27 @@ async def remove_field(
         message=f"Field '{field_name}' removed from {model_name}",
         data={"app": app, "model": model_name, "field": field_name},
     )
+
+
+@agent_function
+async def delete_field(
+    app: str,
+    model_name: str,
+    field_name: str,
+    project_root: Path | None = None,
+) -> AgentResult:
+    """Drop a single field from a model — alias of :func:`remove_field`.
+
+    Provided so the ``delete_*`` verb (``delete_app`` / ``delete_model`` / …)
+    also works for fields. Identical behavior and return shape to
+    ``remove_field`` (the canonical name).
+
+    Returns data (on success):
+        app (str): the app name.
+        model (str): the model class name.
+        field (str): the name of the field that was removed.
+    """
+    return await remove_field(app, model_name, field_name, project_id=project_root)
 
 
 @agent_function
@@ -365,7 +402,7 @@ async def replace_model_fields(
     validate_field_specs(fields)
     path = _models_file(app, project_root)
     if not path.exists():
-        return AgentResult(success=False, message=f"models.py not found at {path}")
+        return fail(f"models.py not found at {path}", code="file_not_found", missing="models.py")
 
     def _replace() -> list[str]:
         import re
@@ -472,7 +509,7 @@ async def update_model(
         ensure_identifier(rename_to, "model name")
     path = _models_file(app, project_root)
     if not path.exists():
-        return AgentResult(success=False, message=f"models.py not found at {path}")
+        return fail(f"models.py not found at {path}", code="file_not_found", missing="models.py")
 
     def _update() -> list[str]:
         import re

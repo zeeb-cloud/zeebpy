@@ -7,7 +7,7 @@ import re
 from pathlib import Path
 
 from zeeb_agents._utils import AgentResult, agent_function
-from zeeb_agents._utils.errors import AgentError, close_matches, did_you_mean
+from zeeb_agents._utils.errors import AgentError, close_matches, did_you_mean, fail
 from zeeb_agents._utils.project import get_app_path
 
 _TASKS_HEADER = '''\
@@ -197,7 +197,9 @@ async def delete_task(
     tasks_path = _tasks_file(app, project_root)
 
     if not tasks_path.exists():
-        return AgentResult(success=False, message=f"tasks.py not found for app '{app}'.")
+        return fail(
+            f"tasks.py not found for app '{app}'.", code="file_not_found", missing="tasks.py"
+        )
 
     def _remove() -> None:
         source = tasks_path.read_text(encoding="utf-8")

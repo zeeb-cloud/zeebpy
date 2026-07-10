@@ -167,17 +167,22 @@ Discover all available endpoints without a running server:
 Standard ViewSet `{prefix}` expands to these REST endpoints:
 | Method | Path | Action |
 |---|---|---|
-| POST   | `/{route_prefix}/query` | list (Q-filter body, `{}` for all) |
+| GET    | `/{route_prefix}`       | list (simple query params / pagination) |
+| POST   | `/{route_prefix}/query` | list with a Q-filter body (`{}` for all) |
 | POST   | `/{route_prefix}`       | create |
 | GET    | `/{route_prefix}/{id}`  | retrieve |
 | PUT    | `/{route_prefix}/{id}`  | update |
 | PATCH  | `/{route_prefix}/{id}`  | partial_update |
 | DELETE | `/{route_prefix}/{id}`  | destroy |
 
+**Listing:** there are two list endpoints — `GET /{route_prefix}` for simple
+listing (query-param filters, pagination, search/ordering) and
+`POST /{route_prefix}/query` for complex serialized `Q` filters in the body. Use
+GET for the common case; use the query endpoint when you need `Q` expressions.
+
 **Path conventions:** canonical paths have **no trailing slash** — generated
 clients must copy paths verbatim from `/openapi.json`, never generalize a
-pattern from one endpoint to another. There is no `GET` list endpoint; lists go
-through `POST /{route_prefix}/query`. (The backend also serves every route with
+pattern from one endpoint to another. (The backend also serves every route with
 a trailing slash appended — no redirect — so a client that adds one still
 works, but the slash-less form is canonical.)
 

@@ -39,6 +39,7 @@ ERROR_CODES = frozenset(
         "invalid_field_spec",
         "invalid_meta",
         "invalid_permission",
+        "invalid_authentication",
         "invalid_input",
         "invalid_sql",
         "invalid_regex",

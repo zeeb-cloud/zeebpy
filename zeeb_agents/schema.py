@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from zeeb_agents._utils import AgentResult, agent_function
-from zeeb_agents._utils.errors import AgentError
+from zeeb_agents._utils.errors import AgentError, fail
 from zeeb_agents._utils.project import get_app_path, list_apps
 
 # Map zeeb_orm field types → JSON Schema types (covers every canonical field
@@ -188,7 +188,9 @@ async def get_model_json_schema(
     """
     models_path = get_app_path(app, project_root) / "models.py"
     if not models_path.exists():
-        return AgentResult(success=False, message=f"models.py not found at {models_path}.")
+        return fail(
+            f"models.py not found at {models_path}.", code="file_not_found", missing="models.py"
+        )
 
     def _build() -> dict[str, Any]:
         from zeeb_agents._utils.code_gen import extract_model_names
@@ -290,16 +292,21 @@ async def export_openapi(
     port: int = 8000,
     project_root: Path | None = None,
 ) -> AgentResult:
-    """Fetch the live OpenAPI spec from the running dev server and save it.
+    """Fetch the OpenAPI spec from a reachable API and save a static snapshot.
 
     Connects to ``http://localhost:{port}/openapi.json`` and writes the
     JSON to ``openapi.json`` in the project root (or *output_path*).
 
-    The dev server must already be running (``zeeb runserver``).
+    This needs a reachable API on ``localhost:{port}`` — it does **not** start
+    one, and you do not (and cannot) start a dev server yourself: the preview
+    runtime is always-on and platform-managed. For the live contract prefer
+    :func:`~zeeb_agents.get_openapi_url` / :func:`~zeeb_agents.get_project_reference`;
+    reach for ``export_openapi`` only when you specifically need a static file
+    written into the project tree.
 
     Args:
         output_path: Override output file path.  Relative to project root.
-        port: Port the dev server is listening on.  Defaults to ``8000``.
+        port: Port the API is listening on.  Defaults to ``8000``.
         project_id: The host-assigned project id (required).
 
     Returns data (on success):

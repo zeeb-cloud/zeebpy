@@ -6,8 +6,34 @@ import re
 import textwrap
 from pathlib import Path
 
+from zeeb_agents._utils import AgentResult
 from zeeb_agents._utils.errors import AgentError, close_matches
 from zeeb_agents._utils.field_types import render_field_line, render_py_literal
+
+# ---------------------------------------------------------------------------
+# Idempotency policy shared by the create_* scaffolding tools.
+#
+# ``if_exists`` controls what happens when the target (model/serializer/viewset/
+# route) already exists:
+#   - "error" (default): fail with ``already_exists`` — the historical behavior.
+#   - "skip": treat as success, return ``data["skipped"] = True`` and change
+#     nothing — makes retries and generate_crud re-runs resumable.
+# ---------------------------------------------------------------------------
+IF_EXISTS_VALUES = ("error", "skip")
+
+
+def validate_if_exists(value: str) -> None:
+    """Raise ``AgentError(invalid_input)`` unless *value* is a known policy."""
+    if value not in IF_EXISTS_VALUES:
+        raise AgentError(
+            f"if_exists must be one of {list(IF_EXISTS_VALUES)}, got '{value}'.",
+            code="invalid_input",
+        )
+
+
+def skip_result(message: str, **data: object) -> AgentResult:
+    """Build a success result for a no-op skip (``data['skipped'] = True``)."""
+    return AgentResult(success=True, message=message, data={**data, "skipped": True})
 
 # The full ``class Meta`` surface zeeb_orm's Options.from_meta understands.
 # ``indexes``/``constraints`` accept lists of plain dicts (Options does
@@ -228,6 +254,15 @@ VIEWSET_PERMISSIONS = frozenset(
     }
 )
 
+# Authentication classes exported by zeeb_api.authentication.
+VIEWSET_AUTHENTICATION = frozenset(
+    {
+        "JWTAuthentication",
+        "JWTStatelessAuthentication",
+        "OAuth2BearerAuthentication",
+    }
+)
+
 # Throttle classes exported by zeeb_api.throttling that work as-is on a viewset.
 VIEWSET_THROTTLES = frozenset({"AnonRateThrottle", "UserRateThrottle", "ScopedRateThrottle"})
 
@@ -254,6 +289,256 @@ def validate_permission(permission: str) -> str:
             suggestions=suggestions,
         )
     return permission
+
+
+# Matches a project-local permission reference: ``apps.<app>.permissions.<Class>``.
+_DOTTED_PERMISSION_RE = re.compile(
+    r"^apps\.([A-Za-z_]\w*)\.permissions\.([A-Za-z_]\w*)$"
+)
+_CLASS_DEF_RE = re.compile(r"^class ([A-Za-z_]\w*)\b", re.MULTILINE)
+
+
+def project_permission_classes(app_dir: Path) -> list[str]:
+    """Return the class names defined in *app_dir*'s ``permissions.py`` (if any)."""
+    path = app_dir / "permissions.py"
+    if not path.exists():
+        return []
+    return _CLASS_DEF_RE.findall(path.read_text(encoding="utf-8"))
+
+
+def resolve_permission(
+    permission: str, app_dir: Path | None = None
+) -> tuple[str | None, str]:
+    """Resolve a permission name to ``(import_line, class_ref)`` for a viewset.
+
+    Accepted forms:
+
+    - a built-in ``zeeb_api.permissions`` class name (see
+      :data:`VIEWSET_PERMISSIONS`) → ``(None, "permissions.<Name>")`` — the
+      standard ``from zeeb_api import viewsets, permissions`` import covers it;
+    - a bare class name defined in *app_dir*'s ``permissions.py`` (scaffold it
+      with :func:`~zeeb_agents.permissions_scaffold.create_permission_class`)
+      → ``("from apps.<app>.permissions import <Name>", "<Name>")``;
+    - a dotted ``apps.<other_app>.permissions.<Class>`` reference to any app's
+      class → the matching import and bare class reference.
+
+    Raises ``AgentError(invalid_permission)`` with close-match suggestions
+    spanning both built-ins and the app's custom classes otherwise.
+    """
+    if permission in VIEWSET_PERMISSIONS:
+        return None, f"permissions.{permission}"
+
+    dotted = _DOTTED_PERMISSION_RE.match(permission)
+    if dotted and app_dir is not None:
+        other_app, class_name = dotted.groups()
+        target = app_dir.parent / other_app / "permissions.py"
+        if target.exists() and class_exists(
+            target.read_text(encoding="utf-8"), class_name
+        ):
+            return f"from apps.{other_app}.permissions import {class_name}", class_name
+        raise AgentError(
+            f"Permission class '{class_name}' not found in "
+            f"apps/{other_app}/permissions.py. Create it first with "
+            f"create_permission_class(app='{other_app}', class_name='{class_name}').",
+            code="invalid_permission",
+            suggestions=close_matches(
+                class_name,
+                project_permission_classes(app_dir.parent / other_app),
+            ),
+        )
+
+    custom = project_permission_classes(app_dir) if app_dir is not None else []
+    if permission in custom:
+        return f"from apps.{app_dir.name}.permissions import {permission}", permission
+
+    candidates = sorted(VIEWSET_PERMISSIONS) + sorted(custom)
+    suggestions = close_matches(permission, candidates)
+    hint = f" Did you mean: {', '.join(suggestions)}?" if suggestions else ""
+    custom_note = (
+        f" Custom classes in this app: {sorted(custom)}."
+        if custom
+        else (
+            " No custom classes exist in this app yet — scaffold one with "
+            "create_permission_class, or reference another app's via "
+            "'apps.<app>.permissions.<Class>'."
+        )
+    )
+    raise AgentError(
+        f"Unknown permission class '{permission}'.{hint} "
+        f"Built-in classes: {sorted(VIEWSET_PERMISSIONS)}.{custom_note}",
+        code="invalid_permission",
+        suggestions=suggestions,
+    )
+
+
+# Matches a project-local authentication reference:
+# ``apps.<app>.authentication.<Class>``.
+_DOTTED_AUTHENTICATION_RE = re.compile(
+    r"^apps\.([A-Za-z_]\w*)\.authentication\.([A-Za-z_]\w*)$"
+)
+
+
+def project_authentication_classes(app_dir: Path) -> list[str]:
+    """Return the class names defined in *app_dir*'s ``authentication.py`` (if any)."""
+    path = app_dir / "authentication.py"
+    if not path.exists():
+        return []
+    return _CLASS_DEF_RE.findall(path.read_text(encoding="utf-8"))
+
+
+def _normalize_class_list(value: str | list[str], *, param: str) -> list[str]:
+    """Normalize a ``str | list[str]`` class-name parameter to a list.
+
+    Raises ``AgentError(invalid_input)`` on an empty list or blank entries so
+    callers fail fast before touching any file.
+    """
+    names = [value] if isinstance(value, str) else list(value)
+    if not names:
+        raise AgentError(
+            f"{param} must name at least one class (got an empty list); "
+            f"omit the parameter to use the default instead.",
+            code="invalid_input",
+        )
+    for name in names:
+        if not isinstance(name, str) or not name.strip():
+            raise AgentError(
+                f"Every {param} entry must be a non-empty class name, "
+                f"got {name!r}.",
+                code="invalid_input",
+            )
+    return names
+
+
+def _resolve_many(
+    values: str | list[str],
+    app_dir: Path | None,
+    resolver,
+    *,
+    param: str,
+) -> tuple[list[str], list[str]]:
+    """Map *values* through a single-name *resolver* to ``(imports, refs)``.
+
+    Preserves caller order, dedupes on the resolved reference, and — when the
+    input listed more than one entry — prefixes resolution errors with the
+    failing entry so the caller knows which one to fix.
+    """
+    names = _normalize_class_list(values, param=param)
+    imports: list[str] = []
+    refs: list[str] = []
+    for name in names:
+        try:
+            import_line, ref = resolver(name, app_dir)
+        except AgentError as exc:
+            if len(names) == 1:
+                raise
+            data = exc.result.data or {}
+            raise AgentError(
+                f"Invalid {param} entry '{name}': {exc}",
+                code=data.get("error_code", "invalid_input"),
+                suggestions=data.get("suggestions"),
+            ) from exc
+        if ref not in refs:
+            refs.append(ref)
+            if import_line and import_line not in imports:
+                imports.append(import_line)
+    return imports, refs
+
+
+def resolve_permissions(
+    permission: str | list[str], app_dir: Path | None = None
+) -> tuple[list[str], list[str]]:
+    """Resolve one or more permission names to ``(import_lines, class_refs)``.
+
+    Plural companion to :func:`resolve_permission`: accepts a single name or a
+    list (all classes are enforced together — AND semantics at runtime),
+    preserves order, and dedupes repeated entries.
+    """
+    return _resolve_many(permission, app_dir, resolve_permission, param="permission")
+
+
+def _resolve_authentication_ref(
+    authentication: str, app_dir: Path | None = None
+) -> tuple[str | None, str]:
+    """Resolve one authentication name to ``(import_line, class_ref)``.
+
+    Accepted forms mirror :func:`resolve_permission`:
+
+    - a built-in ``zeeb_api.authentication`` class name (see
+      :data:`VIEWSET_AUTHENTICATION`) → ``("from zeeb_api import
+      authentication", "authentication.<Name>")``;
+    - a bare class name defined in *app_dir*'s ``authentication.py``
+      (hand-written) → ``("from apps.<app>.authentication import <Name>",
+      "<Name>")``;
+    - a dotted ``apps.<other_app>.authentication.<Class>`` reference.
+
+    Raises ``AgentError(invalid_authentication)`` with close-match suggestions
+    otherwise.
+    """
+    if authentication in VIEWSET_AUTHENTICATION:
+        return "from zeeb_api import authentication", f"authentication.{authentication}"
+
+    dotted = _DOTTED_AUTHENTICATION_RE.match(authentication)
+    if dotted and app_dir is not None:
+        other_app, class_name = dotted.groups()
+        target = app_dir.parent / other_app / "authentication.py"
+        if target.exists() and class_exists(
+            target.read_text(encoding="utf-8"), class_name
+        ):
+            return (
+                f"from apps.{other_app}.authentication import {class_name}",
+                class_name,
+            )
+        raise AgentError(
+            f"Authentication class '{class_name}' not found in "
+            f"apps/{other_app}/authentication.py. Define it there (subclass "
+            f"zeeb_api.authentication.BaseAuthentication) first.",
+            code="invalid_authentication",
+            suggestions=close_matches(
+                class_name,
+                project_authentication_classes(app_dir.parent / other_app),
+            ),
+        )
+
+    custom = project_authentication_classes(app_dir) if app_dir is not None else []
+    if authentication in custom:
+        return (
+            f"from apps.{app_dir.name}.authentication import {authentication}",
+            authentication,
+        )
+
+    candidates = sorted(VIEWSET_AUTHENTICATION) + sorted(custom)
+    suggestions = close_matches(authentication, candidates)
+    hint = f" Did you mean: {', '.join(suggestions)}?" if suggestions else ""
+    custom_note = (
+        f" Custom classes in this app: {sorted(custom)}."
+        if custom
+        else (
+            " No custom classes exist in this app yet — define one in "
+            "apps/<app>/authentication.py (subclass "
+            "zeeb_api.authentication.BaseAuthentication), or reference "
+            "another app's via 'apps.<app>.authentication.<Class>'."
+        )
+    )
+    raise AgentError(
+        f"Unknown authentication class '{authentication}'.{hint} "
+        f"Built-in classes: {sorted(VIEWSET_AUTHENTICATION)}.{custom_note}",
+        code="invalid_authentication",
+        suggestions=suggestions,
+    )
+
+
+def resolve_authentication(
+    authentication: str | list[str], app_dir: Path | None = None
+) -> tuple[list[str], list[str]]:
+    """Resolve one or more authentication names to ``(import_lines, class_refs)``.
+
+    Accepts a single name or a list (classes are tried in order at runtime —
+    the first one that recognizes the request's credentials wins), preserves
+    order, and dedupes repeated entries.
+    """
+    return _resolve_many(
+        authentication, app_dir, _resolve_authentication_ref, param="authentication"
+    )
 
 
 def resolve_pagination(pagination: str) -> str:
@@ -289,7 +574,7 @@ def validate_throttles(throttles: list[str]) -> list[str]:
 def render_viewset_class(
     model_name: str,
     serializer_class: str | None = None,
-    permission: str = "IsAuthenticatedOrReadOnly",
+    permission: str | list[str] = "permissions.IsAuthenticatedOrReadOnly",
     extra_actions: list[dict] | None = None,
     read_only: bool = False,
     lookup_field: str | None = None,
@@ -298,8 +583,18 @@ def render_viewset_class(
     search_fields: list[str] | None = None,
     ordering_fields: list[str] | None = None,
     filterset: str | None = None,
+    authentication: list[str] | None = None,
 ) -> str:
     """Render a ``ModelViewSet`` (or ``ReadOnlyModelViewSet``) subclass definition.
+
+    *permission* is one or more **resolved class references** rendered
+    verbatim into ``permission_classes`` (``"permissions.<Builtin>"`` or a
+    bare project class name) — resolve user input with
+    :func:`resolve_permissions` first; the caller also owns the matching
+    imports. *authentication* is likewise a list of resolved references (from
+    :func:`resolve_authentication`); when given, an ``authentication_classes``
+    attribute is emitted — omitted, no line is rendered and the project's
+    global authentication middleware stays in charge.
 
     Optional attributes cover the full viewset surface: ``lookup_field``,
     ``pagination_class`` (via :data:`PAGINATION_ALIASES`), ``throttle_classes``,
@@ -310,12 +605,15 @@ def render_viewset_class(
     class_name = f"{model_name}ViewSet"
     ser_class = serializer_class or f"{model_name}Serializer"
     base_class = "ReadOnlyModelViewSet" if read_only else "ModelViewSet"
+    perms = [permission] if isinstance(permission, str) else list(permission)
     lines = [
         f"class {class_name}({base_class}):",
         f"    queryset = {model_name}.objects.all()",
         f"    serializer_class = {ser_class}",
-        f"    permission_classes = [permissions.{validate_permission(permission)}]",
+        f"    permission_classes = [{', '.join(perms)}]",
     ]
+    if authentication:
+        lines.append(f"    authentication_classes = [{', '.join(authentication)}]")
     if lookup_field:
         lines.append(f'    lookup_field = "{lookup_field}"')
     if pagination:
@@ -393,7 +691,7 @@ def render_action_method(
     response_serializer: str | None = None,
     request_schema: str | None = None,
     response_schema: str | None = None,
-    permission: str | None = None,
+    permission: str | list[str] | None = None,
 ) -> str:
     """Render a custom ``@action`` method (decorator + body) for a ViewSet.
 
@@ -401,7 +699,9 @@ def render_action_method(
     ``methods`` always, then optionally ``url_path`` (a string literal),
     ``request_serializer``/``response_serializer``/``request_schema``/
     ``response_schema`` (bare class-name references — the caller ensures the
-    imports) and ``permission_classes=[permissions.<Name>]``.
+    imports) and ``permission_classes=[<resolved refs>]`` (*permission* is one
+    or more resolved class references from :func:`resolve_permissions`,
+    rendered verbatim).
 
     When *body* is given it is used verbatim (dedented then re-indented). When
     omitted, a scaffold is generated: a bare ``pass`` placeholder if no
@@ -410,9 +710,9 @@ def render_action_method(
     with ``await self.get_object()`` for detail actions) and returns serialized
     output.
 
-    This function only renders text — validating *permission* and the
-    serializer/schema class names is the caller's job (see
-    :func:`validate_permission` and ``ensure_identifier``).
+    This function only renders text — resolving *permission* and validating
+    the serializer/schema class names is the caller's job (see
+    :func:`resolve_permission` and ``ensure_identifier``).
     """
     action_methods = [m.lower() for m in (methods or ["get"])]
     methods_repr = ", ".join(f'"{m}"' for m in action_methods)
@@ -429,7 +729,8 @@ def render_action_method(
     if response_schema:
         parts.append(f"response_schema={response_schema}")
     if permission:
-        parts.append(f"permission_classes=[permissions.{permission}]")
+        perms = [permission] if isinstance(permission, str) else list(permission)
+        parts.append(f"permission_classes=[{', '.join(perms)}]")
     decorator = f"    @action({', '.join(parts)})"
     signature = f"    async def {action_name}(self, request, pk=None):"
 

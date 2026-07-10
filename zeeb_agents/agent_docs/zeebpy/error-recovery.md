@@ -14,7 +14,6 @@ next call. See `mcp://docs/principles` for the full `AgentResult` contract.
 |---|---|---|
 | `no_project_id` | You did not pass `project_id`. | Pass the host-assigned `project_id` on the call. |
 | `project_not_found` | No project is registered under that id (or its files are missing). | Check the id; create it with `{prefix}create_project` if it does not exist yet. |
-| `no_project_root` | Legacy path resolution found no `manage.py`. | Pass a valid `project_id` — the host resolves it to the project. |
 
 ## Input validation
 
@@ -26,6 +25,7 @@ next call. See `mcp://docs/principles` for the full `AgentResult` contract.
 | `invalid_field_spec` | A field/relation spec is malformed. | Relations need `"to"`; `on_delete="SET_NULL"` needs `null=True`; M2M rejects `on_delete`/`null`. |
 | `invalid_meta` | A `class Meta` option is invalid. | Fix the `meta`/`meta_changes` keys. |
 | `invalid_permission` | Unknown permission class. | Use a valid class (see `suggestions`), e.g. `IsAuthenticated`. |
+| `invalid_authentication` | Unknown authentication class. | Use a valid class (see `suggestions`), e.g. `JWTAuthentication`. |
 | `invalid_regex` | A search/pattern regex did not compile. | Fix the regex passed to `search_code`/`search_logs`. |
 | `invalid_sql` | `run_query` rejected the SQL. | Read-only only: single `SELECT`/`WITH`/`EXPLAIN`, no mutations. |
 
@@ -64,4 +64,4 @@ next call. See `mcp://docs/principles` for the full `AgentResult` contract.
 | `error_code` | Meaning | What to do |
 |---|---|---|
 | `runtime_not_configured` | The platform has not published preview/OpenAPI URLs yet. | Retry later; the preview runtime becomes live asynchronously. |
-| `server_not_running` / `server_not_reachable` | A health check could not reach the API. | The platform manages the runtime; verify via `{prefix}check_system_health`. |
+| `server_not_reachable` | A health check could not reach the API. | The platform manages the runtime; verify via `{prefix}check_system_health`. |
