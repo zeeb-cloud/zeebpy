@@ -283,7 +283,13 @@ class GenericViewSet(ViewSet):
             )
         
         queryset = self.queryset
-        
+
+        # Normalize to a fresh QuerySet per request: a Manager (Model.objects)
+        # is not awaitable, and a shared class-level QuerySet would serve its
+        # cached results across requests.
+        if hasattr(queryset, "all"):
+            queryset = queryset.all()
+
         # Apply object permission filtering if enabled
         if self.use_object_permissions:
             queryset = self._apply_permission_filter(queryset)

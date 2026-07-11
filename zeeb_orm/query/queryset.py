@@ -139,6 +139,15 @@ class QuerySet(Generic[ModelT]):
 
     # Filtering methods
 
+    def all(self) -> QuerySet[ModelT]:
+        """
+        Return a fresh copy of this QuerySet with an empty result cache.
+
+        Mirrors Manager.all(): a class-level queryset shared across requests
+        would otherwise serve its cached results forever.
+        """
+        return self._clone()
+
     def filter(self, *args: Q, **kwargs: Any) -> QuerySet[ModelT]:
         """
         Return a new QuerySet with the given filters applied.
