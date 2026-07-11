@@ -19,7 +19,9 @@ from enum import Enum
 import inspect
 import uuid
 
-from pydantic import BaseModel, Field, ConfigDict, field_validator, model_validator
+from pydantic import (
+    AliasChoices, BaseModel, Field, ConfigDict, field_validator, model_validator,
+)
 from pydantic.fields import FieldInfo
 
 if TYPE_CHECKING:
@@ -255,11 +257,16 @@ class Serializer(metaclass=SerializerMetaclass):
     
     _declared_fields: ClassVar[dict[str, Any]] = {}
     _old_style_fields: ClassVar[dict[str, Any]] = {}
+    # Maps a foreign key's bare model name to its canonical "<name>_id" request
+    # key. Populated by ModelSerializer._generate_schemas; empty otherwise.
+    _fk_request_aliases: ClassVar[dict[str, str]] = {}
     
     # Pydantic schemas - set by metaclass or manually
     Schema: ClassVar[type[BaseModel] | None] = None
     RequestSchema: ClassVar[type[BaseModel] | None] = None
     ResponseSchema: ClassVar[type[BaseModel] | None] = None
+    # All-optional variant of RequestSchema, used to type PATCH bodies.
+    PartialRequestSchema: ClassVar[type[BaseModel] | None] = None
     
     @classmethod
     def _generate_schema_from_fields(cls, fields: dict[str, Any]) -> None:
@@ -620,18 +627,31 @@ class Serializer(metaclass=SerializerMetaclass):
         if schema_class is None:
             self._validated_data = self.initial_data
             return True
-        
+
+        # Normalize bare foreign-key names (e.g. "author") to their canonical
+        # request key ("author_id"). The partial branch below builds data via
+        # model_construct + a model_fields filter, which bypasses pydantic
+        # validation aliases; without this a bare FK key on PATCH is silently
+        # dropped. Canonical key wins when both are present.
+        initial_data = self.initial_data
+        if self._fk_request_aliases and isinstance(initial_data, dict):
+            normalized = dict(initial_data)
+            for bare_name, canonical in self._fk_request_aliases.items():
+                if bare_name in normalized and canonical not in normalized:
+                    normalized[canonical] = normalized.pop(bare_name)
+            initial_data = normalized
+
         try:
             # Validate with Pydantic
             if self.partial:
                 # For partial updates, only validate provided fields
-                validated = schema_class.model_construct(**self.initial_data)
+                validated = schema_class.model_construct(**initial_data)
                 self._validated_data = {
-                    k: v for k, v in self.initial_data.items()
+                    k: v for k, v in initial_data.items()
                     if k in schema_class.model_fields
                 }
             else:
-                validated = schema_class.model_validate(self.initial_data)
+                validated = schema_class.model_validate(initial_data)
                 self._validated_data = validated.model_dump()
             
             self._errors = {}
@@ -732,6 +752,10 @@ class ModelSerializer(Serializer, Generic[ModelT]):
         # Build field definitions
         response_fields: dict[str, tuple[type, Any]] = {}
         request_fields: dict[str, tuple[type, Any]] = {}
+        # Maps a foreign key's bare model name (e.g. "author") to its canonical
+        # request key ("author_id"). Consumed by Serializer.is_valid to normalize
+        # bare FK names on the partial/PATCH path, which bypasses aliases.
+        fk_request_aliases: dict[str, str] = {}
 
         # Forward M2M fields declared on the model. Auto-through M2Ms are
         # writable (as lists of target PKs) via the related manager's set();
@@ -867,7 +891,25 @@ class ModelSerializer(Serializer, Generic[ModelT]):
                 if is_foreign_key:
                     # Use the same python_type we determined above (already includes nullable)
                     base_type = python_type.__args__[0] if hasattr(python_type, '__args__') else python_type
-                    request_fields[field_name_for_request] = (base_type | None if is_nullable else base_type, default)
+                    fk_type = base_type | None if is_nullable else base_type
+                    # Accept the bare relationship name (e.g. "author") as an
+                    # alias for the canonical "<name>_id" request key. GET
+                    # responses expose the bare name, so a client echoing a
+                    # response back into a create/update would otherwise fail
+                    # with a spurious "field required" for "<name>_id".
+                    if field_name_for_request != actual_field_name:
+                        fk_request_aliases[actual_field_name] = field_name_for_request
+                        request_fields[field_name_for_request] = (
+                            fk_type,
+                            Field(
+                                default=default,
+                                validation_alias=AliasChoices(
+                                    field_name_for_request, actual_field_name
+                                ),
+                            ),
+                        )
+                    else:
+                        request_fields[field_name_for_request] = (fk_type, default)
                 else:
                     request_fields[field_name] = (python_type, default)
         
@@ -891,15 +933,52 @@ class ModelSerializer(Serializer, Generic[ModelT]):
             (BaseModel,),
             {
                 "__annotations__": {k: v[0] for k, v in request_fields.items()},
-                **{k: Field(default=v[1]) for k, v in request_fields.items()},
+                **{
+                    k: (v[1] if isinstance(v[1], FieldInfo) else Field(default=v[1]))
+                    for k, v in request_fields.items()
+                },
             },
         )
-        
+
+        # Partial request schema (for PATCH): every field optional. Preserves FK
+        # validation aliases so the bare relationship name is accepted, and lets
+        # the writable field set appear in OpenAPI for PATCH without marking
+        # anything required.
+        partial_request_fields: dict[str, tuple[Any, Any]] = {}
+        for k, (typ, val) in request_fields.items():
+            optional_type = (
+                typ if type(None) in getattr(typ, "__args__", ()) else typ | None
+            )
+            if isinstance(val, FieldInfo):
+                partial_request_fields[k] = (
+                    optional_type,
+                    Field(default=None, validation_alias=val.validation_alias),
+                )
+            else:
+                partial_request_fields[k] = (optional_type, None)
+
+        cls.PartialRequestSchema = type(
+            f"{cls.__name__}PartialRequest",
+            (BaseModel,),
+            {
+                "__annotations__": {
+                    k: v[0] for k, v in partial_request_fields.items()
+                },
+                **{
+                    k: (v[1] if isinstance(v[1], FieldInfo) else Field(default=v[1]))
+                    for k, v in partial_request_fields.items()
+                },
+            },
+        )
+
         # Default Schema is ResponseSchema
         cls.Schema = cls.ResponseSchema
 
         # M2M fields (list-of-PKs) applied after create/update via .set()
         cls._writable_m2m = writable_m2m
+
+        # Bare-FK-name -> canonical-request-key map (see is_valid).
+        cls._fk_request_aliases = fk_request_aliases
 
     def _pop_m2m_values(self, validated_data: dict[str, Any]) -> dict[str, list[Any]]:
         """Extract writable M2M values; they can't go through objects.create()."""

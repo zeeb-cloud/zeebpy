@@ -1748,6 +1748,26 @@ async def test_get_model_json_schema_choices_and_options(project):
     assert "Post" in missing.data["suggestions"]
 
 
+async def test_get_model_json_schema_foreignkey_documents_id_convention(project):
+    await agents.create_model(
+        "blog", "Author", [{"name": "name", "type": "CharField", "max_length": 50}],
+        project_id=project,
+    )
+    await agents.create_model(
+        "blog", "Post",
+        [
+            {"name": "title", "type": "CharField", "max_length": 50},
+            {"name": "author", "type": "ForeignKey", "to": "Author", "on_delete": "CASCADE"},
+        ],
+        project_id=project,
+    )
+    result = await agents.get_model_json_schema("blog", "Post", project_id=project)
+    assert result.success, result.message
+    desc = result.data["schema"]["properties"]["author"]["description"]
+    # The write key must be spelled out; the static "FK id" left clients guessing.
+    assert "author_id" in desc
+
+
 def test_json_schema_map_covers_all_field_types():
     from zeeb_agents._utils.field_types import known_field_types
     from zeeb_agents.schema import _FIELD_TYPE_MAP

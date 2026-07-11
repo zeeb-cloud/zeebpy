@@ -118,6 +118,16 @@ def _parse_model_fields(source: str, model_name: str) -> dict[str, Any]:
 
         schema_type = dict(_FIELD_TYPE_MAP.get(ftype, _DEFAULT_SCHEMA_TYPE))
 
+        # Foreign keys read back as "<name>" but are written as "<name>_id" in
+        # create/update bodies (the bare "<name>" is also accepted). Spell that
+        # out — a static "FK id" leaves clients guessing the write key. An
+        # explicit help_text still overrides this below.
+        if ftype in ("ForeignKey", "OneToOneField"):
+            schema_type["description"] = (
+                f"Foreign key. Write as '{fname}_id' in create/update bodies "
+                f"('{fname}' also accepted); responses return '{fname}'."
+            )
+
         # max_length?
         ml = _MAX_LENGTH_RE.search(params)
         if ml and schema_type.get("type") == "string":
