@@ -608,7 +608,7 @@ def render_viewset_class(
     perms = [permission] if isinstance(permission, str) else list(permission)
     lines = [
         f"class {class_name}({base_class}):",
-        f"    queryset = {model_name}.objects.all()",
+        f"    queryset = {model_name}.objects",
         f"    serializer_class = {ser_class}",
         f"    permission_classes = [{', '.join(perms)}]",
     ]
