@@ -6,6 +6,7 @@ Converts all exceptions to standardized ErrorResponse format.
 
 from __future__ import annotations
 
+import difflib
 import logging
 import traceback
 import uuid
@@ -146,10 +147,36 @@ def _pydantic_error_to_code(error_type: str) -> str:
     return ErrorCode.FIELD_INVALID_VALUE.value
 
 
-def _parse_pydantic_errors(errors: list[dict[str, Any]]) -> list[ErrorDetail]:
+def _field_required_hint(field: str | None, body: Any) -> str | None:
+    """Suggest the likely-intended key for a missing required field.
+
+    Foreign keys are written as ``<name>_id`` (the bare ``<name>`` is also
+    accepted); a body carrying the bare name is the most common cause of a
+    spurious FIELD_REQUIRED, so surface that mapping explicitly. Otherwise fall
+    back to a fuzzy near-miss against the submitted top-level keys (typos).
+    """
+    if not field or not isinstance(body, dict):
+        return None
+    # Only reason about top-level fields (skip nested "items.0.x" paths).
+    if "." in field:
+        return None
+    if field.endswith("_id") and field[:-3] in body:
+        return (
+            f"sent as '{field[:-3]}'; this API names foreign keys '{field}' "
+            f"(both are accepted)"
+        )
+    match = difflib.get_close_matches(field, [k for k in body if k != field], n=1)
+    if match:
+        return f"did you mean '{field}'? received '{match[0]}'"
+    return None
+
+
+def _parse_pydantic_errors(
+    errors: list[dict[str, Any]], body: Any = None
+) -> list[ErrorDetail]:
     """Convert Pydantic validation errors to ErrorDetails."""
     details = []
-    
+
     for error in errors:
         # Get field path (e.g., ["body", "email"] -> "email")
         loc = error.get("loc", [])
@@ -181,7 +208,14 @@ def _parse_pydantic_errors(errors: list[dict[str, Any]]) -> list[ErrorDetail]:
             if isinstance(input_val, str) and len(input_val) > 100:
                 input_val = input_val[:100] + "..."
             meta["input"] = input_val
-        
+
+        # Guide callers past the most common create/update mistake: a missing
+        # required field whose value was sent under a near-miss/foreign-key name.
+        if code == ErrorCode.FIELD_REQUIRED.value:
+            hint = _field_required_hint(field, body)
+            if hint:
+                meta["hint"] = hint
+
         details.append(ErrorDetail(
             code=code,
             field=field,
@@ -231,7 +265,7 @@ async def request_validation_exception_handler(
     exc: RequestValidationError,
 ) -> JSONResponse:
     """Handle FastAPI RequestValidationError (path, query, body validation)."""
-    details = _parse_pydantic_errors(exc.errors())
+    details = _parse_pydantic_errors(exc.errors(), body=getattr(exc, "body", None))
     
     return _create_error_response(
         code=ErrorCode.VALIDATION_ERROR.value,

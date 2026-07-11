@@ -271,7 +271,8 @@ class SimpleRouter:
                 # Get action-specific schemas by checking if viewset has get_serializer_class
                 action_response_schema = default_response_schema
                 action_request_schema = default_request_schema
-                
+                action_partial_request_schema = None
+
                 # Try to get action-specific serializer
                 if hasattr(viewset, "get_serializer_class"):
                     # Create temp instance to get action-specific serializer
@@ -286,6 +287,9 @@ class SimpleRouter:
                                 action_response_schema = serializer_class.ResponseSchema
                             if hasattr(serializer_class, "RequestSchema"):
                                 action_request_schema = serializer_class.RequestSchema
+                            action_partial_request_schema = getattr(
+                                serializer_class, "PartialRequestSchema", None
+                            )
                     except Exception:
                         pass  # Fall back to default schemas
                 
@@ -293,7 +297,10 @@ class SimpleRouter:
                 action_response_model = None
                 final_request_schema = None
                 action_permission_classes = None
-                
+                # PATCH must apply only the keys the client actually sent, so its
+                # body is dumped with exclude_unset. PUT/create keep the full dump.
+                endpoint_exclude_unset = False
+
                 if action_name == "query":
                     # Query uses QueryRequest and QueryResponse
                     action_response_model = query_response_schema
@@ -304,21 +311,30 @@ class SimpleRouter:
                     action_response_model = action_response_schema
                     final_request_schema = action_request_schema
                 elif action_name in ("update", "partial_update"):
-                    # For updates, use response schema but no request schema validation
-                    # This allows partial updates (PATCH) without requiring all fields
+                    # Type the write body so it appears in OpenAPI (needed for
+                    # client codegen). PUT uses the full request schema; PATCH
+                    # uses the all-optional variant and is dumped with
+                    # exclude_unset so partial semantics are preserved.
                     action_response_model = action_response_schema
-                    # Don't set final_request_schema - let viewset handle validation
+                    if action_name == "update":
+                        final_request_schema = action_request_schema
+                    else:
+                        final_request_schema = (
+                            action_partial_request_schema or action_request_schema
+                        )
+                        endpoint_exclude_unset = final_request_schema is not None
                 elif action_config:
                     # Custom action - check for schemas/serializers in action config
                     final_request_schema, action_response_model = self._get_action_schemas(
                         action_config, method
                     )
                     action_permission_classes = action_config.get("permission_classes")
-                
+
                 # Create the endpoint function
                 endpoint = self._create_endpoint(
                     viewset, action_name, route.detail, lookup,
                     final_request_schema, lookup_type, action_permission_classes,
+                    exclude_unset=endpoint_exclude_unset,
                 )
                 
                 # Register with FastAPI router
@@ -407,11 +423,17 @@ class SimpleRouter:
         request_schema: type | None = None,
         lookup_type: type = uuid.UUID,
         permission_classes: list | None = None,
+        exclude_unset: bool = False,
     ) -> Callable:
         """Create a FastAPI endpoint function for a ViewSet action."""
         from pydantic import BaseModel
-        
+
         lookup_field = lookup.strip("{}")
+
+        def _dump_body(body: BaseModel) -> dict[str, Any]:
+            # PATCH dumps with exclude_unset so only client-provided keys are
+            # applied; everything else uses the full dump.
+            return body.model_dump(exclude_unset=True) if exclude_unset else body.model_dump()
 
         def _adapt_action_kwargs(func: Callable, path_params: dict[str, Any]) -> dict[str, Any]:
             """Match path params to the action's signature.
@@ -463,7 +485,7 @@ class SimpleRouter:
                     await viewset.check_throttles(request)
 
                     # Store body data for action
-                    viewset._request_body = body.model_dump()
+                    viewset._request_body = _dump_body(body)
 
                     action = getattr(viewset, action_name)
                     result = await action(request, **_adapt_action_kwargs(action, path_params))
@@ -531,8 +553,8 @@ class SimpleRouter:
                     await viewset.check_throttles(request)
 
                     # Store body data for serializer/query
-                    viewset._request_body = body.model_dump()
-                    
+                    viewset._request_body = _dump_body(body)
+
                     action = getattr(viewset, action_name)
                     result = await action(request)
                     
