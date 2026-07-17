@@ -241,7 +241,7 @@ class CommentViewSet(ModelViewSet):
     
     async def perform_create(self, serializer):
         # Inject author from request
-        serializer.validated_data["author_id"] = self.request.user.id
+        serializer.validated_data["author_id"] = self.request.state.user.id
 ```
 
 ## Best Practices
