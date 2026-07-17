@@ -459,6 +459,9 @@ async def test_describe_project_flags_missing_auth_middleware(root: Path):
     res = await agents.describe_project(project_id=root)
     assert res.data["middleware"]["auth"] is False
     assert any("JWTAuthMiddleware" in w for w in res.data["warnings"])
+    verify = await agents.verify_project(checks=["structure"], project_id=root)
+    assert verify.success  # findings are the payload, not a failure
+    assert verify.data["verification"]["passed"] is False
 
 
 async def test_describe_project_flags_cors_config_without_middleware(root: Path):

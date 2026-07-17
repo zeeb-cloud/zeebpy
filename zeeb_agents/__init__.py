@@ -89,6 +89,18 @@ from zeeb_agents.health import (
     create_health_endpoint,
 )
 
+# Intent workflows (declarative build / change / verify / diagnose)
+from zeeb_agents.intent import (
+    apply_plan,
+    bootstrap_project,
+    build_feature,
+    change_feature,
+    configure_auth,
+    diagnose_problem,
+    plan_feature,
+    verify_project,
+)
+
 # Logs
 from zeeb_agents.logs import (
     clear_logs,
@@ -228,6 +240,15 @@ __all__ = [
     # Library configuration (vendor resolver hook)
     "configure",
     "set_project_resolver",
+    # Intent workflows
+    "plan_feature",
+    "build_feature",
+    "apply_plan",
+    "change_feature",
+    "bootstrap_project",
+    "configure_auth",
+    "verify_project",
+    "diagnose_problem",
     # Project
     "create_project",
     "create_app",

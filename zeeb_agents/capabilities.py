@@ -28,6 +28,7 @@ _NON_FUNCTION_EXPORTS = frozenset(
 # Human-facing category per source module.  One source of truth, shared with the
 # auto-generated capabilities.md inventory (``_utils/capabilities_doc.py``).
 CATEGORY_BY_MODULE: dict[str, str] = {
+    "intent": "Intent Workflows",
     "project": "Project & App Management",
     "models": "Model Management",
     "serializers": "Serializers",
@@ -151,23 +152,27 @@ _BUILD_STEPS: list[dict] = [
         "its endpoints are served and its models migrate. Auto-wires by default.",
     },
     {
-        "step": "generate_crud",
-        "why": "One shot: model + serializer + viewset + route registration. Or do "
-        "the steps individually: create_model → create_serializer → "
-        "create_viewset → register_route.",
+        "step": "build_feature",
+        "why": "Declarative one shot: a FeatureSpec (entities + relations + api) "
+        "becomes models, serializers, endpoints, routes, and migrations — "
+        "verified. plan_feature previews the same plan without writing. For a "
+        "single model, generate_crud; for full control: create_model → "
+        "create_serializer → create_viewset → register_route.",
     },
     {
         "step": "make_migrations",
-        "why": "Write a migration for the new models.",
+        "why": "Write a migration for the new models (build_feature already did "
+        "this unless migrate=false).",
     },
     {
         "step": "run_migrations",
         "why": "Apply the migration to the database.",
     },
     {
-        "step": "describe_project",
-        "why": "Confirm the result: served=True, no unwired apps, no pending "
-        "migrations. Call this any time to orient.",
+        "step": "verify_project",
+        "why": "The acceptance gate: structure, migrations, and the live OpenAPI "
+        "contract in one verdict. describe_project shows the raw snapshot; "
+        "diagnose_problem investigates failures.",
     },
 ]
 
@@ -237,7 +242,10 @@ def _recommend_next_action(state: dict) -> str:
     """Derive the single most useful next call from a describe_project snapshot."""
     apps = state.get("apps", [])
     if not apps:
-        return "create_app('<name>') — no apps yet."
+        return (
+            "build_feature(spec) — scaffold your first feature (it creates the "
+            "app too), or create_app('<name>') for an empty app."
+        )
     for app in apps:
         if app["model_count"] and not app["installed"]:
             return f"install_app('{app['name']}') — it has models but is not registered."
@@ -245,13 +253,16 @@ def _recommend_next_action(state: dict) -> str:
         if not ep.get("served"):
             return f"wire_app_urls('{ep['app']}') — its endpoints 404."
     if not state.get("models"):
-        return "generate_crud(app, model_name, fields) — add your first resource."
+        return (
+            "build_feature(spec) — add your first resource "
+            "(or generate_crud for a single model)."
+        )
     migrations = state.get("migrations", {})
     if migrations.get("available") and migrations.get("pending_count"):
         return "run_migrations() — pending migrations."
     if not state.get("endpoints"):
-        return "generate_crud(...) or register_route(...) — expose your models as an API."
-    return "describe_project() looks healthy — keep building or run_tests()."
+        return "build_feature(spec) or generate_crud(...) — expose your models as an API."
+    return "verify_project() — confirm the acceptance gate passes, then keep building."
 
 
 @agent_function(resolve_project=False)
