@@ -26,6 +26,9 @@ from zeeb_agents._utils.wiring import (
     find_project_package,
 )
 
+_AUTH_MIDDLEWARE = "zeeb_api.middleware.JWTAuthMiddleware"
+_CORS_MIDDLEWARE = "zeeb_api.middleware.CORSMiddleware"
+
 
 @agent_function(resolve_project=False)
 async def create_project(
@@ -120,8 +123,8 @@ async def create_app(
         - A non-zero CLI exit code returns ``success=False`` with
           ``data=None``.
         - Wiring the router with **no prefix** is intentional: ``register_route``
-          mounts each ViewSet under its own segment (the app name by default),
-          and ``DefaultRouter.include`` nests prefixes.
+          mounts each ViewSet under its own segment (the pluralized lowercase
+          model name by default), and ``DefaultRouter.include`` nests prefixes.
     """
     ensure_identifier(name, "app name")
     root = require_project_root(project_root)
@@ -407,18 +410,26 @@ async def describe_project(project_root: Path | None = None) -> AgentResult:
 
     Returns data (on success):
         apps (list[dict]): each ``{"name": str, "installed": bool,
-            "urls_included": bool, "model_count": int}``.
+            "urls_included": bool, "model_count": int, "has_signals": bool}``.
         models (list[dict]): as :func:`list_models` (``{app, model, fields}``).
         endpoints (list[dict]): each registered ViewSet as
             ``{"app", "prefix", "viewset", "served": bool}`` — ``served`` is
             ``False`` when the app's router is not included in ``urls.py``.
+        middleware (dict): ``{"entries": [...], "auth": bool, "cors": bool}`` —
+            the active ``MIDDLEWARE`` list and whether the JWT-auth / CORS
+            middleware are present in it.
         migrations (dict): ``{"applied": [...], "pending": [...],
             "pending_count": int}`` (``"available": False`` when the migration
             state could not be read, e.g. the DB is not initialised yet).
         runtime (dict): ``{"configured": bool, "preview_url": str | None,
             "openapi_url": str | None}`` from the platform preview runtime.
         served (bool): whether at least one endpoint is actually routed.
-        warnings (list[str]): human-readable wiring/migration gaps to fix.
+        warnings (list[str]): human-readable wiring/migration gaps to fix —
+            unregistered apps, unrouted endpoints, duplicate route prefixes
+            (later registrations are shadowed), auth endpoints without
+            ``JWTAuthMiddleware``, CORS settings without ``CORSMiddleware`` (or
+            the middleware with empty origins), signal modules in apps that are
+            not installed, and pending migrations.
 
     Notes:
         - Never hard-fails on a sub-part: an unreadable migration/runtime state
@@ -431,8 +442,8 @@ async def describe_project(project_root: Path | None = None) -> AgentResult:
 
     root = require_project_root(project_root)
 
-    def _wiring_state() -> tuple[set[str], set[str]]:
-        """Return (installed app names, apps whose router is included)."""
+    def _wiring_state() -> tuple[set[str], set[str], dict, str]:
+        """Return (installed apps, included apps, settings, project urls text)."""
         settings = load_project_settings(root)
         installed = {
             entry.split(".", 1)[1]
@@ -440,18 +451,19 @@ async def describe_project(project_root: Path | None = None) -> AgentResult:
             if isinstance(entry, str) and entry.startswith("apps.")
         }
         included: set[str] = set()
+        urls_text = ""
         try:
             pkg = find_project_package(root)
             urls_text = (pkg / "urls.py").read_text(encoding="utf-8")
         except Exception:
-            return installed, included
+            return installed, included, settings, urls_text
         import re
 
         for m in re.finditer(r"router\.include\(\s*(\w+?)_router\b", urls_text):
             included.add(m.group(1))
-        return installed, included
+        return installed, included, settings, urls_text
 
-    installed, included = await asyncio.to_thread(_wiring_state)
+    installed, included, settings, urls_text = await asyncio.to_thread(_wiring_state)
 
     models_res = await list_models(project_id=root)
     models = (models_res.data or {}).get("models", []) if models_res.success else []
@@ -473,9 +485,21 @@ async def describe_project(project_root: Path | None = None) -> AgentResult:
             "installed": app in installed,
             "urls_included": app in included,
             "model_count": model_counts.get(app, 0),
+            "has_signals": (get_app_path(app, root) / "signals.py").exists(),
         }
         for app in list_apps_util(root)
     ]
+
+    middleware_entries = [
+        entry
+        for entry in (settings.get("MIDDLEWARE", []) or [])
+        if isinstance(entry, str)
+    ]
+    middleware = {
+        "entries": middleware_entries,
+        "auth": _AUTH_MIDDLEWARE in middleware_entries,
+        "cors": _CORS_MIDDLEWARE in middleware_entries,
+    }
 
     migr_res = await get_migration_status(project_id=root)
     if migr_res.success:
@@ -507,6 +531,11 @@ async def describe_project(project_root: Path | None = None) -> AgentResult:
                 f"App '{a['name']}' has models but is not in INSTALLED_APPS — "
                 f"its models will not migrate. Run install_app('{a['name']}')."
             )
+        if a["has_signals"] and not a["installed"]:
+            warnings.append(
+                f"App '{a['name']}' has signal receivers (signals.py) but is not "
+                f"in INSTALLED_APPS — they never load. Run install_app('{a['name']}')."
+            )
     for ep in endpoints:
         if not ep["served"]:
             warnings.append(
@@ -514,6 +543,45 @@ async def describe_project(project_root: Path | None = None) -> AgentResult:
                 f"app '{ep['app']}' router is not included in urls.py — it 404s. "
                 f"Run wire_app_urls('{ep['app']}')."
             )
+
+    # Duplicate route prefixes: the project router mounts every app's
+    # registrations at the top level, so two ViewSets sharing a prefix collide
+    # even across apps — the later registration is silently shadowed (and, with
+    # the runtime duplicate guard, fails startup).
+    by_prefix: dict[str, list[dict]] = {}
+    for ep in raw_endpoints:
+        by_prefix.setdefault(ep["prefix"].strip("/"), []).append(ep)
+    for norm_prefix, eps in sorted(by_prefix.items()):
+        if len(eps) > 1:
+            owners = ", ".join(f"{e['app']}.{e['viewset']}" for e in eps)
+            warnings.append(
+                f"Route prefix '{norm_prefix}' is registered {len(eps)} times "
+                f"({owners}) — later registrations are shadowed. Re-register all "
+                f"but one with a distinct url_prefix."
+            )
+
+    # Auth endpoints without the middleware that authenticates requests.
+    if "create_auth_router" in urls_text and not middleware["auth"]:
+        warnings.append(
+            "Auth endpoints are wired but JWTAuthMiddleware is missing from "
+            "MIDDLEWARE — protected endpoints will reject valid tokens. "
+            "Re-run setup_auth() to repair."
+        )
+
+    # CORS config and middleware only work together.
+    cors_origins = settings.get("CORS_ALLOW_ORIGINS", []) or []
+    if cors_origins and not middleware["cors"]:
+        warnings.append(
+            "CORS settings are configured but CORSMiddleware is not in "
+            "MIDDLEWARE — browsers will be blocked. Re-run configure_cors() "
+            "to repair."
+        )
+    elif middleware["cors"] and "CORS_ALLOW_ORIGINS" in settings and not cors_origins:
+        warnings.append(
+            "CORSMiddleware is listed but CORS_ALLOW_ORIGINS is empty — it "
+            "stays inactive until origins are set (configure_cors)."
+        )
+
     if migrations["available"] and migrations["pending_count"]:
         warnings.append(
             f"{migrations['pending_count']} pending migration(s) — run run_migrations()."
@@ -530,6 +598,7 @@ async def describe_project(project_root: Path | None = None) -> AgentResult:
             "apps": apps,
             "models": models,
             "endpoints": endpoints,
+            "middleware": middleware,
             "migrations": migrations,
             "runtime": runtime,
             "served": served,

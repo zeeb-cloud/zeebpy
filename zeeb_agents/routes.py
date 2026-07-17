@@ -12,6 +12,7 @@ from zeeb_agents._utils.code_gen import ensure_import, skip_result, validate_if_
 from zeeb_agents._utils.errors import AgentError, fail
 from zeeb_agents._utils.project import get_app_path, require_project_root
 from zeeb_agents._utils.validation import ensure_identifier
+from zeeb_agents._utils.wiring import ensure_app_urls_included, ensure_installed_app
 
 _VALID_METHODS = frozenset({"get", "post", "put", "patch", "delete"})
 
@@ -97,9 +98,11 @@ async def create_route(
         method (str): the HTTP method.
         function_name (str): the handler function name.
         response_model (str | None): the response model name, if any.
-        wired (bool): ``True`` when the handler's router was auto-included into
-            ``apps/{app}/urls.py`` (so it is actually served); ``False`` when
-            ``urls.py`` was missing and you must include it yourself.
+        wired (bool): always ``True`` on success — the handler's router is
+            included into ``apps/{app}/urls.py``, the app is registered in
+            ``INSTALLED_APPS``, and the app router is included by the project
+            ``urls.py``. When any of those wiring steps fails, the whole call
+            fails instead of returning a handler that would 404.
 
     Notes:
         - The handler is created on a module-level ``router = APIRouter()`` in
@@ -107,14 +110,15 @@ async def create_route(
           ``Router``). The import and instance are added if not already present.
         - **Auto-wiring:** ``apps/{app}/urls.py`` is updated to
           ``from .views import router as {app}_api_router`` and
-          ``router.include({app}_api_router)`` so the route is mounted as soon
-          as the app's router is included by the project ``urls.py`` (the same
-          inclusion a ViewSet needs). This is idempotent.
+          ``router.include({app}_api_router)``, and the full serve chain
+          (``INSTALLED_APPS`` + project ``urls.py`` include) is ensured — so the
+          route is actually served, not just written. This is idempotent.
         - ``{name}`` segments in *path* (e.g. ``"/items/{item_id}"``) are
           auto-extracted and added to the handler as ``str`` parameters
           (``async def handler(request: Request, item_id: str): ...``).
-        - Fails if *method* is invalid, ``views.py`` is missing, or a function
-          named *function_name* already exists.
+        - Fails if *method* is invalid, ``views.py`` or ``apps/{app}/urls.py``
+          is missing (the handler write is kept; the failure message says so),
+          or a function named *function_name* already exists.
 
     Example::
 
@@ -198,41 +202,52 @@ async def create_route(
         return _wire_urls()
 
     def _wire_urls() -> bool:
-        urls = _urls_file(app, require_project_root(project_root))
+        root = require_project_root(project_root)
+        urls = _urls_file(app, root)
         if not urls.exists():
-            return False
+            raise AgentError(
+                f"apps/{app}/urls.py not found — the handler '{function_name}' was "
+                f"written to views.py but cannot be served without it. Restore the "
+                f"app's urls.py (or recreate the app with create_app), then re-run "
+                f"this call (idempotent).",
+                code="file_not_found",
+                missing="urls.py",
+                function=function_name,
+            )
         alias = f"{app}_api_router"
         include_line = f"router.include({alias})"
         content = urls.read_text(encoding="utf-8")
-        if include_line in content:
-            return True
-        ensure_import(urls, f"from .views import router as {alias}")
-        content = urls.read_text(encoding="utf-8")
-        content = content.rstrip("\n") + f"\n{include_line}\n"
-        urls.write_text(content, encoding="utf-8")
+        if include_line not in content:
+            ensure_import(urls, f"from .views import router as {alias}")
+            content = urls.read_text(encoding="utf-8")
+            content = content.rstrip("\n") + f"\n{include_line}\n"
+            urls.write_text(content, encoding="utf-8")
+        # App-layer inclusion alone is not enough: the app must be installed
+        # and its router included by the project urls.py, or the route 404s.
+        ensure_installed_app(root, app)
+        ensure_app_urls_included(root, app)
         return True
 
     try:
         wired = await asyncio.to_thread(_write)
     except AgentError as exc:
         if if_exists == "skip" and (exc.result.data or {}).get("error_code") == "already_exists":
+            # Still ensure the serve chain so a re-run repairs missing wiring.
+            await asyncio.to_thread(_wire_urls)
             return skip_result(
                 f"Route handler '{function_name}' already exists in apps/{app}/views.py; skipped",
                 app=app,
                 path=path,
                 method=method,
                 function_name=function_name,
+                wired=True,
             )
         raise
-    served = (
-        "" if wired
-        else " (urls.py missing — include the views router manually to serve it)"
-    )
     return AgentResult(
         success=True,
         message=(
             f"Route '{method.upper()} {path}' created as '{function_name}' "
-            f"in apps/{app}/views.py{served}"
+            f"in apps/{app}/views.py"
         ),
         data={
             "app": app,

@@ -3,7 +3,10 @@ Middleware loader that reads from settings and installs middleware.
 """
 
 import importlib
+import logging
 from typing import TYPE_CHECKING
+
+logger = logging.getLogger("zeeb_api.middleware")
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
@@ -59,6 +62,11 @@ def install_middleware(app: "FastAPI", settings: "Settings" = None):
         if middleware_path == "zeeb_api.middleware.CORSMiddleware":
             cors_origins = getattr(settings, 'CORS_ALLOW_ORIGINS', [])
             if not cors_origins:
+                logger.warning(
+                    "CORSMiddleware is listed in MIDDLEWARE but CORS_ALLOW_ORIGINS "
+                    "is empty — skipping it (set origins, e.g. via configure_cors, "
+                    "to activate it)."
+                )
                 continue
         
         app.add_middleware(middleware_class)

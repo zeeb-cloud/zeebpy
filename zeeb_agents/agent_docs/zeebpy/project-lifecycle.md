@@ -91,8 +91,8 @@ model for you, so use this *instead of* Step 3 for that model:
 
 When the model already exists (as in Step 3 above), build the API piece by
 piece. `create_viewset` writes the ViewSet; register its route with
-`register_route` (the URL segment defaults to the app name — override it with
-`url_prefix=`):
+`register_route` (the URL segment defaults to the pluralized lowercase model
+name, `Post` → `/posts` — override it with `url_prefix=`):
 ```
 {prefix}create_serializer(app="blog", model_name="Post")
 {prefix}create_viewset(app="blog", model_name="Post")

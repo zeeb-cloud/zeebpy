@@ -137,16 +137,34 @@ class SimpleRouter:
     ) -> None:
         """
         Register a ViewSet with a URL prefix.
-        
+
         Args:
             prefix: URL prefix (e.g., "users")
             viewset: ViewSet class
             basename: Base name for URL names (default: prefix)
+
+        Raises:
+            ValueError: When the prefix is already registered — a second
+                registration at the same prefix would be silently shadowed
+                by FastAPI's first-match routing.
         """
         if basename is None:
             basename = prefix.strip("/").replace("/", "-")
-        
+
+        self._check_prefix_free(prefix, viewset)
         self._registry.append((prefix, viewset, basename))
+
+    def _check_prefix_free(self, prefix: str, viewset: Type[ViewSet]) -> None:
+        """Raise ``ValueError`` when *prefix* is already in the registry."""
+        normalized = prefix.strip("/")
+        for existing_prefix, existing_viewset, _ in self._registry:
+            if existing_prefix.strip("/") == normalized:
+                raise ValueError(
+                    f"Route prefix '{normalized}' is already registered to "
+                    f"{existing_viewset.__name__}; cannot also register "
+                    f"{viewset.__name__} there — the later registration would be "
+                    f"silently shadowed. Register it under a different prefix."
+                )
     
     def _get_lookup_regex(self, viewset: Type[ViewSet]) -> str:
         """Get the lookup field pattern."""
@@ -656,6 +674,7 @@ class DefaultRouter(SimpleRouter):
             # Include ViewSet-based router
             for route_prefix, viewset, basename in router._registry:
                 combined_prefix = f"{prefix.strip('/')}/{route_prefix.strip('/')}" if prefix else route_prefix
+                self._check_prefix_free(combined_prefix, viewset)
                 self._registry.append((combined_prefix, viewset, basename))
             # Propagate raw APIRouters from nested DefaultRouters
             if hasattr(router, '_api_routers'):

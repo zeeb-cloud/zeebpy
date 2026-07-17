@@ -11,6 +11,7 @@ from zeeb_agents._utils.code_gen import (
     append_block,
     class_exists,
     ensure_import,
+    pluralize,
     render_action_method,
     render_viewset_class,
     resolve_authentication,
@@ -24,6 +25,7 @@ from zeeb_agents._utils.code_gen import (
 from zeeb_agents._utils.errors import AgentError, fail
 from zeeb_agents._utils.project import require_project_root
 from zeeb_agents._utils.validation import ensure_app_exists, ensure_identifier
+from zeeb_agents._utils.wiring import ensure_app_urls_included, ensure_installed_app
 from zeeb_agents.models import create_model
 from zeeb_agents.serializers import create_serializer
 
@@ -114,7 +116,8 @@ async def create_viewset(
             scaffold-then-register flow; ``generate_crud`` is the recommended
             one-shot.
         url_prefix: URL segment to mount under when ``register`` is true
-            (defaults to the app name).
+            (defaults to the pluralized lowercase model name, ``Company`` →
+            ``companies``).
         project_id: The host-assigned project id (required).
 
     Returns data (on success):
@@ -132,6 +135,11 @@ async def create_viewset(
         - Failures carry ``error_code`` in ``data`` (``app_not_found``,
           ``already_exists``, ``invalid_permission``, ``invalid_input``, …)
           plus close-match ``suggestions`` where applicable.
+        - With ``register=True``, a failed route registration fails the whole
+          call (``success=False`` with ``data["viewset_created"]`` /
+          ``data["registration_error"]``): a ViewSet that exists but is not
+          routed would 404 silently. The class write is kept — re-running the
+          same call (idempotent) or ``register_route`` repairs it.
     """
     ensure_identifier(model_name, "model name")
     validate_if_exists(if_exists)
@@ -244,8 +252,23 @@ async def create_viewset(
             data["prefix"] = prefix
             message += f"; route registered at '{prefix}/'"
         else:
+            # A ViewSet that exists but is not routed is exactly the silent
+            # 404 this tool is asked to prevent — surface it as a failure.
+            # The class write is kept; re-running (if_exists="skip") repairs.
+            data["viewset_created"] = not skipped
             data["registration_error"] = reg.message
-            message += f"; route registration failed: {reg.message}"
+            data["error_code"] = (reg.data or {}).get("error_code")
+            data["steps_completed"] = [f"Created viewset '{class_name}'"]
+            return AgentResult(
+                success=False,
+                message=(
+                    f"'{class_name}' {verb} in apps/{app}/views.py but its route "
+                    f"was not registered: {reg.message} The viewset is not served"
+                    " — fix the cause and re-run (idempotent), or register with"
+                    " register_route."
+                ),
+                data=data,
+            )
 
     return AgentResult(success=True, message=message, data=data)
 
@@ -651,16 +674,19 @@ async def register_route(
     """Register a ViewSet with the app's router in ``apps/<app>/urls.py``.
 
     Appends ``router.register("<prefix>", <ModelName>ViewSet)`` to the app's
-    ``urls.py`` and ensures the ViewSet is imported there, exposing the full
-    CRUD route set (plus the ``POST /<prefix>/query/`` endpoint) once the app's
-    router is included by the project ``urls.py``. Prefer this over editing
-    ``urls.py`` with ``write_file``.
+    ``urls.py``, ensures the ViewSet is imported there, and then ensures the
+    full serve chain — the app is in ``INSTALLED_APPS`` and the app router is
+    included by the project ``urls.py`` (both idempotent) — exposing the full
+    CRUD route set (plus the ``POST /<prefix>/query/`` endpoint). Prefer this
+    over editing ``urls.py`` with ``write_file``.
 
     Args:
         app: App directory name.
         model_name: The model whose ``<ModelName>ViewSet`` to register.
-        url_prefix: URL segment to mount the ViewSet under. Defaults to the app
-            name when ``None``.
+        url_prefix: URL segment to mount the ViewSet under. Defaults to the
+            pluralized lowercase model name (``Company`` → ``companies``,
+            ``Status`` → ``statuses``) so each ViewSet in an app gets its own
+            segment.
         if_exists: ``"error"`` (default) or ``"skip"`` (succeed and change
             nothing if the route is already registered — makes retries idempotent).
         project_id: The host-assigned project id (required).
@@ -669,29 +695,58 @@ async def register_route(
         app (str): the app name.
         viewset (str): the registered ``<ModelName>ViewSet`` class name.
         prefix (str): the URL segment the ViewSet is mounted under.
+        installed (bool): the app is in ``INSTALLED_APPS`` (ensured by this call).
+        urls_included (bool): the app router is included by the project
+            ``urls.py`` (ensured by this call).
 
     Notes:
-        - Fails (``success=False``) when ``apps/<app>/urls.py`` is missing or (with
-          the default ``if_exists="error"``) the ViewSet is already registered.
+        - Fails (``success=False``) when ``apps/<app>/urls.py`` is missing, when
+          (with the default ``if_exists="error"``) the ViewSet is already
+          registered, or when the prefix is already taken by a *different*
+          ViewSet (``prefix_conflict`` — pass ``url_prefix`` to mount elsewhere;
+          never skippable, because the later registration would be silently
+          shadowed at runtime).
     """
     validate_if_exists(if_exists)
-    path = _urls_file(app, project_root)
+    root = require_project_root(project_root)
+    path = _urls_file(app, root)
     if not path.exists():
         return fail(f"urls.py not found at {path}", code="file_not_found", missing="urls.py")
 
-    prefix = url_prefix or app
+    prefix = url_prefix or pluralize(model_name.lower())
     viewset_name = f"{model_name}ViewSet"
 
     def _write() -> None:
         content = path.read_text(encoding="utf-8")
         register_line = f'router.register("{prefix}", {viewset_name})'
-        if register_line in content:
+        # Scan uncommented lines only — the app scaffold ships a commented
+        # ``# router.register(...)`` example that must not count.
+        active_lines = [
+            line for line in content.splitlines() if not line.lstrip().startswith("#")
+        ]
+        if any(register_line in line for line in active_lines):
             raise AgentError(
                 f"Route for '{viewset_name}' already registered",
                 code="already_exists",
                 viewset=viewset_name,
                 prefix=prefix,
             )
+        conflict_re = re.compile(
+            rf'router\.register\(\s*"{re.escape(prefix)}"\s*,\s*(\w+)'
+        )
+        for line in active_lines:
+            conflict = conflict_re.search(line)
+            if conflict:
+                raise AgentError(
+                    f"Prefix '{prefix}' is already registered to {conflict.group(1)} "
+                    f"in apps/{app}/urls.py — a second registration at the same "
+                    f"prefix is silently shadowed at runtime. Pass url_prefix to "
+                    f"mount {viewset_name} under a different segment.",
+                    code="prefix_conflict",
+                    prefix=prefix,
+                    registered_viewset=conflict.group(1),
+                    viewset=viewset_name,
+                )
         ensure_import(path, f"from .views import {viewset_name}")
         # Append the register call after any existing router.register lines,
         # or just append to the file
@@ -699,21 +754,38 @@ async def register_route(
         content = content.rstrip("\n") + f"\n{register_line}\n"
         path.write_text(content, encoding="utf-8")
 
+    def _ensure_serve_chain() -> None:
+        # A registered route is only reachable when the app is installed and
+        # its router is included by the project urls.py; ensure both (repair
+        # semantics — also runs on the skip path).
+        ensure_installed_app(root, app)
+        ensure_app_urls_included(root, app)
+
     try:
         await asyncio.to_thread(_write)
     except AgentError as exc:
         if if_exists == "skip" and (exc.result.data or {}).get("error_code") == "already_exists":
+            await asyncio.to_thread(_ensure_serve_chain)
             return skip_result(
                 f"'{viewset_name}' already registered at '{prefix}/'; skipped",
                 app=app,
                 viewset=viewset_name,
                 prefix=prefix,
+                installed=True,
+                urls_included=True,
             )
         raise
+    await asyncio.to_thread(_ensure_serve_chain)
     return AgentResult(
         success=True,
         message=f"'{viewset_name}' registered at '{prefix}/'",
-        data={"app": app, "viewset": viewset_name, "prefix": prefix},
+        data={
+            "app": app,
+            "viewset": viewset_name,
+            "prefix": prefix,
+            "installed": True,
+            "urls_included": True,
+        },
     )
 
 
@@ -736,10 +808,11 @@ async def generate_crud(
     ordering_fields: list[str] | None = None,
     filterset: str | None = None,
     authentication: str | list[str] | None = None,
+    url_prefix: str | None = None,
     migrate: bool = False,
     project_root: Path | None = None,
 ) -> AgentResult:
-    """One-shot scaffold: create model + serializer + viewset + register route.
+    """One-shot scaffold: create model + serializer + viewset + register route — wired and served.
 
     Args:
         app: App directory name.
@@ -770,6 +843,9 @@ async def generate_crud(
             name or a list, tried in order (first match wins); omitted, the
             project's global auth middleware stays in charge (forwarded to
             :func:`create_viewset`).
+        url_prefix: URL segment to mount the ViewSet under (forwarded to
+            :func:`register_route`). Defaults to the pluralized lowercase
+            model name (``Company`` → ``companies``).
         migrate: When true, also run ``make_migrations`` + ``run_migrations``
             after scaffolding so the new table is live in one call. Default false
             keeps the DB-touching step explicit.
@@ -777,8 +853,8 @@ async def generate_crud(
 
     Returns data (on success):
         steps (list[str]): human-readable description of each completed step
-            (model, serializer, viewset, route registration, and — when
-            ``migrate=True`` — migration creation/apply).
+            (model, serializer, viewset, route registration, app wiring, and —
+            when ``migrate=True`` — migration creation/apply).
         migrated (dict): present only when ``migrate=True`` —
             ``{"created": str | None, "applied": list[str]}``.
 
@@ -846,11 +922,30 @@ async def generate_crud(
         errors.append(f"viewset: {result.message}")
 
     # 4. Route
-    result = await register_route(app, model_name, if_exists="skip", project_id=root)
+    result = await register_route(
+        app, model_name, url_prefix=url_prefix, if_exists="skip", project_id=root
+    )
     if result.success:
-        steps.append(f"Registered route '{app}/'")
+        prefix = (result.data or {}).get("prefix", url_prefix or "")
+        steps.append(f"Registered route '{prefix}/'")
     else:
         errors.append(f"route: {result.message}")
+
+    # 5. Wiring — installed + included, or nothing above is actually served.
+    # register_route already ensures both on success; repeating them here keeps
+    # a partial run (e.g. the route step failed) migratable and servable.
+    from zeeb_agents.project import install_app, wire_app_urls
+
+    for wiring_call, label in (
+        (install_app, "INSTALLED_APPS"),
+        (wire_app_urls, "project urls.py"),
+    ):
+        result = await wiring_call(app, project_id=root)
+        if result.success:
+            if (result.data or {}).get("changed"):
+                steps.append(f"Wired app '{app}' into {label}")
+        else:
+            errors.append(f"wiring: {result.message}")
 
     if errors:
         return AgentResult(

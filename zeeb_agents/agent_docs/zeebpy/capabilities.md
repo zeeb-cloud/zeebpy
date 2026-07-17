@@ -87,7 +87,7 @@ data    : dict|None   — structured output (see per-tool docs)
 | `{prefix}add_viewset_action(app, model_name, action_name, detail=True, methods=None, body=None, url_path=None, request_serializer=None, response_serializer=None, request_schema=None, response_schema=None, permission=None)` | Append a custom ``@action`` method to an existing ViewSet. |
 | `{prefix}create_route(app, path, method, function_name, response_model=None, body=None, imports=None, if_exists="error")` | Append a standalone FastAPI route handler to ``apps/{app}/views.py`` **and wire it up**. |
 | `{prefix}create_viewset(app, model_name, serializer_class=None, permission="IsAuthenticatedOrReadOnly", read_only=False, lookup_field=None, pagination=None, throttles=None, search_fields=None, ordering_fields=None, filterset=None, authentication=None, if_exists="error", register=False, url_prefix=None)` | Append a ``ModelViewSet`` subclass to ``apps/<app>/views.py``. |
-| `{prefix}generate_crud(app, model_name, fields, serializer_fields=None, read_only_fields=None, permission="IsAuthenticatedOrReadOnly", meta=None, extra_fields=None, validate_fields=None, read_only=False, lookup_field=None, pagination=None, throttles=None, search_fields=None, ordering_fields=None, filterset=None, authentication=None, migrate=False)` | One-shot scaffold: create model + serializer + viewset + register route. |
+| `{prefix}generate_crud(app, model_name, fields, serializer_fields=None, read_only_fields=None, permission="IsAuthenticatedOrReadOnly", meta=None, extra_fields=None, validate_fields=None, read_only=False, lookup_field=None, pagination=None, throttles=None, search_fields=None, ordering_fields=None, filterset=None, authentication=None, url_prefix=None, migrate=False)` | One-shot scaffold: create model + serializer + viewset + register route — wired and served. |
 | `{prefix}list_endpoints()` | Return all ``router.register(...)`` calls found across all app ``urls.py`` files. |
 | `{prefix}register_route(app, model_name, url_prefix=None, if_exists="error")` | Register a ViewSet with the app's router in ``apps/<app>/urls.py``. |
 | `{prefix}update_viewset(app, model_name, permission=None, lookup_field=None, pagination=None, throttles=None, search_fields=None, ordering_fields=None, authentication=None)` | Set or update class attributes on an existing ``<ModelName>ViewSet``. |
@@ -188,7 +188,7 @@ data    : dict|None   — structured output (see per-tool docs)
 
 | Tool | Description |
 |---|---|
-| `{prefix}configure_cors(origins, methods=None, allow_credentials=True, allow_headers=None, expose_headers=None)` | Write CORS settings to the project's ``settings.py``. |
+| `{prefix}configure_cors(origins, methods=None, allow_credentials=True, allow_headers=None, expose_headers=None)` | Write CORS settings to the project's ``settings.py`` — middleware included. |
 | `{prefix}get_cors_config()` | Read the current CORS settings from the project. |
 
 ### Background Tasks (BaaS)
