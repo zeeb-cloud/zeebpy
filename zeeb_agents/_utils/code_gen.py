@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import re
 import textwrap
 from pathlib import Path
@@ -34,6 +35,20 @@ def validate_if_exists(value: str) -> None:
 def skip_result(message: str, **data: object) -> AgentResult:
     """Build a success result for a no-op skip (``data['skipped'] = True``)."""
     return AgentResult(success=True, message=message, data={**data, "skipped": True})
+
+
+def pluralize(word: str) -> str:
+    """English-plural a lowercase model name for a default route prefix.
+
+    Same rule set as the hosting platform's codegen layer (company →
+    companies, status → statuses, box → boxes) so plans and directly issued
+    tool calls mount resources under identical prefixes.
+    """
+    if word.endswith("y") and len(word) > 1 and word[-2] not in "aeiou":
+        return word[:-1] + "ies"
+    if word.endswith(("s", "x", "z", "ch", "sh")):
+        return word + "es"
+    return word + "s"
 
 # The full ``class Meta`` surface zeeb_orm's Options.from_meta understands.
 # ``indexes``/``constraints`` accept lists of plain dicts (Options does
@@ -808,18 +823,70 @@ def find_settings_file(root: Path) -> Path | None:
     return None
 
 
+def _strip_strings_and_comments(line: str) -> str:
+    """Return *line* with string-literal contents and comments blanked out.
+
+    Used by the bracket-balance fallback in :func:`set_or_append_setting` so
+    brackets inside string values (URLs, regexes, secrets) don't miscount the
+    nesting depth. Single-line state machine — good enough for the broken-file
+    fallback it serves.
+    """
+    out: list[str] = []
+    quote: str | None = None
+    i = 0
+    while i < len(line):
+        ch = line[i]
+        if quote is not None:
+            if ch == "\\":
+                i += 2
+                continue
+            if ch == quote:
+                quote = None
+            i += 1
+            continue
+        if ch in "\"'":
+            quote = ch
+            i += 1
+            continue
+        if ch == "#":
+            break
+        out.append(ch)
+        i += 1
+    return "".join(out)
+
+
 def set_or_append_setting(content: str, key: str, rendered: str) -> str:
     """Replace an existing ``KEY = ...`` assignment or append it at end of file.
 
     Handles assignments whose value spans multiple lines (e.g. a list literal
     split across lines), replacing the whole bracketed span rather than only
     the first line — which would otherwise orphan the continuation lines and
-    corrupt ``settings.py``.
+    corrupt ``settings.py``. The span comes from the parsed AST, so brackets
+    inside string values can't confuse it; a bracket-balance scan (with strings
+    and comments stripped) remains as fallback for files that don't parse.
     """
     new_line = f"{key} = {rendered}"
     lines = content.splitlines(keepends=True)
-    key_re = re.compile(rf"^{re.escape(key)}\s*=")
 
+    try:
+        tree = ast.parse(content)
+    except SyntaxError:
+        tree = None
+    if tree is not None:
+        for node in tree.body:
+            if (
+                isinstance(node, ast.Assign)
+                and len(node.targets) == 1
+                and isinstance(node.targets[0], ast.Name)
+                and node.targets[0].id == key
+            ):
+                start, end = node.lineno - 1, node.end_lineno - 1
+                return (
+                    "".join(lines[:start]) + new_line + "\n" + "".join(lines[end + 1 :])
+                )
+        return content.rstrip("\n") + f"\n{new_line}\n"
+
+    key_re = re.compile(rf"^{re.escape(key)}\s*=")
     start = next((i for i, ln in enumerate(lines) if key_re.match(ln)), None)
     if start is None:
         return content.rstrip("\n") + f"\n{new_line}\n"
@@ -829,8 +896,9 @@ def set_or_append_setting(content: str, key: str, rendered: str) -> str:
     depth = 0
     end = start
     for j in range(start, len(lines)):
-        depth += lines[j].count("(") + lines[j].count("[") + lines[j].count("{")
-        depth -= lines[j].count(")") + lines[j].count("]") + lines[j].count("}")
+        code = _strip_strings_and_comments(lines[j])
+        depth += code.count("(") + code.count("[") + code.count("{")
+        depth -= code.count(")") + code.count("]") + code.count("}")
         end = j
         if depth <= 0:
             break

@@ -34,6 +34,7 @@ ERROR_CODES = frozenset(
         "setting_not_found",
         "env_key_not_found",
         "already_exists",
+        "prefix_conflict",
         "invalid_identifier",
         "invalid_field_type",
         "invalid_field_spec",

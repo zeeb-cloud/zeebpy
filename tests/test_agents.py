@@ -268,7 +268,9 @@ async def test_generate_crud(project):
     assert "class Article(Model):" in (app_dir / "models.py").read_text()
     assert "class ArticleSerializer(ModelSerializer):" in (app_dir / "serializers.py").read_text()
     assert "class ArticleViewSet(ModelViewSet):" in (app_dir / "views.py").read_text()
-    assert 'router.register("blog", ArticleViewSet)' in (app_dir / "urls.py").read_text()
+    # Default prefix is the pluralized model name, not the app name — every
+    # ViewSet in an app gets its own segment.
+    assert 'router.register("articles", ArticleViewSet)' in (app_dir / "urls.py").read_text()
 
 
 async def test_create_route_generates_valid_mounted_handler(project):
@@ -1018,6 +1020,34 @@ async def test_cors_round_trip(project):
     cors = result.data["cors"]
     assert cors["CORS_ALLOW_ORIGINS"] == ["https://app.example.com", "http://localhost:3000"]
     assert cors["CORS_ALLOW_METHODS"] == ["GET", "POST"]
+
+
+async def test_configure_cors_restores_missing_middleware(project):
+    """CORS settings without CORSMiddleware are inert — configure_cors repairs (G5)."""
+    settings_path = next(
+        p / "settings.py" for p in project.iterdir() if (p / "settings.py").exists()
+    )
+    settings_path.write_text(
+        "\n".join(
+            line
+            for line in settings_path.read_text().splitlines()
+            if "CORSMiddleware" not in line
+        )
+        + "\n"
+    )
+    result = await agents.configure_cors(["http://localhost:3000"], project_id=project)
+    assert result.success, result.message
+    assert result.data["middleware_added"] is True
+    assert '"zeeb_api.middleware.CORSMiddleware"' in settings_path.read_text()
+    # Idempotent: already present on the second run.
+    again = await agents.configure_cors(["http://localhost:3000"], project_id=project)
+    assert again.success and again.data["middleware_added"] is False
+
+
+async def test_configure_cors_empty_origins_warns(project):
+    result = await agents.configure_cors([], project_id=project)
+    assert result.success
+    assert any("CORS_ALLOW_ORIGINS is empty" in w for w in result.data["warnings"])
 
 
 # ---------------------------------------------------------------------------

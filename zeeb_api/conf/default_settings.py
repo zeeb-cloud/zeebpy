@@ -123,3 +123,8 @@ LOGGING = {
 
 # Exception handlers - set to False to disable default handlers
 INSTALL_EXCEPTION_HANDLERS = True
+
+# Liveness/readiness probes - when True, create_app() registers /health and
+# /ready. Off by default so apps that define their own probes aren't shadowed;
+# generated projects opt in via their settings.py.
+INSTALL_HEALTH_ROUTES = False

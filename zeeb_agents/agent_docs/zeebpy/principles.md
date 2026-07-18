@@ -52,8 +52,8 @@ Rules you can rely on:
 `invalid_field_type`, `invalid_identifier`, `invalid_input`, `invalid_meta`,
 `invalid_permission`, `invalid_regex`, `invalid_sql`, `log_file_not_found`,
 `model_not_found`, `no_project_id`, `no_user_table`,
-`outside_project_root`, `permission_denied`, `project_not_found`, `runtime_not_configured`,
-`server_not_reachable`, `setting_not_found`, `table_not_found`,
+`outside_project_root`, `permission_denied`, `prefix_conflict`, `project_not_found`,
+`runtime_not_configured`, `server_not_reachable`, `setting_not_found`, `table_not_found`,
 `user_not_found`.
 
 ### Two error layers — don't confuse them
@@ -206,8 +206,11 @@ Routing is two-tiered:
   **`apps/<app>/views.py`** but does **not** register its route. Register it with
   `{prefix}register_route(app, model_name, url_prefix=...)`, which appends
   `router.register("<prefix>", <Model>ViewSet)` to **`apps/<app>/urls.py`** and
-  imports the ViewSet there. The URL segment defaults to the **app name**;
-  override it with `url_prefix=`. `{prefix}generate_crud(...)` does both
+  imports the ViewSet there. The URL segment defaults to the **pluralized
+  lowercase model name** (`Company` → `/companies`) so every ViewSet in an app
+  gets its own segment; override it with `url_prefix=`. Registering a second
+  ViewSet at an already-taken prefix fails with `prefix_conflict` instead of
+  silently shadowing it. `{prefix}generate_crud(...)` does both
   (model + serializer + viewset + `register_route`) in one shot.
 - The app's router is in turn included by the **project's `myproject/urls.py`**.
   `{prefix}create_app` wires this include **automatically** (and adds the app to
