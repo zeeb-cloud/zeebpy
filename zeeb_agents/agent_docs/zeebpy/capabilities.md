@@ -44,6 +44,19 @@ data    : dict|None   — structured output (see per-tool docs)
 
 <!-- BEGIN AUTO-GENERATED INVENTORY -->
 
+### Intent Workflows
+
+| Tool | Description |
+|---|---|
+| `{prefix}apply_plan(plan, migrate=True, verify=True)` | Execute a plan produced by :func:`plan_feature` — apply, then verify. |
+| `{prefix}bootstrap_project(auth=True, registration=True, health_endpoint=True, user_model=None, migrate=True)` | Bootstrap the bound project into a production-ready baseline. |
+| `{prefix}build_feature(spec, migrate=True, verify=True)` | Build a complete feature from a FeatureSpec — compile, apply, verify. |
+| `{prefix}change_feature(changes, app=None, migrate=True, verify=True)` | Apply semantic changes to existing features — fields, relations, entities. |
+| `{prefix}configure_auth(providers=None, registration=True, user_model=None, migrate=True)` | Configure authentication as one coherent setup — password and/or OAuth. |
+| `{prefix}diagnose_problem(symptom="", endpoint="", lines=200)` | Diagnose a misbehaving project — one read-only call instead of five. |
+| `{prefix}plan_feature(spec)` | Validate a FeatureSpec and return the execution plan — writes NOTHING. |
+| `{prefix}verify_project(checks=None, port=8000)` | Run the deterministic acceptance gate — the call to make before "done". |
+
 ### Project & App Management
 
 | Tool | Description |

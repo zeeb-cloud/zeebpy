@@ -296,6 +296,47 @@ async def list_all_routes(
     )
 
 
+async def _fetch_openapi_spec(port: int) -> dict[str, Any]:
+    """Fetch ``/openapi.json`` from the local runtime; raises :class:`AgentError`.
+
+    Shared by :func:`export_openapi` (which writes a snapshot file) and the
+    intent verification chain (which must stay read-only — no file written).
+    """
+    try:
+        import httpx
+    except ImportError:
+        raise AgentError(
+            "httpx is required for export_openapi. "
+            "Install with: pip install httpx",
+            code="dependency_missing",
+            dependency="httpx",
+        ) from None
+    try:
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(
+                f"http://localhost:{port}/openapi.json",
+                timeout=10.0,
+            )
+            resp.raise_for_status()
+            return resp.json()
+    except httpx.HTTPStatusError as exc:
+        raise AgentError(
+            f"Dev server on port {port} returned HTTP "
+            f"{exc.response.status_code} for /openapi.json",
+            code="server_not_reachable",
+            port=port,
+            status=exc.response.status_code,
+        ) from exc
+    except httpx.HTTPError as exc:
+        raise AgentError(
+            f"API not reachable on port {port} ({exc}) — the platform "
+            "preview runtime serves the live contract; use "
+            "get_openapi_url() for its URL.",
+            code="server_not_reachable",
+            port=port,
+        ) from exc
+
+
 @agent_function
 async def export_openapi(
     output_path: str | None = None,
@@ -335,42 +376,7 @@ async def export_openapi(
     """
     root = project_root
 
-    async def _fetch() -> dict[str, Any]:
-        try:
-            import httpx
-        except ImportError:
-            raise AgentError(
-                "httpx is required for export_openapi. "
-                "Install with: pip install httpx",
-                code="dependency_missing",
-                dependency="httpx",
-            ) from None
-        try:
-            async with httpx.AsyncClient() as client:
-                resp = await client.get(
-                    f"http://localhost:{port}/openapi.json",
-                    timeout=10.0,
-                )
-                resp.raise_for_status()
-                return resp.json()
-        except httpx.HTTPStatusError as exc:
-            raise AgentError(
-                f"Dev server on port {port} returned HTTP "
-                f"{exc.response.status_code} for /openapi.json",
-                code="server_not_reachable",
-                port=port,
-                status=exc.response.status_code,
-            ) from exc
-        except httpx.HTTPError as exc:
-            raise AgentError(
-                f"API not reachable on port {port} ({exc}) — the platform "
-                "preview runtime serves the live contract; use "
-                "get_openapi_url() for its URL.",
-                code="server_not_reachable",
-                port=port,
-            ) from exc
-
-    spec = await _fetch()
+    spec = await _fetch_openapi_spec(port)
 
     out = (
         root / output_path if output_path and not Path(output_path).is_absolute()

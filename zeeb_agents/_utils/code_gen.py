@@ -1040,6 +1040,33 @@ def class_exists(content: str, class_name: str) -> bool:
     return bool(re.search(rf"^class {re.escape(class_name)}\b", content, re.MULTILINE))
 
 
+def class_has_field(content: str, class_name: str, field_name: str) -> bool:
+    """Return ``True`` if *field_name* is already assigned in *class_name*'s body.
+
+    Used to make ``add_field`` idempotent: adding a field that already exists is
+    a no-op, not a second definition. Scans only the target class body (up to the
+    next top-level definition) so a same-named field on another model doesn't
+    count.
+    """
+    lines = content.splitlines()
+    class_start: int | None = None
+    for i, line in enumerate(lines):
+        if re.match(rf"^class {re.escape(class_name)}\b", line):
+            class_start = i
+            break
+    if class_start is None:
+        return False
+
+    indent = "    "
+    for line in lines[class_start + 1 :]:
+        stripped = line.strip()
+        if stripped and not line.startswith(indent) and not stripped.startswith("#"):
+            break  # next top-level definition → end of class body
+        if re.match(rf"\s+{re.escape(field_name)}\s*[:=]", line):
+            return True
+    return False
+
+
 def add_field_to_class(content: str, class_name: str, field_line: str) -> str | None:
     """Insert *field_line* into the body of *class_name*.
 
