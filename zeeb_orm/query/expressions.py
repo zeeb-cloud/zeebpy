@@ -141,6 +141,27 @@ class Value(Expression):
 # Aggregate functions
 
 
+def _filter_condition(model: Any, q: Any) -> Any:
+    """Compile an aggregate ``filter=Q(...)`` into a SQLAlchemy condition.
+
+    Uses the same lookup machinery as ``QuerySet.filter()``. Relation
+    traversal is not available here (no join context), so paths like
+    ``author__name`` raise ``FieldError`` instead of silently matching
+    nothing.
+    """
+    from zeeb_orm.query.q import Q
+    from zeeb_orm.query.queryset import q_to_condition
+
+    if not isinstance(q, Q):
+        raise TypeError(
+            f"Aggregate filter must be a Q object, got {type(q).__name__}."
+        )
+    cond = q_to_condition(model, q)
+    if cond is None:
+        raise ValueError("Aggregate filter=Q(...) resolved to no condition.")
+    return cond
+
+
 class Aggregate(Expression):
     """Base class for aggregate functions."""
 
@@ -153,20 +174,27 @@ class Aggregate(Expression):
         *,
         distinct: bool = False,
         filter: Any = None,
-        alias: str | None = None,
     ) -> None:
         super().__init__()
         self.expression = expression if isinstance(expression, Expression) else F(expression)
         self.distinct = distinct
         self.filter = filter
-        self.alias = alias
 
     def resolve(self, model: Any) -> Any:
-        """Resolve to SQLAlchemy aggregate function."""
-        from sqlalchemy import func
+        """Resolve to SQLAlchemy aggregate function.
+
+        ``filter=Q(...)`` compiles to an aggregate over a CASE expression
+        (portable across SQLite/PostgreSQL/MySQL): rows failing the
+        condition contribute NULL, which aggregate functions skip.
+        """
+        from sqlalchemy import case, func
 
         expr = self.expression.resolve(model)
         agg_func = getattr(func, self.function.lower())
+
+        if self.filter is not None:
+            cond = _filter_condition(model, self.filter)
+            expr = case((cond, expr), else_=None)
 
         if self.distinct and self.allow_distinct:
             return agg_func(expr.distinct())
@@ -197,9 +225,13 @@ class Count(Aggregate):
             super().__init__(expression, distinct=distinct, **kwargs)
 
     def resolve(self, model: Any) -> Any:
-        from sqlalchemy import func, literal_column
+        from sqlalchemy import case, func, literal, literal_column
 
         if isinstance(self.expression, F) and self.expression.field_name == "*":
+            if self.filter is not None:
+                # COUNT(CASE WHEN cond THEN 1 END): counts matching rows only
+                cond = _filter_condition(model, self.filter)
+                return func.count(case((cond, literal(1)), else_=None))
             return func.count(literal_column("*"))
         return super().resolve(model)
 
@@ -292,6 +324,9 @@ class Case(Expression):
     def resolve(self, model: Any) -> Any:
         from sqlalchemy import case, literal
 
+        from zeeb_orm.query.q import Q
+        from zeeb_orm.query.queryset import q_to_condition
+
         cases = []
         for when in self.whens:
             if isinstance(when, When):
@@ -301,7 +336,16 @@ class Case(Expression):
             else:
                 # Tuple (condition, result)
                 condition, result = when
-                cond = condition.resolve(model) if isinstance(condition, Expression) else condition
+                if isinstance(condition, Q):
+                    cond = q_to_condition(model, condition)
+                    if cond is None:
+                        raise ValueError(
+                            "Case(): condition Q object resolved to no condition."
+                        )
+                elif isinstance(condition, Expression):
+                    cond = condition.resolve(model)
+                else:
+                    cond = condition
                 res = result.resolve(model) if isinstance(result, Expression) else literal(result)
                 cases.append((cond, res))
 
@@ -319,74 +363,47 @@ class Case(Expression):
 class When(Expression):
     """
     WHEN clause for use with Case.
-    
+
+    Conditions use the same lookup machinery as ``QuerySet.filter()``:
+    the full lookup set, datetime transforms, and Q objects all work,
+    and unknown fields or lookups raise ``FieldError`` instead of being
+    silently skipped. Relation traversal is not available inside a CASE
+    expression and raises ``FieldError``.
+
     Usage:
         Case(
             When(status='active', then=Value(1)),
             When(price__gte=500, then=Value('premium')),
-            When(status='inactive', then=Value(0)),
+            When(Q(stock=0) | Q(discontinued=True), then=Value('unavailable')),
             default=Value(-1)
         )
     """
-    
-    def __init__(self, then: Any = None, **condition: Any) -> None:
+
+    def __init__(self, *conditions: Any, then: Any = None, **lookups: Any) -> None:
         super().__init__()
-        self.condition = condition
+        from zeeb_orm.query.q import Q
+
+        for condition in conditions:
+            if not isinstance(condition, Q):
+                raise TypeError(
+                    "When() positional arguments must be Q objects, got "
+                    f"{type(condition).__name__}."
+                )
+        if not conditions and not lookups:
+            raise ValueError("When() requires at least one condition")
+        self.q = Q(*conditions, **lookups)
         self.then = then
-    
+
     def resolve(self, model: Any) -> tuple[Any, Any]:
         """Resolve to (condition, result) tuple for Case."""
-        from sqlalchemy import and_, literal
-        from zeeb_orm.query.q import parse_lookup
-        
-        conditions = []
-        table = model._get_table() if hasattr(model, '_get_table') else model.__table__
-        
-        for lookup_string, value in self.condition.items():
-            # Parse Django-style lookups (e.g., price__gte -> price, gte)
-            field_path, lookup = parse_lookup(lookup_string)
-            col = getattr(table.c, field_path, None)
-            
-            if col is None:
-                continue
-                
-            # Apply lookup
-            if lookup == "exact":
-                conditions.append(col == value)
-            elif lookup == "iexact":
-                conditions.append(col.ilike(value))
-            elif lookup == "gt":
-                conditions.append(col > value)
-            elif lookup == "gte":
-                conditions.append(col >= value)
-            elif lookup == "lt":
-                conditions.append(col < value)
-            elif lookup == "lte":
-                conditions.append(col <= value)
-            elif lookup == "in":
-                conditions.append(col.in_(value))
-            elif lookup == "contains":
-                conditions.append(col.contains(value))
-            elif lookup == "icontains":
-                conditions.append(col.ilike(f"%{value}%"))
-            elif lookup == "startswith":
-                conditions.append(col.startswith(value))
-            elif lookup == "endswith":
-                conditions.append(col.endswith(value))
-            elif lookup == "isnull":
-                if value:
-                    conditions.append(col.is_(None))
-                else:
-                    conditions.append(col.isnot(None))
-            else:
-                # Default to exact match
-                conditions.append(col == value)
-        
-        if not conditions:
+        from sqlalchemy import literal
+
+        from zeeb_orm.query.queryset import q_to_condition
+
+        cond = q_to_condition(model, self.q)
+        if cond is None:
             raise ValueError("When() requires at least one condition")
-        
-        cond = and_(*conditions) if len(conditions) > 1 else conditions[0]
-        
+
         # Resolve result value
         if isinstance(self.then, Expression):
             result = self.then.resolve(model)
@@ -394,104 +411,168 @@ class When(Expression):
             result = literal(self.then)
         else:
             result = literal(None)
-            
+
         return (cond, result)
+
+
+def _bind_outer_refs(queryset: Any, outer_model: Any) -> None:
+    """Point every OuterRef inside ``queryset``'s filters at ``outer_model``.
+
+    Walks the filter/exclude Q trees (including nested Q objects and
+    list/tuple lookup values) so that OuterRef values resolve against the
+    outer query's table when the inner statement is built.
+    """
+
+    def walk_value(value: Any) -> None:
+        if isinstance(value, OuterRef):
+            value.set_outer_model(outer_model)
+        elif isinstance(value, (list, tuple, set, frozenset)):
+            for item in value:
+                walk_value(item)
+
+    def walk_q(q: Any) -> None:
+        for child in q.children:
+            if isinstance(child, tuple):
+                walk_value(child[1])
+            else:
+                walk_q(child)
+
+    for q in list(queryset._filters) + list(queryset._excludes):
+        walk_q(q)
+
+
+def _outer_table(model: Any) -> Any:
+    return model._get_table() if hasattr(model, "_get_table") else model.__table__
+
+
+def _single_inner_column(model: Any, field_name: str) -> Any:
+    """Resolve one field name on the inner model to its table column."""
+    table = _outer_table(model)
+    if field_name == "pk" and hasattr(model, "_meta"):
+        field_name = model._meta.pk_name or "id"
+    if hasattr(model, "_meta"):
+        field = model._meta.get_field(field_name)
+        if field is not None:
+            field_name = field.db_column or field.name
+    col = getattr(table.c, field_name, None)
+    if col is None:
+        raise ValueError(
+            f"Subquery: field {field_name!r} not found on {model.__name__}."
+        )
+    return col
 
 
 class Subquery(Expression):
     """
-    Subquery expression for use in annotations.
-    
+    Correlated scalar subquery for use in annotations.
+
+    The inner queryset must select exactly one column via ``values()`` or
+    ``values_list()``; ``OuterRef`` values in its filters resolve against
+    the outer query.
+
     Usage:
         from zeeb_orm.query import Subquery, OuterRef
-        
+
         # Get the latest comment date for each post
         latest_comment = Comment.objects.filter(
             post_id=OuterRef('id')
         ).order_by('-created_at').values('created_at')[:1]
-        
+
         Post.objects.annotate(latest_comment_date=Subquery(latest_comment))
     """
-    
+
     def __init__(self, queryset: Any, output_field: Any = None) -> None:
         super().__init__()
         self.queryset = queryset
         self._output_field = output_field
-    
+
     def resolve(self, model: Any) -> Any:
-        """Resolve to SQLAlchemy scalar subquery."""
-        from sqlalchemy import select
-        
-        # Get the inner query
+        """Resolve to a correlated SQLAlchemy scalar subquery."""
         inner_qs = self.queryset
-        
-        # Build the subquery statement
+
+        fields = inner_qs._values_fields or inner_qs._values_list_fields
+        if not fields or len(fields) != 1:
+            raise ValueError(
+                "Subquery requires the inner queryset to select exactly one "
+                "column - use .values('field') or .values_list('field') with "
+                "a single field."
+            )
+
+        # Point OuterRefs at the outer model BEFORE building the statement
+        _bind_outer_refs(inner_qs, model)
         inner_stmt = inner_qs._build_select()
-        
-        # Resolve any OuterRef in filters
-        inner_stmt = self._resolve_outer_refs(inner_stmt, model)
-        
-        return inner_stmt.scalar_subquery()
-    
-    def _resolve_outer_refs(self, stmt: Any, outer_model: Any) -> Any:
-        """Resolve OuterRef references to outer query columns."""
-        # This is handled at query build time
-        return stmt
+        inner_stmt = inner_stmt.with_only_columns(
+            _single_inner_column(inner_qs.model, fields[0])
+        )
+
+        # Correlate: keep the outer table out of the inner FROM clause
+        return inner_stmt.correlate(_outer_table(model)).scalar_subquery()
 
 
 class OuterRef(Expression):
     """
     Reference to a field in the outer query (for correlated subqueries).
-    
+
     Usage:
         Comment.objects.filter(post_id=OuterRef('id'))
     """
-    
+
     def __init__(self, field_name: str) -> None:
         super().__init__()
         self.field_name = field_name
         self._outer_model: Any = None
-    
+
     def resolve(self, model: Any) -> Any:
         """Resolve to the outer model's column."""
         if self._outer_model is not None:
             model = self._outer_model
-        
-        table = model._get_table() if hasattr(model, '_get_table') else model.__table__
-        col = getattr(table.c, self.field_name, None)
+
+        table = _outer_table(model)
+        field_name = self.field_name
+        if field_name == "pk" and hasattr(model, "_meta"):
+            field_name = model._meta.pk_name or "id"
+        if hasattr(model, "_meta"):
+            field = model._meta.get_field(field_name)
+            if field is not None:
+                field_name = field.db_column or field.name
+        col = getattr(table.c, field_name, None)
         if col is None:
             raise ValueError(f"Field '{self.field_name}' not found on outer query model")
         return col
-    
+
     def set_outer_model(self, model: Any) -> None:
         """Set the outer model for resolution."""
         self._outer_model = model
-    
+
     def __repr__(self) -> str:
         return f"OuterRef({self.field_name!r})"
 
 
 class Exists(Expression):
     """
-    EXISTS subquery expression.
-    
+    Correlated EXISTS subquery expression.
+
     Usage:
         # Get posts that have at least one comment
         Post.objects.annotate(
             has_comments=Exists(Comment.objects.filter(post_id=OuterRef('id')))
         ).filter(has_comments=True)
     """
-    
+
     def __init__(self, queryset: Any) -> None:
         super().__init__()
         self.queryset = queryset
-    
+
     def resolve(self, model: Any) -> Any:
-        """Resolve to SQLAlchemy EXISTS expression."""
-        from sqlalchemy import exists
-        
+        """Resolve to a correlated SQLAlchemy EXISTS expression."""
+        from sqlalchemy import literal
+
+        _bind_outer_refs(self.queryset, model)
         inner_stmt = self.queryset._build_select()
-        return exists(inner_stmt)
+        inner_stmt = inner_stmt.with_only_columns(literal(1)).correlate(
+            _outer_table(model)
+        )
+        return inner_stmt.exists()
     
     def __repr__(self) -> str:
         return f"Exists({self.queryset!r})"

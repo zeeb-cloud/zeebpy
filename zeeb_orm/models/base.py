@@ -476,6 +476,7 @@ class Model(metaclass=ModelBase):
         update_fields: list[str] | None = None,
         *,
         validate: bool = True,
+        using: str | None = None,
     ) -> None:
         """
         Save the model instance to the database.
@@ -486,10 +487,16 @@ class Model(metaclass=ModelBase):
         ``update_fields`` is given, fields not being updated are excluded
         from validation).
 
+        The write joins the active ``atomic()`` transaction when one is
+        open; otherwise it commits on its own session. ``using=`` targets a
+        registered database alias (defaults to the alias the instance was
+        loaded from).
+
         Fires :data:`~zeeb_orm.signals.pre_save` before the DB write and
-        :data:`~zeeb_orm.signals.post_save` after the commit.
+        :data:`~zeeb_orm.signals.post_save` after it executes (after the
+        commit when this save opened its own session).
         """
-        from zeeb_orm.db.connection import get_connection
+        from zeeb_orm.db.connection import get_session
         from zeeb_orm.signals import post_save, pre_save
 
         if validate:
@@ -502,7 +509,7 @@ class Model(metaclass=ModelBase):
                 ]
             await self.full_clean(exclude=exclude)
 
-        db = await get_connection()
+        alias = using or self._state.db_alias
         created = not self._state.persisted
 
         # pre_save fires BEFORE the session opens — exceptions abort the save
@@ -513,7 +520,7 @@ class Model(metaclass=ModelBase):
             update_fields=update_fields,
         )
 
-        async with db.session() as session:
+        async with get_session(alias) as (session, should_commit):
             if self._state.persisted:
                 # Update existing
                 from sqlalchemy import update
@@ -550,7 +557,8 @@ class Model(metaclass=ModelBase):
 
                 stmt = update(table).where(pk_col == pk_value).values(**values)
                 await session.execute(stmt)
-                await session.commit()
+                if should_commit:
+                    await session.commit()
             else:
                 # Insert new via Core SQL (avoids DeclarativeBase FK resolution issues)
                 from sqlalchemy import insert as _sa_insert
@@ -559,16 +567,20 @@ class Model(metaclass=ModelBase):
                 insert_values = self._to_insert_values()
                 stmt = _sa_insert(table).values(**insert_values)
                 result = await session.execute(stmt)
-                await session.commit()
 
                 # Read back DB-generated PK (auto-increment integers)
                 if getattr(self, self._meta.pk_name) is None:
                     pk_value = result.inserted_primary_key[0]
                     setattr(self, self._meta.pk_name, pk_value)
 
-                self._state.persisted = True
+                if should_commit:
+                    await session.commit()
 
-        # post_save fires AFTER commit — data is in the database
+                self._state.persisted = True
+                self._state.db_alias = alias
+
+        # post_save fires AFTER the write — committed unless a surrounding
+        # atomic() block owns the commit
         await post_save.send(
             sender=type(self),
             instance=self,
@@ -602,31 +614,39 @@ class Model(metaclass=ModelBase):
         if not self._state.persisted:
             return 0, {}
 
-        collector = Collector()
+        alias = self._state.db_alias
+        collector = Collector(using=alias)
         # PROTECT / RESTRICT are checked here, BEFORE any delete runs.
         await collector.collect([self])
 
         if get_active_session() is not None:
             result = await collector.delete()
         else:
-            async with atomic():
+            async with atomic(alias):
                 result = await collector.delete()
 
         self._state.persisted = False
         return result
 
-    async def refresh_from_db(self, fields: list[str] | None = None) -> None:
-        """Reload the model from the database."""
+    async def refresh_from_db(
+        self, fields: list[str] | None = None, using: str | None = None
+    ) -> None:
+        """Reload the model from the database.
+
+        Reads through the active ``atomic()`` session when one is open, so
+        in-transaction writes are visible. ``using=`` targets a registered
+        database alias (defaults to the alias the instance was loaded from).
+        """
         from sqlalchemy import select
 
-        from zeeb_orm.db.connection import get_connection
+        from zeeb_orm.db.connection import get_session
 
-        db = await get_connection()
+        alias = using or self._state.db_alias
         table = self._get_table()
         pk_col = getattr(table.c, self._meta.pk_name)
         pk_value = getattr(self, self._meta.pk_name)
 
-        async with db.session() as session:
+        async with get_session(alias) as (session, _):
             stmt = select(table).where(pk_col == pk_value)
             result = await session.execute(stmt)
             row = result.fetchone()

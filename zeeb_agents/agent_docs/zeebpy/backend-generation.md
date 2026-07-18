@@ -91,6 +91,45 @@ Valid keys: `table_name`/`db_table`, `abstract`, `managed`, `ordering`,
 `default_permissions`, `app_label`. Unknown keys are rejected with
 suggestions before anything is written.
 
+### Data-Access Semantics & Support Boundaries
+
+Rules for any generated data-access code (route/action `body=` code,
+signal receivers, seed scripts):
+
+- **Async everywhere.** Chainable queryset methods return querysets;
+  terminal calls must be awaited (`await Model.objects.filter(...)`,
+  `await qs.count()`). Indexing/slicing also returns a queryset:
+  `page = await Model.objects.all()[:10]`; use `await qs.first()` for a
+  single object. Negative indexing is not supported.
+- **Primary keys are UUIDs by default** (`UUIDAutoField`,
+  client-generated). Use `AutoField`/`BigAutoField` explicitly when an
+  integer PK is required.
+- **`save()`/`create()` validate by default** — `full_clean()` runs
+  before the write and invalid data raises `ValidationError` instead of
+  writing; pass `validate=False` to skip.
+- **Constraint violations raise `zeeb_orm.IntegrityError`** (unique,
+  foreign-key, check, NOT NULL). Catch it for conflict flows, or use
+  `bulk_create([...], ignore_conflicts=True)` to skip duplicates.
+- **Transactions:** `async with atomic():` — nested blocks become
+  savepoints, queries and `save()` inside the block join the transaction,
+  and `on_commit` callbacks run once after the outermost commit.
+- **`Meta.constraints` check expressions are raw SQL strings**
+  (`{"check": "price >= 0", "name": "ck_price"}`), not query objects.
+- **Signals are exactly** `pre_save`, `post_save`, `pre_delete`,
+  `post_delete` — there are no many-to-many-change or init signals.
+- **Conditional aggregation and correlated subqueries work:**
+  `Count("id", filter=Q(status="active"))`, `Sum("amount", filter=Q(...))`,
+  `Subquery(inner.values("col")[:1])` / `Exists(...)` with `OuterRef`.
+- ISO date/time strings in filter values are coerced for date/time
+  columns; passing real `datetime`/`date` objects is still preferred.
+- **Not available — never generate:** `none()`, `earliest()` / `latest()`,
+  `dates()` / `datetimes()`, `alias()`, `reverse()`, `contains(obj)`,
+  `extra()`, `distinct("field")` (per-column distinct — use
+  `values_list(...).distinct()`), related-field paths inside `F()`
+  (`F("author__age")`), JSONField key-path lookups, file/image field
+  types (store paths/URLs in `CharField`/`JSONField`), composite primary
+  keys, generic/polymorphic relations.
+
 ### Inspecting Models
 
 ```

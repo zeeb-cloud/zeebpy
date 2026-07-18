@@ -153,7 +153,9 @@ user = await User.objects.filter(is_active=True).order_by("created_at").first()
 
 ### last()
 
-Return last object or None.
+Return last object or None. Reverses the effective ordering (explicit
+`order_by`, then `Meta.ordering`, then the primary key), so it is
+deterministic and mirror-images `first()` even on unordered querysets.
 
 ```python
 user = await User.objects.order_by("created_at").last()
@@ -304,7 +306,9 @@ users = await User.objects.values("id", "name").all()
 
 ### values_list(\*fields, flat=False)
 
-Return tuples instead of dictionaries.
+Return tuples instead of dictionaries. With no fields, every model field
+is returned in declaration order (relation fields as their `<name>_id`
+column). `flat=True` requires exactly one field.
 
 ```python
 # Tuples
@@ -381,16 +385,18 @@ for user in users:
 
 ## Distinct
 
-### distinct(\*fields)
+### distinct()
 
-Return distinct results.
+Return distinct results (row-level de-duplication). Field arguments are
+not supported and raise `NotSupportedError` — de-duplicate on specific
+columns with `values()`/`values_list()` + `distinct()` instead.
 
 ```python
 # All unique rows
 users = await User.objects.distinct().all()
 
-# Distinct on fields (PostgreSQL)
-users = await User.objects.distinct("email").all()
+# Unique values of one column
+emails = await User.objects.values_list("email", flat=True).distinct()
 ```
 
 ---

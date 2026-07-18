@@ -68,6 +68,23 @@ class NotSupportedError(Exception):
     pass
 
 
+class IntegrityError(Exception):
+    """Raised when a database write violates a constraint.
+
+    Wraps the driver-level integrity error (unique, foreign-key, check or
+    NOT NULL violation); the original exception is available as
+    ``__cause__``.
+    """
+
+    pass
+
+
+class ConnectionDoesNotExist(Exception):
+    """Raised when ``using()``/``atomic()`` names an unregistered database alias."""
+
+    pass
+
+
 class ProtectedError(Exception):
     """Raised when deleting an object protected by an on_delete=PROTECT relation."""
 
@@ -129,6 +146,8 @@ __all__ = [
     "NON_FIELD_ERRORS",
     "ValidationError",
     "NotSupportedError",
+    "IntegrityError",
+    "ConnectionDoesNotExist",
     "ProtectedError",
     "RestrictedError",
     "TransactionManagementError",

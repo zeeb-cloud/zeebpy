@@ -34,8 +34,10 @@ Usage:
 from zeeb_orm.conf.settings import Settings, configure, get_settings
 from zeeb_orm.exceptions import (
     NON_FIELD_ERRORS,
+    ConnectionDoesNotExist,
     FieldDoesNotExist,
     FieldError,
+    IntegrityError,
     NotSupportedError,
     ProtectedError,
     RestrictedError,
@@ -195,6 +197,8 @@ __all__ = [
     "NON_FIELD_ERRORS",
     "ValidationError",
     "NotSupportedError",
+    "IntegrityError",
+    "ConnectionDoesNotExist",
     "ProtectedError",
     "RestrictedError",
     "TransactionManagementError",

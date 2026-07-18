@@ -276,10 +276,21 @@ class QuerySet(Generic[ModelT]):
     # Distinct
 
     def distinct(self, *fields: str) -> QuerySet[ModelT]:
-        """Return a new QuerySet with distinct results."""
+        """Return a new QuerySet with distinct results.
+
+        Field arguments (``DISTINCT ON``) are not supported; call
+        ``distinct()`` with no arguments for row-level de-duplication.
+        """
         self._check_combinator("distinct")
+        if fields:
+            from zeeb_orm.exceptions import NotSupportedError
+
+            raise NotSupportedError(
+                "distinct(*fields) is not supported - call distinct() with "
+                "no arguments for row-level DISTINCT."
+            )
         clone = self._clone()
-        clone._distinct_fields = list(fields) if fields else ["*"]
+        clone._distinct_fields = ["*"]
         return clone
 
     # Slicing / Limiting
@@ -327,8 +338,21 @@ class QuerySet(Generic[ModelT]):
         return clone
 
     def values_list(self, *fields: str, flat: bool = False) -> QuerySet[ModelT]:
-        """Return tuples instead of model instances."""
+        """Return tuples instead of model instances.
+
+        With no fields, all model fields are returned in declaration order
+        (FK fields as their ``<name>_id`` column value).
+        """
         clone = self._clone()
+        if not fields:
+            fields = tuple(
+                f.db_column or f.name for f in self.model._meta.local_fields
+            )
+        if flat and len(fields) > 1:
+            raise TypeError(
+                "'flat' is not valid when values_list is called with more "
+                "than one field."
+            )
         clone._values_list_fields = list(fields)
         clone._flat = flat
         return clone
@@ -383,9 +407,8 @@ class QuerySet(Generic[ModelT]):
             await Author.objects.aggregate(avg_age=Avg('age'))
         """
         self._check_combinator("aggregate")
-        from zeeb_orm.db.connection import get_connection
+        from zeeb_orm.db.connection import get_session
 
-        db = await get_connection(self._db_alias)
         table = self.model._get_table()
         joins = self._make_join_context()
 
@@ -403,7 +426,7 @@ class QuerySet(Generic[ModelT]):
         if where_clause is not None:
             stmt = stmt.where(where_clause)
 
-        async with db.session() as session:
+        async with get_session(self._db_alias) as (session, _):
             result = await session.execute(stmt)
             row = result.fetchone()
             if row:
@@ -664,156 +687,19 @@ class QuerySet(Generic[ModelT]):
 
     def _q_to_condition(self, q: Q, joins: JoinContext | None = None) -> Any:
         """Convert a Q object to SQLAlchemy condition."""
-        connector, negated, children = q.resolve()
-
-        sub_conditions = []
-        for child in children:
-            if isinstance(child, Q):
-                cond = self._q_to_condition(child, joins)
-                if cond is not None:
-                    sub_conditions.append(cond)
-            else:
-                # It's a (field_lookup, value) tuple
-                field_lookup, value = child
-                cond = self._lookup_to_condition(field_lookup, value, joins)
-                if cond is not None:
-                    sub_conditions.append(cond)
-
-        if not sub_conditions:
-            return None
-
-        if connector == QOperator.AND:
-            result = and_(*sub_conditions) if len(sub_conditions) > 1 else sub_conditions[0]
-        else:  # OR
-            result = or_(*sub_conditions) if len(sub_conditions) > 1 else sub_conditions[0]
-
-        if negated:
-            result = not_(result)
-
-        return result
+        return q_to_condition(self.model, q, joins=joins, annotations=self._annotations)
 
     def _lookup_to_condition(
         self, lookup_string: str, value: Any, joins: JoinContext | None = None
     ) -> Any:
         """Convert a Django-style lookup to SQLAlchemy condition."""
-        from zeeb_orm.exceptions import FieldError
-        from zeeb_orm.query.expressions import Expression
-        from zeeb_orm.query.transforms import apply_transform
-
-        relation_parts, field_name, transform, lookup = parse_path(
-            self.model, lookup_string
+        return lookup_to_condition(
+            self.model, lookup_string, value, joins=joins, annotations=self._annotations
         )
-
-        # SQL forbids window functions in WHERE clauses — referencing a
-        # Window annotation in filter()/exclude() must fail loudly.
-        if not relation_parts and field_name in self._annotations:
-            from zeeb_orm.query.expressions import Window
-
-            if isinstance(self._annotations[field_name], Window):
-                raise FieldError(
-                    f"Window annotation {field_name!r} is disallowed in the "
-                    "filter clause: window functions cannot be used in a "
-                    "WHERE clause. Filter on a subquery instead."
-                )
-
-        # Handle F expressions in value
-        if isinstance(value, Expression):
-            value = value.resolve(self.model)
-
-        # Get the column
-        if relation_parts:
-            if joins is None:
-                raise FieldError(
-                    f"Related-field traversal ({lookup_string!r}) is not "
-                    "supported in this context."
-                )
-            column = joins.column(relation_parts, field_name)
-        else:
-            column = self._resolve_field_path(field_name)
-        if column is None:
-            raise ValueError(f"Unknown field: {field_name}")
-
-        # Apply datetime transform (e.g. created_at__year) before the lookup
-        if transform is not None:
-            column = apply_transform(column, transform)
-
-        # Coerce model instances to their primary keys
-        def _coerce(v: Any) -> Any:
-            if hasattr(v, "_state") and hasattr(v, "pk"):
-                return v.pk
-            return v
-
-        if lookup == "in" and isinstance(value, (list, tuple, set, frozenset)):
-            value = [_coerce(v) for v in value]
-        else:
-            value = _coerce(value)
-
-        # Apply lookup
-        if lookup == "exact":
-            return column == value
-        elif lookup == "iexact":
-            return column.ilike(value)
-        elif lookup == "contains":
-            return column.contains(value)
-        elif lookup == "icontains":
-            return column.ilike(f"%{value}%")
-        elif lookup == "in":
-            return column.in_(value)
-        elif lookup == "gt":
-            return column > value
-        elif lookup == "gte":
-            return column >= value
-        elif lookup == "lt":
-            return column < value
-        elif lookup == "lte":
-            return column <= value
-        elif lookup == "startswith":
-            return column.startswith(value)
-        elif lookup == "istartswith":
-            return column.ilike(f"{value}%")
-        elif lookup == "endswith":
-            return column.endswith(value)
-        elif lookup == "iendswith":
-            return column.ilike(f"%{value}")
-        elif lookup == "range":
-            return column.between(value[0], value[1])
-        elif lookup == "isnull":
-            if value:
-                return column.is_(None)
-            else:
-                return column.isnot(None)
-        elif lookup == "regex":
-            return column.regexp_match(value)
-        elif lookup == "iregex":
-            return column.regexp_match(value, flags="i")
-        else:
-            raise ValueError(f"Unknown lookup type: {lookup}")
 
     def _resolve_field_path(self, field_path: str) -> Any:
         """Resolve a field path (potentially with __ for relations) to a column."""
-        parts = field_path.split("__")
-        table = self.model._get_table()
-
-        # Handle 'pk' as alias for primary key
-        field_name = parts[0]
-        if field_name == "pk":
-            # Use the pk_name from meta or default to 'id'
-            field_name = self.model._meta.pk_name or "id"
-
-        # Check if it's an annotation first
-        if field_name in self._annotations:
-            expr = self._annotations[field_name]
-            if hasattr(expr, 'resolve'):
-                return expr.resolve(self.model)
-            return literal_column(field_name)
-
-        column = getattr(table.c, field_name, None)
-
-        # NOTE: Related field traversal (e.g., 'author__name') is handled by
-        # parse_path() + JoinContext (zeeb_orm.query.joins); this method only
-        # resolves plain columns and annotations on the base table.
-
-        return column
+        return resolve_field_path(self.model, field_path, self._annotations)
 
     def _build_order_by(self, joins: JoinContext | None = None) -> list[Any]:
         """Build SQLAlchemy ORDER BY clause."""
@@ -1048,6 +934,7 @@ class QuerySet(Generic[ModelT]):
         instances = []
         for row in rows:
             instance = self.model._from_row(row)
+            instance._state.db_alias = self._db_alias
             # Attach annotation values as attributes
             if self._annotations and hasattr(row, "_mapping"):
                 for alias in self._annotations:
@@ -1064,7 +951,11 @@ class QuerySet(Generic[ModelT]):
         if self._result_cache is not None:
             return self._result_cache
 
-        from zeeb_orm.db.connection import get_active_session, get_connection
+        from zeeb_orm.db.connection import (
+            get_active_session,
+            get_connection,
+            get_session,
+        )
 
         db = await get_connection(self._db_alias)
 
@@ -1089,7 +980,9 @@ class QuerySet(Generic[ModelT]):
             self._result_cache = instances
             return instances
 
-        async with db.session() as session:
+        # get_session reuses the active atomic() session so reads inside a
+        # transaction see that transaction's uncommitted writes.
+        async with get_session(self._db_alias) as (session, _):
             result = await session.execute(stmt)
             rows = result.fetchall()
             instances = self._rows_to_objects(rows)
@@ -1110,7 +1003,9 @@ class QuerySet(Generic[ModelT]):
         """Execute a raw SQL query and return model instances."""
         from sqlalchemy import text
 
-        async with db.session() as session:
+        from zeeb_orm.db.connection import get_session
+
+        async with get_session(self._db_alias) as (session, _):
             stmt = text(self._raw_sql)
             params = {}
             if self._raw_params:
@@ -1306,7 +1201,9 @@ class QuerySet(Generic[ModelT]):
         stmt = select(through.c[my_col], through.c[other_col]).where(
             through.c[my_col].in_(parent_pks)
         )
-        async with db.session() as session:
+        from zeeb_orm.db.connection import get_session
+
+        async with get_session(self._db_alias) as (session, _):
             result = await session.execute(stmt)
             pairs = result.fetchall()
 
@@ -1393,14 +1290,13 @@ class QuerySet(Generic[ModelT]):
             raise ValueError("Chunk size must be strictly positive.")
 
         async def _generate() -> AsyncIterator[ModelT]:
-            from zeeb_orm.db.connection import get_connection
+            from zeeb_orm.db.connection import get_session
 
-            db = await get_connection(self._db_alias)
             stmt = self._build_select()
 
             # The session must stay open across yields - hold it in the
             # generator so it lives exactly as long as the iteration.
-            async with db.session() as session:
+            async with get_session(self._db_alias) as (session, _):
                 result = await session.stream(stmt)
                 async for partition in result.partitions(chunk_size):
                     for obj in self._rows_to_objects(list(partition)):
@@ -1480,7 +1376,9 @@ class QuerySet(Generic[ModelT]):
             compile_kwargs={"render_postcompile": True, "literal_binds": True},
         )
 
-        async with db.session() as session:
+        from zeeb_orm.db.connection import get_session
+
+        async with get_session(self._db_alias) as (session, _):
             result = await session.execute(text(f"{prefix} {compiled}"))
             rows = result.fetchall()
 
@@ -1513,36 +1411,50 @@ class QuerySet(Generic[ModelT]):
             )
         return results[0]
 
+    def _effective_ordering(self) -> list[str]:
+        """Explicit order_by, else Meta.ordering, else the primary key.
+
+        Guarantees first()/last() are deterministic and mirror-images of
+        each other even on querysets with no explicit ordering.
+        """
+        if self._order_by:
+            return list(self._order_by)
+        if self.model._meta.ordering:
+            return list(self.model._meta.ordering)
+        return [self.model._meta.pk_name or "id"]
+
     async def first(self) -> ModelT | None:
-        """Get the first object or None."""
+        """Get the first object or None (primary-key order when unordered)."""
         clone = self._clone()
+        clone._order_by = self._effective_ordering()
         clone._limit = 1
         results = await clone._fetch_all()
         return results[0] if results else None
 
     async def last(self) -> ModelT | None:
-        """Get the last object or None."""
+        """Get the last object or None.
+
+        Reverses the effective ordering (explicit order_by, Meta.ordering,
+        or the primary key) and returns the first row.
+        """
         clone = self._clone()
-        # Reverse ordering
-        if clone._order_by:
-            clone._order_by = [
-                f"-{f}" if not f.startswith("-") else f[1:] for f in clone._order_by
-            ]
+        clone._order_by = [
+            f[1:] if f.startswith("-") else f"-{f}"
+            for f in self._effective_ordering()
+        ]
         clone._limit = 1
         results = await clone._fetch_all()
         return results[0] if results else None
 
     async def count(self) -> int:
         """Count objects matching the query."""
-        from zeeb_orm.db.connection import get_connection
-
-        db = await get_connection(self._db_alias)
+        from zeeb_orm.db.connection import get_session
 
         if self._combinator is not None:
             stmt = select(func.count()).select_from(
                 self._build_combined_select().subquery()
             )
-            async with db.session() as session:
+            async with get_session(self._db_alias) as (session, _):
                 result = await session.execute(stmt)
                 return result.scalar() or 0
 
@@ -1557,7 +1469,7 @@ class QuerySet(Generic[ModelT]):
         if where_clause is not None:
             stmt = stmt.where(where_clause)
 
-        async with db.session() as session:
+        async with get_session(self._db_alias) as (session, _):
             result = await session.execute(stmt)
             return result.scalar() or 0
 
@@ -1661,6 +1573,7 @@ class QuerySet(Generic[ModelT]):
                 setattr(instance, pk_name, result.inserted_primary_key[0])
 
             instance._state.persisted = True
+            instance._state.db_alias = self._db_alias
             return instance
 
     async def get_or_create(
@@ -1806,7 +1719,7 @@ class QuerySet(Generic[ModelT]):
         """
         from sqlalchemy import insert as _sa_insert
 
-        from zeeb_orm.db.connection import get_session
+        from zeeb_orm.db.connection import get_connection, get_session
 
         if not objs:
             return []
@@ -1819,14 +1732,46 @@ class QuerySet(Generic[ModelT]):
         table = self.model._get_table()
         pk_name = self.model._meta.pk_name
 
+        # ignore_conflicts needs a dialect-specific INSERT form
+        make_insert = _sa_insert
+        if ignore_conflicts:
+            db = await get_connection(self._db_alias)
+            dialect = db.get_engine().dialect.name
+            if dialect == "postgresql":
+                from sqlalchemy.dialects.postgresql import insert as _pg_insert
+
+                def make_insert(t: Any) -> Any:
+                    return _pg_insert(t).on_conflict_do_nothing()
+            elif dialect == "sqlite":
+                from sqlalchemy.dialects.sqlite import insert as _sqlite_insert
+
+                def make_insert(t: Any) -> Any:
+                    return _sqlite_insert(t).on_conflict_do_nothing()
+            elif dialect == "mysql":
+                def make_insert(t: Any) -> Any:
+                    return _sa_insert(t).prefix_with("IGNORE")
+            else:
+                from zeeb_orm.exceptions import NotSupportedError
+
+                raise NotSupportedError(
+                    f"bulk_create(ignore_conflicts=True) is not supported on "
+                    f"the {dialect!r} backend."
+                )
+
         created: list[ModelT] = []
         async with get_session(self._db_alias) as (session, should_commit):
             for i in range(0, len(objs), batch_size):
                 batch = objs[i : i + batch_size]
                 for obj in batch:
                     values = obj._to_insert_values()
-                    stmt = _sa_insert(table).values(**values)
+                    stmt = make_insert(table).values(**values)
                     result = await session.execute(stmt)
+
+                    if ignore_conflicts and result.rowcount == 0:
+                        # Conflicting row was skipped - leave the object
+                        # unpersisted (its PK may not exist in the table).
+                        created.append(obj)
+                        continue
 
                     # Read back DB-generated PK for auto-increment fields
                     if getattr(obj, pk_name) is None:
@@ -1834,6 +1779,7 @@ class QuerySet(Generic[ModelT]):
                         setattr(obj, pk_name, pk_value)
 
                     obj._state.persisted = True
+                    obj._state.db_alias = self._db_alias
                     created.append(obj)
 
             if should_commit:
@@ -1905,3 +1851,234 @@ class Prefetch:
         self.lookup = lookup
         self.queryset = queryset
         self.to_attr = to_attr
+
+
+# Shared condition-building machinery.
+#
+# Module-level so that expression classes (When/Case, Aggregate filter=,
+# Subquery) compile their conditions through the exact same path as
+# QuerySet.filter() instead of maintaining a divergent lookup subset.
+
+
+def resolve_field_path(
+    model: type, field_path: str, annotations: dict[str, Any] | None = None
+) -> Any:
+    """Resolve a plain field name (or annotation) on ``model`` to a column."""
+    parts = field_path.split("__")
+    table = model._get_table()
+
+    # Handle 'pk' as alias for primary key
+    field_name = parts[0]
+    if field_name == "pk":
+        field_name = model._meta.pk_name or "id"
+
+    # Check if it's an annotation first
+    if annotations and field_name in annotations:
+        expr = annotations[field_name]
+        if hasattr(expr, "resolve"):
+            return expr.resolve(model)
+        return literal_column(field_name)
+
+    column = getattr(table.c, field_name, None)
+
+    # NOTE: Related field traversal (e.g., 'author__name') is handled by
+    # parse_path() + JoinContext (zeeb_orm.query.joins); this function only
+    # resolves plain columns and annotations on the base table.
+
+    return column
+
+
+def q_to_condition(
+    model: type,
+    q: Q,
+    joins: JoinContext | None = None,
+    annotations: dict[str, Any] | None = None,
+) -> Any:
+    """Convert a Q object to a SQLAlchemy condition."""
+    connector, negated, children = q.resolve()
+
+    sub_conditions = []
+    for child in children:
+        if isinstance(child, Q):
+            cond = q_to_condition(model, child, joins, annotations)
+            if cond is not None:
+                sub_conditions.append(cond)
+        else:
+            # It's a (field_lookup, value) tuple
+            field_lookup, value = child
+            cond = lookup_to_condition(model, field_lookup, value, joins, annotations)
+            if cond is not None:
+                sub_conditions.append(cond)
+
+    if not sub_conditions:
+        return None
+
+    if connector == QOperator.AND:
+        result = and_(*sub_conditions) if len(sub_conditions) > 1 else sub_conditions[0]
+    else:  # OR
+        result = or_(*sub_conditions) if len(sub_conditions) > 1 else sub_conditions[0]
+
+    if negated:
+        result = not_(result)
+
+    return result
+
+
+# Lookups whose comparison value must match the column's temporal type.
+_TEMPORAL_COERCE_LOOKUPS = {"exact", "gt", "gte", "lt", "lte", "in", "range"}
+
+
+def _coerce_temporal_value(column: Any, transform: str | None, lookup: str, value: Any) -> Any:
+    """Coerce ISO-format strings to date/time objects for temporal columns.
+
+    Some async drivers (e.g. asyncpg) reject string binds against
+    timestamp/date/time columns, so comparison values are normalized here.
+    Transformed columns (``created_at__year``) compare against plain
+    ints/strings and are left untouched.
+    """
+    import datetime as _dt
+
+    from sqlalchemy import Date as _SADate
+    from sqlalchemy import DateTime as _SADateTime
+    from sqlalchemy import Time as _SATime
+
+    if transform is not None or lookup not in _TEMPORAL_COERCE_LOOKUPS:
+        return value
+
+    col_type = getattr(column, "type", None)
+    if isinstance(col_type, _SADateTime):
+        def _convert(v: Any) -> Any:
+            if not isinstance(v, str):
+                return v
+            try:
+                return _dt.datetime.fromisoformat(v)
+            except ValueError:
+                # Date-only string compares from midnight
+                return _dt.datetime.combine(
+                    _dt.date.fromisoformat(v), _dt.time.min
+                )
+    elif isinstance(col_type, _SADate):
+        def _convert(v: Any) -> Any:
+            if not isinstance(v, str):
+                return v
+            try:
+                return _dt.date.fromisoformat(v)
+            except ValueError:
+                return _dt.datetime.fromisoformat(v).date()
+    elif isinstance(col_type, _SATime):
+        def _convert(v: Any) -> Any:
+            return _dt.time.fromisoformat(v) if isinstance(v, str) else v
+    else:
+        return value
+
+    if isinstance(value, (list, tuple, set, frozenset)):
+        return [_convert(v) for v in value]
+    return _convert(value)
+
+
+def lookup_to_condition(
+    model: type,
+    lookup_string: str,
+    value: Any,
+    joins: JoinContext | None = None,
+    annotations: dict[str, Any] | None = None,
+) -> Any:
+    """Convert a Django-style lookup to a SQLAlchemy condition."""
+    from zeeb_orm.exceptions import FieldError
+    from zeeb_orm.query.expressions import Expression
+    from zeeb_orm.query.transforms import apply_transform
+
+    relation_parts, field_name, transform, lookup = parse_path(model, lookup_string)
+
+    # SQL forbids window functions in WHERE clauses — referencing a
+    # Window annotation in filter()/exclude() must fail loudly.
+    if not relation_parts and annotations and field_name in annotations:
+        from zeeb_orm.query.expressions import Window
+
+        if isinstance(annotations[field_name], Window):
+            raise FieldError(
+                f"Window annotation {field_name!r} is disallowed in the "
+                "filter clause: window functions cannot be used in a "
+                "WHERE clause. Filter on a subquery instead."
+            )
+
+    # Handle F expressions in value
+    if isinstance(value, Expression):
+        value = value.resolve(model)
+
+    # Get the column
+    if relation_parts:
+        if joins is None:
+            raise FieldError(
+                f"Related-field traversal ({lookup_string!r}) is not "
+                "supported in this context."
+            )
+        column = joins.column(relation_parts, field_name)
+    else:
+        column = resolve_field_path(model, field_name, annotations)
+    if column is None:
+        field_names = sorted(f.name for f in model._meta.local_fields)
+        raise FieldError(
+            f"Cannot resolve keyword {field_name!r} into field on "
+            f"{model.__name__}. Choices are: {', '.join(field_names)}"
+        )
+
+    # Apply datetime transform (e.g. created_at__year) before the lookup
+    if transform is not None:
+        column = apply_transform(column, transform)
+
+    # Coerce model instances to their primary keys
+    def _coerce(v: Any) -> Any:
+        if hasattr(v, "_state") and hasattr(v, "pk"):
+            return v.pk
+        return v
+
+    if lookup == "in" and isinstance(value, (list, tuple, set, frozenset)):
+        value = [_coerce(v) for v in value]
+    else:
+        value = _coerce(value)
+
+    # Coerce ISO strings against temporal columns (asyncpg rejects str binds)
+    value = _coerce_temporal_value(column, transform, lookup, value)
+
+    # Apply lookup
+    if lookup == "exact":
+        return column == value
+    elif lookup == "iexact":
+        return column.ilike(value)
+    elif lookup == "contains":
+        return column.contains(value)
+    elif lookup == "icontains":
+        return column.ilike(f"%{value}%")
+    elif lookup == "in":
+        return column.in_(value)
+    elif lookup == "gt":
+        return column > value
+    elif lookup == "gte":
+        return column >= value
+    elif lookup == "lt":
+        return column < value
+    elif lookup == "lte":
+        return column <= value
+    elif lookup == "startswith":
+        return column.startswith(value)
+    elif lookup == "istartswith":
+        return column.ilike(f"{value}%")
+    elif lookup == "endswith":
+        return column.endswith(value)
+    elif lookup == "iendswith":
+        return column.ilike(f"%{value}")
+    elif lookup == "range":
+        value = list(value)
+        return column.between(value[0], value[1])
+    elif lookup == "isnull":
+        if value:
+            return column.is_(None)
+        else:
+            return column.isnot(None)
+    elif lookup == "regex":
+        return column.regexp_match(value)
+    elif lookup == "iregex":
+        return column.regexp_match(value, flags="i")
+    else:
+        raise ValueError(f"Unknown lookup type: {lookup}")
