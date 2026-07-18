@@ -108,6 +108,25 @@ def test_ensure_installed_app_adds_comma_to_inline_list(tmp_path: Path):
     assert [c.value for c in apps_node.elts] == ["apps.blog", "apps.shop"]
 
 
+def test_ensure_installed_app_comma_repair_skips_inline_comment(tmp_path: Path):
+    """Last entry without a trailing comma but with an inline comment: the
+    repair comma must land after the value, not inside the comment (else the
+    two entries implicitly concatenate and both are lost)."""
+    root = _project(
+        tmp_path,
+        'INSTALLED_APPS = [\n    "apps.blog"  # keep blog\n]\n',
+    )
+    assert ensure_installed_app(root, "shop") is True
+    text = (root / "demo" / "settings.py").read_text()
+    apps_node = next(
+        n.value
+        for n in ast.parse(text).body
+        if isinstance(n, ast.Assign) and n.targets[0].id == "INSTALLED_APPS"
+    )
+    assert [c.value for c in apps_node.elts] == ["apps.blog", "apps.shop"]
+    assert "# keep blog" in text  # comment preserved
+
+
 def test_ensure_app_urls_included_recreates_missing_project_urls(tmp_path: Path):
     """Repair semantics: a missing project urls.py is rebuilt from the template."""
     root = _project(tmp_path, "INSTALLED_APPS = []\n", urls_text=None)
