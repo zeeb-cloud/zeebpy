@@ -147,6 +147,7 @@ async def _apply_and_report(
     outcome = await execute_plan(plan, project_root, migrate=migrate)
     summary = plan.get("summary", label)
     warnings = list(plan.get("warnings", []))
+    warnings.extend(outcome.get("warnings", []))
     if outcome["errors"]:
         shown = "; ".join(outcome["errors"][:3])
         if len(outcome["errors"]) > 3:

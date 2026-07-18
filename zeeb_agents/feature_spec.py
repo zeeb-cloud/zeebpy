@@ -895,7 +895,10 @@ async def execute_plan(
     a re-run completes whatever is missing.  Migration ops stop the run on
     failure (nothing meaningful follows them).
 
-    Returns ``{"changes", "steps", "errors", "state_changed"}``.
+    Returns ``{"changes", "steps", "errors", "warnings", "state_changed"}``.
+    ``warnings`` holds non-fatal, project-global conditions (e.g. an unrelated
+    app not in ``INSTALLED_APPS``) that must not flip a successful build to a
+    failure.
     """
     from zeeb_agents.auth_scaffold import create_user_model, setup_auth, setup_oauth
     from zeeb_agents.health import create_health_endpoint
@@ -908,6 +911,7 @@ async def execute_plan(
     changes = new_changes()
     steps: list[str] = []
     errors: list[str] = []
+    warnings: list[str] = []
     state_changed = False
 
     for op in plan.get("operations", []):
@@ -1073,7 +1077,11 @@ async def execute_plan(
                 else:
                     steps.append("No migration needed")
                 if (result.data or {}).get("warning"):
-                    errors.append(f"make_migrations: {result.data['warning']}")
+                    # A project-global, non-fatal condition (e.g. an unrelated
+                    # app on disk not in INSTALLED_APPS) — surface it as a
+                    # warning, never as an error, or a fully successful build
+                    # would be reported as a failure the user cannot clear.
+                    warnings.append(f"make_migrations: {result.data['warning']}")
             else:
                 errors.append(f"make_migrations: {result.message}")
                 break
@@ -1097,5 +1105,6 @@ async def execute_plan(
         "changes": changes,
         "steps": steps,
         "errors": errors,
+        "warnings": warnings,
         "state_changed": state_changed,
     }

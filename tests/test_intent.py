@@ -241,6 +241,45 @@ async def test_change_feature_add_entity(root: Path):
     assert res.data["changes"]["endpoints_created"] == ["comments"]
 
 
+async def test_change_feature_add_field_is_idempotent(root: Path):
+    """Re-adding an existing field is a tolerated no-op, not a duplicate line.
+
+    Regression: add_field had no duplicate guard, so the executor's
+    ``already_exists`` tolerance was dead code and every re-run appended a second
+    ``subtitle = fields.CharField(...)`` line to the model.
+    """
+    assert (await agents.build_feature(SPEC, migrate=False, verify=False, project_id=root)).success
+    add = {
+        "operation": "add_field",
+        "entity": "Post",
+        "field": {"name": "subtitle", "type": "string", "required": False},
+    }
+    first = await agents.change_feature([add], migrate=False, verify=False, project_id=root)
+    assert first.success, first.message
+    second = await agents.change_feature([add], migrate=False, verify=False, project_id=root)
+    assert second.success, second.message  # tolerated, not a partial failure
+    models = (root / "apps" / "blog" / "models.py").read_text()
+    assert models.count("subtitle = ") == 1  # exactly one definition
+
+
+async def test_build_feature_succeeds_despite_unregistered_app_warning(root: Path):
+    """A project-global make_migrations warning (an unrelated app not in
+    INSTALLED_APPS) must surface under ``warnings`` and must NOT flip a fully
+    successful build to ``success=False``.
+    """
+    orphan = root / "apps" / "orphan"
+    orphan.mkdir(parents=True)
+    (orphan / "__init__.py").write_text("")
+    (orphan / "models.py").write_text(
+        "from zeeb_orm import Model, fields\n\n"
+        "class Widget(Model):\n    name = fields.CharField(max_length=20)\n"
+    )
+    res = await agents.build_feature(SPEC, project_id=root, verify=False)  # migrate=True default
+    assert res.success, res.message
+    assert res.data["warnings"]
+    assert any("make_migrations" in w for w in res.data["warnings"])
+
+
 async def test_change_feature_invalid_changes_write_nothing(root: Path):
     assert (await agents.build_feature(SPEC, migrate=False, verify=False, project_id=root)).success
     before = _tree_snapshot(root)

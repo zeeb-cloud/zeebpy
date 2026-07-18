@@ -10,6 +10,7 @@ from zeeb_agents._utils.code_gen import (
     add_field_to_class,
     append_block,
     class_exists,
+    class_has_field,
     ensure_import,
     extract_field_names,
     extract_model_names,
@@ -226,6 +227,9 @@ async def add_field(
     Notes:
         - ``data`` is ``None`` on failure (missing ``models.py`` or the model
           was not found).
+        - Idempotent: adding a field that already exists on the model fails with
+          ``error_code="already_exists"`` rather than inserting a duplicate
+          definition (the intent executor tolerates this on re-runs).
     """
     path = _models_file(app, project_root)
     if not path.exists():
@@ -234,6 +238,13 @@ async def add_field(
     def _insert() -> None:
         content = path.read_text(encoding="utf-8")
         ensure_model_exists(content, model_name, str(path))
+        if class_has_field(content, model_name, field["name"]):
+            raise AgentError(
+                f"Field '{field['name']}' already exists on {model_name}",
+                code="already_exists",
+                model=model_name,
+                field=field["name"],
+            )
         field_line = render_field_line(field)
         new_content = add_field_to_class(content, model_name, field_line)
         if new_content is None:
