@@ -24,6 +24,7 @@ from zeeb_agents._utils.validation import (
     ensure_identifier,
     validate_field_specs,
 )
+from zeeb_agents._utils.wiring import append_router_include
 
 # Provider names zeeb_api can instantiate without a "class" dotted path
 # (zeeb_api/auth/oauth/registry.py KNOWN_PROVIDER_CLASSES).
@@ -109,17 +110,18 @@ async def setup_auth(
 
     def _wire() -> tuple[bool, list[str]]:
         urls_path = _project_urls_file(root)
-        content = urls_path.read_text(encoding="utf-8")
-        already = "create_auth_router" in content
-        if not already:
-            ensure_import(urls_path, "from zeeb_api.auth import create_auth_router")
-            include_line = (
-                f'router.include(create_auth_router(prefix="{url_prefix}", '
-                f"enable_registration={enable_registration}))"
-            )
-            content = urls_path.read_text(encoding="utf-8")
-            content = content.rstrip("\n") + f"\n\n{include_line}\n"
-            urls_path.write_text(content, encoding="utf-8")
+        include_line = (
+            f'router.include(create_auth_router(prefix="{url_prefix}", '
+            f"enable_registration={enable_registration}))"
+        )
+        # append_router_include verifies the project urls.py still defines a
+        # module-level ``router`` before emitting code that references it.
+        already = not append_router_include(
+            urls_path,
+            include_line,
+            import_stmt="from zeeb_api.auth import create_auth_router",
+            dedupe_pattern=r"create_auth_router",
+        )
 
         updated: list[str] = []
         settings_path = find_settings_file(root)
@@ -288,16 +290,13 @@ async def setup_oauth(
         ensure_import(settings_path, "import os")
 
         urls_path = _project_urls_file(root)
-        urls_content = urls_path.read_text(encoding="utf-8")
-        already = "create_oauth_router" in urls_content
-        if not already:
-            ensure_import(urls_path, "from zeeb_api.auth.oauth import create_oauth_router")
-            urls_content = urls_path.read_text(encoding="utf-8")
-            urls_content = (
-                urls_content.rstrip("\n") + "\n\nrouter.include(create_oauth_router())\n"
-            )
-            urls_path.write_text(urls_content, encoding="utf-8")
-        return not already, updated
+        wired_now = append_router_include(
+            urls_path,
+            "router.include(create_oauth_router())",
+            import_stmt="from zeeb_api.auth.oauth import create_oauth_router",
+            dedupe_pattern=r"create_oauth_router",
+        )
+        return wired_now, updated
 
     wired, settings_updated = await asyncio.to_thread(_configure)
     return AgentResult(

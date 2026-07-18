@@ -8,7 +8,7 @@ from pathlib import Path
 
 from zeeb_agents._utils import AgentResult, agent_function
 from zeeb_agents._utils.errors import AgentError, close_matches, did_you_mean, fail
-from zeeb_agents._utils.project import require_project_root
+from zeeb_agents._utils.project import load_project_settings, require_project_root
 from zeeb_agents._utils.validation import ensure_app_exists, ensure_identifier
 
 _VALID_SIGNALS = frozenset({"pre_save", "post_save", "pre_delete", "post_delete"})
@@ -137,7 +137,10 @@ async def create_signal_receiver(
 ) -> AgentResult:
     """Create an async signal receiver stub in ``{app}/signals.py``.
 
-    Creates ``signals.py`` if it does not exist.
+    Creates ``signals.py`` if it does not exist. Receivers load automatically
+    at startup: ``create_app()`` imports ``<app>.signals`` for every
+    ``INSTALLED_APPS`` entry, so no manual import is needed — but the app must
+    be installed for that to happen.
 
     Args:
         app: App name (e.g. ``"blog"``).
@@ -153,6 +156,10 @@ async def create_signal_receiver(
         model (str): the sender model class name
         function (str): the new receiver function name
         action (str): ``"created"`` (new file) or ``"updated"`` (appended)
+        loaded_at_startup (bool): always ``True`` — receivers connect via the
+            startup autodiscovery, no manual import needed
+        warnings (list[str]): present only when the app is not in
+            ``INSTALLED_APPS`` (the receivers would never load)
 
     Notes:
         - An invalid ``signal_name`` fails with ``error_code="invalid_input"``
@@ -198,17 +205,31 @@ async def create_signal_receiver(
 
     rel_path, existed = await asyncio.to_thread(_write)
     action = "Updated" if existed else "Created"
+    data = {
+        "path": rel_path,
+        "app": app,
+        "signal": signal_name,
+        "model": model_name,
+        "function": function_name,
+        "action": action.lower(),
+        # create_app() imports <app>.signals for every installed app at
+        # startup, so receivers connect without any manual import.
+        "loaded_at_startup": True,
+    }
+
+    def _installed() -> bool:
+        settings = load_project_settings(root)
+        return f"apps.{app}" in (settings.get("INSTALLED_APPS", []) or [])
+
+    if not await asyncio.to_thread(_installed):
+        data["warnings"] = [
+            f"App '{app}' is not in INSTALLED_APPS — its signal receivers will "
+            f"not load at startup. Run install_app('{app}')."
+        ]
     return AgentResult(
         success=True,
         message=f"{action} {rel_path} with receiver '{function_name}'",
-        data={
-            "path": rel_path,
-            "app": app,
-            "signal": signal_name,
-            "model": model_name,
-            "function": function_name,
-            "action": action.lower(),
-        },
+        data=data,
     )
 
 

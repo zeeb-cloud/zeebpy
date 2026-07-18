@@ -378,6 +378,9 @@ Signals fire automatically in `Model.save()` / `Model.delete()`:
 - `pre_save` / `post_save` — before/after save
 - `pre_delete` / `post_delete` — before/after delete
 
+Receivers in `apps/<app>/signals.py` load automatically at startup for every
+installed app — no manual import needed (the app must be in `INSTALLED_APPS`).
+
 ## Permissions
 
 ```

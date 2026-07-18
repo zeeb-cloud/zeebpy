@@ -297,19 +297,29 @@ def test_orm_validation_error_returns_400_envelope():
 
 
 # ---------------------------------------------------------------------------
-# ASGI template: applies settings.MIDDLEWARE and serves root /health.
+# ASGI template: delegates middleware + health to create_app(), which wires them
+# from the settings the scaffold declares (MIDDLEWARE, ROOT_URLCONF,
+# INSTALL_HEALTH_ROUTES). The template no longer hand-rolls the apply-loop.
 # ---------------------------------------------------------------------------
 
 
-def test_asgi_template_applies_middleware_and_health():
-    from zeeb_orm.cli.commands.startproject import ASGI_PY
+def test_asgi_template_delegates_middleware_and_health_to_create_app():
+    from zeeb_orm.cli.commands.startproject import ASGI_PY, SETTINGS_PY
 
-    rendered = ASGI_PY.format(project_name="probe_api")
-    compile(rendered, "asgi.py", "exec")
-    assert "for middleware_path in reversed(MIDDLEWARE):" in rendered
-    assert "app.add_middleware(middleware_cls)" in rendered
-    assert '@app.get("/health"' in rendered
-    assert '@app.get("/ready"' in rendered
+    asgi = ASGI_PY.format(project_name="probe_api")
+    settings = SETTINGS_PY.format(project_name="probe_api")
+    compile(asgi, "asgi.py", "exec")
+    compile(settings, "settings.py", "exec")
+
+    # asgi.py is a thin shim over create_app(); no hand-rolled middleware loop.
+    assert 'create_app("probe_api.settings")' in asgi
+    assert "for middleware_path in reversed(MIDDLEWARE):" not in asgi
+
+    # The wiring create_app() consumes is declared in settings: JWTAuthMiddleware
+    # in MIDDLEWARE, routes via ROOT_URLCONF, and the health/ready probes opt-in.
+    assert "zeeb_api.middleware.JWTAuthMiddleware" in settings
+    assert 'ROOT_URLCONF = "probe_api.urls"' in settings
+    assert "INSTALL_HEALTH_ROUTES = True" in settings
 
 
 # ---------------------------------------------------------------------------

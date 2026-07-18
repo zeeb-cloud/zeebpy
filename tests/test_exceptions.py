@@ -224,16 +224,31 @@ class TestErrorResponseSchema:
 
 
 class TestScaffoldAsgiTemplate:
-    """The generated asgi.py wires up the standard error contract."""
+    """The generated asgi.py delegates the standard error contract to create_app()."""
 
-    def test_asgi_template_installs_error_contract(self):
+    def test_asgi_template_delegates_error_contract_to_create_app(self):
         from zeeb_orm.cli.commands.startproject import ASGI_PY
 
         rendered = ASGI_PY.format(project_name="probe_api")
-        assert "install_exception_handlers(app)" in rendered
-        assert "install_error_response_schema(app)" in rendered
+        # The generated asgi.py is a thin shim: the error envelope (and middleware,
+        # routes, health) is installed by zeeb_api.create_app() from settings, not
+        # hand-rolled in the template.
+        assert 'create_app("probe_api.settings")' in rendered
+        assert "install_exception_handlers" not in rendered
         # Rendered template must be valid Python.
         compile(rendered, "asgi.py", "exec")
+
+    def test_create_app_installs_exception_handlers_by_default(self):
+        """create_app() is where the error contract actually gets installed."""
+        from fastapi import FastAPI
+
+        from zeeb_api.exception_handlers import install_exception_handlers
+        from zeeb_api.exceptions import ZeebException
+
+        app = FastAPI()
+        install_exception_handlers(app)
+        # The base ZeebException handler is registered (renders the envelope).
+        assert ZeebException in app.exception_handlers
 
 
 class TestDeprecatedResponseImports:

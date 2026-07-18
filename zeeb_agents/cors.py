@@ -6,9 +6,16 @@ import asyncio
 from pathlib import Path
 
 from zeeb_agents._utils import AgentResult, agent_function
-from zeeb_agents._utils.code_gen import find_settings_file, set_or_append_setting
+from zeeb_agents._utils.code_gen import (
+    ensure_asgi_middleware,
+    ensure_middleware,
+    find_settings_file,
+    set_or_append_setting,
+)
 from zeeb_agents._utils.errors import fail
 from zeeb_agents._utils.project import load_project_settings
+
+_CORS_MIDDLEWARE = "zeeb_api.middleware.CORSMiddleware"
 
 _CORS_KEYS = (
     "CORS_ALLOW_ORIGINS",
@@ -37,14 +44,15 @@ async def configure_cors(
     expose_headers: list[str] | None = None,
     project_root: Path | None = None,
 ) -> AgentResult:
-    """Write CORS settings to the project's ``settings.py``.
+    """Write CORS settings to the project's ``settings.py`` — middleware included.
 
     Sets ``CORS_ALLOW_ORIGINS``, ``CORS_ALLOW_METHODS``,
     ``CORS_ALLOW_CREDENTIALS``, and optionally ``CORS_ALLOW_HEADERS``
-    and ``CORS_EXPOSE_HEADERS``.
-
-    The ``zeeb_api.middleware.CORSMiddleware`` class reads these keys
-    automatically when added to ``MIDDLEWARE`` in settings.
+    and ``CORS_EXPOSE_HEADERS``, and ensures
+    ``zeeb_api.middleware.CORSMiddleware`` is an active ``MIDDLEWARE`` entry
+    (which reads those keys at startup) — settings without the middleware are
+    silently inert, so both are written together. Idempotent: re-running
+    repairs a project whose CORS middleware entry was removed.
 
     Args:
         origins: List of allowed origins, e.g. ``["http://localhost:3000"]``.
@@ -65,6 +73,11 @@ async def configure_cors(
     Returns data (on success):
         settings_file (str): settings.py path relative to the project root
         keys_written (list[str]): the ``CORS_*`` setting keys written
+        middleware_added (bool): whether the ``CORSMiddleware`` entry had to be
+            added to ``MIDDLEWARE`` (``False`` when already present)
+        warnings (list[str]): present only when the configuration is inert
+            (``origins`` is empty — the middleware skips installation until
+            origins are set)
 
     Notes:
         - On failure (no ``settings.py`` found) ``data`` is ``None``.
@@ -78,7 +91,7 @@ async def configure_cors(
             "settings.py not found in project.", code="file_not_found", missing="settings.py"
         )
 
-    def _write() -> dict:
+    def _write() -> tuple[dict, bool]:
         content = settings_path.read_text(encoding="utf-8")
 
         updates = {
@@ -94,13 +107,30 @@ async def configure_cors(
             content = _set_or_append_setting(content, key, value)
 
         settings_path.write_text(content, encoding="utf-8")
-        return updates
 
-    written = await asyncio.to_thread(_write)
+        # The CORS_* keys are read by CORSMiddleware at startup — without an
+        # active MIDDLEWARE entry the configuration above is silently inert.
+        # ensure_middleware is idempotent, so this also repairs a project whose
+        # entry was removed; the asgi.py apply-loop repair mirrors setup_auth.
+        middleware_added = ensure_middleware(settings_path, _CORS_MIDDLEWARE)
+        ensure_asgi_middleware(settings_path.parent / "asgi.py")
+        return updates, middleware_added
+
+    written, middleware_added = await asyncio.to_thread(_write)
+    data = {
+        "settings_file": str(settings_path.relative_to(root)),
+        "keys_written": list(written.keys()),
+        "middleware_added": middleware_added,
+    }
+    if not origins:
+        data["warnings"] = [
+            "CORS_ALLOW_ORIGINS is empty — CORSMiddleware stays inactive until "
+            "origins are set."
+        ]
     return AgentResult(
         success=True,
         message=f"CORS settings updated in {settings_path.name} ({len(written)} key(s)).",
-        data={"settings_file": str(settings_path.relative_to(root)), "keys_written": list(written.keys())},
+        data=data,
     )
 
 

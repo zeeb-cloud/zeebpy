@@ -50,6 +50,7 @@ next call. See `mcp://docs/principles` for the full `AgentResult` contract.
 | `error_code` | Meaning | What to do |
 |---|---|---|
 | `already_exists` | The thing you are creating already exists. | Use the update/edit tool instead, or a different name. |
+| `prefix_conflict` | The route prefix is already taken by a *different* ViewSet — a second registration would be silently shadowed. | Re-issue with an explicit `url_prefix=` for a distinct segment. |
 | `dependency_missing` | An optional dependency (e.g. `zeebpy[oauth]`) is not installed. | Install the extra named in `message`. |
 
 ## Security boundaries
