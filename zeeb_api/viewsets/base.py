@@ -262,10 +262,24 @@ class GenericViewSet(ViewSet):
         return self._action_permission_map.get(self.action)
     
     def _get_user_from_request(self) -> Any:
-        """Extract user from request, returns None for anonymous."""
+        """Extract the authenticated user, or None for anonymous.
+
+        Reads ``request.state.user`` — where ``JWTAuthMiddleware`` and
+        view-level authenticators put the resolved user (and what the
+        permission classes read). Falls back to Starlette's ``request.user``,
+        guarding the ``AssertionError`` it raises when no ``AuthenticationMiddleware``
+        is installed (``getattr`` would otherwise not swallow it).
+        """
         if self.request is None:
             return None
-        return getattr(self.request, "user", None)
+        state = getattr(self.request, "state", None)
+        user = getattr(state, "user", None) if state is not None else None
+        if user is not None:
+            return user
+        try:
+            return getattr(self.request, "user", None)
+        except AssertionError:
+            return None
     
     def get_queryset(self) -> Any:
         """

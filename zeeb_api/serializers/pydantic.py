@@ -367,6 +367,10 @@ class Serializer(metaclass=SerializerMetaclass):
         
         self._validated_data: dict[str, Any] | None = None
         self._errors: dict[str, list[str]] = {}
+        # True once .save() has persisted an instance. The create/update
+        # viewset mixins read this after perform_create/perform_update so a
+        # hook that calls .save() itself is not saved a second time.
+        self._saved: bool = False
     
     @property
     def data(self) -> dict[str, Any] | list[dict[str, Any]]:
@@ -676,15 +680,51 @@ class Serializer(metaclass=SerializerMetaclass):
             return False
     
     async def save(self, **kwargs: Any) -> Any:
-        """Save validated data."""
+        """Save validated data.
+
+        Extra ``kwargs`` (e.g. ``save(author_id=user.id)`` from a
+        ``perform_create`` hook) are merged over the validated data. Bare
+        foreign-key names and model instances passed as kwargs are normalized
+        the same way request input is (``author=user`` -> ``author_id=user.pk``)
+        so the create and update paths behave identically.
+
+        Sets ``self.instance`` to the saved row so the caller and a second
+        ``save()`` operate on it (a repeat call updates rather than inserting a
+        duplicate), and marks the serializer saved for the viewset mixins.
+        """
         if self._validated_data is None:
             raise AssertionError("Call .is_valid() before calling .save()")
-        
-        validated = {**self._validated_data, **kwargs}
-        
+
+        validated = {**self._validated_data, **self._normalize_save_kwargs(kwargs)}
+
         if self.instance is not None:
-            return await self.update(self.instance, validated)
-        return await self.create(validated)
+            self.instance = await self.update(self.instance, validated)
+        else:
+            self.instance = await self.create(validated)
+        self._saved = True
+        return self.instance
+
+    def _normalize_save_kwargs(self, kwargs: dict[str, Any]) -> dict[str, Any]:
+        """Normalize ``save(**kwargs)`` FK values to canonical ``<name>_id`` pks.
+
+        Mirrors the request-input aliasing in ``is_valid`` (bare FK name ->
+        ``<name>_id``, canonical key wins on collision) and additionally coerces
+        a passed model instance to its primary key, so a hook may write
+        ``save(author=user)``, ``save(author=user.id)``, ``save(author_id=user)``
+        or ``save(author_id=user.id)`` interchangeably. No-op for a plain
+        ``Serializer`` (its ``_fk_request_aliases`` is empty).
+        """
+        if not kwargs:
+            return kwargs
+        normalized = dict(kwargs)
+        for bare_name, canonical in self._fk_request_aliases.items():
+            if bare_name in normalized and canonical not in normalized:
+                normalized[canonical] = normalized.pop(bare_name)
+        for canonical in set(self._fk_request_aliases.values()):
+            value = normalized.get(canonical)
+            if value is not None and hasattr(value, "pk"):
+                normalized[canonical] = value.pk
+        return normalized
     
     async def create(self, validated_data: dict[str, Any]) -> Any:
         """Create new instance. Override in subclass."""

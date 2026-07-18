@@ -113,31 +113,68 @@ class JWTAuthMiddleware(BaseHTTPMiddleware):
         app: Any,
         user_loader: UserLoaderFunc | None = None,
         load_user_from_db: bool | None = None,
+        external_validators: list[Any] | None = None,
     ):
         """
         Initialize middleware.
-        
+
         Args:
             app: FastAPI/Starlette app
             user_loader: Custom async function to load user from token payload.
             load_user_from_db: If True and no user_loader provided, loads user from DB.
                               If False, uses AuthenticatedUser (token claims only).
                               If None, reads from settings.AUTH_LOAD_USER_FROM_DB.
+            external_validators: Optional list of async callables
+                ``(token) -> user | None`` tried (first non-None wins) when the
+                token is not a locally-issued JWT (e.g. Azure AD tokens). None
+                (the default) lazily self-configures from
+                ``settings.OAUTH_ACCEPT_EXTERNAL_TOKENS`` on first request
+                (``install_middleware`` passes no kwargs); pass ``[]`` to
+                disable explicitly.
         """
         super().__init__(app)
-        
+
         # Get load_user_from_db from settings if not specified
         if load_user_from_db is None:
             from zeeb_api.conf import settings
             load_user_from_db = getattr(settings, 'AUTH_LOAD_USER_FROM_DB', True)
-        
+
         if user_loader:
             self.user_loader = user_loader
         elif load_user_from_db:
             self.user_loader = default_user_loader
         else:
             self.user_loader = None
-    
+
+        # None = lazily resolve from settings on first request; [] = disabled.
+        self._external_validators = external_validators
+
+    def _get_external_validators(self) -> list[Any]:
+        """Resolve external token validators (lazy settings-based config)."""
+        if self._external_validators is None:
+            validators: list[Any] = []
+            try:
+                from zeeb_api.conf import settings
+                names = getattr(settings, "OAUTH_ACCEPT_EXTERNAL_TOKENS", []) or []
+                if names:
+                    from zeeb_api.auth.oauth.bearer import build_validators_from_settings
+                    validators = build_validators_from_settings()
+            except Exception:
+                validators = []
+            self._external_validators = validators
+        return self._external_validators
+
+    async def _try_external_validators(self, token: str) -> Any | None:
+        """Try external validators (first non-None wins). Never raises."""
+        for validator in self._get_external_validators():
+            try:
+                user = await validator(token)
+            except Exception:
+                continue
+            if user is not None:
+                return user
+        return None
+
     async def dispatch(
         self,
         request: Request,
@@ -145,25 +182,36 @@ class JWTAuthMiddleware(BaseHTTPMiddleware):
     ) -> Response:
         # Initialize user as None
         request.state.user = None
-        
+
         # Try to extract and validate token
         auth_header = request.headers.get("Authorization")
         if auth_header and auth_header.startswith("Bearer "):
             token = auth_header[7:]  # Remove "Bearer " prefix
-            
+
             try:
                 payload = decode_token(token, token_type="access")
-                
+
                 # Load user (custom loader or default)
                 if self.user_loader:
                     request.state.user = await self.user_loader(payload)
                 else:
                     request.state.user = AuthenticatedUser(payload)
-                    
-            except TokenError:
-                # Don't raise - let endpoints decide if auth is required
-                pass
-        
+
+            except TokenError as exc:
+                # Not a valid locally-issued token. Give externally-issued
+                # tokens (e.g. Azure AD) a chance, still never raising.
+                request.state.user = await self._try_external_validators(token)
+                if request.state.user is None:
+                    # Record why local validation failed so a downstream
+                    # permission denial can distinguish an EXPIRED token (→ the
+                    # frontend should refresh) from an invalid/absent one (→
+                    # re-login), instead of collapsing both to AUTH_TOKEN_MISSING.
+                    request.state.auth_error = (
+                        ErrorCode.AUTH_TOKEN_EXPIRED
+                        if isinstance(exc, TokenExpiredError)
+                        else ErrorCode.AUTH_TOKEN_INVALID
+                    )
+
         return await call_next(request)
 
 
