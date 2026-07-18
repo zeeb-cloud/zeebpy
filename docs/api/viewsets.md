@@ -288,8 +288,8 @@ class ArticleViewSet(ModelViewSet):
         qs = Article.objects.all()
         
         # Only own articles for non-staff
-        if not self.request.user.is_staff:
-            qs = qs.filter(author=self.request.user)
+        if not self.request.state.user.is_staff:
+            qs = qs.filter(author_id=self.request.state.user.id)
         
         # Apply filters from query params
         if self.request.query_params.get("published"):
@@ -329,7 +329,7 @@ class ArticleViewSet(ModelViewSet):
         obj = await super().get_object()
         
         # Check ownership
-        if obj.author != self.request.user:
+        if obj.author_id != self.request.state.user.id:
             raise PermissionDenied("Not your article")
         
         return obj
@@ -337,28 +337,50 @@ class ArticleViewSet(ModelViewSet):
 
 ### perform_create() / perform_update() / perform_destroy()
 
-Hook into CRUD operations:
+Hook into CRUD operations. Use `perform_create`/`perform_update` to inject
+server-owned values (e.g. the authenticated user) instead of trusting the
+request body — the authenticated user is on `request.state.user`.
+
+The preferred style mutates `serializer.validated_data` and lets the framework
+save; foreign keys are written as `<name>_id`:
 
 ```python
 class ArticleViewSet(ModelViewSet):
     queryset = Article.objects.all()
     serializer_class = ArticleSerializer
-    
+
     async def perform_create(self, serializer):
-        """Called during create."""
-        # Set author to current user
-        await serializer.save(author=self.request.user)
-    
+        """Called before the framework saves the new instance."""
+        serializer.validated_data["author_id"] = self.request.state.user.id
+
     async def perform_update(self, serializer):
-        """Called during update."""
-        await serializer.save(updated_by=self.request.user)
-    
+        """Called before the framework saves the updated instance."""
+        serializer.validated_data["updated_by_id"] = self.request.state.user.id
+
     async def perform_destroy(self, instance):
         """Called during delete."""
         # Soft delete instead
         instance.deleted = True
         await instance.save()
 ```
+
+Alternatively, call `await serializer.save(...)` inside the hook yourself — the
+framework detects that the serializer was already saved and does **not** save a
+second time, and the saved instance is used for the response. A bare FK name or
+a model instance passed as a kwarg is normalized to `<name>_id`, so all of these
+are equivalent:
+
+```python
+    async def perform_create(self, serializer):
+        # Any of these persist author_id = user.id:
+        await serializer.save(author_id=self.request.state.user.id)
+        # await serializer.save(author=self.request.state.user)      # instance
+        # await serializer.save(author_id=self.request.state.user)   # instance
+```
+
+Do not both mutate `validated_data` and call `save()` for the same field — pick
+one. Calling `save()` twice updates the same row (it does not insert a
+duplicate).
 
 ## Filtering
 
@@ -502,12 +524,14 @@ class ArticleViewSet(ModelViewSet):
     async def create(self, request):
         """Custom create with validation."""
         serializer = self.get_serializer(data=await request.json())
-        
+
         if not serializer.is_valid():
             raise ValidationError(serializer.errors)
-        
+
         await self.perform_create(serializer)
-        return Response(serializer.data, status=201)
+        instance = await serializer.save()
+        output = self.get_serializer(instance=instance)
+        return Response(output.data, status=201)
 ```
 
 ## ViewSet Mixins

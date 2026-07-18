@@ -138,11 +138,47 @@ def configure_jwt(
     return _jwt_config
 
 
+def _config_from_settings() -> JWTConfig:
+    """Build a JWTConfig from the project's settings.
+
+    Mirrors the wiring the ``create_app`` factory does via ``configure_jwt``
+    (``zeeb_api/app.py``), but lazily — so a scaffolded project whose ``asgi.py``
+    never calls that factory still signs/verifies tokens with its own
+    ``SECRET_KEY`` and honors the ``JWT_*`` lifetimes written by ``setup_auth``,
+    instead of silently using the built-in insecure default. Falls back to the
+    plain default when settings are unavailable.
+    """
+    try:
+        from zeeb_api.conf import settings
+
+        return JWTConfig(
+            secret_key=settings.get_jwt_secret_key(),
+            algorithm=getattr(settings, "JWT_ALGORITHM", None) or "HS256",
+            access_token_expire_minutes=getattr(
+                settings, "JWT_ACCESS_TOKEN_EXPIRE_MINUTES", None
+            )
+            or 15,
+            refresh_token_expire_days=getattr(
+                settings, "JWT_REFRESH_TOKEN_EXPIRE_DAYS", None
+            )
+            or 7,
+            issuer=getattr(settings, "JWT_ISSUER", None),
+            audience=getattr(settings, "JWT_AUDIENCE", None),
+        )
+    except Exception:
+        return JWTConfig()
+
+
 def get_jwt_config() -> JWTConfig:
-    """Get the current JWT configuration."""
+    """Get the current JWT configuration.
+
+    An explicit ``configure_jwt(...)`` call always wins. Otherwise the config is
+    lazily derived from project settings on first use (see
+    ``_config_from_settings``).
+    """
     global _jwt_config
     if _jwt_config is None:
-        _jwt_config = JWTConfig()
+        _jwt_config = _config_from_settings()
     return _jwt_config
 
 
