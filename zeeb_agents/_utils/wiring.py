@@ -94,6 +94,25 @@ def _installed_apps_body_span(text: str, settings_path: Path) -> tuple[int, int]
     return open_offset + 1, close_offset
 
 
+def _code_before_comment(line: str) -> str:
+    """Return the portion of *line* before an inline ``#`` comment.
+
+    Quote-aware so a ``#`` inside a string literal is not mistaken for the
+    start of a comment. Good enough for the simple quoted entries that make up
+    ``INSTALLED_APPS`` / ``MIDDLEWARE`` lists.
+    """
+    quote: str | None = None
+    for idx, ch in enumerate(line):
+        if quote is not None:
+            if ch == quote:
+                quote = None
+        elif ch in ("'", '"'):
+            quote = ch
+        elif ch == "#":
+            return line[:idx]
+    return line
+
+
 def ensure_installed_app(root: Path, app: str) -> bool:
     """Append ``"apps.<app>"`` to ``INSTALLED_APPS`` in ``settings.py``.
 
@@ -130,12 +149,21 @@ def ensure_installed_app(root: Path, app: str) -> bool:
     indent = indent_match.group(1) if indent_match else "    "
 
     # Insert ``    "apps.<app>",\n`` just before the list's closing "]". If the
-    # last entry has no trailing comma, add one — otherwise the new line would
-    # implicitly concatenate with it into one string.
+    # last entry has no trailing comma, add one first — otherwise the new line
+    # would implicitly concatenate with it into one string. The comma must land
+    # after the entry's value but before any inline comment on that line, so we
+    # operate on the last real content line rather than the raw rstripped text.
     before = text[:body_end]
-    stripped = before.rstrip()
-    if body.strip() and not stripped.endswith((",", "[")):
-        before = stripped + "," + before[len(stripped):]
+    lines = before.splitlines(keepends=True)
+    for i in range(len(lines) - 1, -1, -1):
+        code = _code_before_comment(lines[i]).rstrip()
+        if not code.strip():
+            continue  # blank or comment-only line
+        if not code.endswith((",", "[")):
+            cut = len(code)
+            lines[i] = lines[i][:cut] + "," + lines[i][cut:]
+        break
+    before = "".join(lines)
     lead = "" if before.endswith("\n") else "\n"
     updated = f'{before}{lead}{indent}"{entry}",\n{text[body_end:]}'
     settings_path.write_text(updated, encoding="utf-8")
