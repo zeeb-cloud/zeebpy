@@ -84,7 +84,7 @@ async def test_plan_feature_writes_nothing(root: Path):
     assert res.success, res.message
     assert _tree_snapshot(root) == before
     assert res.data["state_changed"] is False
-    assert res.data["plan_version"] == 1
+    assert res.data["plan_version"] == 2
     kinds = [op["op"] for op in res.data["operations"]]
     assert "create_app" in kinds and "create_model" in kinds
     # Relation ordering: Category before Post.
@@ -408,3 +408,56 @@ async def test_diagnose_problem_healthy_project_is_inconclusive(root: Path):
     res = await agents.diagnose_problem(project_id=root)
     assert res.success
     assert res.data["root_cause"] is None
+
+
+# ---------------------------------------------------------------------------
+# Plan hardening: risk recompute, v1 acceptance, staleness fingerprint
+# ---------------------------------------------------------------------------
+
+
+async def test_apply_plan_recomputes_tampered_risk(root: Path):
+    res = await agents.plan_feature(SPEC, project_id=root)
+    assert res.success, res.message
+    plan = dict(res.data)
+    plan["risk"] = {"level": "low", "destructive": False, "database_changes": False}
+    applied = await agents.apply_plan(plan, migrate=False, verify=False, project_id=root)
+    assert applied.success, applied.message
+    assert any("plan.risk did not match" in w for w in applied.data["warnings"])
+
+
+async def test_apply_plan_accepts_v1_plan_with_warning(root: Path):
+    res = await agents.plan_feature(SPEC, project_id=root)
+    assert res.success, res.message
+    plan = {k: v for k, v in res.data.items() if k not in ("preconditions", "state_changed")}
+    plan["plan_version"] = 1
+    applied = await agents.apply_plan(plan, migrate=False, verify=False, project_id=root)
+    assert applied.success, applied.message
+    assert any("older planner" in w for w in applied.data["warnings"])
+
+
+async def test_apply_plan_warns_when_project_state_changed(root: Path):
+    res = await agents.plan_feature(SPEC, project_id=root)
+    assert res.success, res.message
+    plan = res.data
+    # Create one of the planned models after the plan was compiled.
+    build = await agents.build_feature(
+        {"name": "blog", "entities": [
+            {"name": "Category", "fields": [{"name": "name", "type": "string"}]}
+        ]},
+        migrate=False, verify=False, project_id=root,
+    )
+    assert build.success, build.message
+    applied = await agents.apply_plan(plan, migrate=False, verify=False, project_id=root)
+    assert applied.success, applied.message
+    assert any("Plan is stale" in w for w in applied.data["warnings"])
+    assert any("plan_feature" in a for a in applied.data["next_actions"])
+
+
+async def test_apply_plan_rejects_hand_built_op_payloads(root: Path):
+    applied = await agents.apply_plan(
+        {"plan_version": 2, "operations": [{"op": "remove_field", "app": "blog"}]},
+        project_id=root,
+    )
+    assert not applied.success
+    assert applied.data["error_code"] == "invalid_input"
+    assert "missing required key" in applied.message

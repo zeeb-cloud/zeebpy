@@ -27,7 +27,12 @@ from zeeb_agents._utils.field_types import (
 )
 from zeeb_agents._utils.project import get_app_path
 
-PLAN_VERSION = 1
+PLAN_VERSION = 2
+
+#: Plan versions ``apply_plan`` accepts. v1 plans (compiled before the
+#: staleness fingerprint existed) still apply — with a warning that full
+#: checking is unavailable.
+SUPPORTED_PLAN_VERSIONS = frozenset({1, PLAN_VERSION})
 
 # FeatureSpec relation cardinality → native field-type alias.
 CARDINALITY_MAP = {
@@ -79,6 +84,31 @@ KNOWN_OPS = (
     "make_migrations",
     "run_migrations",
 )
+
+# Per-op required payload keys: validate_plan rejects payloads that could only
+# fail (or silently mis-execute) deep inside the executor. Kept in lockstep
+# with KNOWN_OPS (guarded by tests).
+_OP_REQUIRED: dict[str, tuple[str, ...]] = {
+    "create_app": ("app",),
+    "create_model": ("app", "model", "fields"),
+    "create_serializer": ("app", "model"),
+    "create_viewset": ("app", "model"),
+    "register_route": ("app", "model"),
+    "add_field": ("app", "model", "field"),
+    "remove_field": ("app", "model", "field_name"),
+    "add_relationship": ("app", "model", "rel"),
+    "create_user_model": ("app",),
+    "setup_auth": (),
+    "setup_oauth": ("provider",),
+    "create_health_endpoint": (),
+    "make_migrations": (),
+    "run_migrations": (),
+}
+
+# Recognized keys per level — unknown keys warn (never error) so typos like
+# "filds" cannot be silently ignored.
+_SPEC_KEYS = {"name", "app", "entities", "api", "auth", "description"}
+_ENTITY_KEYS = {"name", "fields", "timestamps", "ordering", "constraints", "api"}
 
 _DB_CHANGING_OPS = {
     "create_model",
@@ -359,22 +389,44 @@ def _topo_order(entities: list[dict], warnings: list[str]) -> list[dict]:
     return sorted(entities, key=lambda e: index[e["name"]])
 
 
+def _warn_unknown_keys(
+    obj: dict,
+    known: set[str],
+    path: str,
+    warnings: list[str],
+) -> None:
+    """Warn (never error) about unrecognized keys so typos are visible."""
+    for key in obj:
+        if key in known:
+            continue
+        hint = close_matches(key, sorted(known))
+        suffix = f" — did you mean: {', '.join(hint)}?" if hint else ""
+        warnings.append(f"{path}.{key} is not a recognized key and was ignored{suffix}")
+
+
 def validate_feature_spec(
     spec: object,
     existing_models: list[dict],
     existing_apps: list[str],
+    warnings: list[str] | None = None,
 ) -> list[dict]:
     """Validate a FeatureSpec, collecting **every** problem found.
 
     Returns a list of ``{"path", "code", "message", "suggestions"?}`` dicts —
     empty when the spec is valid.  Mirrors ``validate_field_specs``'s
-    report-everything-at-once behavior at the spec level.
+    report-everything-at-once behavior at the spec level.  When ``warnings``
+    is passed, non-fatal findings (unrecognized keys) are appended to it.
     """
     problems: list[dict] = []
+    if warnings is None:
+        warnings = []
     if not isinstance(spec, dict):
         return [
             _problem("spec", "invalid_input", f"spec must be a dict, got {type(spec).__name__}")
         ]
+    _warn_unknown_keys(spec, _SPEC_KEYS, "spec", warnings)
+    if isinstance(spec.get("api"), dict):
+        _warn_unknown_keys(spec["api"], set(_API_DEFAULTS), "spec.api", warnings)
 
     name = spec.get("name")
     if not _is_identifier(name):
@@ -425,6 +477,9 @@ def validate_feature_spec(
         if not isinstance(entity, dict) or not _is_identifier(entity.get("name")):
             continue
         path = f"spec.entities[{i}]"
+        _warn_unknown_keys(entity, _ENTITY_KEYS, path, warnings)
+        if isinstance(entity.get("api"), dict):
+            _warn_unknown_keys(entity["api"], set(_API_DEFAULTS), f"{path}.api", warnings)
         fields = entity.get("fields")
         if not isinstance(fields, list) or not fields:
             problems.append(
@@ -510,7 +565,8 @@ def compile_feature_spec(
     ``data["problems"]``) when validation fails; the same spec against the
     same project state always compiles to the same plan.
     """
-    problems = validate_feature_spec(spec, existing_models, existing_apps)
+    warnings: list[str] = []
+    problems = validate_feature_spec(spec, existing_models, existing_apps, warnings)
     if problems:
         raise AgentError(
             f"FeatureSpec has {len(problems)} problem(s): "
@@ -523,7 +579,6 @@ def compile_feature_spec(
 
     name: str = spec["name"]
     app: str = spec.get("app", name)
-    warnings: list[str] = []
     operations: list[dict] = []
 
     if app not in existing_apps:
@@ -635,15 +690,20 @@ def compile_feature_spec(
     operations.append({"op": "make_migrations", "name": name})
     operations.append({"op": "run_migrations"})
 
+    feature: dict = {"name": name, "app": app}
+    if isinstance(spec.get("description"), str) and spec["description"]:
+        feature["description"] = spec["description"]
+
     return {
         "plan_version": PLAN_VERSION,
         "summary": (
             f"Create feature '{name}': {len(entity_names)} model(s), "
             f"{endpoints} endpoint(s) in app '{app}'"
         ),
-        "feature": {"name": name, "app": app},
+        "feature": feature,
         "operations": operations,
         "risk": _plan_risk(operations),
+        "preconditions": plan_preconditions(operations, existing_models, existing_apps),
         "warnings": warnings,
     }
 
@@ -839,25 +899,127 @@ def _plan_risk(operations: list[dict]) -> dict:
     }
 
 
+def plan_preconditions(
+    operations: list[dict],
+    existing_models: list[dict],
+    existing_apps: list[str],
+) -> dict:
+    """Fingerprint of the project state a plan was compiled against.
+
+    Keyed off the plan's own operations: for every app the plan touches
+    whether it existed, and for every ``app.Model`` the sorted field-name set
+    it had (``None`` = did not exist yet). ``apply_plan`` re-inventories and
+    diffs this to warn when a plan is applied against changed state.
+    """
+    apps: dict[str, bool] = {}
+    models: dict[str, list[str] | None] = {}
+    by_key = {(m.get("app"), m.get("model")): m for m in existing_models}
+    for op in operations:
+        app = op.get("app")
+        if isinstance(app, str) and app not in apps:
+            apps[app] = app in existing_apps
+        model = op.get("model")
+        if isinstance(app, str) and isinstance(model, str):
+            dotted = f"{app}.{model}"
+            if dotted not in models:
+                match = by_key.get((app, model))
+                models[dotted] = sorted(match.get("fields") or []) if match else None
+    return {"apps": apps, "models": models}
+
+
+def staleness_warnings(
+    plan: dict,
+    existing_models: list[dict],
+    existing_apps: list[str],
+) -> list[str]:
+    """Diff a plan's compile-time preconditions against the current project.
+
+    Warnings only — execution is skip-idempotent, and hard-failing here would
+    break the documented "re-run the same call to resume" recovery loop
+    (which by definition re-applies a plan against changed state).
+    """
+    pre = plan.get("preconditions")
+    if not isinstance(pre, dict):
+        return []  # v1 plan — no fingerprint to check
+    warnings: list[str] = []
+    by_key = {(m.get("app"), m.get("model")): m for m in existing_models}
+    for app, existed in (pre.get("apps") or {}).items():
+        if bool(existed) is not (app in existing_apps):
+            state = "now exists" if not existed else "no longer exists"
+            warnings.append(f"Plan is stale: app '{app}' {state}.")
+    for dotted, fields in (pre.get("models") or {}).items():
+        app, _, model = dotted.partition(".")
+        match = by_key.get((app, model))
+        now = sorted(match.get("fields") or []) if match else None
+        if now == fields:
+            continue
+        if fields is None:
+            warnings.append(
+                f"Plan is stale: model '{dotted}' was created after the plan "
+                "was compiled — its create steps will be skipped."
+            )
+        elif now is None:
+            warnings.append(
+                f"Plan is stale: model '{dotted}' no longer exists — steps "
+                "that modify it will fail."
+            )
+        else:
+            warnings.append(
+                f"Plan is stale: the fields of '{dotted}' changed since the "
+                "plan was compiled."
+            )
+    return warnings
+
+
 def validate_plan(plan: object) -> str | None:
-    """Light structural check of a plan dict; returns a problem string or None."""
+    """Structural + payload check of a plan dict; returns a problem string or None.
+
+    Op payloads are validated against :data:`_OP_REQUIRED` (required keys,
+    identifier validity, spec-dict shape) so a hand-edited plan fails here
+    with an actionable message instead of mis-executing deep in the executor.
+    """
     if not isinstance(plan, dict):
         return f"plan must be a dict (the object plan_feature returned), got {type(plan).__name__}"
-    if plan.get("plan_version") != PLAN_VERSION:
+    if plan.get("plan_version") not in SUPPORTED_PLAN_VERSIONS:
         return (
             f"plan_version {plan.get('plan_version')!r} is not supported "
-            f"(expected {PLAN_VERSION}) — re-run plan_feature to get a fresh plan"
+            f"(supported: {sorted(SUPPORTED_PLAN_VERSIONS)}) — re-run "
+            "plan_feature to get a fresh plan"
         )
     operations = plan.get("operations")
     if not isinstance(operations, list) or not operations:
         return "plan has no 'operations' list — re-run plan_feature"
+    problems: list[str] = []
     for i, op in enumerate(operations):
         if not isinstance(op, dict) or not isinstance(op.get("op"), str):
-            return f"operations[{i}] is not an operation dict — re-run plan_feature"
-        if op["op"] not in KNOWN_OPS:
-            hint = close_matches(op["op"], list(KNOWN_OPS))
+            problems.append(f"operations[{i}] is not an operation dict")
+            continue
+        kind = op["op"]
+        if kind not in KNOWN_OPS:
+            hint = close_matches(kind, list(KNOWN_OPS))
             suffix = f" Did you mean: {', '.join(hint)}?" if hint else ""
-            return f"operations[{i}]: unknown op '{op['op']}'.{suffix} Re-run plan_feature."
+            problems.append(f"operations[{i}]: unknown op '{kind}'.{suffix}")
+            continue
+        for key in _OP_REQUIRED.get(kind, ()):
+            value = op.get(key)
+            if value is None:
+                problems.append(f"operations[{i}] ({kind}): missing required key '{key}'")
+            elif key in ("app", "model", "field_name") and not _is_identifier(value):
+                problems.append(
+                    f"operations[{i}] ({kind}): '{key}' must be an identifier, got {value!r}"
+                )
+            elif key in ("field", "rel") and not (
+                isinstance(value, dict) and _is_identifier(value.get("name"))
+            ):
+                problems.append(
+                    f"operations[{i}] ({kind}): '{key}' must be a field-spec "
+                    "dict with an identifier 'name'"
+                )
+            elif key in ("fields", "entities") and not isinstance(value, list):
+                problems.append(f"operations[{i}] ({kind}): '{key}' must be a list")
+    if problems:
+        shown = "; ".join(problems[:5]) + ("; …" if len(problems) > 5 else "")
+        return f"{shown} — re-run plan_feature"
     return None
 
 

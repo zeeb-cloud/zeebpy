@@ -41,6 +41,8 @@ from zeeb_agents.feature_spec import (
     compile_changes,
     compile_feature_spec,
     execute_plan,
+    plan_preconditions,
+    staleness_warnings,
     validate_plan,
 )
 
@@ -376,8 +378,14 @@ async def apply_plan(
         state_changed (bool): whether anything was actually written/applied.
 
     Notes:
-        - An unknown/malformed plan fails with ``error_code="invalid_input"``
-          and a message telling you to re-run plan_feature.
+        - An unknown/malformed plan (bad version, unknown op, invalid op
+          payload) fails with ``error_code="invalid_input"`` and a message
+          telling you to re-run plan_feature.
+        - The plan's ``risk`` is recomputed from its operations at apply time
+          (a tampered echo is corrected with a warning), and its compile-time
+          ``preconditions`` fingerprint is diffed against the current project
+          — a stale plan applies with warnings, never a hard failure, so the
+          "re-run to resume" recovery loop keeps working.
         - Idempotent like build_feature — re-applying a plan skips whatever
           already exists.
     """
@@ -385,7 +393,38 @@ async def apply_plan(
     problem = validate_plan(plan)
     if problem:
         return fail(problem, code="invalid_input")
-    return await _apply_and_report(plan, root, migrate, verify, "Plan")
+
+    extra_warnings: list[str] = []
+    extra_actions: list[str] = []
+    if plan.get("plan_version", PLAN_VERSION) < PLAN_VERSION:
+        extra_warnings.append(
+            "Plan was produced by an older planner (no staleness fingerprint) "
+            "— re-run plan_feature for full checking."
+        )
+    actual_risk = _plan_risk(plan["operations"])
+    if plan.get("risk") != actual_risk:
+        extra_warnings.append(
+            "plan.risk did not match its operations — recomputed: "
+            f"level={actual_risk['level']}, destructive={actual_risk['destructive']}, "
+            f"database_changes={actual_risk['database_changes']}."
+        )
+    existing_models, existing_apps = await _project_inventory(root)
+    stale = staleness_warnings(plan, existing_models, existing_apps)
+    if stale:
+        extra_warnings.extend(stale)
+        extra_actions.append(
+            "Project state changed since this plan was compiled — re-run "
+            "plan_feature if the skipped or failed steps surprise you."
+        )
+    if extra_warnings:
+        plan = {
+            **plan,
+            "risk": actual_risk,
+            "warnings": [*plan.get("warnings", []), *extra_warnings],
+        }
+    return await _apply_and_report(
+        plan, root, migrate, verify, "Plan", extra_next_actions=extra_actions
+    )
 
 
 @agent_function
@@ -452,6 +491,7 @@ async def change_feature(
         "summary": f"Apply {len(changes)} change(s)",
         "operations": operations,
         "risk": _plan_risk(operations),
+        "preconditions": plan_preconditions(operations, existing_models, existing_apps),
         "warnings": warnings,
     }
     return await _apply_and_report(plan, root, migrate, verify, "Changes")

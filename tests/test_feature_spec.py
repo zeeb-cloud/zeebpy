@@ -457,6 +457,118 @@ def test_validate_plan_accepts_compiled_plan():
     assert validate_plan(plan) is None
 
 
+def test_validate_plan_accepts_v1_plans():
+    plan = compile_feature_spec(spec_with([{"name": "title", "type": "string"}]), [], [])
+    assert validate_plan({**plan, "plan_version": 1}) is None
+
+
+def test_validate_plan_rejects_invalid_op_payloads():
+    def _plan(op):
+        return {"plan_version": PLAN_VERSION, "operations": [op]}
+
+    missing = validate_plan(_plan({"op": "create_model", "app": "blog"}))
+    assert missing is not None and "missing required key 'model'" in missing
+    assert missing is not None and "missing required key 'fields'" in missing
+
+    bad_ident = validate_plan(_plan({"op": "create_app", "app": "not an app"}))
+    assert bad_ident is not None and "identifier" in bad_ident
+
+    bad_field = validate_plan(
+        _plan({"op": "add_field", "app": "blog", "model": "Post", "field": "title"})
+    )
+    assert bad_field is not None and "field-spec dict" in bad_field
+
+    bad_list = validate_plan(
+        _plan({"op": "create_model", "app": "blog", "model": "Post", "fields": "title"})
+    )
+    assert bad_list is not None and "'fields' must be a list" in bad_list
+
+
+def test_op_required_table_covers_every_known_op():
+    from zeeb_agents.feature_spec import _OP_REQUIRED, KNOWN_OPS
+
+    assert set(_OP_REQUIRED) == set(KNOWN_OPS)
+
+
+def test_plan_embeds_preconditions_fingerprint():
+    plan = compile_feature_spec(
+        {"name": "shop", "entities": [
+            {"name": "Product", "fields": [{"name": "name", "type": "string"}]}
+        ]},
+        EXISTING,
+        APPS,
+    )
+    pre = plan["preconditions"]
+    assert pre["apps"]["shop"] is True
+    assert pre["models"]["shop.Product"] == sorted(
+        next(m["fields"] for m in EXISTING if m["model"] == "Product")
+    )
+    fresh = compile_feature_spec(
+        {"name": "blog", "entities": [
+            {"name": "Post", "fields": [{"name": "title", "type": "string"}]}
+        ]},
+        [],
+        [],
+    )
+    assert fresh["preconditions"]["apps"]["blog"] is False
+    assert fresh["preconditions"]["models"]["blog.Post"] is None
+
+
+def test_staleness_warnings_diff_preconditions():
+    from zeeb_agents.feature_spec import staleness_warnings
+
+    plan = compile_feature_spec(
+        {"name": "blog", "entities": [
+            {"name": "Post", "fields": [{"name": "title", "type": "string"}]}
+        ]},
+        [],
+        [],
+    )
+    # Unchanged state — no warnings; v1 plan without fingerprint — no warnings.
+    assert staleness_warnings(plan, [], []) == []
+    assert staleness_warnings({"plan_version": 1, "operations": []}, [], []) == []
+    # Model created after compile.
+    now = [{"app": "blog", "model": "Post", "fields": ["title"]}]
+    warned = staleness_warnings(plan, now, ["blog"])
+    assert any("created after the plan" in w for w in warned)
+    assert any("app 'blog' now exists" in w for w in warned)
+
+
+def test_unknown_spec_keys_warn_with_suggestions():
+    warnings: list[str] = []
+    problems = validate_feature_spec(
+        {
+            "name": "blog",
+            "entitees": "typo",
+            "entities": [
+                {"name": "Post", "filds": [], "fields": [{"name": "t", "type": "string"}]}
+            ],
+        },
+        [],
+        [],
+        warnings,
+    )
+    assert problems == []
+    assert any("spec.entitees" in w and "entities" in w for w in warnings)
+    assert any("filds" in w and "fields" in w for w in warnings)
+
+
+def test_description_is_echoed_into_the_plan():
+    plan = compile_feature_spec(
+        {
+            "name": "blog",
+            "description": "Users write and publish posts",
+            "entities": [
+                {"name": "Post", "fields": [{"name": "title", "type": "string"}]}
+            ],
+        },
+        [],
+        [],
+    )
+    assert plan["feature"]["description"] == "Users write and publish posts"
+    assert not any("description" in w for w in plan["warnings"])
+
+
 # ---------------------------------------------------------------------------
 # compile_changes
 # ---------------------------------------------------------------------------
