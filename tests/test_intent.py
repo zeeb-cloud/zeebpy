@@ -494,3 +494,69 @@ async def test_partial_failure_still_reports_affected(root: Path, monkeypatch):
     assert not built.success
     assert built.data["affected"]["apps"] == ["blog"]
     assert built.data["errors"]
+
+
+# ---------------------------------------------------------------------------
+# Workflows end-to-end (build → files on disk → idempotent re-run)
+# ---------------------------------------------------------------------------
+
+WORKFLOW_SPEC = {
+    "name": "orders",
+    "entities": [
+        {
+            "name": "Order",
+            "fields": [{"name": "total", "type": "decimal"}],
+            "workflow": {
+                "states": ["draft", "submitted", "approved"],
+                "transitions": [
+                    {"name": "submit", "from": "draft", "to": "submitted"},
+                    {"name": "approve", "from": ["submitted"], "to": "approved",
+                     "permission": "IsAdminUser"},
+                ],
+            },
+        }
+    ],
+}
+
+
+async def test_build_feature_with_workflow_e2e(root: Path):
+    import ast
+
+    res = await agents.build_feature(WORKFLOW_SPEC, verify=False, project_id=root)
+    assert res.success, res.message
+    assert res.data["changes"]["actions_created"] == ["Order.submit", "Order.approve"]
+
+    models = (root / "apps" / "orders" / "models.py").read_text()
+    assert "status" in models and "draft" in models
+
+    views = (root / "apps" / "orders" / "views.py").read_text()
+    ast.parse(views)
+    assert "async def submit(self, request, pk=None):" in views
+    assert "async def approve(self, request, pk=None):" in views
+    assert "from zeeb_api.exceptions import ResourceConflictException" in views
+    assert 'obj.status not in ("draft",)' in views
+    assert "permission_classes=[permissions.IsAdminUser]" in views or "IsAdminUser" in views
+
+    # Idempotent re-run: nothing duplicated, actions reported as skips.
+    again = await agents.build_feature(WORKFLOW_SPEC, verify=False, project_id=root)
+    assert again.success, again.message
+    assert again.data["changes"]["actions_created"] == []
+    assert any("already defined" in s for s in again.data["steps"])
+    views_again = (root / "apps" / "orders" / "views.py").read_text()
+    assert views_again.count("async def submit(") == 1
+
+
+async def test_change_feature_add_transition_e2e(root: Path):
+    res = await agents.build_feature(WORKFLOW_SPEC, verify=False, project_id=root)
+    assert res.success, res.message
+    changed = await agents.change_feature(
+        [{"operation": "add_transition", "entity": "Order",
+          "transition": {"name": "cancel", "from": ["draft", "submitted"],
+                          "to": "cancelled"}}],
+        verify=False,
+        project_id=root,
+    )
+    assert changed.success, changed.message
+    assert changed.data["changes"]["actions_created"] == ["Order.cancel"]
+    views = (root / "apps" / "orders" / "views.py").read_text()
+    assert "async def cancel(self, request, pk=None):" in views

@@ -287,6 +287,8 @@ async def add_viewset_action(
     request_schema: str | None = None,
     response_schema: str | None = None,
     permission: str | list[str] | None = None,
+    imports: list[str] | None = None,
+    if_exists: str = "error",
     project_root: Path | None = None,
 ) -> AgentResult:
     """Append a custom ``@action`` method to an existing ViewSet.
@@ -336,6 +338,14 @@ async def add_viewset_action(
             ``apps.<app>.permissions.<Class>`` reference; matching imports
             are added automatically. (Authentication is viewset-level, not
             per-action — set it via ``create_viewset``/``update_viewset``.)
+        imports: Extra import lines the *body* needs (e.g. ``["from
+            zeeb_api.exceptions import ResourceConflictException"]``) — added
+            idempotently to ``views.py``, same as ``create_route``'s imports.
+        if_exists: What to do when the ViewSet already defines a method named
+            *action_name*: ``"error"`` (default) fails with
+            ``already_exists``; ``"skip"`` returns success with
+            ``data["skipped"]=True``. Note: previously a duplicate was
+            silently appended (shadowing the original) — that was a bug.
         project_id: The host-assigned project id (required).
 
     Returns data (on success):
@@ -367,6 +377,11 @@ async def add_viewset_action(
         )
     """
     ensure_identifier(action_name, "action name")
+    if if_exists not in ("error", "skip"):
+        return fail(
+            f"if_exists must be 'error' or 'skip', got {if_exists!r}",
+            code="invalid_input",
+        )
     action_methods = [m.lower() for m in (methods or ["get"])]
     invalid = [m for m in action_methods if m not in _ACTION_METHODS]
     if invalid:
@@ -395,13 +410,31 @@ async def add_viewset_action(
 
     class_name = f"{model_name}ViewSet"
 
-    def _insert() -> None:
+    def _insert() -> bool:
+        """Splice the action into the class; returns False on a skipped duplicate."""
         content = path.read_text(encoding="utf-8")
         if not class_exists(content, class_name):
             raise AgentError(
                 f"'{class_name}' not found in {path}",
                 code="model_not_found",
                 viewset=class_name,
+            )
+
+        class_pattern = re.compile(
+            rf"(^class {re.escape(class_name)}\b.*?)(?=^\S|\Z)",
+            re.DOTALL | re.MULTILINE,
+        )
+        class_match = class_pattern.search(content)
+        block = class_match.group(1) if class_match else ""
+        if re.search(rf"^\s+(?:async\s+)?def {re.escape(action_name)}\(", block, re.MULTILINE):
+            if if_exists == "skip":
+                return False
+            raise AgentError(
+                f"'{class_name}' already defines '{action_name}' — pass "
+                "if_exists='skip' to keep it, or pick a different action name",
+                code="already_exists",
+                viewset=class_name,
+                action=action_name,
             )
 
         action_code = render_action_method(
@@ -421,17 +454,13 @@ async def add_viewset_action(
         # statement or EOF). The ``^`` anchors are essential: without them the
         # pattern also matches the commented example ViewSet in the scaffolded
         # views.py and splices the action into a comment block.
-        pattern = re.compile(
-            rf"(^class {re.escape(class_name)}\b.*?)(?=^\S|\Z)",
-            re.DOTALL | re.MULTILINE,
-        )
         def _replace(m: re.Match) -> str:
             block = m.group(1)
             if not block.endswith("\n"):
                 block += "\n"
             return block + "\n" + action_code
 
-        new_content = pattern.sub(_replace, content, count=1)
+        new_content = class_pattern.sub(_replace, content, count=1)
         path.write_text(new_content, encoding="utf-8")
         # After writing the new content — ensure_import edits the file on disk,
         # so imports must run last or the write above clobbers them.
@@ -440,11 +469,25 @@ async def add_viewset_action(
             ensure_import(path, "from zeeb_api import viewsets, permissions")
         for import_line in perm_imports:
             ensure_import(path, import_line)
+        for import_line in imports or []:
+            ensure_import(path, import_line)
         for ref in serializer_refs.values():
             if ref:
                 ensure_import(path, f"from .serializers import {ref}")
+        return True
 
-    await asyncio.to_thread(_insert)
+    inserted = await asyncio.to_thread(_insert)
+    if not inserted:
+        return AgentResult(
+            success=True,
+            message=f"'{class_name}' already defines '{action_name}'; skipped",
+            data={
+                "app": app,
+                "viewset": class_name,
+                "action": action_name,
+                "skipped": True,
+            },
+        )
     wiring = {label: ref for label, ref in serializer_refs.items() if ref}
     if permission:
         wiring["permission"] = permission

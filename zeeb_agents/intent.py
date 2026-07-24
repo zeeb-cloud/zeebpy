@@ -58,6 +58,7 @@ _OP_FILES: dict[str, tuple[str, ...]] = {
     "create_user_model": ("models.py",),
     "create_serializer": ("serializers.py",),
     "create_viewset": ("views.py",),
+    "add_viewset_action": ("views.py",),
     "register_route": ("urls.py",),
     "make_migrations": ("migrations",),
 }
@@ -275,7 +276,18 @@ async def plan_feature(
                   ],
                   "constraints": [
                     {"type": "unique", "fields": ["title", "author"]}
-                  ]
+                  ],
+                  "workflow": {                # optional state machine
+                    "field": "status",         # default "status"
+                    "states": ["draft", "submitted", "approved"],
+                    "initial": "draft",        # default states[0]
+                    "transitions": [
+                      {"name": "submit", "from": "draft", "to": "submitted",
+                       "actor": "authenticated"},
+                      {"name": "approve", "from": ["submitted"],
+                       "to": "approved", "permission": "IsAdminUser"}
+                    ]
+                  }
                 }
               ],
               "api": {                         # defaults for all entities;
@@ -293,6 +305,15 @@ async def plan_feature(
             dotted ``app.Model``, or ``"self"``). ``required: false`` maps to
             ``null=True, blank=True``. Each entity may carry its own ``api``
             override; ``"expose": false`` skips endpoint generation.
+
+            An entity ``workflow`` declares a status state machine: the
+            status enum field is synthesized when not declared, and every
+            transition becomes a ``POST /<prefix>/{id}/<name>/`` endpoint
+            that returns 409 on an illegal from-state. ``actor`` (``anyone``
+            / ``authenticated`` / ``owner`` / ``admin``) or an explicit
+            ``permission`` class gates each transition; omitting both
+            inherits the endpoint's permission. ``actor: "owner"`` requires
+            an ``owner`` (or ``user``) relation field on the entity.
         project_id: The host-assigned project id (required).
 
     Returns data (on success):
@@ -492,10 +513,26 @@ async def change_feature(
             {"operation": "add_entity",
              "entity": {"name": "Comment", "fields": [...]},
              "app": "blog"}
+            {"operation": "add_workflow", "entity": "Order",
+             "workflow": {"states": ["draft", "submitted"],
+                           "transitions": [{"name": "submit",
+                                            "from": "draft",
+                                            "to": "submitted"}]}}
+            {"operation": "add_transition", "entity": "Order",
+             "field": "status",
+             "transition": {"name": "cancel",
+                             "from": ["draft", "submitted"],
+                             "to": "cancelled"}}
 
             Fields use the same dialect as :func:`plan_feature` (``enum``,
             ``relation``, ``required``, …). ``add_entity`` scaffolds the
             model plus serializer/endpoint/route like build_feature.
+            ``add_workflow`` adds the status field (when missing) plus one
+            transition endpoint per transition (see the ``workflow`` shape in
+            :func:`plan_feature`); ``add_transition`` adds a single
+            transition endpoint to an existing status field — its from/to
+            states cannot be validated without a states list, so check the
+            warning it emits.
         app: Target app override — required only when an entity name exists
             in several apps (or for add_entity without its own ``app`` key).
         migrate: Create and apply migrations at the end (default true).

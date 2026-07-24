@@ -653,3 +653,207 @@ def test_compile_changes_ambiguous_entity_needs_app():
         "crm",
     )
     assert ops[0]["app"] == "crm"
+
+
+# ---------------------------------------------------------------------------
+# Workflows: validation, compilation, change ops
+# ---------------------------------------------------------------------------
+
+WORKFLOW_ENTITY = {
+    "name": "Order",
+    "fields": [{"name": "total", "type": "decimal"}],
+    "workflow": {
+        "states": ["draft", "submitted", "approved"],
+        "transitions": [
+            {"name": "submit", "from": "draft", "to": "submitted", "actor": "authenticated"},
+            {"name": "approve", "from": ["submitted"], "to": "approved",
+             "permission": "IsAdminUser"},
+        ],
+    },
+}
+
+
+def _workflow_spec(entity=None):
+    return {"name": "shop_flow", "app": "shop_flow", "entities": [entity or WORKFLOW_ENTITY]}
+
+
+def test_workflow_validation_matrix():
+    def problems_for(workflow, fields=None, api=None):
+        entity = {"name": "Order", "fields": fields or [{"name": "total", "type": "decimal"}],
+                  "workflow": workflow}
+        if api is not None:
+            entity["api"] = api
+        return validate_feature_spec(_workflow_spec(entity), [], [])
+
+    base_transitions = [{"name": "submit", "from": "draft", "to": "submitted"}]
+
+    assert problems_for({"states": [], "transitions": base_transitions})
+    assert problems_for({"states": ["draft", "draft"], "transitions": base_transitions})
+    assert problems_for({"states": ["draft", "submitted"], "initial": "nope",
+                         "transitions": base_transitions})
+    assert problems_for({"states": ["draft", "submitted"], "transitions": []})
+    assert problems_for({"states": ["draft", "submitted"],
+                         "transitions": [{"name": "list", "from": "draft", "to": "submitted"}]})
+    assert problems_for({"states": ["draft", "submitted"],
+                         "transitions": [{"name": "total", "from": "draft", "to": "submitted"}]})
+    assert problems_for({"states": ["draft", "submitted"],
+                         "transitions": [{"name": "submit", "from": "nope", "to": "submitted"}]})
+    assert problems_for({"states": ["draft", "submitted"],
+                         "transitions": [{"name": "submit", "from": "draft", "to": "nope"}]})
+    assert problems_for({"states": ["draft", "submitted"],
+                         "transitions": [{"name": "submit", "from": "draft", "to": "submitted",
+                                          "actor": "authenticated", "permission": "IsAdminUser"}]})
+    assert problems_for({"states": ["draft", "submitted"],
+                         "transitions": [{"name": "submit", "from": "draft", "to": "submitted",
+                                          "actor": "wizard"}]})
+    assert problems_for({"states": ["draft", "submitted"],
+                         "transitions": [{"name": "submit", "from": "draft", "to": "submitted",
+                                          "permission": "IsWizard"}]})
+    # Duplicate transition names.
+    assert problems_for({"states": ["draft", "submitted"],
+                         "transitions": base_transitions + base_transitions})
+    # expose: false + workflow is contradictory.
+    assert problems_for({"states": ["draft", "submitted"], "transitions": base_transitions},
+                        api={"expose": False})
+    # Declared status field must be an enum covering the states.
+    assert problems_for(
+        {"states": ["draft", "submitted"], "transitions": base_transitions},
+        fields=[{"name": "status", "type": "string"}],
+    )
+    # Valid workflow — no problems.
+    assert problems_for({"states": ["draft", "submitted"], "transitions": base_transitions}) == []
+
+
+def test_workflow_owner_actor_without_owner_field_warns():
+    warnings: list[str] = []
+    entity = {"name": "Order", "fields": [{"name": "total", "type": "decimal"}],
+              "workflow": {"states": ["draft", "done"],
+                            "transitions": [{"name": "finish", "from": "draft",
+                                             "to": "done", "actor": "owner"}]}}
+    assert validate_feature_spec(_workflow_spec(entity), [], [], warnings) == []
+    assert any("IsOwner" in w for w in warnings)
+
+
+def test_workflow_compiles_to_status_field_and_transition_ops():
+    plan = compile_feature_spec(_workflow_spec(), [], [])
+    model_op = next(op for op in plan["operations"] if op["op"] == "create_model")
+    status = next(f for f in model_op["fields"] if f["name"] == "status")
+    assert status["type"] == "CharField"
+    assert status["choices"] == [["draft", "draft"], ["submitted", "submitted"],
+                                 ["approved", "approved"]]
+    assert status["default"] == "draft"
+
+    actions = [op for op in plan["operations"] if op["op"] == "add_viewset_action"]
+    assert [op["action_name"] for op in actions] == ["submit", "approve"]
+    submit, approve = actions
+    assert submit["permission"] == "IsAuthenticated"
+    assert approve["permission"] == "IsAdminUser"
+    assert submit["methods"] == ["post"] and submit["detail"] is True
+    assert submit["response_serializer"] == "OrderSerializer"
+    assert "ResourceConflictException" in submit["body"]
+    assert 'obj.status not in ("draft",)' in submit["body"]
+    assert 'obj.status = "submitted"' in submit["body"]
+    assert "from zeeb_api.exceptions import ResourceConflictException" in submit["imports"]
+    assert "2 workflow transition(s)" in plan["summary"]
+    # Transition ops come after the entity's route registration.
+    kinds = [op["op"] for op in plan["operations"]]
+    assert kinds.index("register_route") < kinds.index("add_viewset_action")
+
+
+def test_workflow_reuses_declared_enum_status_field():
+    entity = {
+        "name": "Order",
+        "fields": [
+            {"name": "total", "type": "decimal"},
+            {"name": "status", "type": "enum",
+             "values": ["draft", "submitted", "archived"], "default": "draft"},
+        ],
+        "workflow": {"states": ["draft", "submitted"],
+                      "transitions": [{"name": "submit", "from": "draft",
+                                       "to": "submitted"}]},
+    }
+    plan = compile_feature_spec(_workflow_spec(entity), [], [])
+    model_op = next(op for op in plan["operations"] if op["op"] == "create_model")
+    status_fields = [f for f in model_op["fields"] if f["name"] == "status"]
+    assert len(status_fields) == 1  # declared field reused, none synthesized
+    assert ["archived", "archived"] in status_fields[0]["choices"]
+
+
+def test_transition_without_actor_or_permission_inherits():
+    entity = {
+        "name": "Order",
+        "fields": [{"name": "total", "type": "decimal"}],
+        "workflow": {"states": ["a", "b"],
+                      "transitions": [{"name": "go", "from": "a", "to": "b"}]},
+    }
+    plan = compile_feature_spec(_workflow_spec(entity), [], [])
+    action = next(op for op in plan["operations"] if op["op"] == "add_viewset_action")
+    assert "permission" not in action
+
+
+def test_add_workflow_change_emits_field_and_actions():
+    existing = [{"app": "shop", "model": "Order", "fields": ["id", "total"]}]
+    ops, warnings = compile_changes(
+        [{"operation": "add_workflow", "entity": "Order",
+          "workflow": {"states": ["draft", "done"],
+                        "transitions": [{"name": "finish", "from": "draft", "to": "done"}]}}],
+        existing,
+        ["shop"],
+        None,
+    )
+    kinds = [op["op"] for op in ops]
+    assert kinds == ["add_field", "add_viewset_action"]
+    field_op = ops[0]
+    assert field_op["field"]["name"] == "status"
+    assert field_op["field"]["default"] == "draft"
+    assert ops[1]["action_name"] == "finish"
+
+    # Existing status field: no add_field, but an assumption warning.
+    existing_with_status = [
+        {"app": "shop", "model": "Order", "fields": ["id", "total", "status"]}
+    ]
+    ops2, warnings2 = compile_changes(
+        [{"operation": "add_workflow", "entity": "Order",
+          "workflow": {"states": ["draft", "done"],
+                        "transitions": [{"name": "finish", "from": "draft", "to": "done"}]}}],
+        existing_with_status,
+        ["shop"],
+        None,
+    )
+    assert [op["op"] for op in ops2] == ["add_viewset_action"]
+    assert any("assuming existing field 'status'" in w for w in warnings2)
+
+
+def test_add_transition_change_emits_action_with_warning():
+    existing = [{"app": "shop", "model": "Order", "fields": ["id", "status"]}]
+    ops, warnings = compile_changes(
+        [{"operation": "add_transition", "entity": "Order", "field": "status",
+          "transition": {"name": "cancel", "from": ["draft", "submitted"],
+                          "to": "cancelled"}}],
+        existing,
+        ["shop"],
+        None,
+    )
+    assert [op["op"] for op in ops] == ["add_viewset_action"]
+    assert 'obj.status not in ("draft", "submitted",)' in ops[0]["body"]
+    assert any("cannot be checked" in w for w in warnings)
+
+
+def test_add_transition_rejects_bad_shapes():
+    existing = [{"app": "shop", "model": "Order", "fields": ["id", "status"]}]
+    import pytest as _pytest
+
+    from zeeb_agents._utils.errors import AgentError
+
+    with _pytest.raises(AgentError):
+        compile_changes(
+            [{"operation": "add_transition", "entity": "Order",
+              "transition": {"name": "x", "from": "a", "to": "b",
+                              "actor": "authenticated", "permission": "IsAdminUser"}}],
+            existing, ["shop"], None,
+        )
+    with _pytest.raises(AgentError):
+        compile_changes(
+            [{"operation": "add_workflow", "entity": "Order"}],
+            existing, ["shop"], None,
+        )

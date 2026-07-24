@@ -2054,3 +2054,56 @@ def test_fail_derives_recoverable_from_code():
     # Explicit override wins over the code-derived default.
     assert fail("terminal", code="invalid_input", recoverable=False).data["recoverable"] is False
     assert AgentError("x", code="no_project_id", recoverable=True).result.data["recoverable"] is True
+
+
+async def test_add_viewset_action_duplicate_errors_then_skips(project):
+    await agents.create_model("blog", "Post", POST_FIELDS, project_id=project)
+    await agents.create_serializer("blog", "Post", project_id=project)
+    await agents.create_viewset("blog", "Post", project_id=project)
+    first = await agents.add_viewset_action(
+        "blog", "Post", "publish", detail=True, methods=["post"],
+        body="return {}", project_id=project,
+    )
+    assert first.success, first.message
+
+    dup = await agents.add_viewset_action(
+        "blog", "Post", "publish", detail=True, methods=["post"],
+        body="return {}", project_id=project,
+    )
+    assert not dup.success
+    assert dup.data["error_code"] == "already_exists"
+
+    skipped = await agents.add_viewset_action(
+        "blog", "Post", "publish", detail=True, methods=["post"],
+        body="return {}", if_exists="skip", project_id=project,
+    )
+    assert skipped.success
+    assert skipped.data["skipped"] is True
+    views = (project / "apps" / "blog" / "views.py").read_text()
+    assert views.count("async def publish(") == 1
+
+    bad = await agents.add_viewset_action(
+        "blog", "Post", "other", if_exists="overwrite", project_id=project,
+    )
+    assert not bad.success
+    assert bad.data["error_code"] == "invalid_input"
+
+
+async def test_add_viewset_action_body_imports_are_wired(project):
+    import ast
+
+    await agents.create_model("blog", "Post", POST_FIELDS, project_id=project)
+    await agents.create_serializer("blog", "Post", project_id=project)
+    await agents.create_viewset("blog", "Post", project_id=project)
+    result = await agents.add_viewset_action(
+        "blog", "Post", "submit", detail=True, methods=["post"],
+        imports=["from zeeb_api.exceptions import ResourceConflictException"],
+        body="""
+            raise ResourceConflictException(message="nope")
+        """,
+        project_id=project,
+    )
+    assert result.success, result.message
+    views = (project / "apps" / "blog" / "views.py").read_text()
+    ast.parse(views)
+    assert "from zeeb_api.exceptions import ResourceConflictException" in views

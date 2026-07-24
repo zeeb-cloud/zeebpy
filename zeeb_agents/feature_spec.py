@@ -77,6 +77,7 @@ KNOWN_OPS = (
     "add_field",
     "remove_field",
     "add_relationship",
+    "add_viewset_action",
     "create_user_model",
     "setup_auth",
     "setup_oauth",
@@ -97,6 +98,7 @@ _OP_REQUIRED: dict[str, tuple[str, ...]] = {
     "add_field": ("app", "model", "field"),
     "remove_field": ("app", "model", "field_name"),
     "add_relationship": ("app", "model", "rel"),
+    "add_viewset_action": ("app", "model", "action_name", "body"),
     "create_user_model": ("app",),
     "setup_auth": (),
     "setup_oauth": ("provider",),
@@ -108,7 +110,34 @@ _OP_REQUIRED: dict[str, tuple[str, ...]] = {
 # Recognized keys per level — unknown keys warn (never error) so typos like
 # "filds" cannot be silently ignored.
 _SPEC_KEYS = {"name", "app", "entities", "api", "auth", "description"}
-_ENTITY_KEYS = {"name", "fields", "timestamps", "ordering", "constraints", "api"}
+_ENTITY_KEYS = {"name", "fields", "timestamps", "ordering", "constraints", "api", "workflow"}
+_WORKFLOW_KEYS = {"field", "states", "initial", "transitions"}
+_TRANSITION_KEYS = {"name", "from", "to", "actor", "permission"}
+
+# Workflow transition ``actor`` → permission class on the generated action.
+ACTOR_PERMISSION_MAP = {
+    "anyone": "AllowAny",
+    "authenticated": "IsAuthenticated",
+    "owner": "IsOwner",
+    "admin": "IsAdminUser",
+}
+
+# Method names a transition may not use (generated ViewSet API + CRUD verbs).
+_RESERVED_ACTION_NAMES = frozenset(
+    {
+        "list",
+        "retrieve",
+        "create",
+        "update",
+        "partial_update",
+        "destroy",
+        "get_queryset",
+        "get_object",
+        "get_serializer",
+        "get_action_request_body",
+        "perform_create",
+    }
+)
 
 _DB_CHANGING_OPS = {
     "create_model",
@@ -348,6 +377,259 @@ def _merged_api(spec: dict, entity: dict, path: str, problems: list[dict]) -> di
     return merged
 
 
+def _transition_from_states(transition: dict) -> list[str]:
+    """Normalize a transition's ``from`` to a list of state names."""
+    raw = transition.get("from")
+    return [raw] if isinstance(raw, str) else list(raw or [])
+
+
+def _transition_permission(transition: dict) -> str | None:
+    """The permission class a transition's action carries (None = inherit)."""
+    if transition.get("permission"):
+        return transition["permission"]
+    actor = transition.get("actor")
+    if actor and actor != "anyone":
+        return ACTOR_PERMISSION_MAP.get(actor)
+    if actor == "anyone":
+        return ACTOR_PERMISSION_MAP["anyone"]
+    return None
+
+
+def _validate_workflow(
+    entity: dict,
+    path: str,
+    field_names: set[str],
+    problems: list[dict],
+    warnings: list[str],
+) -> None:
+    """Validate an entity-level ``workflow`` block (states + transitions)."""
+    from zeeb_agents._utils.code_gen import VIEWSET_PERMISSIONS
+
+    workflow = entity.get("workflow")
+    if workflow is None:
+        return
+    if not isinstance(workflow, dict):
+        problems.append(_problem(path, "invalid_input", "'workflow' must be a dict"))
+        return
+    _warn_unknown_keys(workflow, _WORKFLOW_KEYS, path, warnings)
+
+    states = workflow.get("states")
+    if (
+        not isinstance(states, list)
+        or not states
+        or not all(isinstance(s, str) and s for s in states)
+        or len(set(states)) != len(states)
+    ):
+        problems.append(
+            _problem(
+                f"{path}.states",
+                "invalid_input",
+                "workflow needs a non-empty 'states' list of unique strings",
+            )
+        )
+        return
+    initial = workflow.get("initial", states[0])
+    if initial not in states:
+        problems.append(
+            _problem(
+                f"{path}.initial",
+                "invalid_input",
+                f"workflow initial {initial!r} is not one of {states}",
+                suggestions=close_matches(str(initial), states),
+            )
+        )
+    status_field = workflow.get("field", "status")
+    if not _is_identifier(status_field):
+        problems.append(
+            _problem(
+                f"{path}.field",
+                "invalid_identifier",
+                f"workflow field must be an identifier, got {status_field!r}",
+            )
+        )
+
+    # A declared field of the same name must be an enum covering the states.
+    declared = next(
+        (
+            f
+            for f in entity.get("fields", []) or []
+            if isinstance(f, dict) and f.get("name") == status_field
+        ),
+        None,
+    )
+    if declared is not None:
+        values = declared.get("values") if declared.get("type") == "enum" else None
+        if not isinstance(values, list) or not set(states) <= set(values):
+            problems.append(
+                _problem(
+                    f"{path}.field",
+                    "invalid_field_spec",
+                    f"declared field '{status_field}' must be an enum whose "
+                    f"values cover the workflow states {states}",
+                )
+            )
+
+    transitions = workflow.get("transitions")
+    if not isinstance(transitions, list) or not transitions:
+        problems.append(
+            _problem(
+                f"{path}.transitions",
+                "invalid_input",
+                "workflow needs a non-empty 'transitions' list",
+            )
+        )
+        return
+    seen_names: set[str] = set()
+    has_owner_relation = any(
+        isinstance(f, dict) and f.get("name") in ("owner", "user")
+        for f in entity.get("fields", []) or []
+    )
+    for j, transition in enumerate(transitions):
+        tpath = f"{path}.transitions[{j}]"
+        if not isinstance(transition, dict):
+            problems.append(_problem(tpath, "invalid_input", "transition must be a dict"))
+            continue
+        _warn_unknown_keys(transition, _TRANSITION_KEYS, tpath, warnings)
+        t_name = transition.get("name")
+        if not _is_identifier(t_name):
+            problems.append(
+                _problem(
+                    f"{tpath}.name",
+                    "invalid_identifier",
+                    f"transition needs an identifier 'name', got {t_name!r}",
+                )
+            )
+            continue
+        if t_name in seen_names:
+            problems.append(
+                _problem(f"{tpath}.name", "already_exists", f"duplicate transition '{t_name}'")
+            )
+        seen_names.add(t_name)
+        if t_name in _RESERVED_ACTION_NAMES or t_name in field_names:
+            problems.append(
+                _problem(
+                    f"{tpath}.name",
+                    "invalid_input",
+                    f"transition name '{t_name}' collides with a reserved "
+                    "endpoint method or a field name",
+                )
+            )
+        from_states = _transition_from_states(transition)
+        bad_from = [s for s in from_states if s not in states]
+        if not from_states or bad_from:
+            problems.append(
+                _problem(
+                    f"{tpath}.from",
+                    "invalid_input",
+                    f"'from' must name workflow states; got {transition.get('from')!r}",
+                    suggestions=close_matches(str((bad_from or [""])[0]), states),
+                )
+            )
+        to = transition.get("to")
+        if to not in states:
+            problems.append(
+                _problem(
+                    f"{tpath}.to",
+                    "invalid_input",
+                    f"'to' must be one workflow state; got {to!r}",
+                    suggestions=close_matches(str(to), states),
+                )
+            )
+        actor = transition.get("actor")
+        permission = transition.get("permission")
+        if actor and permission:
+            problems.append(
+                _problem(
+                    tpath,
+                    "invalid_input",
+                    "'actor' and 'permission' are mutually exclusive — pick one",
+                )
+            )
+        if actor is not None and actor not in ACTOR_PERMISSION_MAP:
+            problems.append(
+                _problem(
+                    f"{tpath}.actor",
+                    "invalid_input",
+                    f"unknown actor {actor!r}. Valid: {', '.join(ACTOR_PERMISSION_MAP)}",
+                    suggestions=close_matches(str(actor), list(ACTOR_PERMISSION_MAP)),
+                )
+            )
+        if actor == "owner" and not has_owner_relation:
+            warnings.append(
+                f"{tpath}: actor 'owner' maps to IsOwner, which checks an "
+                "'owner' (or 'user') field — this entity declares neither, so "
+                "the transition would deny every request."
+            )
+        if permission is not None:
+            if not isinstance(permission, str) or not permission:
+                problems.append(
+                    _problem(f"{tpath}.permission", "invalid_permission", "'permission' must be a class name")
+                )
+            elif "." in permission:
+                warnings.append(
+                    f"{tpath}: dotted permission '{permission}' is accepted "
+                    "but can only be checked at execute time."
+                )
+            elif permission not in VIEWSET_PERMISSIONS:
+                problems.append(
+                    _problem(
+                        f"{tpath}.permission",
+                        "invalid_permission",
+                        f"unknown permission class '{permission}'. Valid: "
+                        f"{', '.join(sorted(VIEWSET_PERMISSIONS))} (or a custom "
+                        "class via a dotted apps.<app>.permissions.<Class> reference)",
+                        suggestions=close_matches(permission, sorted(VIEWSET_PERMISSIONS)),
+                    )
+                )
+
+
+def _render_transition_body(
+    entity: str,
+    status_field: str,
+    transition: dict,
+) -> str:
+    """Render the generated action body for one workflow transition."""
+    from_states = _transition_from_states(transition)
+    allowed = ", ".join(from_states)
+    from_tuple = ", ".join(f'"{s}"' for s in from_states)
+    name = transition["name"]
+    to = transition["to"]
+    return (
+        "obj = await self.get_object()\n"
+        f"if obj.{status_field} not in ({from_tuple},):\n"
+        "    raise ResourceConflictException(\n"
+        f"        message=f\"Cannot {name}: {status_field} is '{{obj.{status_field}}}' (allowed: {allowed})\"\n"
+        "    )\n"
+        f'obj.{status_field} = "{to}"\n'
+        "await obj.save()\n"
+        f"return {entity}Serializer(obj).data"
+    )
+
+
+def _transition_action_op(
+    app: str,
+    entity: str,
+    status_field: str,
+    transition: dict,
+) -> dict:
+    """The ``add_viewset_action`` op implementing one workflow transition."""
+    op = {
+        "op": "add_viewset_action",
+        "app": app,
+        "model": entity,
+        "action_name": transition["name"],
+        "detail": True,
+        "methods": ["post"],
+        "response_serializer": f"{entity}Serializer",
+        "imports": ["from zeeb_api.exceptions import ResourceConflictException"],
+        "body": _render_transition_body(entity, status_field, transition),
+    }
+    permission = _transition_permission(transition)
+    if permission:
+        op["permission"] = permission
+    return op
+
+
 def _topo_order(entities: list[dict], warnings: list[str]) -> list[dict]:
     """Order entities so fk/o2o targets are created first (Kahn's algorithm).
 
@@ -549,7 +831,17 @@ def validate_feature_spec(
                     "'ordering' must be a list of field names (prefix with '-' for descending)",
                 )
             )
-        _merged_api(spec, entity, path, problems)
+        api = _merged_api(spec, entity, path, problems)
+        _validate_workflow(entity, f"{path}.workflow", seen, problems, warnings)
+        if entity.get("workflow") is not None and not api.get("expose", True):
+            problems.append(
+                _problem(
+                    f"{path}.workflow",
+                    "invalid_input",
+                    "workflow transitions are API endpoints — remove "
+                    "'expose': false or drop the workflow",
+                )
+            )
 
     return problems
 
@@ -587,6 +879,7 @@ def compile_feature_spec(
     existing_names = {m["model"] for m in existing_models if m.get("app") == app}
     entity_names = [e["name"] for e in spec["entities"]]
     endpoints = 0
+    transitions = 0
 
     for entity in _topo_order(spec["entities"], warnings):
         ename = entity["name"]
@@ -604,6 +897,23 @@ def compile_feature_spec(
             if compiled is not None:
                 fields.append(compiled)
         field_names = [f["name"] for f in fields]
+        workflow = entity.get("workflow")
+        if workflow:
+            status_field = workflow.get("field", "status")
+            if status_field not in field_names:
+                synthesized = _compile_field(
+                    {
+                        "name": status_field,
+                        "type": "enum",
+                        "values": list(workflow["states"]),
+                        "default": workflow.get("initial", workflow["states"][0]),
+                    },
+                    f"spec.entities.{ename}.workflow.field",
+                    entity_names, existing_models, app, [], warnings,
+                )
+                if synthesized is not None:
+                    fields.append(synthesized)
+                    field_names.append(status_field)
         if entity.get("timestamps", True):
             for ts in _TIMESTAMP_FIELDS:
                 if ts["name"] not in field_names:
@@ -679,6 +989,13 @@ def compile_feature_spec(
                 "prefix": _pluralize(ename.lower()),
             }
         )
+        if workflow:
+            status_field = workflow.get("field", "status")
+            for transition in workflow["transitions"]:
+                operations.append(
+                    _transition_action_op(app, ename, status_field, transition)
+                )
+                transitions += 1
 
     if (spec.get("auth") or {}).get("required"):
         warnings.append(
@@ -694,12 +1011,16 @@ def compile_feature_spec(
     if isinstance(spec.get("description"), str) and spec["description"]:
         feature["description"] = spec["description"]
 
+    summary = (
+        f"Create feature '{name}': {len(entity_names)} model(s), "
+        f"{endpoints} endpoint(s) in app '{app}'"
+    )
+    if transitions:
+        summary += f", {transitions} workflow transition(s)"
+
     return {
         "plan_version": PLAN_VERSION,
-        "summary": (
-            f"Create feature '{name}': {len(entity_names)} model(s), "
-            f"{endpoints} endpoint(s) in app '{app}'"
-        ),
+        "summary": summary,
         "feature": feature,
         "operations": operations,
         "risk": _plan_risk(operations),
@@ -766,7 +1087,14 @@ def compile_changes(
         )
         return None
 
-    known_change_ops = ("add_field", "remove_field", "add_relation", "add_entity")
+    known_change_ops = (
+        "add_field",
+        "remove_field",
+        "add_relation",
+        "add_entity",
+        "add_workflow",
+        "add_transition",
+    )
     for i, change in enumerate(changes):
         path = f"changes[{i}]"
         if not isinstance(change, dict):
@@ -838,6 +1166,117 @@ def compile_changes(
             continue
         entity_app = _entity_app(entity_name, path)
         if entity_app is None:
+            continue
+
+        if operation == "add_workflow":
+            workflow = change.get("workflow")
+            model_fields = next(
+                (
+                    list(m.get("fields") or [])
+                    for m in existing_models
+                    if m.get("model") == entity_name and m.get("app") == entity_app
+                ),
+                [],
+            )
+            status_field = (
+                workflow.get("field", "status") if isinstance(workflow, dict) else "status"
+            )
+            # Pseudo-entity for the shared validator: known field names minus
+            # the status field (its type/choices are not in the inventory, so
+            # the declared-enum check must not fire against a bare name).
+            pseudo = {
+                "name": entity_name,
+                "fields": [{"name": n} for n in model_fields if n != status_field],
+                "workflow": workflow,
+            }
+            before = len(problems)
+            _validate_workflow(pseudo, f"{path}.workflow", set(model_fields), problems, warnings)
+            if workflow is None:
+                problems.append(
+                    _problem(path, "invalid_input", "add_workflow needs 'workflow': a workflow dict")
+                )
+            if len(problems) > before or workflow is None:
+                continue
+            if status_field in model_fields:
+                warnings.append(
+                    f"{path}: assuming existing field '{status_field}' carries "
+                    f"the states {workflow['states']} — enum choices cannot be "
+                    "verified from the project inventory."
+                )
+            else:
+                operations.append(
+                    {
+                        "op": "add_field",
+                        "app": entity_app,
+                        "model": entity_name,
+                        "field": {
+                            "name": status_field,
+                            "type": "CharField",
+                            "choices": [[s, s] for s in workflow["states"]],
+                            "max_length": max(len(s) for s in workflow["states"]),
+                            "default": workflow.get("initial", workflow["states"][0]),
+                        },
+                    }
+                )
+            for transition in workflow["transitions"]:
+                operations.append(
+                    _transition_action_op(entity_app, entity_name, status_field, transition)
+                )
+            continue
+
+        if operation == "add_transition":
+            transition = change.get("transition")
+            if not isinstance(transition, dict) or not _is_identifier(transition.get("name")):
+                problems.append(
+                    _problem(
+                        path,
+                        "invalid_input",
+                        "add_transition needs 'transition': "
+                        '{"name", "from", "to", "actor"?|"permission"?}',
+                    )
+                )
+                continue
+            status_field = change.get("field", "status")
+            if not _is_identifier(status_field):
+                problems.append(
+                    _problem(path, "invalid_identifier", f"'field' must be an identifier, got {status_field!r}")
+                )
+                continue
+            from_states = _transition_from_states(transition)
+            to = transition.get("to")
+            if not from_states or not isinstance(to, str) or not to:
+                problems.append(
+                    _problem(
+                        path,
+                        "invalid_input",
+                        "transition needs 'from' (a state or list of states) and 'to' (a state)",
+                    )
+                )
+                continue
+            if transition.get("actor") and transition.get("permission"):
+                problems.append(
+                    _problem(path, "invalid_input", "'actor' and 'permission' are mutually exclusive")
+                )
+                continue
+            actor = transition.get("actor")
+            if actor is not None and actor not in ACTOR_PERMISSION_MAP:
+                problems.append(
+                    _problem(
+                        path,
+                        "invalid_input",
+                        f"unknown actor {actor!r}. Valid: {', '.join(ACTOR_PERMISSION_MAP)}",
+                        suggestions=close_matches(str(actor), list(ACTOR_PERMISSION_MAP)),
+                    )
+                )
+                continue
+            warnings.append(
+                f"{path}: 'from'/'to' cannot be checked against a declared "
+                f"states list — ensure field '{status_field}' accepts "
+                f"'{to}' on '{entity_name}'."
+            )
+            operations.append(
+                _transition_action_op(entity_app, entity_name, status_field, transition)
+            )
             continue
 
         if operation == "remove_field":
@@ -1004,7 +1443,7 @@ def validate_plan(plan: object) -> str | None:
             value = op.get(key)
             if value is None:
                 problems.append(f"operations[{i}] ({kind}): missing required key '{key}'")
-            elif key in ("app", "model", "field_name") and not _is_identifier(value):
+            elif key in ("app", "model", "field_name", "action_name") and not _is_identifier(value):
                 problems.append(
                     f"operations[{i}] ({kind}): '{key}' must be an identifier, got {value!r}"
                 )
@@ -1031,6 +1470,7 @@ def new_changes() -> dict:
         "endpoints_created": [],
         "fields_added": [],
         "fields_removed": [],
+        "actions_created": [],
         "migrations_created": [],
         "migrations_applied": [],
     }
@@ -1068,7 +1508,7 @@ async def execute_plan(
     from zeeb_agents.models import add_field, add_relationship, create_model, remove_field
     from zeeb_agents.project import create_app
     from zeeb_agents.serializers import create_serializer
-    from zeeb_agents.viewsets import create_viewset, register_route
+    from zeeb_agents.viewsets import add_viewset_action, create_viewset, register_route
 
     changes = new_changes()
     steps: list[str] = []
@@ -1172,6 +1612,27 @@ async def execute_plan(
                 )
             else:
                 errors.append(f"add_relationship({op['model']}): {result.message}")
+        elif kind == "add_viewset_action":
+            result = await add_viewset_action(
+                op["app"], op["model"], op["action_name"],
+                detail=op.get("detail", True), methods=op.get("methods"),
+                body=op.get("body"), permission=op.get("permission"),
+                response_serializer=op.get("response_serializer"),
+                imports=op.get("imports"),
+                if_exists="skip", project_id=project_root,
+            )
+            label = f"{op['model']}.{op['action_name']}"
+            if result.success:
+                if _skipped(result):
+                    # Name-based skip: a hand-written method with this name
+                    # blocks generation — say so loudly in the step log.
+                    steps.append(f"Action '{label}' already defined; left untouched")
+                else:
+                    changes["actions_created"].append(label)
+                    steps.append(f"Added action '{label}'")
+                    state_changed = True
+            else:
+                errors.append(f"add_viewset_action({label}): {result.message}")
         elif kind == "remove_field":
             result = await remove_field(
                 op["app"], op["model"], op["field_name"], project_id=project_root
