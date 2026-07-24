@@ -2039,3 +2039,18 @@ async def test_no_project_id_error_code(tmp_path, monkeypatch):
     result = await agents.list_models(project_id=None)
     assert not result.success
     assert result.data["error_code"] == "no_project_id"
+
+
+def test_fail_derives_recoverable_from_code():
+    from zeeb_agents._utils.errors import AgentError, fail
+
+    assert fail("bad type", code="invalid_field_type").data["recoverable"] is True
+    assert fail("no app", code="app_not_found").data["recoverable"] is True
+    assert fail("exists", code="already_exists").data["recoverable"] is True
+    assert fail("no id", code="no_project_id").data["recoverable"] is False
+    assert fail("gone", code="project_not_found").data["recoverable"] is False
+    assert fail("no urls", code="runtime_not_configured").data["recoverable"] is False
+    assert fail("denied", code="permission_denied").data["recoverable"] is False
+    # Explicit override wins over the code-derived default.
+    assert fail("terminal", code="invalid_input", recoverable=False).data["recoverable"] is False
+    assert AgentError("x", code="no_project_id", recoverable=True).result.data["recoverable"] is True

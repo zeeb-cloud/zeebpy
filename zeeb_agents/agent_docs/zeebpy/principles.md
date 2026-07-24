@@ -39,6 +39,19 @@ Rules you can rely on:
   (a list of close-match candidates, also echoed as a "Did you mean: …?" in
   the message). Extra context keys (`apps`, `models`, `tables`, `columns`,
   `port`, …) appear where they help; treat any of them as optional.
+- **Failures declare whether you can recover.** `data["recoverable"]` is
+  `true` when a corrected input or a preparatory call in the same session can
+  succeed (bad field type, missing app, thing already exists, …) and `false`
+  for session/context-level faults (missing project id, unknown project,
+  runtime not configured, filesystem permission) that need the platform or
+  the user, not another attempt.
+- **Mutating intent results report their blast radius.** `build_feature`,
+  `apply_plan`, `change_feature`, and `plan_feature` attach
+  `data["affected"]` — `{"apps": [...], "entities": ["app.Model", ...],
+  "files": ["apps/<app>/models.py", ...]}` — computed from the plan's
+  operations. On success it is what was touched; on partial failure it is the
+  scope the call was touching; on `plan_feature` it is what the plan *would*
+  touch.
 - For the exact keys a given tool puts in `data`, read its `Returns data:`
   docstring block (via `{prefix}list_capabilities(include_docstrings=True)`).
 

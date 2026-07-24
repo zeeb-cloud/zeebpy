@@ -461,3 +461,36 @@ async def test_apply_plan_rejects_hand_built_op_payloads(root: Path):
     assert not applied.success
     assert applied.data["error_code"] == "invalid_input"
     assert "missing required key" in applied.message
+
+
+# ---------------------------------------------------------------------------
+# Recovery contract: affected scope on mutating envelopes
+# ---------------------------------------------------------------------------
+
+
+async def test_intent_envelopes_report_affected_scope(root: Path):
+    planned = await agents.plan_feature(SPEC, project_id=root)
+    assert planned.success, planned.message
+    affected = planned.data["affected"]
+    assert affected["apps"] == ["blog"]
+    assert set(affected["entities"]) == {"blog.Post", "blog.Category"}
+    assert "apps/blog/models.py" in affected["files"]
+    assert "apps/blog/urls.py" in affected["files"]
+    assert "migrations" in affected["files"]
+
+    built = await agents.build_feature(SPEC, migrate=False, verify=False, project_id=root)
+    assert built.success, built.message
+    assert built.data["affected"] == affected
+
+
+async def test_partial_failure_still_reports_affected(root: Path, monkeypatch):
+    async def _boom(*args, **kwargs):
+        from zeeb_agents._utils.errors import fail
+
+        return fail("disk full", code="invalid_input")
+
+    monkeypatch.setattr("zeeb_agents.serializers.create_serializer", _boom)
+    built = await agents.build_feature(SPEC, migrate=False, verify=False, project_id=root)
+    assert not built.success
+    assert built.data["affected"]["apps"] == ["blog"]
+    assert built.data["errors"]

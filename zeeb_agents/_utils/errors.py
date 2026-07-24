@@ -56,18 +56,40 @@ ERROR_CODES = frozenset(
 )
 
 
+# Codes an agent cannot fix from inside the session: they signal a missing or
+# broken project/platform context, not a correctable input. Everything else is
+# recoverable — a corrected argument or a preparatory call can succeed.
+_NON_RECOVERABLE_CODES = frozenset(
+    {
+        "no_project_id",
+        "project_not_found",
+        "runtime_not_configured",
+        "permission_denied",
+    }
+)
+
+
 def fail(
     message: str,
     *,
     code: str,
     suggestions: list[str] | None = None,
+    recoverable: bool | None = None,
     **data: Any,
 ) -> AgentResult:
-    """Build a failure ``AgentResult`` with a machine-readable ``error_code``."""
+    """Build a failure ``AgentResult`` with a machine-readable ``error_code``.
+
+    ``recoverable`` defaults from the code (see :data:`_NON_RECOVERABLE_CODES`);
+    pass it explicitly only when a nominally recoverable code is terminal in
+    context.
+    """
     if code not in ERROR_CODES:
         raise ValueError(f"Unknown error code '{code}'")
     payload: dict[str, Any] = {k: v for k, v in data.items() if v is not None}
     payload["error_code"] = code
+    payload["recoverable"] = (
+        recoverable if recoverable is not None else code not in _NON_RECOVERABLE_CODES
+    )
     if suggestions:
         payload["suggestions"] = suggestions
     return AgentResult(success=False, message=message, data=payload)
@@ -86,10 +108,13 @@ class AgentError(Exception):
         *,
         code: str,
         suggestions: list[str] | None = None,
+        recoverable: bool | None = None,
         **data: Any,
     ) -> None:
         super().__init__(message)
-        self.result = fail(message, code=code, suggestions=suggestions, **data)
+        self.result = fail(
+            message, code=code, suggestions=suggestions, recoverable=recoverable, **data
+        )
 
 
 def close_matches(value: str, candidates: list[str], n: int = 3) -> list[str]:

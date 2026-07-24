@@ -49,6 +49,41 @@ from zeeb_agents.feature_spec import (
 _DEFAULT_CHECKS = ("structure", "migrations", "openapi")
 _VALID_CHECKS = ("structure", "migrations", "openapi", "tests")
 
+#: Generator-owned files each op kind touches — powers the ``affected`` report.
+_OP_FILES: dict[str, tuple[str, ...]] = {
+    "create_model": ("models.py",),
+    "add_field": ("models.py",),
+    "remove_field": ("models.py",),
+    "add_relationship": ("models.py",),
+    "create_user_model": ("models.py",),
+    "create_serializer": ("serializers.py",),
+    "create_viewset": ("views.py",),
+    "register_route": ("urls.py",),
+    "make_migrations": ("migrations",),
+}
+
+
+def _affected(plan: dict) -> dict:
+    """Apps, entities, and files a plan touches (or would touch, for plans).
+
+    Computed statically from the operations, so it is attached to successful,
+    partially-failed, and plan-only results alike — on failure it reads as
+    "the scope this call was touching".
+    """
+    apps: set[str] = set()
+    entities: set[str] = set()
+    files: set[str] = set()
+    for op in plan.get("operations", []):
+        app = op.get("app")
+        model = op.get("model")
+        if isinstance(app, str):
+            apps.add(app)
+        if isinstance(app, str) and isinstance(model, str):
+            entities.add(f"{app}.{model}")
+        for name in _OP_FILES.get(op.get("op", ""), ()):
+            files.add(f"apps/{app}/{name}" if isinstance(app, str) else name)
+    return {"apps": sorted(apps), "entities": sorted(entities), "files": sorted(files)}
+
 
 async def _project_inventory(root: Path) -> tuple[list[dict], list[str]]:
     """Return ``(existing models, existing app names)`` for compilation."""
@@ -162,6 +197,7 @@ async def _apply_and_report(
                 "changes": outcome["changes"],
                 "steps_completed": outcome["steps"],
                 "errors": outcome["errors"],
+                "affected": _affected(plan),
                 "verification": None,
                 "warnings": warnings,
                 "next_actions": [
@@ -196,6 +232,7 @@ async def _apply_and_report(
             "summary": summary,
             "changes": outcome["changes"],
             "steps": outcome["steps"],
+            "affected": _affected(plan),
             "verification": verification,
             "warnings": warnings,
             "next_actions": next_actions,
@@ -287,7 +324,7 @@ async def plan_feature(
             "nothing written yet. Review, then run apply_plan with this plan "
             "(or build_feature with the same spec)."
         ),
-        data={**plan, "state_changed": False},
+        data={**plan, "affected": _affected(plan), "state_changed": False},
     )
 
 
