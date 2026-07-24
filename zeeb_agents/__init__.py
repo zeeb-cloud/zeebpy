@@ -101,6 +101,9 @@ from zeeb_agents.intent import (
     verify_project,
 )
 
+# Generated-test scaffolding
+from zeeb_agents.test_scaffold import generate_tests
+
 # Logs
 from zeeb_agents.logs import (
     clear_logs,
@@ -311,6 +314,7 @@ __all__ = [
     "run_query",
     # Testing
     "run_tests",
+    "generate_tests",
     # Shell
     "run_management_command",
     # Seed data

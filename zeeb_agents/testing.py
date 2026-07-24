@@ -10,26 +10,29 @@ from pathlib import Path
 
 from zeeb_agents._utils import AgentResult, agent_function
 
-_RESULT_RE = re.compile(
-    r"(?P<passed>\d+) passed"
-    r"(?:, (?P<failed>\d+) failed)?"
-    r"(?:, (?P<error>\d+) error)?"
-    r"(?:, (?P<skipped>\d+) skipped)?",
-    re.IGNORECASE,
-)
+_COUNT_RES = {
+    "passed": re.compile(r"(\d+) passed"),
+    "failed": re.compile(r"(\d+) failed"),
+    "errors": re.compile(r"(\d+) error"),
+    "skipped": re.compile(r"(\d+) skipped"),
+}
 
 
 def _parse_pytest_output(output: str) -> dict:
-    """Extract pass/fail/error/skipped counts from pytest output."""
+    """Extract pass/fail/error/skipped counts from pytest's summary line.
+
+    Each count is matched independently: pytest orders them by outcome
+    ("2 failed, 1 passed") and omits absent ones entirely ("3 failed in
+    1.20s") — the old passed-first pattern silently reported all-failing
+    runs as zero failures.
+    """
     for line in reversed(output.splitlines()):
-        m = _RESULT_RE.search(line)
-        if m:
-            return {
-                "passed": int(m.group("passed") or 0),
-                "failed": int(m.group("failed") or 0),
-                "errors": int(m.group("error") or 0),
-                "skipped": int(m.group("skipped") or 0),
-            }
+        if not any(token in line for token in ("passed", "failed", "error", "skipped")):
+            continue
+        return {
+            key: int(match.group(1)) if (match := rx.search(line)) else 0
+            for key, rx in _COUNT_RES.items()
+        }
     return {"passed": 0, "failed": 0, "errors": 0, "skipped": 0}
 
 

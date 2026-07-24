@@ -188,7 +188,9 @@ async def test_build_feature_verification_envelope(root: Path):
     res = await agents.build_feature(SPEC, project_id=root)  # verify=True default
     assert res.success, res.message
     verification = res.data["verification"]
-    assert set(verification["checks"]) == {"structure", "migrations", "openapi"}
+    # tests=True (default) generated a suite, so the tests check auto-joins.
+    assert set(verification["checks"]) == {"structure", "migrations", "openapi", "tests"}
+    assert verification["checks"]["tests"]["ok"] is True
     assert verification["checks"]["structure"]["ok"] is True
     assert verification["checks"]["migrations"]["ok"] is True
     # No live server in tests — the openapi check reports, not raises.
@@ -502,6 +504,7 @@ async def test_partial_failure_still_reports_affected(root: Path, monkeypatch):
 
 WORKFLOW_SPEC = {
     "name": "orders",
+    "api": {"authentication": "public"},
     "entities": [
         {
             "name": "Order",
@@ -560,3 +563,48 @@ async def test_change_feature_add_transition_e2e(root: Path):
     assert changed.data["changes"]["actions_created"] == ["Order.cancel"]
     views = (root / "apps" / "orders" / "views.py").read_text()
     assert "async def cancel(self, request, pk=None):" in views
+
+
+# ---------------------------------------------------------------------------
+# Generated tests: build writes them, verification gates on them, they PASS
+# ---------------------------------------------------------------------------
+
+
+async def test_build_feature_generates_tests_and_verification_gates_on_them(root: Path):
+    res = await agents.build_feature(SPEC, project_id=root)
+    assert res.success, res.message
+    created = res.data["changes"]["tests_created"]
+    assert "tests/conftest.py" in created
+    assert "tests/test_blog_generated.py" in created
+
+    # The default verification chain auto-included the tests check — and the
+    # generated suite actually passes against the scaffolded feature.
+    checks = res.data["verification"]["checks"]
+    assert "tests" in checks
+    assert checks["tests"]["ok"], checks["tests"]["summary"]
+
+    # Idempotent re-run: no files rewritten, user edits survive.
+    marker = "# user edited\n"
+    test_file = root / "tests" / "test_blog_generated.py"
+    original = test_file.read_text()
+    test_file.write_text(original + marker)
+    again = await agents.build_feature(SPEC, verify=False, project_id=root)
+    assert again.success, again.message
+    assert again.data["changes"]["tests_created"] == []
+    assert test_file.read_text().endswith(marker)
+
+    # Opt-out leaves no generate_tests op in the plan.
+    planned = await agents.plan_feature(SPEC, tests=False, project_id=root)
+    assert all(op["op"] != "generate_tests" for op in planned.data["operations"])
+
+
+async def test_generated_workflow_transition_test_passes_live(root: Path):
+    res = await agents.build_feature(WORKFLOW_SPEC, verify=False, project_id=root)
+    assert res.success, res.message
+    generated = (root / "tests" / "test_orders_generated.py").read_text()
+    assert "test_order_submit_transition_conflict" in generated
+
+    run = await agents.run_tests(project_id=root)
+    assert run.success, (run.data or {}).get("output", run.message)
+    assert (run.data or {}).get("failed") == 0
+    assert (run.data or {}).get("passed", 0) > 0

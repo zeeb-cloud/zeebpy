@@ -78,6 +78,7 @@ KNOWN_OPS = (
     "remove_field",
     "add_relationship",
     "add_viewset_action",
+    "generate_tests",
     "create_user_model",
     "setup_auth",
     "setup_oauth",
@@ -99,6 +100,7 @@ _OP_REQUIRED: dict[str, tuple[str, ...]] = {
     "remove_field": ("app", "model", "field_name"),
     "add_relationship": ("app", "model", "rel"),
     "add_viewset_action": ("app", "model", "action_name", "body"),
+    "generate_tests": ("app", "entities"),
     "create_user_model": ("app",),
     "setup_auth": (),
     "setup_oauth": ("provider",),
@@ -850,6 +852,7 @@ def compile_feature_spec(
     spec: dict,
     existing_models: list[dict],
     existing_apps: list[str],
+    tests: bool = True,
 ) -> dict:
     """Compile a validated FeatureSpec into a deterministic plan dict.
 
@@ -880,6 +883,7 @@ def compile_feature_spec(
     entity_names = [e["name"] for e in spec["entities"]]
     endpoints = 0
     transitions = 0
+    test_entities: list[dict] = []
 
     for entity in _topo_order(spec["entities"], warnings):
         ename = entity["name"]
@@ -940,6 +944,28 @@ def compile_feature_spec(
         )
 
         api = _merged_api(spec, entity, ename, [])
+        descriptor: dict = {
+            "name": ename,
+            "exposed": bool(api["expose"]),
+            "authentication": api["authentication"],
+            "prefix": _pluralize(ename.lower()) if api["expose"] else None,
+            "fields": fields,
+        }
+        if workflow:
+            descriptor["workflow"] = {
+                "field": workflow.get("field", "status"),
+                "initial": workflow.get("initial", workflow["states"][0]),
+                "transitions": [
+                    {
+                        "name": t["name"],
+                        "from_states": _transition_from_states(t),
+                        "to": t["to"],
+                        "permission": _transition_permission(t),
+                    }
+                    for t in workflow["transitions"]
+                ],
+            }
+        test_entities.append(descriptor)
         if not api["expose"]:
             continue
         endpoints += 1
@@ -1004,6 +1030,8 @@ def compile_feature_spec(
             "up JWT auth."
         )
 
+    if tests:
+        operations.append({"op": "generate_tests", "app": app, "entities": test_entities})
     operations.append({"op": "make_migrations", "name": name})
     operations.append({"op": "run_migrations"})
 
@@ -1142,7 +1170,11 @@ def compile_changes(
                 "entities": [entity],
             }
             try:
-                sub_plan = compile_feature_spec(sub_spec, existing_models, existing_apps)
+                # tests=False: change_feature evolves existing features — test
+                # generation stays a build_feature/apply_plan concern.
+                sub_plan = compile_feature_spec(
+                    sub_spec, existing_models, existing_apps, tests=False
+                )
             except AgentError as exc:
                 data = exc.result.data or {}
                 for p in data.get("problems", []):
@@ -1471,6 +1503,7 @@ def new_changes() -> dict:
         "fields_added": [],
         "fields_removed": [],
         "actions_created": [],
+        "tests_created": [],
         "migrations_created": [],
         "migrations_applied": [],
     }
@@ -1508,6 +1541,7 @@ async def execute_plan(
     from zeeb_agents.models import add_field, add_relationship, create_model, remove_field
     from zeeb_agents.project import create_app
     from zeeb_agents.serializers import create_serializer
+    from zeeb_agents.test_scaffold import generate_tests
     from zeeb_agents.viewsets import add_viewset_action, create_viewset, register_route
 
     changes = new_changes()
@@ -1633,6 +1667,18 @@ async def execute_plan(
                     state_changed = True
             else:
                 errors.append(f"add_viewset_action({label}): {result.message}")
+        elif kind == "generate_tests":
+            result = await generate_tests(op["app"], op["entities"], project_id=project_root)
+            if result.success:
+                created = (result.data or {}).get("created", [])
+                if created:
+                    changes["tests_created"].extend(created)
+                    steps.append(f"Generated {len(created)} test file(s)")
+                    state_changed = True
+                else:
+                    steps.append("Test files already exist; skipped")
+            else:
+                errors.append(f"generate_tests: {result.message}")
         elif kind == "remove_field":
             result = await remove_field(
                 op["app"], op["model"], op["field_name"], project_id=project_root

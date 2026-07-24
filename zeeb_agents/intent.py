@@ -49,6 +49,17 @@ from zeeb_agents.feature_spec import (
 _DEFAULT_CHECKS = ("structure", "migrations", "openapi")
 _VALID_CHECKS = ("structure", "migrations", "openapi", "tests")
 
+
+def _default_checks(root: Path) -> tuple[str, ...]:
+    """Default verification chain; includes ``tests`` once a generated suite exists.
+
+    The marker is the generated ``tests/conftest.py`` — cheap, stateless, and
+    still true after the user adds their own tests to the directory.
+    """
+    if (root / "tests" / "conftest.py").exists():
+        return (*_DEFAULT_CHECKS, "tests")
+    return _DEFAULT_CHECKS
+
 #: Generator-owned files each op kind touches — powers the ``affected`` report.
 _OP_FILES: dict[str, tuple[str, ...]] = {
     "create_model": ("models.py",),
@@ -178,10 +189,15 @@ async def _apply_and_report(
     migrate: bool,
     verify: bool,
     label: str,
-    checks: tuple[str, ...] = _DEFAULT_CHECKS,
+    checks: tuple[str, ...] | None = None,
     extra_next_actions: list[str] | None = None,
 ) -> AgentResult:
-    """Shared execute + verify + envelope tail for the mutating intent tools."""
+    """Shared execute + verify + envelope tail for the mutating intent tools.
+
+    ``checks=None`` selects the default chain, which auto-includes the
+    ``tests`` check when the project carries a generated test suite — resolved
+    *after* execution, so the build that generates the suite already gates on it.
+    """
     outcome = await execute_plan(plan, project_root, migrate=migrate)
     summary = plan.get("summary", label)
     warnings = list(plan.get("warnings", []))
@@ -212,7 +228,10 @@ async def _apply_and_report(
     verification = None
     next_actions: list[str] = []
     if verify:
-        verification = await _run_verification(checks, project_root)
+        verification = await _run_verification(
+            checks if checks is not None else _default_checks(project_root),
+            project_root,
+        )
         next_actions.extend(_verification_next_actions(verification))
     if not migrate:
         next_actions.append(
@@ -245,6 +264,7 @@ async def _apply_and_report(
 @agent_function
 async def plan_feature(
     spec: dict,
+    tests: bool = True,
     project_root: Path | None = None,
 ) -> AgentResult:
     """Validate a FeatureSpec and return the execution plan — writes NOTHING.
@@ -305,6 +325,9 @@ async def plan_feature(
             dotted ``app.Model``, or ``"self"``). ``required: false`` maps to
             ``null=True, blank=True``. Each entity may carry its own ``api``
             override; ``"expose": false`` skips endpoint generation.
+        tests: Include a ``generate_tests`` operation in the plan (default
+            true): per-entity smoke tests written into the project's
+            ``tests/`` directory (existing files are never overwritten).
 
             An entity ``workflow`` declares a status state machine: the
             status enum field is synthesized when not declared, and every
@@ -337,7 +360,7 @@ async def plan_feature(
     """
     root = require_project_root(project_root)
     existing_models, existing_apps = await _project_inventory(root)
-    plan = compile_feature_spec(spec, existing_models, existing_apps)
+    plan = compile_feature_spec(spec, existing_models, existing_apps, tests=tests)
     return AgentResult(
         success=True,
         message=(
@@ -354,6 +377,7 @@ async def build_feature(
     spec: dict,
     migrate: bool = True,
     verify: bool = True,
+    tests: bool = True,
     project_root: Path | None = None,
 ) -> AgentResult:
     """Build a complete feature from a FeatureSpec — compile, apply, verify.
@@ -369,15 +393,20 @@ async def build_feature(
             shape and field dialect.
         migrate: Create and apply migrations at the end (default true). Pass
             false to keep the DB untouched (the schema steps still run).
-        verify: Run the verification chain (structure → migrations → OpenAPI)
-            after applying (default true).
+        verify: Run the verification chain (structure → migrations → OpenAPI,
+            plus the generated tests once they exist) after applying
+            (default true).
+        tests: Generate per-entity smoke tests as part of the build (default
+            true; existing test files are never overwritten). The generated
+            suite makes verification's ``tests`` check meaningful.
         project_id: The host-assigned project id (required).
 
     Returns data (on success):
         summary (str): what was built.
         changes (dict): ``{"apps_created", "models_created",
             "endpoints_created", "fields_added", "fields_removed",
-            "migrations_created", "migrations_applied"}`` — each a list.
+            "actions_created", "tests_created", "migrations_created",
+            "migrations_applied"}`` — each a list.
         steps (list[str]): human-readable step log (skips included).
         verification (dict | None): ``{"passed": bool, "checks": {...}}`` per
             requested check (``None`` when ``verify=false``).
@@ -398,7 +427,7 @@ async def build_feature(
     """
     root = require_project_root(project_root)
     existing_models, existing_apps = await _project_inventory(root)
-    plan = compile_feature_spec(spec, existing_models, existing_apps)
+    plan = compile_feature_spec(spec, existing_models, existing_apps, tests=tests)
     label = f"Feature '{plan['feature']['name']}'"
     return await _apply_and_report(plan, root, migrate, verify, label)
 
@@ -859,7 +888,7 @@ async def verify_project(
           project has tests worth gating on.
     """
     root = require_project_root(project_root)
-    requested = list(checks) if checks else list(_DEFAULT_CHECKS)
+    requested = list(checks) if checks else list(_default_checks(root))
     unknown = [c for c in requested if c not in _VALID_CHECKS]
     if unknown:
         return fail(
