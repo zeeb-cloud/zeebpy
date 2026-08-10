@@ -1421,3 +1421,137 @@ class TestMigratePlan:
         )
         assert len(planned) == 1
         assert "initial" in planned[0]
+
+
+class TestSchemaIntegrityRegressions:
+    """Guards for schema details that silently vanished on the way into a migration."""
+
+    def test_foreign_keys_survive_the_copy_into_operations(self):
+        """Copying a column for a migration must not strip its ForeignKey.
+
+        ``Column.copy()``/``._copy()`` drop foreign keys once the column is detached
+        from its Table, so every generated table came out with plain columns and no
+        referential integrity — a nonexistent id was accepted happily.
+        """
+        from zeeb_orm.migrations.operations import copy_column, _repr_column
+
+        meta = sa.MetaData()
+        sa.Table("customers", meta, sa.Column("id", sa.Uuid(), primary_key=True))
+        orders = sa.Table(
+            "orders",
+            meta,
+            sa.Column("id", sa.Uuid(), primary_key=True),
+            sa.Column(
+                "customer_id",
+                sa.Uuid(),
+                sa.ForeignKey("customers.id", ondelete="CASCADE"),
+                nullable=False,
+            ),
+        )
+
+        copied = copy_column(orders.c.customer_id)
+
+        assert len(copied.foreign_keys) == 1
+        # The written migration must carry it too, or it is lost on the next run.
+        assert "sa.ForeignKey('customers.id', ondelete='CASCADE')" in _repr_column(copied)
+
+    def test_create_model_emits_referential_integrity(self):
+        """A created table REFERENCES its target, and rejects a dangling id."""
+        from zeeb_orm.migrations.operations import CreateModel
+
+        engine = sa.create_engine("sqlite://")
+        with engine.begin() as conn:
+            conn.execute(sa.text("PRAGMA foreign_keys=ON"))
+            CreateModel(
+                name="Customer",
+                table="customers",
+                columns=[sa.Column("id", sa.Integer(), nullable=False)],
+                primary_key=["id"],
+            ).forward(conn)
+            # Built in its own MetaData: the FK target must still resolve.
+            CreateModel(
+                name="Order",
+                table="orders",
+                columns=[
+                    sa.Column("id", sa.Integer(), nullable=False),
+                    sa.Column(
+                        "customer_id", sa.Integer(), sa.ForeignKey("customers.id"), nullable=False
+                    ),
+                ],
+                primary_key=["id"],
+            ).forward(conn)
+
+            conn.execute(sa.text("INSERT INTO customers (id) VALUES (1)"))
+            conn.execute(sa.text("INSERT INTO orders (id, customer_id) VALUES (1, 1)"))
+            with pytest.raises(sa.exc.IntegrityError):
+                conn.execute(sa.text("INSERT INTO orders (id, customer_id) VALUES (2, 999)"))
+
+    def test_add_not_null_column_backfills_existing_rows(self):
+        """Adding a NOT NULL column to a populated table must not wedge the project.
+
+        Without a DEFAULT the ALTER dies on NotNullViolation, and because the
+        migration is already written it fails identically on every retry.
+        """
+        from zeeb_orm.migrations.operations import AddField
+
+        engine = sa.create_engine("sqlite://")
+        with engine.begin() as conn:
+            conn.execute(sa.text("CREATE TABLE orders (id INTEGER PRIMARY KEY)"))
+            conn.execute(sa.text("INSERT INTO orders (id) VALUES (1), (2)"))
+
+            AddField(
+                model_name="Order",
+                table="orders",
+                name="status",
+                column=sa.Column("status", sa.String(11), nullable=False, default="draft"),
+            ).forward(conn)
+
+            rows = conn.execute(sa.text("SELECT status FROM orders ORDER BY id")).fetchall()
+            assert [r[0] for r in rows] == ["draft", "draft"]
+
+    def test_add_not_null_column_without_default_fails_actionably(self):
+        """No default and existing rows -> a message that says what to do, not a DB error."""
+        from zeeb_orm.migrations.operations import AddField
+        from zeeb_orm.migrations.state import MigrationError
+
+        engine = sa.create_engine("sqlite://")
+        with engine.begin() as conn:
+            conn.execute(sa.text("CREATE TABLE orders (id INTEGER PRIMARY KEY)"))
+            with pytest.raises(MigrationError, match="no default"):
+                AddField(
+                    model_name="Order",
+                    table="orders",
+                    name="code",
+                    column=sa.Column("code", sa.String(5), nullable=False),
+                ).forward(conn)
+
+    def test_column_level_unique_reaches_the_database(self):
+        """``Column(unique=True)`` must produce a UNIQUE constraint.
+
+        SQLAlchemy renders column-level uniqueness as an *unnamed* table
+        constraint; the autodetector kept only named ones, so the column reached
+        the database with no UNIQUE at all and duplicates were accepted.
+        """
+        from zeeb_orm.migrations.autodetector import _convert_single_diff
+        from zeeb_orm.migrations.operations import _repr_constraint
+
+        meta = sa.MetaData()
+        table = sa.Table(
+            "warehouses",
+            meta,
+            sa.Column("id", sa.Integer(), primary_key=True),
+            sa.Column("code", sa.String(20), nullable=False, unique=True),
+        )
+        op = _convert_single_diff(("add_table", table))
+
+        assert op.constraints, "column-level unique was dropped"
+        # Deterministic name, or the next autodetect re-emits it forever.
+        assert op.constraints[0].name == "uq_warehouses_code"
+        assert "sa.UniqueConstraint('code'" in _repr_constraint(op.constraints[0])
+
+        engine = sa.create_engine("sqlite://")
+        with engine.begin() as conn:
+            op.forward(conn)
+            conn.execute(sa.text("INSERT INTO warehouses (id, code) VALUES (1, 'WH-1')"))
+            with pytest.raises(sa.exc.IntegrityError):
+                conn.execute(sa.text("INSERT INTO warehouses (id, code) VALUES (2, 'WH-1')"))

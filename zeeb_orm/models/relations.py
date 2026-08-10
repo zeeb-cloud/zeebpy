@@ -177,7 +177,9 @@ def resolve_relation(model: type, name: str) -> RelationInfo | None:
     # 2. Reverse FK / O2O: scan the registry for FKs targeting `model`
     from zeeb_orm.models.base import _model_registry
 
-    for model_cls in _model_registry.values():
+    # Snapshot: resolving a string-referenced target below can import a module
+    # and register further models, which would invalidate a live iterator.
+    for model_cls in list(_model_registry.values()):
         for fk_field in getattr(model_cls, "_fk_fields", []):
             try:
                 target = fk_field.get_target_model()
@@ -199,7 +201,7 @@ def resolve_relation(model: type, name: str) -> RelationInfo | None:
             )
 
     # 3. Reverse M2M: scan the registry for M2M fields targeting `model`
-    for model_cls in _model_registry.values():
+    for model_cls in list(_model_registry.values()):
         for m2m_field in getattr(model_cls, "_m2m_fields", []):
             try:
                 target = m2m_field.get_target_model()

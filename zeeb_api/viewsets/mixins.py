@@ -72,7 +72,38 @@ class CreateModelMixin:
 
 class QueryModelMixin:
     """Mixin for query (POST /query/) operation with Q filters."""
-    
+
+    def _allowed_query_fields(self) -> set[str] | None:
+        """Field names a client may filter or order by.
+
+        An explicit ``query_fields`` attribute on the viewset wins. Otherwise the
+        serializer's exposed (response) fields are used, so a client cannot
+        filter or order by a column the API does not surface (e.g. a password
+        hash). Returns None when the set cannot be determined, leaving the query
+        unrestricted (backwards-compatible for untyped viewsets).
+        """
+        explicit = getattr(self, "query_fields", None)
+        if explicit is not None:
+            return set(explicit)
+
+        get_serializer_class = getattr(self, "get_serializer_class", None)
+        if get_serializer_class is None:
+            return None
+        try:
+            serializer_class = get_serializer_class()
+        except Exception:
+            return None
+        if serializer_class is None:
+            return None
+
+        schema = getattr(serializer_class, "ResponseSchema", None) or getattr(
+            serializer_class, "Schema", None
+        )
+        model_fields = getattr(schema, "model_fields", None)
+        if model_fields:
+            return set(model_fields.keys())
+        return None
+
     async def query(self, request: Request, **kwargs: Any) -> dict[str, Any]:
         """
         Query model instances with Q filter, ordering, and pagination.
@@ -93,41 +124,69 @@ class QueryModelMixin:
                 "results": [...]
             }
         """
-        from zeeb_api.query import parse_q_filter, QFilterError
-        
+        from zeeb_api.query import parse_q_filter, extract_q_fields, QFilterError
+
         # Get query params from request body
         if hasattr(self, "_request_body"):
             query_params = self._request_body
         else:
             query_params = await request.json()
-        
+
         # Start with base queryset - ensure it's a QuerySet not Manager
         queryset = self.get_queryset()
         if hasattr(queryset, 'all'):
             queryset = queryset.all()
-        
+
+        # Fields a client is allowed to filter / order by (None = unrestricted).
+        allowed_fields = self._allowed_query_fields()
+
         # Apply Q filter
         filter_expr = query_params.get("filter")
         if filter_expr:
+            try:
+                referenced = extract_q_fields(filter_expr)
+            except QFilterError as e:
+                raise ValidationError({"filter": [str(e)]})
+            if allowed_fields is not None:
+                unknown = referenced - allowed_fields
+                if unknown:
+                    raise ValidationError(
+                        {"filter": [
+                            "Cannot filter by field(s): "
+                            + ", ".join(sorted(unknown))
+                        ]}
+                    )
             try:
                 q_filter = parse_q_filter(filter_expr)
                 queryset = queryset.filter(q_filter)
             except QFilterError as e:
                 raise ValidationError({"filter": [str(e)]})
-        
+
         # Apply ordering
         order_by = query_params.get("order_by")
         if order_by:
             if isinstance(order_by, str):
                 order_by = [order_by]
+            if allowed_fields is not None:
+                for field in order_by:
+                    root = field.lstrip("-").split("__", 1)[0]
+                    if root not in allowed_fields:
+                        raise ValidationError(
+                            {"order_by": [f"Cannot order by unknown field '{field}'"]}
+                        )
             queryset = queryset.order_by(*order_by)
         
-        # Get pagination params (limit/offset)
-        limit = query_params.get("limit", 20)
+        # Get pagination params (limit/offset). Defaults/caps come from the
+        # DEFAULT_LIMIT / MAX_LIMIT settings (falling back to 20 / 100).
+        from zeeb_api.conf import settings
+
+        default_limit = int(getattr(settings, "DEFAULT_LIMIT", 20))
+        max_limit = int(getattr(settings, "MAX_LIMIT", 100))
+        limit = query_params.get("limit", default_limit)
         offset = query_params.get("offset", 0)
-        
+
         # Clamp limit
-        limit = max(1, min(limit, 100))
+        limit = max(1, min(limit, max_limit))
         offset = max(0, offset)
         
         # Get total count
@@ -162,8 +221,10 @@ class ListModelMixin:
         serializer = self.get_serializer(instance=items, many=True)
 
         if page_info:
+            # count is None when the paginator does not provide a total (e.g.
+            # cursor pagination) — do not fabricate one from the page length.
             return {
-                "count": page_info.get("count", len(items)),
+                "count": page_info.get("count"),
                 "next": page_info.get("next"),
                 "previous": page_info.get("previous"),
                 "results": await serializer.adata(),

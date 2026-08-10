@@ -41,6 +41,17 @@ articles = await Article.objects.exclude(status="draft")
 articles = await Article.objects.filter(published=True).exclude(author=None)
 ```
 
+### Matching Nothing
+
+```python
+# Guaranteed empty, and still chainable
+articles = await Article.objects.none()
+```
+
+Use `none()` for "this caller may see no rows" rather than filtering on a
+sentinel. `filter(author_id=None)` on a nullable column returns every
+author-less row, which is the opposite of an empty result.
+
 ## Lookup Expressions
 
 Field lookups are specified as `field__lookup=value`:
@@ -167,6 +178,14 @@ authors = await Author.objects.filter(posts__published=True).distinct()
 
 # Compare a relation directly with an instance (no JOIN, uses the FK column)
 posts = await Post.objects.filter(author=alice)
+
+# A relation name also accepts `in` and `isnull` against the FK column
+posts = await Post.objects.filter(author__in=[alice, bob])
+posts = await Post.objects.filter(author__isnull=True)      # orphaned posts
+authors = await Author.objects.filter(posts__isnull=True)   # authors with none
+
+# `<relation>_id` is addressable directly, including across a hop
+posts = await Post.objects.filter(author__profile_id=profile.id)
 
 # Ordering and values across relations
 posts = await Post.objects.order_by("author__name", "-views")
@@ -391,6 +410,40 @@ stats = await Article.objects.filter(published=True).aggregate(
 )
 ```
 
+`aggregate()` never groups — it reduces the whole (filtered) QuerySet to a
+single row. Use `annotate()` for per-group values.
+
+### annotate() with aggregates
+
+An aggregate annotation adds a `GROUP BY`. Pair it with `values()` to choose
+the grouping columns; without `values()` the rows are grouped by primary key,
+i.e. one annotated value per object:
+
+```python
+# One row per author
+per_author = await Article.objects.values("author_id").annotate(
+    n=Count("id")
+)
+
+# One annotated instance per author (reverse relations are traversed)
+authors = await Author.objects.annotate(post_count=Count("articles"))
+for author in authors:
+    print(author.name, author.post_count)
+```
+
+Filtering an aggregate annotation compiles to `HAVING`, while filters on
+plain fields stay in `WHERE` — both may appear in the same call:
+
+```python
+prolific = await Author.objects.annotate(
+    post_count=Count("articles")
+).filter(post_count__gt=10, active=True)
+```
+
+The two cannot be mixed inside one `OR`/`NOT` group (`Q(post_count__gt=10) |
+Q(active=True)`), because they compile to different clauses; that raises
+`NotSupportedError`. Split them into separate `filter()` calls.
+
 ## Field Selection
 
 ### values()
@@ -402,12 +455,28 @@ Return dictionaries instead of model instances:
 articles = await Article.objects.values()
 # [{"id": 1, "title": "...", ...}, ...]
 
-# Specific fields
+# Specific fields — only these columns are selected
 articles = await Article.objects.values("id", "title")
 # [{"id": 1, "title": "Hello"}, {"id": 2, "title": "World"}]
 
 # With filter
 titles = await Article.objects.filter(published=True).values("title")
+```
+
+Each key is exactly the string you passed, so `pk` and a ForeignKey's field
+name resolve to their columns:
+
+```python
+await Article.objects.values("pk")      # [{"pk": 1}, ...]
+await Article.objects.values("author")  # [{"author": 7}, ...]  (column author_id)
+```
+
+Combined with an aggregate annotation, `values()` defines the grouping —
+one row per distinct combination of the named fields:
+
+```python
+per_author = await Article.objects.values("author_id").annotate(n=Count("id"))
+# [{"author_id": 1, "n": 12}, {"author_id": 2, "n": 3}]
 ```
 
 ### values_list()
@@ -716,13 +785,36 @@ articles = await Article.objects.raw(
 
 ## Using Different Databases
 
+Register the connection first — an alias that was never registered raises
+`ConnectionDoesNotExist` rather than silently falling back to the default:
+
 ```python
-# Query specific database
+from zeeb_orm import Database, register_database
+
+replica = Database("postgresql+asyncpg://localhost/replica")
+await replica.connect()
+register_database(replica, alias="replica")
+```
+
+```python
+# Query a specific database
 articles = await Article.objects.using("replica").all()
 
-# Create on specific database
+# Create on a specific database
 article = await Article.objects.using("primary").create(...)
 ```
+
+An instance **remembers** the database it was loaded from, so `save()`,
+`refresh_from_db()` and `delete()` go back to the same one. Pass `using=` to
+override:
+
+```python
+article = await Article.objects.using("replica").first()
+await article.save(using="primary")        # override the sticky alias
+await article.refresh_from_db(using="primary")
+```
+
+See [Database Configuration](../configuration/database.md).
 
 ## Transactions
 
@@ -744,7 +836,29 @@ async with atomic():
     # If second update fails, first update is also rolled back
 ```
 
-Operations inside `atomic()` share the same database session, ensuring proper transaction isolation.
+Operations inside `atomic()` share the same database session, so reads,
+`save()` and `refresh_from_db()` inside the block **see the block's own
+uncommitted writes** — a row created earlier in the block is visible to a query
+later in it.
+
+Nested `atomic()` blocks use **savepoints**: the inner block rolls back to its
+savepoint on failure without discarding the outer transaction.
+
+```python
+async with atomic():
+    order = await Order.objects.create(...)
+
+    try:
+        async with atomic():          # savepoint
+            await charge_card(order)
+    except PaymentError:
+        order.status = "unpaid"       # outer transaction is still alive
+        await order.save()
+```
+
+A constraint violation surfaces on commit as `zeeb_orm.exceptions.IntegrityError`
+wrapping the driver error — at the API boundary that becomes a 409, not a 500
+(see [Error Handling](../api/errors.md)).
 
 ### on_commit
 

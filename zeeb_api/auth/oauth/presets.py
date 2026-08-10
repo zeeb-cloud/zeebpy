@@ -7,6 +7,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from zeeb_api.auth.oauth.client import OAuthError
 from zeeb_api.auth.oauth.provider import ExternalClaims, OAuthProvider
 
 AZURE_AUTHORITY_TEMPLATE = (
@@ -107,9 +108,13 @@ class GitHubProvider(OAuthProvider):
     GitHub OAuth (plain OAuth2; GitHub does not implement OIDC).
 
     Uses manual endpoints, disables ID token validation and resolves the
-    user via the REST API. When the primary email is private (``/user``
-    returns ``email: null``), ``/user/emails`` is queried (requires the
-    ``user:email`` scope).
+    user via the REST API.
+
+    ``/user`` carries no verification flag, so ``/user/emails`` is always
+    queried (requires the ``user:email`` scope, requested by default) — both
+    to fill in a private primary address and to learn whether the address is
+    verified. Without that call ``email_verified`` stays ``None``, which
+    ``OAUTH_REQUIRE_VERIFIED_EMAIL`` treats as unverified.
     """
 
     EMAILS_ENDPOINT = "https://api.github.com/user/emails"
@@ -132,9 +137,11 @@ class GitHubProvider(OAuthProvider):
         super().__init__(client_id=client_id, client_secret=client_secret, **kwargs)
 
     def map_claims(self, raw: dict[str, Any]) -> ExternalClaims:
+        email_verified = raw.get("email_verified")
         return ExternalClaims(
             subject=str(raw["id"]),
             email=raw.get("email"),
+            email_verified=bool(email_verified) if email_verified is not None else None,
             name=raw.get("name") or raw.get("login"),
             raw=raw,
         )
@@ -144,15 +151,55 @@ class GitHubProvider(OAuthProvider):
         raw = await self.client.fetch_userinfo(
             metadata.userinfo_endpoint, tokens.access_token
         )
-        if not raw.get("email"):
+        self._apply_email_verification(raw, await self._fetch_emails(tokens))
+        return self.map_claims(raw)
+
+    async def _fetch_emails(self, tokens: Any) -> list[dict[str, Any]] | None:
+        """The ``/user/emails`` payload, or None when it is unavailable.
+
+        A token without the ``user:email`` scope makes GitHub reject this
+        call; that must not turn an otherwise working login into a 500, so
+        the failure degrades to "verification unknown".
+        """
+        try:
             emails = await self.client.fetch_userinfo(
                 self.EMAILS_ENDPOINT, tokens.access_token
             )
-            if isinstance(emails, list):
-                primary = next(
-                    (e for e in emails if e.get("primary") and e.get("verified")),
-                    None,
-                ) or next((e for e in emails if e.get("verified")), None)
-                if primary:
-                    raw["email"] = primary.get("email")
-        return self.map_claims(raw)
+        except OAuthError:
+            return None
+        return emails if isinstance(emails, list) else None
+
+    @staticmethod
+    def _apply_email_verification(
+        raw: dict[str, Any], emails: list[dict[str, Any]] | None
+    ) -> None:
+        """Fill ``raw["email"]``/``raw["email_verified"]`` from ``/user/emails``.
+
+        ``/user`` only exposes the public primary address and never says
+        whether it is verified, so the flag can only come from here.
+        """
+        if emails is None:
+            return
+
+        address = raw.get("email")
+        if not address:
+            # Private primary address: adopt the best verified entry.
+            entry = next(
+                (e for e in emails if e.get("primary") and e.get("verified")), None
+            ) or next((e for e in emails if e.get("verified")), None)
+            if entry:
+                raw["email"] = entry.get("email")
+                raw["email_verified"] = True
+            return
+
+        entry = next(
+            (
+                e
+                for e in emails
+                if isinstance(e.get("email"), str)
+                and e["email"].lower() == str(address).lower()
+            ),
+            None,
+        )
+        if entry is not None:
+            raw["email_verified"] = bool(entry.get("verified"))

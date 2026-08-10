@@ -93,8 +93,10 @@ total, per_model = await author.delete()
   signals fire for **every** affected instance.
 - `QuerySet.delete()` routes through the collector whenever another model
   references the queryset's model with a non-`DO_NOTHING` FK (its count then
-  includes cascaded rows, and per-instance delete signals fire). Models with
-  no such inbound FKs keep the fast single-statement DELETE (no signals).
+  includes cascaded rows, and per-instance delete signals fire). It also
+  routes through the collector when a `pre_delete`/`post_delete` receiver is
+  connected for the model, so a registered receiver always runs. Only when
+  neither applies does the fast single-statement DELETE run.
 
 At the database level the constants map to standard `ON DELETE` actions in
 the generated DDL: `CASCADE` → `ON DELETE CASCADE`, `SET_NULL` →

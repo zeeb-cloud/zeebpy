@@ -377,20 +377,25 @@ class GenericViewSet(ViewSet):
         
         # Build filter
         filter_kwargs = {self.lookup_field: lookup_value}
-        
-        # Get object
+
+        # Get object. A malformed lookup value is a 400, a genuinely absent row
+        # is a 404, and a real database error must surface as a 500 rather than
+        # being silently masked as "not found".
+        from zeeb_api.exceptions import NotFound, ValidationError
+
         try:
             obj = await queryset.filter(**filter_kwargs).first()
-        except Exception:
-            obj = None
-        
+        except (ValueError, TypeError) as exc:
+            raise ValidationError(
+                {self.lookup_field: [f"Invalid lookup value: {exc}"]}
+            ) from exc
+
         if obj is None:
-            from zeeb_api.exceptions import NotFound
             raise NotFound("Object not found")
-        
+
         # Check object permissions
         await self.check_object_permissions(self.request, obj)
-        
+
         return obj
     
     async def check_object_permissions(self, request: Request, obj: Any) -> None:
@@ -400,14 +405,13 @@ class GenericViewSet(ViewSet):
         First checks class-level permissions, then object-level permissions
         if use_object_permissions is enabled.
         """
-        # Check class-level permissions
+        # Check class-level permissions. Route the denial through _deny so an
+        # unauthenticated caller gets 401 (and an expired-token hint) rather than
+        # a flat 403 — consistent with the collection-level check_permissions.
         for permission in self.get_permissions():
             if not await permission.has_object_permission(request, self, obj):
-                from zeeb_api.exceptions import PermissionDenied
-                raise PermissionDenied(
-                    getattr(permission, "message", "Permission denied")
-                )
-        
+                self._deny(request, getattr(permission, "message", None))
+
         # Check model-level object permissions if enabled
         if self.use_object_permissions:
             await self._check_model_object_permission(request, obj)

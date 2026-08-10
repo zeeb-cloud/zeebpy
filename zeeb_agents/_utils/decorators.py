@@ -157,8 +157,24 @@ def agent_function(
                 return fail(f"PermissionError: {exc}", code="permission_denied")
             except Exception as exc:
                 logger.exception("%s failed", fn.__qualname__)
+                # An unanticipated crash is the one case where the caller
+                # genuinely cannot know whether anything was written, so say so
+                # instead of guessing: state_changed None means "unknown", and
+                # re-running is the documented recovery (writes are idempotent).
+                # Carrying no data at all left the worst failure mode with the
+                # least machine-readable information.
                 return AgentResult(
-                    success=False, message=f"{type(exc).__name__}: {exc}"
+                    success=False,
+                    message=f"{type(exc).__name__}: {exc}",
+                    data={
+                        "error_type": type(exc).__name__,
+                        "recoverable": True,
+                        "state_changed": None,
+                        "next_actions": [
+                            "Re-run the same call — completed steps are skipped.",
+                            "If it fails the same way, inspect the logs (read_logs).",
+                        ],
+                    },
                 )
 
         if public_sig is not None:

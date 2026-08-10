@@ -1,22 +1,15 @@
-"""
-comment views.
+"""comment views."""
 
-Define your API viewsets here.
-"""
+from zeeb_api import permissions, viewsets
 
-from zeeb_api import viewsets, permissions
-# from .models import YourModel
-# from .serializers import YourModelSerializer
+from .models import Comment
+from .serializers import CommentSerializer
 
 
-# Example viewset:
-# class CommentViewSet(viewsets.ModelViewSet):
-#     queryset = Comment.objects.all()
-#     serializer_class = CommentSerializer
-#     permission_classes = [permissions.IsAuthenticatedOrReadOnly]
-#
-#     @viewsets.action(detail=True, methods=["post"])
-#     async def custom_action(self, request, pk=None):
-#         obj = await self.get_object()
-#         # Do something
-#         return {"status": "success"}
+class CommentViewSet(viewsets.ModelViewSet):
+    queryset = Comment.objects.all()
+    serializer_class = CommentSerializer
+    permission_classes = [permissions.IsAuthenticatedOrReadOnly]
+
+    async def perform_create(self, serializer):
+        await serializer.save(author_id=self.request.state.user.id)

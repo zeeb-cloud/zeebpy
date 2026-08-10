@@ -151,7 +151,7 @@ async def get_principles_doc(
 ) -> AgentResult:
     """Return the operating-principles and special-cases guide.
 
-    Reads ``zeeb_agents/agent_docs/principles.md``.
+    Reads ``zeeb_agents/agent_docs/<framework>/principles.md``.
     The single most useful document to read first: it explains the
     ``AgentResult`` contract, the ``@agent_function`` semantics (functions
     never raise, ``project_root`` auto-detection), the return-shape
@@ -192,8 +192,8 @@ async def get_capabilities_doc(
 ) -> AgentResult:
     """Return the full `zeeb_agents` capability reference.
 
-    Reads ``zeeb_agents/agent_docs/capabilities.md``.
-    Covers all 80+ public functions organised by module, the ``AgentResult``
+    Reads ``zeeb_agents/agent_docs/<framework>/capabilities.md``.
+    Covers all 113 public functions organised by module, the ``AgentResult``
     contract, and import examples.
 
     Maps to MCP resource ``mcp://docs/capabilities``.
@@ -231,7 +231,7 @@ async def get_project_lifecycle_doc(
 ) -> AgentResult:
     """Return the end-to-end project lifecycle guide.
 
-    Reads ``zeeb_agents/agent_docs/project-lifecycle.md``.
+    Reads ``zeeb_agents/agent_docs/<framework>/project-lifecycle.md``.
     Covers every step from `create_project` through development, iteration,
     and monitoring.
 
@@ -269,7 +269,7 @@ async def get_backend_generation_doc(
 ) -> AgentResult:
     """Return the backend code-generation guide.
 
-    Reads ``zeeb_agents/agent_docs/backend-generation.md``.
+    Reads ``zeeb_agents/agent_docs/<framework>/backend-generation.md``.
     Covers models, migrations, serializers, viewsets, routes, permissions,
     signals, tasks, and seed data.
 
@@ -306,7 +306,7 @@ async def get_frontend_generation_doc(
 ) -> AgentResult:
     """Return the frontend integration guide.
 
-    Reads ``zeeb_agents/agent_docs/frontend-generation.md``.
+    Reads ``zeeb_agents/agent_docs/<framework>/frontend-generation.md``.
     Covers CORS, JWT auth, OpenAPI export, JSON Schema, route inventory,
     health endpoints, and WebSocket notes.
 
@@ -363,7 +363,7 @@ async def get_deployment_doc(
 ) -> AgentResult:
     """Return the deployment guide.
 
-    Reads ``zeeb_agents/agent_docs/deployment.md``.
+    Reads ``zeeb_agents/agent_docs/<framework>/deployment.md``.
     Covers production settings, Dockerfile generation, requirements.txt,
     health endpoints, environment variables, and recommended stack.
 
@@ -488,7 +488,7 @@ async def get_resource(
     """Fetch MCP resource content by URI.
 
     Dispatches to the appropriate documentation function based on *uri*.
-    The markdown source is read from ``zeeb_agents/agent_docs/<name>.md``.
+    The markdown source is read from ``zeeb_agents/agent_docs/<framework>/<name>.md``.
 
     Supported URIs:
 

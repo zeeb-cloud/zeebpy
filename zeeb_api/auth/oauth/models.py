@@ -64,6 +64,7 @@ async def get_or_create_user_for_identity(
     *,
     auto_create: bool,
     link_by_email: bool,
+    require_verified_email: bool = True,
 ) -> tuple[Any, ExternalIdentity, bool]:
     """
     Resolve (or provision) the local user for an external identity.
@@ -71,13 +72,16 @@ async def get_or_create_user_for_identity(
     Resolution order:
         1. Existing ``ExternalIdentity(provider, subject)`` -> its user
            (updates ``last_login_at`` / ``email`` / ``extra_data``).
-        2. ``link_by_email`` and the claims carry an email -> existing user
-           with that email gets a new identity attached.
+        2. ``link_by_email`` and the claims carry a **verified** email ->
+           existing user with that email gets a new identity attached.
 
            SECURITY: email linking means whoever controls that email at the
            IdP gains access to the matching local account (account takeover
-           if the IdP does not verify email ownership). Only enable it for
-           providers that verify emails.
+           if the IdP does not verify email ownership). When
+           ``require_verified_email`` is set (the default), the IdP must
+           assert ``email_verified`` is true before an email is used to link
+           to an existing account or to auto-provision a new one. Only disable
+           it for providers you fully trust to have verified the address.
         3. ``auto_create`` -> create a new user (no usable password) with
            ``date_joined`` set.
         4. Otherwise raise
@@ -106,8 +110,23 @@ async def get_or_create_user_for_identity(
         await identity.save()
         return user, identity, False
 
+    # An email may only be trusted to identify/provision an account when the
+    # IdP has verified ownership. ``email_verified is None`` (claim absent) is
+    # treated as unverified: fail safe. A returning identity (handled above)
+    # is exempt because ownership was already established at first link.
+    email_is_trusted = (not require_verified_email) or (claims.email_verified is True)
+    if claims.email and not email_is_trusted:
+        raise AuthenticationException(
+            code=ErrorCode.AUTH_OAUTH_EMAIL_UNVERIFIED,
+            message=(
+                f"The {provider} identity's email address is not verified; "
+                "refusing to link or provision a local account from an "
+                "unverified email"
+            ),
+        )
+
     user = None
-    if link_by_email and claims.email:
+    if link_by_email and claims.email and email_is_trusted:
         user = await user_model.objects.filter(email=claims.email).first()
 
     if user is None:

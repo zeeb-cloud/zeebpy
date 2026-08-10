@@ -71,6 +71,10 @@ class OAuthProvider:
         auto_create_user: Auto-provision local users (None = use settings).
         link_by_email: Link identities to existing users by email
             (None = use settings).
+        require_verified_email: Require the IdP to assert ``email_verified``
+            before an email is used to link or auto-provision an account
+            (None = use settings; defaults to True). Only disable for
+            providers you fully trust to verify email ownership.
         extra_authorize_params: Extra query params for the authorization URL.
         http_client: Optional ``httpx.AsyncClient`` (test seam).
     """
@@ -94,6 +98,7 @@ class OAuthProvider:
         validate_id_token: bool = True,
         auto_create_user: bool | None = None,
         link_by_email: bool | None = None,
+        require_verified_email: bool | None = None,
         extra_authorize_params: dict[str, str] | None = None,
         http_client: Any | None = None,
     ) -> None:
@@ -113,6 +118,7 @@ class OAuthProvider:
         self.validate_id_token = validate_id_token
         self.auto_create_user = auto_create_user
         self.link_by_email = link_by_email
+        self.require_verified_email = require_verified_email
         self.extra_authorize_params = dict(extra_authorize_params or {})
 
         self.client = OAuth2Client(http_client=http_client)

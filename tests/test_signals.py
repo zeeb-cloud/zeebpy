@@ -325,3 +325,161 @@ class TestModelDeleteSignals:
         await art.delete()
 
         assert captured == [pk]
+
+
+# ---------------------------------------------------------------------------
+# QuerySet write paths
+# ---------------------------------------------------------------------------
+
+
+class TestQuerySetWriteSignals:
+    """``objects.create()`` used to build its own INSERT and fire nothing.
+
+    Django routes ``create()`` through ``obj.save(force_insert=True)``; the
+    bulk paths deliberately stay signal-free there and here.
+    """
+
+    @pytest.mark.asyncio
+    async def test_create_fires_save_signals(self):
+        order = []
+
+        @receiver(pre_save, sender=Article)
+        async def on_pre(sender, instance, created, **kwargs):
+            order.append(("pre_save", created))
+
+        @receiver(post_save, sender=Article)
+        async def on_post(sender, instance, created, **kwargs):
+            order.append(("post_save", created, instance.pk))
+
+        art = await Article.objects.create(title="Created")
+
+        assert order[0] == ("pre_save", True)
+        assert order[1] == ("post_save", True, art.pk)
+        assert art.pk is not None
+
+    @pytest.mark.asyncio
+    async def test_pre_save_exception_aborts_create(self):
+        @receiver(pre_save, sender=Article)
+        async def on_pre(sender, instance, **kwargs):
+            raise ValueError("nope")
+
+        with pytest.raises(ValueError, match="nope"):
+            await Article.objects.create(title="Blocked")
+
+        assert await Article.objects.count() == 0
+
+    @pytest.mark.asyncio
+    async def test_get_or_create_fires_only_when_creating(self):
+        created_flags = []
+
+        @receiver(post_save, sender=Article)
+        async def on_post(sender, instance, created, **kwargs):
+            created_flags.append(created)
+
+        _, created = await Article.objects.get_or_create(title="Once")
+        assert created is True
+        assert created_flags == [True]
+
+        _, created = await Article.objects.get_or_create(title="Once")
+        assert created is False
+        assert created_flags == [True]  # the get branch writes nothing
+
+    @pytest.mark.asyncio
+    async def test_update_or_create_fires_on_both_branches(self):
+        seen = []
+
+        @receiver(post_save, sender=Article)
+        async def on_post(sender, instance, created, **kwargs):
+            seen.append(created)
+
+        await Article.objects.update_or_create(title="Twice")
+        await Article.objects.update_or_create(title="Twice", defaults={"title": "Twice"})
+        assert seen == [True, False]
+
+    @pytest.mark.asyncio
+    async def test_bulk_create_stays_signal_free(self):
+        # Django parity: bulk_create does not send pre_save/post_save.
+        fired = []
+
+        @receiver(post_save, sender=Article)
+        async def on_post(sender, instance, **kwargs):
+            fired.append(instance.pk)
+
+        await Article.objects.bulk_create(
+            [Article(title="a"), Article(title="b")]
+        )
+        assert fired == []
+        assert await Article.objects.count() == 2
+
+    @pytest.mark.asyncio
+    async def test_queryset_update_stays_signal_free(self):
+        fired = []
+
+        @receiver(post_save, sender=Article)
+        async def on_post(sender, instance, **kwargs):
+            fired.append(instance.pk)
+
+        await Article.objects.create(title="before")
+        fired.clear()
+        await Article.objects.filter(title="before").update(title="after")
+        assert fired == []
+
+
+class TestQuerySetDeleteSignals:
+    """A leaf model took a fast single-statement DELETE that fired nothing.
+
+    Django's ``Collector.can_fast_delete()`` refuses the fast path whenever a
+    delete receiver is connected, so a registered receiver always runs.
+    """
+
+    @pytest.mark.asyncio
+    async def test_queryset_delete_fires_when_a_receiver_is_connected(self):
+        order = []
+
+        @receiver(pre_delete, sender=Article)
+        async def on_pre(sender, instance, **kwargs):
+            order.append(("pre_delete", instance.pk))
+
+        @receiver(post_delete, sender=Article)
+        async def on_post(sender, instance, **kwargs):
+            order.append(("post_delete", instance.pk))
+
+        art = await Article.objects.create(title="Doomed")
+        pk = art.pk
+
+        deleted = await Article.objects.filter(title="Doomed").delete()
+
+        assert deleted == 1
+        assert order == [("pre_delete", pk), ("post_delete", pk)]
+        assert await Article.objects.count() == 0
+
+    @pytest.mark.asyncio
+    async def test_pre_delete_exception_aborts_queryset_delete(self):
+        @receiver(pre_delete, sender=Article)
+        async def on_pre(sender, instance, **kwargs):
+            raise RuntimeError("blocked")
+
+        await Article.objects.create(title="Safe")
+
+        with pytest.raises(RuntimeError, match="blocked"):
+            await Article.objects.filter(title="Safe").delete()
+
+        assert await Article.objects.count() == 1
+
+    @pytest.mark.asyncio
+    async def test_fast_path_is_kept_without_receivers(self):
+        # No receivers -> one statement, no per-instance fetch.
+        await Article.objects.create(title="Gone")
+        assert await Article.objects.filter(title="Gone").delete() == 1
+        assert await Article.objects.count() == 0
+
+    @pytest.mark.asyncio
+    async def test_has_listeners_reports_per_sender(self):
+        assert pre_delete.has_listeners(Article) is False
+
+        @receiver(pre_delete, sender=Article)
+        async def on_pre(sender, instance, **kwargs):
+            pass
+
+        assert pre_delete.has_listeners(Article) is True
+        assert pre_delete.has_listeners(str) is False

@@ -18,8 +18,11 @@ import pytest
 import zeeb_agents as agents
 from zeeb_agents._utils.code_gen import (
     ensure_asgi_middleware,
+    ensure_import,
     extract_model_names,
+    imports_name,
     render_serializer_class,
+    router_registrations,
 )
 from zeeb_agents._utils.field_types import render_field_line, validate_field_spec
 from zeeb_agents._utils.errors import AgentError
@@ -228,11 +231,16 @@ async def test_missing_models_module_still_skippable(project: Path, monkeypatch)
 # ---------------------------------------------------------------------------
 
 
-async def test_list_endpoints_skips_commented_registrations(project: Path):
-    # Fresh scaffold contains only the commented example registration.
+async def test_list_endpoints_skips_registrations_that_are_not_code(project: Path):
+    # The blog app's urls.py carries a copy-pasteable router.register(...)
+    # example in its module docstring. Reporting it would have an agent believe
+    # in a route that 404s, so the scan reads the AST, not the text.
+    urls = (project / "apps" / "blog" / "urls.py").read_text()
+    assert "router.register(" in urls, "the example this test is about is gone"
+
     res = await agents.list_endpoints(project_id=project)
     assert res.success
-    assert res.data["count"] == 0, res.data
+    assert [e["viewset"] for e in res.data["endpoints"]] == ["UserViewSet"], res.data
 
     assert (await agents.create_model("blog", "Post", [{"name": "title", "type": "string", "max_length": 50}], project_id=project)).success
     assert (await agents.create_serializer("blog", "Post", project_id=project)).success
@@ -240,7 +248,10 @@ async def test_list_endpoints_skips_commented_registrations(project: Path):
     assert (await agents.register_route("blog", "Post", project_id=project)).success
     res = await agents.list_endpoints(project_id=project)
     assert res.success
-    assert [e["viewset"] for e in res.data["endpoints"]] == ["PostViewSet"]
+    assert sorted(e["viewset"] for e in res.data["endpoints"]) == [
+        "PostViewSet",
+        "UserViewSet",
+    ]
 
 
 def test_extract_model_names_includes_abstract_user_subclasses():
@@ -424,3 +435,59 @@ def test_ensure_asgi_middleware_leaves_unrecognized_file_untouched(tmp_path: Pat
     custom.write_text(original, encoding="utf-8")
     assert ensure_asgi_middleware(custom) is None
     assert custom.read_text(encoding="utf-8") == original
+
+
+# ---------------------------------------------------------------------------
+# Introspection reads code, not text.
+#
+# The scaffolded modules teach through a copy-pasteable example in their module
+# docstring. Every tool that inspects or edits those files therefore has to ask
+# the AST what is actually there — a substring match sees the example and acts
+# on it, which is how a docstring line ends up deleted, an import silently
+# skipped, or a nonexistent endpoint reported.
+# ---------------------------------------------------------------------------
+
+
+_URLS_WITH_EXAMPLE = '''"""Shop URL configuration.
+
+Registering a viewset here is what makes its endpoints exist:
+
+    from .views import ProductViewSet
+
+    router.register("products", ProductViewSet)
+"""
+
+from zeeb_api.routers import DefaultRouter
+
+router = DefaultRouter()
+'''
+
+
+def test_router_registrations_ignores_the_docstring_example():
+    assert router_registrations(_URLS_WITH_EXAMPLE) == []
+
+    live = _URLS_WITH_EXAMPLE + '\nrouter.register("products", ProductViewSet)\n'
+    assert [(prefix, viewset) for prefix, viewset, _ in router_registrations(live)] == [
+        ("products", "ProductViewSet")
+    ]
+
+
+def test_router_registrations_reports_no_routes_for_a_broken_file():
+    """A urls.py that does not parse serves nothing, so nothing is registered."""
+    assert router_registrations("router.register(") == []
+
+
+def test_ensure_import_is_not_fooled_by_the_docstring_example(tmp_path: Path):
+    urls = tmp_path / "urls.py"
+    urls.write_text(_URLS_WITH_EXAMPLE, encoding="utf-8")
+
+    ensure_import(urls, "from .views import ProductViewSet")
+    written = urls.read_text(encoding="utf-8")
+    # The example is not a binding: without this the module would reference a
+    # name nothing imports and fail at import time.
+    assert imports_name(written, ".views", "ProductViewSet")
+    compile(written, "urls.py", "exec")
+
+    # Now genuinely present — a second call must not duplicate it.
+    ensure_import(urls, "from .views import ProductViewSet")
+    assert urls.read_text(encoding="utf-8") == written

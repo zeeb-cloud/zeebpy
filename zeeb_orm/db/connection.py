@@ -8,6 +8,7 @@ from contextvars import ContextVar
 from typing import Any, AsyncGenerator
 
 from sqlalchemy import create_engine, text
+from sqlalchemy import exc as _sa_exc
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -22,8 +23,11 @@ from zeeb_orm.conf.settings import DatabaseConfig, get_settings
 _connections: dict[str, Database] = {}
 _default_alias = "default"
 
-# Context variable for active transaction session
+# Context variables for the active transaction session and its database alias
 _active_session: ContextVar[AsyncSession | None] = ContextVar("active_session", default=None)
+_active_session_alias: ContextVar[str | None] = ContextVar(
+    "active_session_alias", default=None
+)
 
 
 class Database:
@@ -212,6 +216,19 @@ class Database:
             metadata.drop_all(self._sync_engine)
 
 
+class _SyncSessionTransactionWrapper:
+    """Async facade over a sync SessionTransaction (savepoint)."""
+
+    def __init__(self, tx: Any) -> None:
+        self._tx = tx
+
+    async def commit(self) -> None:
+        self._tx.commit()
+
+    async def rollback(self) -> None:
+        self._tx.rollback()
+
+
 class _SyncSessionWrapper:
     """Wrapper to make sync session work with async interface."""
 
@@ -226,6 +243,9 @@ class _SyncSessionWrapper:
 
     async def rollback(self) -> None:
         self._session.rollback()
+
+    async def begin_nested(self) -> _SyncSessionTransactionWrapper:
+        return _SyncSessionTransactionWrapper(self._session.begin_nested())
 
     async def refresh(self, instance: Any) -> None:
         self._session.refresh(instance)
@@ -254,11 +274,22 @@ async def get_connection(alias: str | None = None) -> Database:
     """
     Get or create database connection.
 
-    If no alias specified, uses default connection from settings.
+    The default connection is created lazily from settings. Any other alias
+    must have been registered via register_database() first - an unknown
+    alias raises ConnectionDoesNotExist instead of silently falling back to
+    the default database.
     """
     alias = alias or _default_alias
 
     if alias not in _connections:
+        if alias != _default_alias:
+            from zeeb_orm.exceptions import ConnectionDoesNotExist
+
+            raise ConnectionDoesNotExist(
+                f"The database connection {alias!r} doesn't exist. Register "
+                "it with register_database(Database(...), alias=...) before "
+                "using it."
+            )
         settings = get_settings()
         db = Database(config=settings.database)
         await db.connect()
@@ -286,6 +317,14 @@ async def atomic(using: str | None = None) -> AsyncGenerator[AsyncSession, None]
     """
     Context manager for database transactions.
 
+    Nested ``atomic()`` blocks on the same database become SAVEPOINTs: an
+    inner block's failure rolls back to its savepoint without dooming the
+    outer transaction, and an inner block's success only releases the
+    savepoint - nothing is durable until the outermost block commits.
+
+    ``on_commit`` callbacks run once, after the outermost commit; callbacks
+    registered inside a rolled-back savepoint block are discarded.
+
     Usage:
         async with atomic() as session:
             await User.objects.create(name='John')
@@ -294,20 +333,46 @@ async def atomic(using: str | None = None) -> AsyncGenerator[AsyncSession, None]
     """
     from zeeb_orm.db.transaction import _on_commit_callbacks, _run_on_commit_callbacks
 
-    db = await get_connection(using)
+    alias = using or _default_alias
+    active = _active_session.get()
+
+    if active is not None and _active_session_alias.get() == alias:
+        # Nested block on the same database -> SAVEPOINT on the same session
+        callbacks = _on_commit_callbacks.get()
+        cb_mark = len(callbacks) if callbacks is not None else 0
+        nested = await active.begin_nested()
+        try:
+            yield active
+            await nested.commit()
+        except Exception:
+            await nested.rollback()
+            # Discard callbacks registered inside the rolled-back block
+            if callbacks is not None:
+                del callbacks[cb_mark:]
+            raise
+        return
+
+    db = await get_connection(alias)
 
     async with db.session() as session:
         token = _active_session.set(session)
+        alias_token = _active_session_alias.set(alias)
         cb_token = _on_commit_callbacks.set([])
         try:
             yield session
-            await session.commit()
+            try:
+                await session.commit()
+            except _sa_exc.IntegrityError as exc:
+                from zeeb_orm.exceptions import IntegrityError
+
+                raise IntegrityError(str(exc.orig)) from exc
             _run_on_commit_callbacks()
         except Exception:
             await session.rollback()
             raise
         finally:
             _on_commit_callbacks.reset(cb_token)
+            _active_session_alias.reset(alias_token)
             _active_session.reset(token)
 
 
@@ -324,21 +389,33 @@ async def get_session(db_alias: str | None = None) -> AsyncGenerator[tuple[Async
     Returns a tuple of (session, should_commit) where should_commit is False
     if using an active transaction (let atomic() handle the commit).
 
+    The active session is only reused when it belongs to the same database
+    alias; statements against a different database open their own session.
+
+    Database integrity violations (unique/foreign-key/check/NOT NULL) raised
+    inside the block surface as zeeb_orm.exceptions.IntegrityError.
+
     Usage:
         async with get_session() as (session, should_commit):
             result = await session.execute(stmt)
             if should_commit:
                 await session.commit()
     """
+    alias = db_alias or _default_alias
     active = _active_session.get()
-    if active is not None:
-        # Reuse existing transaction session - don't commit
-        yield active, False
-    else:
-        # Create a new session - caller should commit
-        db = await get_connection(db_alias)
-        async with db.session() as session:
-            yield session, True
+    try:
+        if active is not None and _active_session_alias.get() == alias:
+            # Reuse existing transaction session - don't commit
+            yield active, False
+        else:
+            # Create a new session - caller should commit
+            db = await get_connection(alias)
+            async with db.session() as session:
+                yield session, True
+    except _sa_exc.IntegrityError as exc:
+        from zeeb_orm.exceptions import IntegrityError
+
+        raise IntegrityError(str(exc.orig)) from exc
 
 
 # Convenience functions for setup

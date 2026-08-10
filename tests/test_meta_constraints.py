@@ -110,7 +110,7 @@ class TestMetaConstraintEmission:
     async def test_unique_together_enforced_in_db(self, db):
         tenant = await McTenant.objects.create(name="acme")
         await McMember.objects.create(email="a@x.com", tenant=tenant, status="s1")
-        import sqlalchemy.exc
+        from zeeb_orm.exceptions import IntegrityError
 
-        with pytest.raises(sqlalchemy.exc.IntegrityError):
+        with pytest.raises(IntegrityError):
             await McMember.objects.create(email="a@x.com", tenant=tenant, status="s2")

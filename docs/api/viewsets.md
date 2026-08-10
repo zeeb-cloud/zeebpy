@@ -62,13 +62,22 @@ class ArticleViewSet(ModelViewSet):
 
 This provides (canonical paths are **slash-less**; the trailing-slash variant
 also resolves without a redirect, so paths below are shown slash-less):
-- `GET /articles` - List all articles (simple query params / pagination)
-- `POST /articles/query` - List with a serialized `Q` filter body
-- `POST /articles` - Create article
-- `GET /articles/{id}` - Get single article
-- `PUT /articles/{id}` - Update article
-- `PATCH /articles/{id}` - Partial update
-- `DELETE /articles/{id}` - Delete article
+| Route | Success status |
+|---|---|
+| `GET /articles` — list (simple query params / pagination) | 200 |
+| `POST /articles/query` — list with a serialized `Q` filter body | 200 |
+| `POST /articles` — create | **201** |
+| `GET /articles/{id}` — retrieve | 200 |
+| `PUT /articles/{id}` — update | 200 |
+| `PATCH /articles/{id}` — partial update | 200 |
+| `DELETE /articles/{id}` — delete | **204** (no body) |
+
+### The list envelope
+
+With a `pagination_class` set, `GET` returns
+`{"count", "next", "previous", "results"}`; without one it returns a bare JSON
+array. `count` is `null` under cursor pagination, which does not compute a
+total — see [Pagination](pagination.md).
 
 ## ReadOnlyModelViewSet
 
@@ -371,6 +380,7 @@ a model instance passed as a kwarg is normalized to `<name>_id`, so all of these
 are equivalent:
 
 ```python
+class ArticleViewSet(ModelViewSet):
     async def perform_create(self, serializer):
         # Any of these persist author_id = user.id:
         await serializer.save(author_id=self.request.state.user.id)
@@ -564,6 +574,53 @@ Available mixins:
 - `RetrieveModelMixin` - Adds `retrieve()` action
 - `UpdateModelMixin` - Adds `update()` and `partial_update()` actions
 - `DestroyModelMixin` - Adds `destroy()` action
+- `QueryModelMixin` - Adds the `POST /<prefix>/query` action (see below)
+
+## The `/query` Endpoint
+
+`ModelViewSet` includes `QueryModelMixin`, which serves a `POST` endpoint
+accepting a serialized `Q` expression — for filters too complex to express in a
+query string.
+
+```http
+POST /articles/query
+{
+  "filter": "Q(published=True) & Q(author_id='...')",
+  "order_by": ["-created_at"],
+  "limit": 20,
+  "offset": 0
+}
+```
+
+The string is parsed by `parse_q_filter()`, which is a **safe parser**, not
+`eval` — it accepts `Q(...)` calls combined with `&`, `|` and `~`, and rejects
+anything else with `QFilterError`.
+
+### Which fields a client may use
+
+Filtering and ordering are restricted to the fields the serializer actually
+exposes in its **response** schema. A `write_only` field, or any column the API
+does not surface, cannot be filtered on.
+
+Override that with `query_fields` on the viewset:
+
+```python
+class ArticleViewSet(ModelViewSet):
+    queryset = Article.objects.all()
+    serializer_class = ArticleSerializer
+
+    # Exactly what POST /articles/query may filter and order by
+    query_fields = ["title", "published", "created_at", "author"]
+```
+
+A `filter` or `order_by` naming a field outside the allow-list is a **400**
+with the standard `VALIDATION_ERROR` envelope, detailed under the `filter` or
+`order_by` key — see [Error Handling](errors.md).
+
+The request and response bodies are modelled by `QueryRequest` and
+`QueryResponse` (`count`, `limit`, `offset`, `results`).
+`create_query_response_model(item_schema)` builds a concrete, correctly-typed
+`QueryResponse` for OpenAPI when you wire the endpoint yourself.
 
 ## Nested Routes
 

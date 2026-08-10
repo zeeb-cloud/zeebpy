@@ -36,6 +36,9 @@ def build_table(model: type[Model]) -> Table:
             if field.default is not None and not callable(field.default):
                 col_kwargs["default"] = field.default
 
+            if getattr(field, "auto_increment", False):
+                col_kwargs["autoincrement"] = True
+
             # Handle FK columns
             if isinstance(field, ForeignKeyField):
                 target_model = field.get_target_model()

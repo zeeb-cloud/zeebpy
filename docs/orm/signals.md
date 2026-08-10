@@ -17,6 +17,27 @@ receivers can react to a `save()` or `delete()` without the model knowing about 
 
 `created` is `True` for `INSERT`, `False` for `UPDATE`.
 
+### Which write paths fire them
+
+| Method | Save signals |
+|--------|--------------|
+| `Model.save()` | yes |
+| `objects.create()` | yes (`created=True`) — it calls `save()` |
+| `objects.get_or_create()` | yes, on the create branch only |
+| `objects.update_or_create()` | yes, on both branches |
+| `objects.bulk_create()` / `bulk_update()` | **no** |
+| `QuerySet.update()` | **no** |
+
+The bulk paths are deliberately signal-free: they write set at a time and
+never build the instances a receiver would expect. Use `Model.save()` in a
+loop when receivers must run.
+
+`Model.delete()` and `QuerySet.delete()` both fire the delete signals per
+instance. `QuerySet.delete()` normally collapses to a single DELETE
+statement when nothing references the model, but takes the per-instance
+route as soon as a receiver is connected — check with
+`pre_delete.has_listeners(MyModel)`.
+
 ---
 
 ## Connecting receivers

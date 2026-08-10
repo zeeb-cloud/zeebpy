@@ -79,49 +79,65 @@ This creates:
 myproject/
 ├── myproject/
 │   ├── __init__.py
-│   ├── settings.py      # Configuration
+│   ├── settings.py      # Environment-driven configuration
 │   ├── asgi.py          # ASGI application
-│   └── urls.py          # URL routing
-├── apps/                # Your applications
-├── migrations/          # Database migrations
-│   └── versions/
-├── logs/                # Application logs
-├── manage.py            # Management CLI
+│   └── urls.py          # Auth + OAuth + app routers
+├── apps/
+│   └── accounts/        # Your user model, wired via AUTH_USER_MODEL
+│       ├── __init__.py
+│       ├── models.py
+│       ├── serializers.py
+│       ├── views.py
+│       └── urls.py
+├── tests/               # Shared fixtures + a smoke suite that already passes
+├── migrations/          # Migration files live flat in here
+├── logs/
+├── .cursor/rules/       # The AGENTS.md body, for Cursor
+├── .env                 # Generated signing key — gitignored, mode 0600
+├── .env.example         # Every supported variable
+├── .gitignore
+├── AGENTS.md            # Conventions, for humans and coding agents
+├── CLAUDE.md            # Pointer to AGENTS.md
+├── manage.py
+├── pyproject.toml
+├── pytest.ini
+├── README.md
 └── requirements.txt
 ```
 
+Authentication, CORS, rate limiting, API versioning, health probes and logging
+are configured and on. The `.env` holds a signing key generated for this
+project, which is what lets it run with `DEBUG=false` without further setup.
+
+`pytest` passes right away — before any migration exists — so you have a working
+verification loop from the start.
+
 ### Configure Database
 
-Edit `myproject/settings.py`:
+Set `DATABASE_URL` in `.env` — no code change needed:
 
-```python
+```bash
 # SQLite (default, good for development)
-DATABASE = {
-    "url": "sqlite+aiosqlite:///./db.sqlite3",
-}
+DATABASE_URL=sqlite+aiosqlite:///db.sqlite3
 
 # PostgreSQL (recommended for production)
-DATABASE = {
-    "url": "postgresql+asyncpg://user:password@localhost:5432/mydb",
-}
+DATABASE_URL=postgresql+asyncpg://user:password@localhost:5432/mydb
 
 # MySQL
-DATABASE = {
-    "url": "mysql+aiomysql://user:password@localhost:3306/mydb",
-}
+DATABASE_URL=mysql+aiomysql://user:password@localhost:3306/mydb
 ```
 
 ### Initialize Database
 
 ```bash
-# Create migrations directory
-python manage.py init
-
 # Generate initial migrations
 python manage.py makemigrations
 
 # Apply migrations
 python manage.py migrate
+
+# Create an admin account
+python manage.py createsuperuser
 ```
 
 ### Run Development Server

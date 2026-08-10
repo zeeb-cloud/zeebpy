@@ -13,9 +13,11 @@ from zeeb_agents._utils.code_gen import (
     class_has_field,
     ensure_import,
     extract_field_names,
+    extract_field_types,
     extract_model_names,
     remove_field_from_class,
     render_model_class,
+    replace_field_in_class,
     skip_result,
     validate_if_exists,
 )
@@ -109,7 +111,11 @@ async def create_model(
                 model=model_name,
             )
 
-        resolved_meta = meta or {"table_name": to_table_name(app, model_name)}
+        # Merge, never replace: passing any meta (e.g. just ``ordering``) used to drop
+        # the app-prefixed table name, so that one model landed on an unprefixed table
+        # while its siblings kept the prefix — two apps with the same model name then
+        # collide on one table. An explicit table_name still wins.
+        resolved_meta = {"table_name": to_table_name(app, model_name), **(meta or {})}
         class_code = render_model_class(model_name, fields, resolved_meta)
         ensure_import(path, "from zeeb_orm import Model, fields")
         for field in fields:
@@ -179,8 +185,13 @@ async def list_models(project_root: Path | None = None) -> AgentResult:
 
     Returns data (on success):
         models (list[dict]): each ``{"app": str, "model": str,
-            "fields": list[str]}``.
+            "fields": list[str], "field_types": dict[str, str]}``.
         count (int): len(models).
+
+    Notes:
+        - ``field_types`` maps each field name to its declared field class
+          (``{"title": "CharField"}``), so a caller comparing a spec against the
+          project can tell a new field from a changed one.
     """
     root = project_root
 
@@ -192,10 +203,12 @@ async def list_models(project_root: Path | None = None) -> AgentResult:
                 continue
             content = models_path.read_text(encoding="utf-8")
             for model_name in extract_model_names(content):
+                field_types = extract_field_types(content, model_name)
                 result.append({
                     "app": app,
                     "model": model_name,
-                    "fields": extract_field_names(content, model_name),
+                    "fields": list(field_types),
+                    "field_types": field_types,
                 })
         return result
 
@@ -331,6 +344,75 @@ async def delete_field(
         field (str): the name of the field that was removed.
     """
     return await remove_field(app, model_name, field_name, project_id=project_root)
+
+
+@agent_function
+async def alter_field(
+    app: str,
+    model_name: str,
+    field: dict,
+    project_root: Path | None = None,
+) -> AgentResult:
+    """Redefine an existing field in place — type, length, nullability, default.
+
+    The field keeps its name and position; only its definition changes. Use
+    this instead of remove_field + add_field, which drops the column (and its
+    data) before recreating it.
+
+    Args:
+        app: App directory name (e.g. ``"blog"``).
+        model_name: PascalCase class name (e.g. ``"Post"``).
+        field: Full replacement field spec — same dialect as
+            :func:`add_field` (``{"name", "type", ...kwargs}``). Every kwarg
+            must be restated; the old definition is discarded, not merged.
+
+    Returns data (on success):
+        app (str): the app name.
+        model (str): the model class name.
+        field (str): the ``"name"`` of the field that was redefined.
+
+    Notes:
+        - Idempotent: applying the same spec twice rewrites the identical line.
+        - Fails with ``field_not_found`` (plus close-match suggestions) when the
+          model has no such field, and when the field was hand-edited across
+          several lines — generated definitions are always single-line.
+        - A type change can require a data migration the generator cannot
+          write; review the migration before applying it in production.
+    """
+    path = _models_file(app, project_root)
+    if not path.exists():
+        return fail(f"models.py not found at {path}", code="file_not_found", missing="models.py")
+
+    validate_field_specs([field])
+    field_name = field["name"]
+
+    def _replace() -> None:
+        content = path.read_text(encoding="utf-8")
+        ensure_model_exists(content, model_name, str(path))
+        new_content = replace_field_in_class(
+            content, model_name, field_name, render_field_line(field)
+        )
+        if new_content is None:
+            existing = extract_field_names(content, model_name)
+            hint = did_you_mean(field_name, existing)
+            if not hint:
+                hint = f" Fields present: {', '.join(existing) or '(none)'}."
+            raise AgentError(
+                f"Field '{field_name}' not found in model '{model_name}' in {path}.{hint}",
+                code="field_not_found",
+                suggestions=close_matches(field_name, existing),
+                fields=existing,
+            )
+        path.write_text(new_content, encoding="utf-8")
+        for import_line in field_extra_imports(field):
+            ensure_import(path, import_line)
+
+    await asyncio.to_thread(_replace)
+    return AgentResult(
+        success=True,
+        message=f"Field '{field_name}' redefined on {model_name}",
+        data={"app": app, "model": model_name, "field": field_name},
+    )
 
 
 @agent_function

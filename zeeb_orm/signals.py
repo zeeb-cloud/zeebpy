@@ -151,6 +151,15 @@ class Signal:
 
         return live
 
+    def has_listeners(self, sender: type) -> bool:
+        """Whether any live receiver would run for *sender*.
+
+        Lets callers skip a set-based fast path that cannot fire signals —
+        :meth:`zeeb_orm.query.QuerySet.delete` uses it to decide between a
+        single DELETE statement and the per-instance collector.
+        """
+        return bool(self._live_receivers(sender))
+
     async def send(self, sender: type, **kwargs: Any) -> list[tuple[Callable, Any]]:
         """Fire all connected receivers.
 

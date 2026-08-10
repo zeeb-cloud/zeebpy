@@ -1,391 +1,220 @@
-"""startproject command - Create new Zeeb project."""
+"""startproject command - Create new Zeeb project.
 
-import os
-from pathlib import Path
-from typing import Any
+The templates themselves live in :mod:`zeeb_orm.scaffold.project`, which is the
+single source of truth shared with the agent layer. They are re-exported here
+because they are part of this module's established import surface.
+"""
 
-
-# Project template files
-
-MANAGE_PY = '''#!/usr/bin/env python3
-"""Zeeb project management script."""
-
-import sys
 from pathlib import Path
 
-# Add project to path
-sys.path.insert(0, str(Path(__file__).parent))
-
-if __name__ == "__main__":
-    from zeeb_orm.cli.main import main
-    sys.exit(main())
-'''
-
-SETTINGS_PY = '''"""
-{project_name} settings.
-
-Configure your database, installed apps, and other settings here.
-"""
-
-import os
-
-# Debug mode - set to False in production
-DEBUG = os.getenv("DEBUG", "true").lower() == "true"
-
-# Secret key for JWT tokens - CHANGE IN PRODUCTION!
-SECRET_KEY = os.getenv("SECRET_KEY", "your-secret-key-change-in-production")
-
-# Database configuration
-DATABASE = {{
-    "url": os.getenv(
-        "DATABASE_URL",
-        "sqlite+aiosqlite:///db.sqlite3"
-    ),
-    # PostgreSQL example:
-    # "url": "postgresql+asyncpg://user:password@localhost:5432/dbname",
-    # MySQL example:
-    # "url": "mysql+aiomysql://user:password@localhost:3306/dbname",
-}}
-
-# Installed apps - list your app modules here
-INSTALLED_APPS = [
-    # "apps.myapp",
-]
-
-# Custom user model (like Django's AUTH_USER_MODEL)
-# Set to your custom user model path, e.g., "apps.accounts.CustomUser"
-# If not set, uses the default zeeb_api.auth.models.User
-AUTH_USER_MODEL = None  # Example: "apps.accounts.CustomUser"
-
-# Logging configuration
-# Logs are automatically written to the logs/ directory with daily rotation
-LOGGING = {{
-    "level": os.getenv("LOG_LEVEL", "DEBUG" if DEBUG else "INFO"),
-    "json_logs": os.getenv("JSON_LOGS", "false" if DEBUG else "true").lower() == "true",
-    "log_file": os.getenv("LOG_FILE", "logs/app.log"),
-    "log_rotation": True,           # Rotate logs at midnight
-    "log_retention_days": 30,       # Keep logs for 30 days
-}}
-
-# Middleware (for FastAPI)
-# JWTAuthMiddleware resolves the Bearer token and sets request.state.user so
-# ViewSet permission classes (IsAuthenticated, ...) work; it is a no-op when no
-# token is sent. CORSMiddleware only activates once CORS_ALLOW_ORIGINS is set.
-MIDDLEWARE = [
-    "zeeb_api.middleware.CORSMiddleware",
-    "zeeb_api.middleware.JWTAuthMiddleware",
-]
-
-# CORS settings
-CORS_ALLOW_ORIGINS = [
-    "http://localhost:3000",
-]
-
-# API settings
-API_TITLE = "{project_name} API"
-API_VERSION = "1.0.0"
-API_PREFIX = "/api/v1"
-
-# URL configuration - module exposing the project router (like Django's ROOT_URLCONF)
-ROOT_URLCONF = "{project_name}.urls"
-
-# Register /health and /ready liveness/readiness probes in create_app()
-INSTALL_HEALTH_ROUTES = True
-
-# Pagination (limit/offset)
-DEFAULT_LIMIT = 20
-MAX_LIMIT = 100
-
-# Migration enforcement
-# When True, server will fail to start if there are unapplied migrations
-# Automatically disabled in DEBUG mode for development convenience
-ENFORCE_MIGRATIONS = os.getenv("ENFORCE_MIGRATIONS", "true").lower() == "true"
-
-# JWT settings
-JWT_ACCESS_TOKEN_EXPIRE_MINUTES = 15
-JWT_REFRESH_TOKEN_EXPIRE_DAYS = 7
-'''
-
-URLS_PY = '''"""
-{project_name} URL configuration.
-
-Register your app routers here.
-"""
-
-from zeeb_api.routers import DefaultRouter
-
-# Main router
-router = DefaultRouter()
-
-# Include app routers
-# from apps.myapp.urls import router as myapp_router
-# router.include(myapp_router, prefix="myapp")
-
-
-def get_routes():
-    """Return all routes for the FastAPI app."""
-    return router.routes
-'''
-
-ASGI_PY = '''"""
-{project_name} ASGI application.
-
-Thin entry point. The application is built by ``zeeb_api.create_app()``, which
-wires everything from settings.py: middleware (CORS + JWTAuthMiddleware), the
-standard error envelope, JWT, routes (from ROOT_URLCONF), the /health + /ready
-probes (INSTALL_HEALTH_ROUTES), and a migration-aware startup lifespan.
-Configure behavior in settings.py, not here.
-"""
-
-from zeeb_api import create_app
-from zeeb_api.logging import configure_logging
-
-from {project_name}.settings import LOGGING
-
-# Configure logging from settings (with rotation at midnight) before the app is
-# built, so startup logs use the configured handlers.
-configure_logging(
-    level=LOGGING.get("level", "INFO"),
-    json_logs=LOGGING.get("json_logs", False),
-    log_file=LOGGING.get("log_file"),
-    log_rotation=LOGGING.get("log_rotation", True),
-    log_retention_days=LOGGING.get("log_retention_days", 30),
+from zeeb_orm.cli.output import fail, ok
+from zeeb_orm.scaffold import accounts as accounts_templates
+from zeeb_orm.scaffold.agent_guide import (
+    CLAUDE_MD,
+    render_agents_md,
+    render_cursor_rules,
+)
+from zeeb_orm.scaffold.app import APP_INIT_PY
+from zeeb_orm.scaffold.errors import ScaffoldError
+from zeeb_orm.scaffold.harness import (
+    PYTEST_INI,
+    SMOKE_TEST_PY,
+    render_conftest,
+)
+from zeeb_orm.scaffold.project import (
+    APPS_INIT_PY,
+    ASGI_PY,
+    ENV_EXAMPLE,
+    ENV_TEMPLATE,
+    GITIGNORE,
+    MANAGE_PY,
+    PROJECT_INIT_PY,
+    PYPROJECT_TOML,
+    README_MD,
+    REQUIREMENTS_TXT,
+    SETTINGS_PY,
+    URLS_PY,
+    generate_secret_key,
+    zeeb_version,
 )
 
-app = create_app("{project_name}.settings")
-'''
-
-PROJECT_INIT_PY = '''"""
-{project_name} - A Zeeb project.
-"""
-
-__version__ = "0.1.0"
-'''
-
-APPS_INIT_PY = '''"""
-Apps package - your application modules go here.
-
-Create a new app with: zeeb startapp <name>
-"""
-'''
-
-REQUIREMENTS_TXT = '''# Zeeb ORM and API (zeeb_api ships inside the zeebpy distribution)
-zeebpy[all] @ git+https://github.com/zeeb-cloud/zeebpy.git
-
-# FastAPI
-fastapi>=0.100.0
-uvicorn[standard]>=0.23.0
-
-# Development
-pytest>=7.0.0
-pytest-asyncio>=0.21.0
-httpx>=0.24.0
-'''
-
-GITIGNORE = '''# Python
-__pycache__/
-*.py[cod]
-*$py.class
-*.so
-.Python
-build/
-develop-eggs/
-dist/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
-*.egg-info/
-.installed.cfg
-*.egg
-
-# Virtual environments
-.venv/
-venv/
-ENV/
-
-# IDE
-.idea/
-.vscode/
-*.swp
-*.swo
-
-# Testing
-.pytest_cache/
-.coverage
-htmlcov/
-
-# Database
-*.sqlite3
-*.db
-
-# Environment
-.env
-.env.local
-
-# Logs
-logs/*.log
-
-# Migrations
-migrations/versions/__pycache__/
-'''
-
-README_MD = '''# {project_name}
-
-A Zeeb project.
-
-## Setup
-
-```bash
-# Create virtual environment
-python -m venv .venv
-source .venv/bin/activate  # or .venv\\Scripts\\activate on Windows
-
-# Install dependencies
-pip install -r requirements.txt
-
-# Initialize and run migrations (REQUIRED before starting)
-python manage.py init           # Initialize migrations folder
-python manage.py makemigrations  # Create migrations for all models
-python manage.py migrate         # Apply migrations to database
-```
-
-## Running
-
-```bash
-# Run development server
-python manage.py runserver
-
-# Or use zeeb-manage from anywhere in the project
-zeeb-manage runserver
-
-# Or with uvicorn directly
-uvicorn {project_name}.asgi:app --reload
-```
-
-## Management Commands
-
-All commands work with `python manage.py`, `zeeb-manage`, or `zeeb`:
-
-```bash
-# Create a new app
-zeeb-manage startapp myapp
-
-# Initialize migrations (first time only)
-zeeb-manage init
-
-# Create migrations after model changes
-zeeb-manage makemigrations
-
-# Apply migrations
-zeeb-manage migrate
-
-# Check project configuration
-zeeb-manage check
-
-# Create a superuser
-zeeb-manage createsuperuser
-
-# Show migration status
-zeeb-manage showmigrations
-
-# Rollback migrations
-zeeb-manage migrate --rollback 1
-
-# Interactive shell
-zeeb-manage shell
-```
-
-## Project Structure
-
-```
-{project_name}/
-├── manage.py
-├── {project_name}/
-│   ├── __init__.py
-│   ├── settings.py
-│   ├── urls.py
-│   └── asgi.py
-├── apps/
-│   └── (your apps here)
-├── migrations/
-└── requirements.txt
-```
-'''
+__all__ = [
+    "APPS_INIT_PY",
+    "ASGI_PY",
+    "ENV_EXAMPLE",
+    "ENV_TEMPLATE",
+    "GITIGNORE",
+    "MANAGE_PY",
+    "PROJECT_INIT_PY",
+    "PYPROJECT_TOML",
+    "README_MD",
+    "REQUIREMENTS_TXT",
+    "SETTINGS_PY",
+    "URLS_PY",
+    "run_startproject",
+]
 
 
-def run_startproject(name: str, directory: str) -> int:
+def run_startproject(name: str, directory: str, json_output: bool = False) -> int:
     """Create a new Zeeb project."""
-    # Validate project name
     if not name.isidentifier():
-        print(f"Error: '{name}' is not a valid Python identifier")
-        return 1
+        return fail(
+            f"'{name}' is not a valid Python identifier, so it cannot be a package name.",
+            code="invalid_identifier",
+            next_command="python -m zeeb_orm.cli.main startproject <valid_name>",
+            json_output=json_output,
+            name=name,
+        )
 
     base_path = Path(directory).resolve()
     project_path = base_path / name
 
     if project_path.exists():
-        print(f"Error: Directory '{project_path}' already exists")
-        return 1
+        return fail(
+            f"Directory '{project_path}' already exists.",
+            code="already_exists",
+            next_command=f"cd {name} && python manage.py check",
+            json_output=json_output,
+            path=str(project_path),
+        )
 
-    print(f"Creating project '{name}' in {base_path}...")
+    if not json_output:
+        print(f"Creating project '{name}' in {base_path}...")
 
     try:
         # Create directory structure
         project_path.mkdir(parents=True)
         (project_path / name).mkdir()
         (project_path / "apps").mkdir()
+        (project_path / "apps" / "accounts").mkdir()
         (project_path / "migrations").mkdir()
-        (project_path / "migrations" / "versions").mkdir()
         (project_path / "logs").mkdir()
-        
-        # Create .gitkeep in logs to preserve empty dir
+
+        # Keep the empty directories in version control. Migration files live
+        # flat in migrations/ — that is what makemigrations writes and what the
+        # executor, the state module and the pre-flight checks read.
         (project_path / "logs" / ".gitkeep").write_text("")
+        (project_path / "migrations" / ".gitkeep").write_text("")
+
+        # A fresh signing key per project, so the generated app runs with
+        # DEBUG=false without the operator having to think about it.
+        accounts_context = {
+            "app_name": "accounts",
+            "app_class": "Accounts",
+            "app_title": "Accounts",
+        }
 
         # Create files
         files = {
             "manage.py": MANAGE_PY,
             f"{name}/__init__.py": PROJECT_INIT_PY.format(project_name=name),
             f"{name}/settings.py": SETTINGS_PY.format(project_name=name),
-            f"{name}/urls.py": URLS_PY.format(project_name=name),
+            f"{name}/urls.py": URLS_PY,
             f"{name}/asgi.py": ASGI_PY.format(project_name=name),
             "apps/__init__.py": APPS_INIT_PY,
+            "apps/accounts/__init__.py": APP_INIT_PY.format(**accounts_context),
+            "apps/accounts/models.py": accounts_templates.MODELS_PY,
+            "apps/accounts/serializers.py": accounts_templates.SERIALIZERS_PY,
+            "apps/accounts/views.py": accounts_templates.VIEWS_PY,
+            "apps/accounts/urls.py": accounts_templates.URLS_PY,
+            # The test harness ships with the project, not with the first
+            # generated feature: `pytest` has to be a working verification loop
+            # from minute one, and the db fixture builds the schema from the
+            # model registry so it passes before `makemigrations` has ever run.
+            "pytest.ini": PYTEST_INI,
+            "tests/__init__.py": "",
+            "tests/conftest.py": render_conftest(f"{name}.settings"),
+            "tests/test_smoke.py": SMOKE_TEST_PY,
             "requirements.txt": REQUIREMENTS_TXT,
+            "pyproject.toml": PYPROJECT_TOML.format(
+                project_name=name, zeeb_version=zeeb_version()
+            ),
             ".gitignore": GITIGNORE,
+            ".env": ENV_TEMPLATE.format(
+                project_name=name, secret_key=generate_secret_key()
+            ),
+            ".env.example": ENV_EXAMPLE.format(project_name=name),
             "README.md": README_MD.format(project_name=name),
+            # What tells a coding agent what this project is. AGENTS.md is the
+            # source of truth; the other two are vendor entry points rendered
+            # from the same constant so they cannot drift from it.
+            "AGENTS.md": render_agents_md(name),
+            "CLAUDE.md": CLAUDE_MD,
+            ".cursor/rules/zeebpy.mdc": render_cursor_rules(name),
         }
 
         for filepath, content in files.items():
             file_path = project_path / filepath
+            file_path.parent.mkdir(parents=True, exist_ok=True)
             file_path.write_text(content)
-            print(f"  Created {filepath}")
+            if not json_output:
+                print(f"  Created {filepath}")
 
-        # Make manage.py executable
+        # Make manage.py executable.
         manage_path = project_path / "manage.py"
         manage_path.chmod(manage_path.stat().st_mode | 0o111)
+        # The signing key is in there: owner-only, like an ssh private key.
+        (project_path / ".env").chmod(0o600)
 
-        print(f"\nProject '{name}' created successfully!")
-        print(f"\nNext steps:")
-        print(f"  cd {name}")
-        print(f"  python -m venv .venv")
-        print(f"  source .venv/bin/activate")
-        print(f"  pip install -r requirements.txt")
-        print(f"  python manage.py init           # Initialize migrations")
-        print(f"  python manage.py makemigrations  # Create initial migrations")
-        print(f"  python manage.py migrate         # Apply migrations")
-        print(f"  python manage.py runserver")
-
-        return 0
-
-    except Exception as e:
-        print(f"Error creating project: {e}")
-        # Cleanup on error
+    except Exception as exc:
+        # Only a half-written tree is removed. Everything past this point runs
+        # outside the try for exactly that reason — see below.
         import shutil
+
         if project_path.exists():
             shutil.rmtree(project_path)
-        return 1
+        return fail(
+            f"Could not create the project: {exc}",
+            code="invalid_input",
+            next_command=f"python -m zeeb_orm.cli.main startproject {name}",
+            json_output=json_output,
+        )
+
+    # Wiring runs outside the block above. The files are on disk and valid, so
+    # a failure here must not delete them — a project the user can repair in two
+    # lines beats no project at all. (startapp makes the same choice.)
+    from zeeb_orm.scaffold.wiring import ensure_app_urls_included
+
+    try:
+        # Same code path startapp uses, so the include statement and its
+        # position are identical to what the wiring tools would produce.
+        # INSTALLED_APPS already lists apps.accounts in the settings template.
+        ensure_app_urls_included(project_path, "accounts")
+    except ScaffoldError as exc:
+        return fail(
+            f"Project '{name}' was created, but its accounts router could not be "
+            f"included: {exc}",
+            code=exc.code,
+            next_command=(
+                f"Add 'from apps.accounts.urls import router as accounts_router' and "
+                f"'router.include(accounts_router)' to {name}/{name}/urls.py"
+            ),
+            json_output=json_output,
+            state_changed=True,
+            path=str(project_path),
+            **exc.data,
+        )
+
+    return ok(
+        f"Project '{name}' created at {project_path}.",
+        json_output=json_output,
+        lines=(
+            f"\nProject '{name}' created successfully!",
+            "\nNext steps:",
+            f"  cd {name}",
+            "  python -m venv .venv",
+            "  source .venv/bin/activate",
+            "  pip install -r requirements.txt",
+            "  pytest                           # The smoke suite passes already",
+            "  python manage.py makemigrations  # Create initial migrations",
+            "  python manage.py migrate         # Apply migrations",
+            "  python manage.py createsuperuser # Create an admin account",
+            "  python manage.py runserver",
+            "\nAuthentication is already wired: POST /api/v1/auth/register,",
+            "/api/v1/auth/login, /api/v1/auth/refresh and GET /api/v1/auth/me.",
+            "Read AGENTS.md for the conventions; configure everything from .env.",
+        ),
+        name=name,
+        path=str(project_path),
+        files=sorted(files),
+    )

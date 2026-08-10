@@ -163,6 +163,10 @@ class Manager(Generic[ModelT]):
         """Return all objects."""
         return self.get_queryset()
 
+    def none(self) -> QuerySet[ModelT]:
+        """Return a queryset guaranteed to match nothing."""
+        return self.get_queryset().none()
+
     def filter(self, *args: Any, **kwargs: Any) -> QuerySet[ModelT]:
         """Return filtered queryset."""
         return self.get_queryset().filter(*args, **kwargs)

@@ -21,6 +21,7 @@ from zeeb_orm.migrations.operations import (
     RemoveField,
     RemoveIndex,
     Operation,
+    copy_column,
 )
 
 
@@ -33,6 +34,18 @@ def _server_default_value(default) -> str | None:
         return None
     text = getattr(arg, "text", None)  # TextClause -> its SQL text
     return text if text is not None else str(arg)
+
+
+def _named_unique_constraint(table_name: str, constraint):
+    """Copy an unnamed UniqueConstraint with a deterministic name.
+
+    The name has to be stable across runs, or the next autodetect sees a different
+    constraint and re-emits it forever.
+    """
+    from sqlalchemy import UniqueConstraint
+
+    columns = [col.key if hasattr(col, "key") else str(col) for col in constraint.columns]
+    return UniqueConstraint(*columns, name=f"uq_{table_name}_{'_'.join(columns)}")
 
 
 def _table_name_to_model_name(table_name: str) -> str:
@@ -157,13 +170,17 @@ def _convert_single_diff(diff: tuple) -> Operation | list[Operation] | None:
         from sqlalchemy import UniqueConstraint
         table = diff[1]
         model_name = _table_name_to_model_name(table.name)
-        columns = [col.copy() for col in table.columns]
+        columns = [copy_column(col) for col in table.columns]
         pk_cols = [col.name for col in table.primary_key.columns]
-        # Preserve named table-level unique constraints so the written migration
-        # round-trips (otherwise the constraint is re-detected forever).
+        # Preserve table-level unique constraints so the written migration
+        # round-trips (otherwise the constraint is re-detected forever). A
+        # constraint from ``Column(unique=True)`` is unnamed, so requiring a name
+        # dropped it silently — the column reached the database with no UNIQUE at
+        # all and duplicates were accepted. Give those a deterministic name instead.
         constraints = [
-            c for c in table.constraints
-            if isinstance(c, UniqueConstraint) and c.name and len(c.columns) > 0
+            c if c.name else _named_unique_constraint(table.name, c)
+            for c in table.constraints
+            if isinstance(c, UniqueConstraint) and len(c.columns) > 0
         ]
         return CreateModel(
             name=model_name,
@@ -185,7 +202,7 @@ def _convert_single_diff(diff: tuple) -> Operation | list[Operation] | None:
             model_name=model_name,
             table=table_name,
             name=column.name,
-            column=column.copy(),
+            column=copy_column(column),
         )
 
     elif diff_type == "remove_column":
@@ -196,7 +213,7 @@ def _convert_single_diff(diff: tuple) -> Operation | list[Operation] | None:
             table=table_name,
             name=column.name,
             # Keep a copy of the dropped column so the operation is reversible.
-            field=column.copy(),
+            field=copy_column(column),
         )
 
     elif diff_type == "modify_type":

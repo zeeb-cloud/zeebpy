@@ -224,7 +224,8 @@ async def create_signal_receiver(
     if not await asyncio.to_thread(_installed):
         data["warnings"] = [
             f"App '{app}' is not in INSTALLED_APPS — its signal receivers will "
-            f"not load at startup. Run install_app('{app}')."
+            f"not load at startup. Run create_app('{app}') to repair the wiring "
+            "(existing files are untouched)."
         ]
     return AgentResult(
         success=True,

@@ -138,3 +138,95 @@ def test_config_from_settings_honors_secret_and_lifetimes(restore_jwt_config):
     finally:
         for key, value in saved.items():
             setattr(settings, key, value)
+
+
+# --------------------------------------------------------------------------- #
+# default_user_loader must fail CLOSED: never authenticate from token claims
+# when the subject no longer resolves to an active account (H3).
+# --------------------------------------------------------------------------- #
+
+
+def _loader_models():
+    # ExternalIdentity has a reverse FK to User; a user delete cascades to it,
+    # so its table must exist regardless of test ordering.
+    from zeeb_api.auth.models import Permission, User, UserPermission
+    from zeeb_api.auth.oauth.models import ExternalIdentity
+
+    return (User, Permission, UserPermission, ExternalIdentity)
+
+
+@pytest.fixture
+async def db():
+    """In-memory DB registering the auth models (pattern from test_oauth.py)."""
+    from zeeb_orm import close_all_connections, configure, setup_database
+    from zeeb_orm.conf.settings import Settings
+    from zeeb_orm.models.base import metadata
+
+    models = _loader_models()
+    Settings.reset()
+    for model in models:
+        model._sa_table = None
+        model._sa_model = None
+    metadata.clear()
+
+    configure(database={"url": "sqlite+aiosqlite:///:memory:"})
+    database = await setup_database("sqlite+aiosqlite:///:memory:")
+    for model in models:
+        model._get_table()
+    await database.create_all()
+
+    yield database
+
+    await database.drop_all()
+    await close_all_connections()
+    for model in models:
+        table = metadata.tables.get(model._meta.db_table)
+        if table is not None:
+            metadata.remove(table)
+        model._sa_table = None
+        model._sa_model = None
+    Settings.reset()
+
+
+async def _payload_for(user_id: str):
+    from zeeb_api.auth.jwt import decode_token
+
+    token = create_access_token(user_id, claims={"is_staff": True, "is_superuser": True})
+    return decode_token(token, token_type="access")
+
+
+async def test_loader_returns_active_user(db, restore_jwt_config):
+    from zeeb_api.auth.backends import create_user
+    from zeeb_api.middleware.auth import default_user_loader
+
+    configure_jwt(secret_key=SECRET)
+    user = await create_user(email="active@example.com", password="pw-123456")
+
+    loaded = await default_user_loader(await _payload_for(str(user.id)))
+    assert loaded is not None
+    assert loaded.id == user.id
+
+
+async def test_loader_returns_none_for_deleted_user(db, restore_jwt_config):
+    from zeeb_api.auth.backends import create_user
+    from zeeb_api.middleware.auth import default_user_loader
+
+    configure_jwt(secret_key=SECRET)
+    user = await create_user(email="gone@example.com", password="pw-123456")
+    payload = await _payload_for(str(user.id))
+    await user.delete()
+
+    # Must NOT return a claims-only AuthenticatedUser carrying is_staff/is_superuser.
+    assert await default_user_loader(payload) is None
+
+
+async def test_loader_returns_none_for_inactive_user(db, restore_jwt_config):
+    from zeeb_api.auth.backends import create_user
+    from zeeb_api.middleware.auth import default_user_loader
+
+    configure_jwt(secret_key=SECRET)
+    user = await create_user(email="inactive@example.com", password="pw-123456")
+    user.is_active = False
+    await user.save()
+
+    assert await default_user_loader(await _payload_for(str(user.id))) is None

@@ -67,10 +67,11 @@ def create_auth_router(
     on_logout: Callable[[str], Awaitable[None]] | None = None,
     enable_registration: bool = True,
     use_database: bool = True,
+    login_throttle: str | None = None,
 ) -> APIRouter:
     """
     Create an authentication router with login, refresh, logout, register endpoints.
-    
+
     Args:
         authenticate: Custom async function to validate credentials.
                      If None and use_database=True, uses database authentication.
@@ -79,22 +80,38 @@ def create_auth_router(
         on_logout: Optional async callback when user logs out
         enable_registration: Whether to include /register endpoint
         use_database: If True, uses database-backed authentication
-    
+        login_throttle: Rate limit for the credential endpoints (/login and
+                     /register), e.g. ``"10/min"``. These are the two routes an
+                     attacker can drive without a token, so they are throttled
+                     per client independently of the global throttle settings.
+                     ``/refresh``, ``/logout`` and ``/me`` are token-bound and
+                     stay unthrottled — a limit there breaks a client with
+                     several tabs open. ``None`` disables it.
+
     Returns:
         FastAPI APIRouter with auth endpoints
-    
+
     Usage:
         # Database-backed auth (default)
         auth_router = create_auth_router()
-        
+
         # Custom authentication
         async def my_auth(request, body):
             ...
         auth_router = create_auth_router(authenticate=my_auth)
+
+        # Brake on credential stuffing
+        auth_router = create_auth_router(login_throttle="10/min")
     """
     router = APIRouter(prefix=prefix, tags=tags or ["auth"])
     config = get_jwt_config()
-    
+
+    credential_deps = []
+    if login_throttle:
+        from zeeb_api.throttling import throttle
+
+        credential_deps = [Depends(throttle(login_throttle, scope="auth_login"))]
+
     # Determine authentication function
     auth_func = authenticate
     if auth_func is None and use_database:
@@ -127,8 +144,10 @@ def create_auth_router(
         @router.post(
             "/login",
             response_model=TokenResponse,
+            dependencies=credential_deps,
             responses={
                 401: {"model": ErrorResponse, "description": "Invalid credentials"},
+                429: {"model": ErrorResponse, "description": "Too many attempts"},
             },
             summary="Login",
             description="Authenticate with email/password and receive access/refresh tokens.",
@@ -161,9 +180,11 @@ def create_auth_router(
         @router.post(
             "/register",
             response_model=RegisterResponse,
+            dependencies=credential_deps,
             responses={
                 400: {"model": ErrorResponse, "description": "Validation error"},
                 409: {"model": ErrorResponse, "description": "Email already exists"},
+                429: {"model": ErrorResponse, "description": "Too many attempts"},
             },
             summary="Register",
             description="Create a new user account.",
@@ -175,9 +196,11 @@ def create_auth_router(
             Creates a new user account with the provided email and password.
             """
             from zeeb_api.auth.backends import get_user_model, create_user
-            
-            User = get_user_model()
-            
+
+            # See the note in /refresh: `objects` is metaclass-added.
+            User: Any = get_user_model()
+
+
             # Check if email already exists
             existing = await User.objects.filter(email=body.email).first()
             if existing:
@@ -220,9 +243,18 @@ def create_auth_router(
     async def refresh(body: RefreshRequest) -> TokenResponse:
         """
         Refresh access token.
-        
-        Use a valid refresh token to get a new access/refresh token pair.
+
+        Redeems a valid refresh token for a new access/refresh pair. The
+        presented refresh token is *rotated*: it is single-use, and replaying
+        it is rejected. With database-backed auth the account is re-validated
+        (a deleted or deactivated user cannot refresh) and claims are reloaded
+        from the authoritative source so a refreshed token never carries stale
+        privileges.
         """
+        from datetime import datetime, timezone
+
+        from zeeb_api.auth.refresh_store import get_refresh_token_store
+
         try:
             payload = decode_token(body.refresh_token, token_type="refresh")
         except TokenExpiredError:
@@ -235,13 +267,52 @@ def create_auth_router(
                 code=ErrorCode.AUTH_TOKEN_INVALID,
                 message=str(e),
             )
-        
-        # Create new token pair (preserving claims from original token)
-        access_token, refresh_token = create_token_pair(
-            payload.sub,
-            payload.claims,
-        )
-        
+
+        store = get_refresh_token_store()
+
+        # Reuse detection: a rotated (already redeemed) refresh token is invalid.
+        if payload.jti and await store.is_consumed(payload.jti):
+            raise AuthenticationException(
+                code=ErrorCode.AUTH_TOKEN_INVALID,
+                message="Refresh token has already been used",
+            )
+
+        user_id = payload.sub
+        claims = payload.claims or {}
+
+        # Re-validate the account and refresh claims from the database. A user
+        # that was deleted or deactivated after the token was issued cannot
+        # obtain new tokens.
+        if use_database:
+            from uuid import UUID
+            from zeeb_api.auth.backends import get_user_model
+
+            # get_user_model() is typed as `type`; `objects` is added by the
+            # model metaclass, so the manager is only visible at runtime.
+            User: Any = get_user_model()
+            lookup_id: Any = user_id
+            try:
+                lookup_id = UUID(user_id)
+            except (ValueError, TypeError):
+                pass
+
+            user = await User.objects.filter(id=lookup_id).first()
+            if user is None or not getattr(user, "is_active", True):
+                raise AuthenticationException(
+                    code=ErrorCode.AUTH_TOKEN_INVALID,
+                    message="User no longer exists or is inactive",
+                )
+            if hasattr(user, "get_claims"):
+                claims = user.get_claims()
+
+        # Rotate: consume the presented token for the remainder of its lifetime
+        # so it cannot be replayed.
+        if payload.jti:
+            ttl = (payload.exp - datetime.now(timezone.utc)).total_seconds()
+            await store.consume(payload.jti, ttl)
+
+        access_token, refresh_token = create_token_pair(user_id, claims)
+
         return TokenResponse(
             access_token=access_token,
             refresh_token=refresh_token,

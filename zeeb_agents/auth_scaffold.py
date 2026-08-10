@@ -256,7 +256,13 @@ async def setup_oauth(
         entry = "\n".join(entry_lines)
 
         existing = re.search(r"^OAUTH_PROVIDERS\s*=\s*(.*)$", content, re.MULTILINE)
-        if existing is None or existing.group(1).strip() in ("{}", "dict()"):
+        # The scaffold ships ``OAUTH_PROVIDERS = env_oauth_providers()``, which
+        # auto-detects providers from the environment and yields ``{}`` when
+        # none are configured. Calling this tool is the deliberate opt-out from
+        # that, so it counts as "nothing configured yet" and gets replaced by an
+        # explicit dict — same as a literal ``{}``.
+        empty_forms = re.compile(r"^(\{\}|dict\(\)|env_oauth_providers\(.*\))$")
+        if existing is None or empty_forms.match(existing.group(1).strip()):
             # No providers configured yet — write the whole dict.
             rendered = "{\n" + entry + "\n}"
             content = set_or_append_setting(content, "OAUTH_PROVIDERS", rendered)

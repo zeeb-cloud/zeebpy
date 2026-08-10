@@ -199,8 +199,9 @@ async def test_get_started_with_project_recommends_next_action(root: Path):
     res = await agents.get_started(project_id=root)
     assert res.success
     assert res.data["state"] is not None
-    # No apps yet → recommend create_app.
-    assert "create_app" in res.data["next_action"]
+    # A fresh project already has the accounts app, its models and its routes,
+    # so the outstanding step is confirming the acceptance gate.
+    assert "verify_project" in res.data["next_action"]
 
 
 # ---------------------------------------------------------------------------
@@ -422,7 +423,13 @@ async def test_create_route_fails_when_app_urls_missing(root: Path):
 async def test_setup_auth_fails_cleanly_on_renamed_router(root: Path):
     """A customized project urls.py without a `router` symbol fails loudly (G9)."""
     urls_path = root / "demo" / "urls.py"
-    original = urls_path.read_text().replace("router = DefaultRouter()", "api = DefaultRouter()")
+    # Drop the scaffolded auth include first, otherwise setup_auth returns
+    # already_wired before it ever looks for the router symbol.
+    original = "\n".join(
+        line
+        for line in urls_path.read_text().splitlines()
+        if "create_auth_router" not in line
+    ).replace("router = DefaultRouter()", "api = DefaultRouter()") + "\n"
     urls_path.write_text(original)
     res = await agents.setup_auth(project_id=root)
     assert not res.success and res.data["error_code"] == "invalid_input"

@@ -43,6 +43,26 @@ users = await User.objects.exclude(is_active=False).all()
 users = await User.objects.filter(role="user").exclude(is_banned=True).all()
 ```
 
+### none()
+
+Return a QuerySet guaranteed to match nothing.
+
+```python
+# An owner-scoped get_queryset() for an anonymous caller
+def get_queryset(self):
+    user = getattr(self.request.state, "user", None)
+    if user is None:
+        return Article.objects.none()
+    return Article.objects.filter(owner_id=user.id)
+```
+
+Use this rather than filtering on a sentinel value. On a nullable column,
+`filter(owner_id=None)` matches every **unowned** row — the opposite of what
+"this caller sees nothing" means.
+
+Chaining stays sound: the empty marker survives cloning, so
+`.none().filter(...)` is still empty.
+
 ### filter(Q(...))
 
 Complex queries with Q objects.
@@ -153,7 +173,9 @@ user = await User.objects.filter(is_active=True).order_by("created_at").first()
 
 ### last()
 
-Return last object or None.
+Return last object or None. Reverses the effective ordering (explicit
+`order_by`, then `Meta.ordering`, then the primary key), so it is
+deterministic and mirror-images `first()` even on unordered querysets.
 
 ```python
 user = await User.objects.order_by("created_at").last()
@@ -225,20 +247,14 @@ users = await User.objects.all()[10:20]
 user = await User.objects.order_by("created_at").all()[0]
 ```
 
-### limit(n)
+### Limit and offset
 
-Limit results.
-
-```python
-users = await User.objects.limit(10).all()
-```
-
-### offset(n)
-
-Skip results.
+There are no `limit()` / `offset()` methods — use slicing, which compiles to
+`LIMIT`/`OFFSET`:
 
 ```python
-users = await User.objects.offset(10).limit(10).all()
+users = await User.objects.all()[:10]        # LIMIT 10
+users = await User.objects.all()[10:20]      # LIMIT 10 OFFSET 10
 ```
 
 ---
@@ -304,7 +320,9 @@ users = await User.objects.values("id", "name").all()
 
 ### values_list(\*fields, flat=False)
 
-Return tuples instead of dictionaries.
+Return tuples instead of dictionaries. With no fields, every model field
+is returned in declaration order (relation fields as their `<name>_id`
+column). `flat=True` requires exactly one field.
 
 ```python
 # Tuples
@@ -381,16 +399,18 @@ for user in users:
 
 ## Distinct
 
-### distinct(\*fields)
+### distinct()
 
-Return distinct results.
+Return distinct results (row-level de-duplication). Field arguments are
+not supported and raise `NotSupportedError` — de-duplicate on specific
+columns with `values()`/`values_list()` + `distinct()` instead.
 
 ```python
 # All unique rows
 users = await User.objects.distinct().all()
 
-# Distinct on fields (PostgreSQL)
-users = await User.objects.distinct("email").all()
+# Unique values of one column
+emails = await User.objects.values_list("email", flat=True).distinct()
 ```
 
 ---
@@ -455,7 +475,7 @@ user = await User.objects.create(
 )
 ```
 
-### bulk_create(objects)
+### bulk_create(objects, ignore_conflicts=False)
 
 Create multiple objects efficiently.
 
@@ -465,6 +485,24 @@ users = await User.objects.bulk_create([
     User(name="Jane", email="jane@example.com"),
 ])
 ```
+
+`ignore_conflicts=True` skips rows that violate a unique constraint instead of
+aborting the whole insert:
+
+```python
+users = await User.objects.bulk_create(new_users, ignore_conflicts=True)
+```
+
+Two things to know before relying on it:
+
+- It is **dialect-gated** — PostgreSQL, SQLite and MySQL only. Anything else
+  raises `NotSupportedError`.
+- A conflicting object is **still in the returned list**, unsaved, and its
+  primary key may be `None`. The return value is not a list of what was
+  persisted. Re-query if you need the rows that actually landed.
+
+`bulk_create()` does not fire `pre_save` / `post_save` signals — it is a single
+bulk INSERT, not a loop over `save()`.
 
 ### get_or_create(\*\*kwargs, defaults=None)
 
@@ -510,10 +548,10 @@ users = await User.objects.raw(
 
 | Category | Methods |
 |----------|---------|
-| **Filtering** | `filter()`, `exclude()` |
+| **Filtering** | `filter()`, `exclude()`, `none()` |
 | **Retrieval** | `all()`, `get()`, `first()`, `last()`, `exists()`, `count()` |
 | **Ordering** | `order_by()` |
-| **Slicing** | `limit()`, `offset()`, `[start:end]` |
+| **Slicing** | `[start:end]` |
 | **Annotation** | `annotate()`, `aggregate()` |
 | **Values** | `values()`, `values_list()` |
 | **Field Selection** | `only()`, `defer()` |

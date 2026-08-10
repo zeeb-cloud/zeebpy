@@ -65,7 +65,7 @@ async def create_user(
 ) -> AgentResult:
     """Create a new user in the project's user table.
 
-    Passwords are hashed with zeeb_api's PBKDF2 hasher before storage.
+    Passwords are hashed with zeeb_api's bcrypt hasher before storage.
 
     Args:
         email: User email address (must be unique).

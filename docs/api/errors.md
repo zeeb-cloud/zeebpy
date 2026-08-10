@@ -71,6 +71,7 @@ i18n translations on them.
 | `AUTH_OAUTH_ID_TOKEN_INVALID` | OIDC ID token failed validation. |
 | `AUTH_OAUTH_PROVIDER_NOT_FOUND` | Unknown OAuth provider name in the callback path. |
 | `AUTH_OAUTH_USER_NOT_PROVISIONED` | External identity valid but no local user exists and auto-provisioning is off. |
+| `AUTH_OAUTH_EMAIL_UNVERIFIED` | Provider reported the email as unverified while `OAUTH_REQUIRE_VERIFIED_EMAIL` is on — blocks both linking and auto-provisioning. |
 
 ### Permissions — HTTP 403
 
@@ -106,10 +107,27 @@ Serializer-specific: `SERIALIZER_INVALID_DATA`, `SERIALIZER_MISSING_FIELDS`,
 
 ### Query / filter — HTTP 400
 
-`QUERY_INVALID_FILTER`, `QUERY_INVALID_FIELD`, `QUERY_SYNTAX_ERROR`,
-`QUERY_INVALID_OPERATOR`, `QUERY_INVALID_VALUE` — returned by the
-`POST /<prefix>/query/` endpoint when a serialized `Q` filter string cannot be
-parsed or references unknown fields/operators.
+The `POST /<prefix>/query/` endpoint reports a `Q` filter string that cannot be
+parsed, or that references a field outside the allow-list, as a **standard
+validation error** — top-level code `VALIDATION_ERROR`, with the detail under
+the `filter` or `order_by` key:
+
+```json
+{
+  "success": false,
+  "error": {
+    "code": "VALIDATION_ERROR",
+    "message": "Validation failed",
+    "details": [{"field": "filter", "message": "Unknown field 'authr'"}]
+  }
+}
+```
+
+> The `ErrorCode` enum also defines `QUERY_INVALID_FILTER`,
+> `QUERY_INVALID_FIELD`, `QUERY_SYNTAX_ERROR`, `QUERY_INVALID_OPERATOR` and
+> `QUERY_INVALID_VALUE` for use by `QueryException`. **Nothing in the framework
+> currently raises them** — do not branch on them. Branch on
+> `VALIDATION_ERROR` and read `error.details[].field`.
 
 ### Rate limiting — HTTP 429
 
@@ -227,14 +245,28 @@ code.
    `MultipleObjectsReturned` → 409 `RESOURCE_CONFLICT`. A bare
    `await Post.objects.get(pk=...)` in a handler therefore produces a correct
    404 without any try/except.
-5. **Catch-all `Exception`** → 500 `SERVER_ERROR` with the generic message
+5. **Constraint violations** — both `zeeb_orm.exceptions.IntegrityError` and
+   `sqlalchemy.exc.IntegrityError` → 409 `RESOURCE_CONFLICT` (both layers can
+   surface: the ORM wraps driver errors where it manages the transaction, but a
+   violation raised while flushing inside a request escapes as the SQLAlchemy
+   error). The message is derived from the driver text:
+
+   | Violation | Message |
+   |---|---|
+   | foreign key | `Referenced object does not exist.` |
+   | unique / duplicate | `A record with these values already exists.` |
+   | anything else | `The request violates a database constraint.` |
+
+   Note this is `RESOURCE_CONFLICT`, **not** `RESOURCE_ALREADY_EXISTS` — a
+   duplicate-key write and a state conflict share one code.
+6. **Catch-all `Exception`** → 500 `SERVER_ERROR` with the generic message
    `"Internal server error"` — internals are never leaked; the full traceback
    is logged to the `zeeb_api` logger.
 
 ## ORM exceptions (`zeeb_orm.exceptions`)
 
 The ORM layer raises plain exception classes with no HTTP semantics; codes are
-attached only at the API boundary (see pipeline step 4 — everything not
+attached only at the API boundary (see pipeline steps 4–5 — everything not
 explicitly mapped surfaces as a 500 unless your code catches it and raises a
 `ZeebException`):
 
@@ -247,3 +279,6 @@ explicitly mapped surfaces as a 500 unless your code catches it and raises a
 | `FieldError` / `FieldDoesNotExist` | Bad field lookup, expression, or unknown field name. |
 | `NotSupportedError` | Operation unsupported by the database backend. |
 | `TransactionManagementError` | Invalid transaction usage. |
+| `IntegrityError` | Database constraint violated (foreign key, unique, check). Handled → 409. |
+| `ConnectionDoesNotExist` | `using("<alias>")` named a database that was never registered with `register_database()`. |
+| `MigrationError` | A migration cannot be applied — e.g. adding a `null=False` column with no scalar default. |

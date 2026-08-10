@@ -202,13 +202,13 @@ def test_is_valid_put_accepts_bare_fk():
 
 def test_is_valid_patch_accepts_bare_fk():
     # Regression: the partial path used to filter bare FK keys out silently, so
-    # a PATCH of {"author": ...} quietly did nothing. The partial path does not
-    # coerce types (model_construct), so the value stays as sent — the point is
-    # that it now lands under the canonical key instead of being dropped.
+    # a PATCH of {"author": ...} quietly did nothing. It now lands under the
+    # canonical key AND is validated/coerced to the proper type (a UUID here),
+    # since PATCH validates provided fields instead of accepting them verbatim.
     uid = uuid.uuid4()
     ser = ArticleSerializer(data={"author": str(uid)}, partial=True)
     assert ser.is_valid(), ser.errors
-    assert ser.validated_data.get("author_id") == str(uid)
+    assert ser.validated_data.get("author_id") == uid
     assert "author" not in ser.validated_data
 
 
@@ -256,7 +256,7 @@ async def test_create_accepts_bare_fk_over_http(db):
         resp = await client.post(
             "/articles", json={"title": "Hello", "author": str(author.pk)}
         )
-    assert resp.status_code == 200, resp.text
+    assert resp.status_code == 201, resp.text
     body = resp.json()
     assert body["title"] == "Hello"
     assert body["author"] == str(author.pk)

@@ -76,6 +76,7 @@ async def generate_dockerfile(
     Returns data (on success):
         files_written (list[str]): names written — always ``"Dockerfile"``,
             plus ``".dockerignore"`` if it did not already exist
+        path (str): the Dockerfile path, relative to the project root
         python_version (str): the version tag used
         port (int): the port baked into the image
 

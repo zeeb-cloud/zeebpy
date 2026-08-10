@@ -1,13 +1,8 @@
-"""
-post URL configuration.
-
-Register your viewsets with the router here.
-"""
+"""post URL configuration."""
 
 from zeeb_api.routers import DefaultRouter
-# from .views import YourModelViewSet
+
+from .views import PostViewSet
 
 router = DefaultRouter()
-
-# Register viewsets:
-# router.register("post", YourModelViewSet)
+router.register("posts", PostViewSet)

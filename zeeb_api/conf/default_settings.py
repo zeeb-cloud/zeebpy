@@ -15,6 +15,12 @@ DATABASE = {
     "url": "sqlite+aiosqlite:///db.sqlite3",
 }
 
+# Migrations
+# Directory holding migration files (None = the framework default location).
+MIGRATIONS_DIR = None
+# Refuse to start with unapplied migrations outside DEBUG (create_app startup).
+ENFORCE_MIGRATIONS = True
+
 # URL configuration - path to your urls module (like Django's ROOT_URLCONF)
 ROOT_URLCONF = None
 
@@ -57,6 +63,11 @@ OAUTH_AUTO_CREATE_USERS = True
 # Link an OAuth identity to an existing local user with the same email address.
 # SECURITY: only enable when all configured providers verify email ownership.
 OAUTH_LINK_BY_EMAIL = True
+# Require the IdP to assert `email_verified` before an email is used to link to
+# an existing account or auto-provision a new one. SECURITY: leave True unless a
+# provider is fully trusted to verify ownership; otherwise an attacker can seed
+# an unverified email matching a victim's account and be linked to it.
+OAUTH_REQUIRE_VERIFIED_EMAIL = True
 # Lifetime of the signed OAuth state token (seconds)
 OAUTH_STATE_TTL_SECONDS = 600
 # Explicit redirect URI (defaults to the callback route URL derived from the request)
@@ -76,9 +87,17 @@ OAUTH_ACCEPT_EXTERNAL_TOKENS = []
 
 # CORS settings
 CORS_ALLOW_ORIGINS = []
+# For frontends whose hostname changes per build (preview deployments on
+# Lovable, Vercel, Netlify …), where an exact origin list would need editing on
+# every deploy. Anchor it and escape the dots.
+CORS_ALLOW_ORIGIN_REGEX = None
 CORS_ALLOW_CREDENTIALS = True
 CORS_ALLOW_METHODS = ["*"]
 CORS_ALLOW_HEADERS = ["*"]
+# Response headers exposed to the browser (Access-Control-Expose-Headers).
+CORS_EXPOSE_HEADERS = []
+# Preflight cache lifetime in seconds (Access-Control-Max-Age).
+CORS_MAX_AGE = 600
 
 # API settings
 API_TITLE = "Zeeb API"

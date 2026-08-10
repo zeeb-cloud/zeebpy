@@ -59,27 +59,74 @@ def _escape_cell(text: str) -> str:
     return text.replace("|", "\\|").strip()
 
 
+def _table(entries: list[dict], prefix: str) -> list[str]:
+    """Render one markdown table body for *entries*, sorted by tool name."""
+    lines = ["| Tool | Description |", "|---|---|"]
+    for t in sorted(entries, key=lambda e: e["name"]):
+        call = f"`{prefix}{t['name']}{_clean_signature(t['params'])}`"
+        lines.append(f"| {call} | {_escape_cell(t['summary'])} |")
+    return lines
+
+
 async def _render_async(prefix: str = "") -> str:
     from zeeb_agents import list_capabilities
     from zeeb_agents.capabilities import CATEGORY_ORDER
 
     result = await list_capabilities()
     tools = result.data["tools"]
-    by_cat: dict[str, list[dict]] = {}
-    for t in tools:
-        by_cat.setdefault(t["category"], []).append(t)
-
     blocks: list[str] = []
+
+    # The tiers lead: an agent reading top-down meets the ~20 tools that do
+    # almost everything before the long per-object inventory.
+    core = [t for t in tools if t["tier"] == "core"]
+    hatches = [t for t in tools if t["tier"] == "escape_hatch"]
+    advanced = [t for t in tools if t["tier"] == "advanced"]
+
+    blocks.append(
+        "\n".join(
+            [
+                f"### Core ({len(core)})",
+                "",
+                "Start here. These are declarative and cover almost every task.",
+                "",
+                *_table(core, prefix),
+            ]
+        )
+    )
+    blocks.append(
+        "\n".join(
+            [
+                f"### Escape hatches ({len(hatches)})",
+                "",
+                "Precise, general-purpose control for what a feature spec cannot",
+                "express. Reaching for these first usually means the wrong problem",
+                "is being solved.",
+                "",
+                *_table(hatches, prefix),
+            ]
+        )
+    )
+    blocks.append(
+        "\n".join(
+            [
+                f"### Advanced ({len(advanced)})",
+                "",
+                "One tool per object. Fully supported — the feature compiler runs",
+                "exactly these — but reach for them only when a spec cannot express",
+                "the change. Grouped by category below.",
+            ]
+        )
+    )
+
+    by_cat: dict[str, list[dict]] = {}
+    for t in advanced:
+        by_cat.setdefault(t["category"], []).append(t)
     ordered = CATEGORY_ORDER + [c for c in by_cat if c not in CATEGORY_ORDER]
     for cat in ordered:
         entries = by_cat.get(cat)
         if not entries:
             continue
-        lines = [f"### {cat}", "", "| Tool | Description |", "|---|---|"]
-        for t in sorted(entries, key=lambda e: e["name"]):
-            call = f"`{prefix}{t['name']}{_clean_signature(t['params'])}`"
-            lines.append(f"| {call} | {_escape_cell(t['summary'])} |")
-        blocks.append("\n".join(lines))
+        blocks.append("\n".join([f"#### {cat}", "", *_table(entries, prefix)]))
     return "\n\n".join(blocks)
 
 

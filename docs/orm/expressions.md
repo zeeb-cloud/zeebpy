@@ -21,6 +21,22 @@ await Article.objects.filter(pk=article_id).update(views=F("views") + 1)
 await Product.objects.update(price=F("price") * 1.1)  # 10% price increase
 ```
 
+### Traversing Relations and Dates
+
+`F()` also resolves a related field or a datetime transform:
+
+```python
+# A related field across a join
+await Author.objects.annotate(top_post_views=Max(F("posts__views")))
+
+# A datetime component
+await Article.objects.annotate(year=F("created_at__year")).order_by("-year")
+```
+
+Both need a join context, which only `annotate()`, `aggregate()` and
+`order_by()` provide. `F("posts__views")` inside a plain `filter()` raises
+`FieldError` — annotate it to a name first, then filter on that name.
+
 ### Arithmetic Operators
 
 ```python
@@ -153,6 +169,25 @@ top_authors = await Author.objects.annotate(
 ).order_by("-post_count")
 ```
 
+Filtering on an **aggregate** annotation compiles to `GROUP BY` + `HAVING`,
+not `WHERE` — the grouping keys are the plain (non-aggregate) columns being
+selected. Filtering on a non-aggregate annotation still compiles to `WHERE`.
+
+Because the two land in different SQL clauses, they cannot be mixed inside a
+single `OR` or `NOT`:
+
+```python
+# OK — separate conditions, one HAVING and one WHERE
+Author.objects.annotate(post_count=Count("posts")).filter(
+    post_count__gte=10, is_active=True,
+)
+
+# NotSupportedError — an aggregate and a plain field inside one OR
+Author.objects.annotate(post_count=Count("posts")).filter(
+    Q(post_count__gte=10) | Q(is_active=True)
+)
+```
+
 ### Multiple Annotations
 
 ```python
@@ -260,6 +295,20 @@ expensive = await Product.objects.annotate(
 ).filter(tier="premium")
 ```
 
+`When()` fails loudly rather than silently skipping a condition it cannot
+resolve: an unknown field or an unknown lookup raises `FieldError`, and a
+positional argument that is not a `Q` raises `TypeError`. Traversing a relation
+inside `When`/`Case` also needs a join context, so it raises where none exists —
+the same rule as `F()`.
+
+The `filter=Q(...)` argument on an aggregate behaves the same way:
+
+```python
+await Author.objects.annotate(
+    published_count=Count("posts", filter=Q(posts__published=True)),
+)
+```
+
 ### Coalesce
 
 Return first non-null value:
@@ -272,10 +321,10 @@ products = await Product.objects.annotate(
     display_name=Coalesce("nickname", "name", Value("Unknown"))
 )
 
-# Use in filter
-await Product.objects.filter(
-    Coalesce("sale_price", "price")__lt=100
-)
+# Use in filter — annotate first, then filter on the alias
+await Product.objects.annotate(
+    effective_price=Coalesce("sale_price", "price"),
+).filter(effective_price__lt=100)
 ```
 
 ## String Functions

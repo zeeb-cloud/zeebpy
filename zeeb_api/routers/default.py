@@ -315,8 +315,12 @@ class SimpleRouter:
                 action_response_model = None
                 final_request_schema = None
                 action_permission_classes = None
+                # POST create returns 201 Created; everything else defaults to 200.
+                action_status_code = 200
                 # PATCH must apply only the keys the client actually sent, so its
-                # body is dumped with exclude_unset. PUT/create keep the full dump.
+                # body is dumped with exclude_unset. Create does the same so that
+                # fields the client omitted are not sent as explicit None over the
+                # model's own defaults. PUT keeps the full dump (full replace).
                 endpoint_exclude_unset = False
 
                 if action_name == "query":
@@ -328,6 +332,8 @@ class SimpleRouter:
                 elif action_name == "create":
                     action_response_model = action_response_schema
                     final_request_schema = action_request_schema
+                    action_status_code = 201
+                    endpoint_exclude_unset = final_request_schema is not None
                 elif action_name in ("update", "partial_update"):
                     # Type the write body so it appears in OpenAPI (needed for
                     # client codegen). PUT uses the full request schema; PATCH
@@ -364,8 +370,9 @@ class SimpleRouter:
                     methods=[method.upper()],
                     name=route_name,
                     response_model=action_response_model,
+                    status_code=action_status_code,
                 )
-        
+
         return router
     
     def _get_action_schemas(

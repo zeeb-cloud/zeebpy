@@ -94,6 +94,7 @@ class ExternalTokenValidator:
                     claims,
                     auto_create=True,
                     link_by_email=self._resolved_link_by_email(),
+                    require_verified_email=self._resolved_require_verified_email(),
                 )
                 return user
         except Exception as e:
@@ -111,6 +112,15 @@ class ExternalTokenValidator:
         try:
             from zeeb_api.conf import settings
             return bool(getattr(settings, "OAUTH_LINK_BY_EMAIL", True))
+        except Exception:
+            return True
+
+    def _resolved_require_verified_email(self) -> bool:
+        if self.provider.require_verified_email is not None:
+            return self.provider.require_verified_email
+        try:
+            from zeeb_api.conf import settings
+            return bool(getattr(settings, "OAUTH_REQUIRE_VERIFIED_EMAIL", True))
         except Exception:
             return True
 

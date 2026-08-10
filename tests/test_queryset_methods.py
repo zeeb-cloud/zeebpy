@@ -391,3 +391,33 @@ class TestExplain:
         plan = await qs.explain()
         assert isinstance(plan, str)
         assert plan
+
+
+# none
+
+
+class TestNone:
+    @pytest.mark.asyncio
+    async def test_none_matches_nothing(self, seeded):
+        assert await QmItem.objects.none().count() == 0
+        assert await QmItem.objects.none() == []
+        assert await QmItem.objects.none().exists() is False
+        # ...while the unrestricted queryset does return rows.
+        assert await QmItem.objects.count() > 0
+
+    @pytest.mark.asyncio
+    async def test_none_survives_further_chaining(self, seeded):
+        """A caller that narrows an already-empty queryset must still see nothing."""
+        assert await QmItem.objects.none().filter(name="item1").count() == 0
+        assert await QmItem.objects.none().order_by("name").count() == 0
+
+    @pytest.mark.asyncio
+    async def test_manager_none_delegates(self, seeded):
+        assert await QmItem.objects.none().count() == 0
+
+    @pytest.mark.asyncio
+    async def test_none_does_not_leak_null_column_rows(self, db):
+        """The reason none() exists: a sentinel filter would match NULLs."""
+        await QmItem.objects.create(name="unowned", sku="sku-null", qty=0)
+        # filter(qty=None) is NOT an empty set semantically; none() always is.
+        assert await QmItem.objects.none().count() == 0

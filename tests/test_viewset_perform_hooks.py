@@ -255,7 +255,7 @@ async def test_perform_create_mutate_validated_data(db):
     async with _client(router, user_id=user.id) as client:
         resp = await client.post("/articles", json={"title": "Hello"})
 
-    assert resp.status_code == 200, resp.text
+    assert resp.status_code == 201, resp.text
     assert await HookArticle.objects.count() == 1
     row = await HookArticle.objects.get(title="Hello")
     assert row.author_id == user.id
@@ -271,7 +271,7 @@ async def test_perform_create_save_in_hook_no_double_insert(db):
     async with _client(router, user_id=user.id) as client:
         resp = await client.post("/articles", json={"title": "Hello"})
 
-    assert resp.status_code == 200, resp.text
+    assert resp.status_code == 201, resp.text
     body = resp.json()
     assert body["title"] == "Hello"
     assert body["id"] is not None  # response serializes the saved instance

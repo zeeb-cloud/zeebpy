@@ -7,6 +7,29 @@ limit is exceeded the API returns **429 Too Many Requests** with a
 `Retry-After` header and the standardized error envelope
 (`error.code == "RATE_LIMIT_EXCEEDED"`).
 
+## What a generated project already has
+
+`zeeb startproject` turns throttling on:
+
+```python
+DEFAULT_THROTTLE_CLASSES = [
+    "zeeb_api.throttling.AnonRateThrottle",
+    "zeeb_api.throttling.UserRateThrottle",
+]
+DEFAULT_THROTTLE_RATES = {"anon": "120/min", "user": "1200/min"}
+```
+
+These apply to every ViewSet that does not set its own `throttle_classes`.
+Tune them from `.env` with `THROTTLE_ANON_RATE` and `THROTTLE_USER_RATE`, or
+turn throttling off entirely with an empty `DEFAULT_THROTTLE_CLASSES=`.
+
+`/login` and `/register` carry a separate per-client limit
+(`AUTH_LOGIN_THROTTLE_RATE`, default `10/min`).
+
+> The default cache is in-memory **per process**. Behind several workers the
+> effective limit multiplies by the worker count — install a shared
+> `BaseThrottleCache` with `set_throttle_cache()` before deploying more than one.
+
 ## Quick Start
 
 ```python
@@ -147,7 +170,7 @@ override `async allow_request(request, view)` and optionally `wait()`.
 |---------|---------|-------------|
 | `DEFAULT_THROTTLE_CLASSES` | `[]` | Dotted paths of throttles applied to every viewset that does not set `throttle_classes` |
 | `DEFAULT_THROTTLE_RATES` | `{"anon": None, "user": None}` | Rate per throttle scope |
-| `THROTTLE_NUM_PROXIES` | `None` | Number of trusted proxies; when set, clients are identified by the first hop of `X-Forwarded-For` instead of the socket address |
+| `THROTTLE_NUM_PROXIES` | `None` | Number of trusted proxies. When set, the client IP is taken `THROTTLE_NUM_PROXIES` entries **from the right** of `X-Forwarded-For` instead of the socket address — the leftmost entry is client-controlled and would let anyone forge unlimited distinct throttle keys |
 
 ## Caching Caveat (Multi-Process Deployments)
 
