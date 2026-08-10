@@ -61,6 +61,10 @@ class QuerySet(Generic[ModelT]):
         self._offset: int | None = None
         self._only_fields: list[str] | None = None
         self._defer_fields: list[str] | None = None
+        # `_values_mode` is what makes rows come back as dicts; `_values_fields`
+        # stays None for a bare `.values()` (= all local fields), so the two
+        # cannot be collapsed into one attribute.
+        self._values_mode: bool = False
         self._values_fields: list[str] | None = None
         self._values_list_fields: list[str] | None = None
         self._flat: bool = False
@@ -70,6 +74,7 @@ class QuerySet(Generic[ModelT]):
         self._combinator: str | None = None
         self._combined_querysets: list[QuerySet[Any]] = []
         self._for_update: dict[str, Any] | None = None
+        self._is_empty: bool = False
         self._result_cache: list[ModelT] | None = None
 
     @classmethod
@@ -106,6 +111,7 @@ class QuerySet(Generic[ModelT]):
         clone._offset = self._offset
         clone._only_fields = self._only_fields.copy() if self._only_fields else None
         clone._defer_fields = self._defer_fields.copy() if self._defer_fields else None
+        clone._values_mode = self._values_mode
         clone._values_fields = self._values_fields.copy() if self._values_fields else None
         clone._values_list_fields = (
             self._values_list_fields.copy() if self._values_list_fields else None
@@ -117,6 +123,7 @@ class QuerySet(Generic[ModelT]):
         clone._combinator = self._combinator
         clone._combined_querysets = self._combined_querysets.copy()
         clone._for_update = dict(self._for_update) if self._for_update else None
+        clone._is_empty = self._is_empty
         return clone
 
     def _check_combinator(self, method: str) -> None:
@@ -147,6 +154,21 @@ class QuerySet(Generic[ModelT]):
         would otherwise serve its cached results forever.
         """
         return self._clone()
+
+    def none(self) -> QuerySet[ModelT]:
+        """Return a QuerySet guaranteed to match nothing.
+
+        The safe base for "this caller may see no rows" — an owner-scoped
+        ``get_queryset`` for an anonymous request, say. Filtering on a sentinel
+        value instead is a correctness trap: a nullable owner column would make
+        ``filter(owner_id=None)`` return every unowned row.
+
+        Chaining stays sound: the empty marker survives ``_clone``, so
+        ``.none().filter(...)`` is still empty.
+        """
+        clone = self._clone()
+        clone._is_empty = True
+        return clone
 
     def filter(self, *args: Q, **kwargs: Any) -> QuerySet[ModelT]:
         """
@@ -332,8 +354,15 @@ class QuerySet(Generic[ModelT]):
         return clone
 
     def values(self, *fields: str) -> QuerySet[ModelT]:
-        """Return dictionaries instead of model instances."""
+        """Return dictionaries instead of model instances.
+
+        With no arguments every local field is returned (FK fields under
+        their ``<name>_id`` column name). Named fields restrict the SELECT
+        list and are labeled exactly as given, so ``values("pk")`` and
+        ``values("author")`` come back under those keys.
+        """
         clone = self._clone()
+        clone._values_mode = True
         clone._values_fields = list(fields) if fields else None
         return clone
 
@@ -415,7 +444,7 @@ class QuerySet(Generic[ModelT]):
         select_exprs = []
         for alias, agg in kwargs.items():
             if hasattr(agg, "resolve"):
-                select_exprs.append(agg.resolve(self.model).label(alias))
+                select_exprs.append(agg.resolve(self.model, joins=joins).label(alias))
 
         # Apply filters (may register traversal JOINs)
         where_clause = self._build_where_clause(joins)
@@ -667,6 +696,11 @@ class QuerySet(Generic[ModelT]):
 
     def _build_where_clause(self, joins: JoinContext | None = None) -> Any:
         """Build SQLAlchemy WHERE clause from filters and excludes."""
+        if self._is_empty:
+            from sqlalchemy import false
+
+            return false()
+
         conditions = []
 
         for q in self._filters:
@@ -697,9 +731,11 @@ class QuerySet(Generic[ModelT]):
             self.model, lookup_string, value, joins=joins, annotations=self._annotations
         )
 
-    def _resolve_field_path(self, field_path: str) -> Any:
+    def _resolve_field_path(
+        self, field_path: str, joins: JoinContext | None = None
+    ) -> Any:
         """Resolve a field path (potentially with __ for relations) to a column."""
-        return resolve_field_path(self.model, field_path, self._annotations)
+        return resolve_field_path(self.model, field_path, self._annotations, joins)
 
     def _build_order_by(self, joins: JoinContext | None = None) -> list[Any]:
         """Build SQLAlchemy ORDER BY clause."""
@@ -716,7 +752,7 @@ class QuerySet(Generic[ModelT]):
             if field_name in self._annotations:
                 expr = self._annotations[field_name]
                 if hasattr(expr, 'resolve'):
-                    column = expr.resolve(self.model)
+                    column = expr.resolve(self.model, joins=joins)
                 else:
                     column = literal_column(field_name)
             elif "__" in field_name:
@@ -747,7 +783,7 @@ class QuerySet(Generic[ModelT]):
                 return None
             column = joins.column(relation_parts, field_name)
         else:
-            column = self._resolve_field_path(field_name)
+            column = self._resolve_field_path(field_name, joins)
         if column is not None and transform is not None:
             column = apply_transform(column, transform)
         return column
@@ -780,19 +816,57 @@ class QuerySet(Generic[ModelT]):
                 columns.append(col.label(f"_sr_{label_prefix}_{col.name}"))
         return columns
 
-    def _values_path_columns(self, joins: JoinContext) -> list[Any]:
-        """Labeled columns for ``__`` paths in values()/values_list()."""
-        path_fields: list[str] = []
-        for f in (self._values_fields or []) + (self._values_list_fields or []):
-            if "__" in f and f not in self._annotations and f not in path_fields:
-                path_fields.append(f)
+    def _pk_column_name(self) -> str:
+        """The primary key's database column name."""
+        meta = self.model._meta
+        return (meta.pk.db_column or meta.pk_name) if meta.pk else meta.pk_name
 
+    def _requested_value_names(self) -> list[str] | None:
+        """The field names values()/values_list() asked for, or None.
+
+        ``None`` means "every local field" — either no values() mode at all,
+        or a bare ``.values()``.
+        """
+        if self._values_list_fields is not None:
+            return list(self._values_list_fields)
+        if self._values_mode and self._values_fields is not None:
+            return list(self._values_fields)
+        return None
+
+    def _values_columns(self, joins: JoinContext) -> list[Any]:
+        """Labeled columns for the fields values()/values_list() asked for.
+
+        Every column is labeled with the exact string the caller passed, so
+        ``_rows_to_objects`` can read it straight out of ``row._mapping`` —
+        which is also what makes ``values("pk")`` and ``values("author")``
+        (column ``author_id``) resolve instead of silently yielding None.
+        """
+        names = self._requested_value_names()
+        if names is None:
+            return []
+
+        table = self.model._get_table()
+        meta = self.model._meta
         columns = []
-        for f in path_fields:
-            column = self._resolve_path_expression(f, joins)
+        seen: set[str] = set()
+        for name in names:
+            if name in seen or name in self._annotations:
+                # Annotations are appended from _annotations with their own label.
+                continue
+            seen.add(name)
+
+            if "__" in name:
+                column = self._resolve_path_expression(name, joins)
+            elif name == "pk":
+                column = getattr(table.c, self._pk_column_name(), None)
+            else:
+                field = meta.get_field(name) or meta.get_field_by_column(name)
+                col_name = (field.db_column or field.name) if field else name
+                column = getattr(table.c, col_name, None)
+
             if column is None:
-                raise ValueError(f"Unknown field: {f}")
-            columns.append(column.label(f))
+                raise ValueError(f"Unknown field: {name}")
+            columns.append(column.label(name))
         return columns
 
     def _get_select_columns(self, table: Any) -> list[Any]:
@@ -828,6 +902,155 @@ class QuerySet(Generic[ModelT]):
 
         return [table]
 
+    def _aggregate_aliases(self) -> set[str]:
+        """Annotation aliases whose expression is an aggregate.
+
+        Deliberately an ``isinstance`` check rather than a walk of the
+        expression tree: ``Window(Sum(...))`` contains an aggregate but is a
+        window function, and grouping by it would be wrong.
+        """
+        from zeeb_orm.query.expressions import Aggregate
+
+        return {
+            alias
+            for alias, expr in self._annotations.items()
+            if isinstance(expr, Aggregate)
+        }
+
+    def _build_group_by(self, table: Any, grouping_columns: list[Any]) -> list[Any]:
+        """GROUP BY columns implied by aggregate annotations.
+
+        Without one, ``values("author").annotate(n=Count("id"))`` collapses to
+        a single row instead of one row per author.
+        """
+        if not self._aggregate_aliases():
+            return []
+
+        if self._requested_value_names() is not None:
+            # Exactly the non-aggregate columns in the SELECT list.
+            return list(grouping_columns)
+
+        # Whole rows are selected: grouping by the primary key is enough and
+        # is accepted by SQLite, PostgreSQL and MySQL (functional dependency).
+        pk_column = getattr(table.c, self._pk_column_name(), None)
+        return [pk_column] if pk_column is not None else []
+
+    def _split_aggregate_q(self, q: Q, aggregate_aliases: set[str]) -> tuple[Any, Any]:
+        """Split ``q`` into a WHERE part and a HAVING part.
+
+        An AND node is split child by child. Any other node (OR, negation) is
+        classified as a whole; one that mixes an aggregate reference with a
+        plain field cannot be expressed as WHERE + HAVING and is rejected
+        rather than silently compiled into invalid SQL.
+        """
+        from zeeb_orm.exceptions import NotSupportedError
+        from zeeb_orm.query.q import Q as QClass
+        from zeeb_orm.query.q import QOperator
+
+        def references_aggregate(node: Any) -> bool:
+            """True when any leaf of this Q node names an aggregate alias."""
+            for child in getattr(node, "children", []):
+                if isinstance(child, tuple):
+                    key = child[0]
+                    if key in aggregate_aliases or key.split("__")[0] in aggregate_aliases:
+                        return True
+                elif references_aggregate(child):
+                    return True
+            return False
+
+        def references_plain_field(node: Any) -> bool:
+            """True when any leaf of this Q node names a non-aggregate field."""
+            for child in getattr(node, "children", []):
+                if isinstance(child, tuple):
+                    key = child[0]
+                    if (
+                        key not in aggregate_aliases
+                        and key.split("__")[0] not in aggregate_aliases
+                    ):
+                        return True
+                elif references_plain_field(child):
+                    return True
+            return False
+
+        splittable = q.connector is QOperator.AND and not q.negated
+        if not splittable or not references_aggregate(q):
+            if references_aggregate(q):
+                if references_plain_field(q):
+                    raise NotSupportedError(
+                        "Cannot combine a filter on an aggregate annotation with "
+                        "a filter on a plain field inside the same OR/NOT group: "
+                        "the two belong in HAVING and WHERE respectively. Split "
+                        "them into separate filter() calls."
+                    )
+                return None, q
+            return q, None
+
+        where_children: list[Any] = []
+        having_children: list[Any] = []
+        for child in q.children:
+            if isinstance(child, tuple):
+                key = child[0]
+                is_agg = (
+                    key in aggregate_aliases
+                    or key.split("__")[0] in aggregate_aliases
+                )
+                (having_children if is_agg else where_children).append(child)
+            else:
+                child_where, child_having = self._split_aggregate_q(
+                    child, aggregate_aliases
+                )
+                if child_where is not None:
+                    where_children.append(child_where)
+                if child_having is not None:
+                    having_children.append(child_having)
+
+        def rebuild(children: list[Any]) -> Any:
+            """Re-wrap split children into a single AND-joined Q, or None if empty."""
+            if not children:
+                return None
+            node = QClass()
+            node.connector = QOperator.AND
+            node.children = children
+            return node
+
+        return rebuild(where_children), rebuild(having_children)
+
+    def _build_where_and_having(
+        self, joins: JoinContext | None = None
+    ) -> tuple[Any, Any]:
+        """Build the WHERE and HAVING clauses from filters and excludes."""
+        aggregate_aliases = self._aggregate_aliases()
+        if not aggregate_aliases:
+            return self._build_where_clause(joins), None
+
+        if self._is_empty:
+            from sqlalchemy import false
+
+            return false(), None
+
+        where_conditions: list[Any] = []
+        having_conditions: list[Any] = []
+        for source, wrap in ((self._filters, False), (self._excludes, True)):
+            for q in source:
+                where_q, having_q = self._split_aggregate_q(q, aggregate_aliases)
+                for part, bucket in (
+                    (where_q, where_conditions),
+                    (having_q, having_conditions),
+                ):
+                    if part is None:
+                        continue
+                    condition = self._q_to_condition(part, joins)
+                    if condition is not None:
+                        bucket.append(not_(condition) if wrap else condition)
+
+        def combine(conditions: list[Any]) -> Any:
+            """AND a bucket of SQLAlchemy conditions into one, or None if empty."""
+            if not conditions:
+                return None
+            return conditions[0] if len(conditions) == 1 else and_(*conditions)
+
+        return combine(where_conditions), combine(having_conditions)
+
     def _build_select(self) -> Select[Any]:
         """Build the complete SELECT statement."""
         if self._combinator is not None:
@@ -836,30 +1059,42 @@ class QuerySet(Generic[ModelT]):
         table = self.model._get_table()
         joins = self._make_join_context()
 
-        # Build select columns
-        columns = list(self._get_select_columns(table))
+        # Build select columns. Named values()/values_list() fields restrict
+        # the SELECT list (and win over only()/defer(), as in Django);
+        # select_related columns are dead weight there because dicts are
+        # built straight from the row mapping.
+        value_columns = self._values_columns(joins)
+        if value_columns:
+            columns = list(value_columns)
+        else:
+            columns = list(self._get_select_columns(table))
+            # select_related paths register their JOINs FIRST so filter/order
+            # traversal of the same path reuses the same aliases (single JOIN).
+            if self._select_related:
+                columns.extend(self._select_related_columns(joins))
 
-        # select_related paths register their JOINs FIRST so filter/order
-        # traversal of the same path reuses the same aliases (single JOIN).
-        if self._select_related:
-            columns.extend(self._select_related_columns(joins))
-
-        # Labeled columns for values()/values_list() "__" paths
-        columns.extend(self._values_path_columns(joins))
+        grouping_columns = list(columns)
 
         if self._annotations:
             for alias, expr in self._annotations.items():
                 if hasattr(expr, 'resolve'):
-                    columns.append(expr.resolve(self.model).label(alias))
+                    columns.append(expr.resolve(self.model, joins=joins).label(alias))
                 else:
                     columns.append(literal_column(str(expr)).label(alias))
 
-        # Apply filters (registers traversal JOINs on the shared context)
-        where_clause = self._build_where_clause(joins)
+        # Apply filters (registers traversal JOINs on the shared context).
+        # Conditions on aggregate annotations belong in HAVING, not WHERE.
+        where_clause, having_clause = self._build_where_and_having(joins)
 
         stmt = select(*columns)
         if where_clause is not None:
             stmt = stmt.where(where_clause)
+
+        group_by = self._build_group_by(table, grouping_columns)
+        if group_by:
+            stmt = stmt.group_by(*group_by)
+        if having_clause is not None:
+            stmt = stmt.having(having_clause)
 
         # Apply ordering - can also order by annotations and "__" paths
         order_clauses = self._build_order_by(joins)
@@ -898,9 +1133,11 @@ class QuerySet(Generic[ModelT]):
     def _rows_to_objects(self, rows: list[Any]) -> list[Any]:
         """Convert DB rows to results (dicts, tuples or model instances)."""
         # Handle values() mode - return dicts
-        if self._values_fields is not None:
+        if self._values_mode:
             instances = []
-            fields = self._values_fields or [f.name for f in self.model._meta.local_fields]
+            fields = self._values_fields or [
+                f.db_column or f.name for f in self.model._meta.local_fields
+            ]
             # Include annotations if requested
             all_fields = list(fields)
             for alias in self._annotations:
@@ -989,7 +1226,7 @@ class QuerySet(Generic[ModelT]):
 
             # Handle prefetch_related after main fetch
             if (
-                self._values_fields is None
+                not self._values_mode
                 and self._values_list_fields is None
                 and self._prefetch_related
                 and instances
@@ -1485,96 +1722,18 @@ class QuerySet(Generic[ModelT]):
     async def create(self, *, validate: bool = True, **kwargs: Any) -> ModelT:
         """Create and save a new object.
 
-        Unless ``validate=False``, ``full_clean()`` runs after defaults are
-        applied and before the INSERT.
+        Delegates to :meth:`Model.save`, so ``pre_save``/``post_save`` fire
+        with ``created=True`` — as they do in Django, where ``create()`` is
+        ``obj.save(force_insert=True)``. Unless ``validate=False``,
+        ``full_clean()`` runs before the INSERT.
+
+        Model instances may be passed for ForeignKey fields
+        (``create(author=author)``); the descriptor stores the id and caches
+        the instance, so a later ``await obj.author`` needs no query.
         """
-        from datetime import datetime as dt
-        from datetime import timezone
-
-        from sqlalchemy import insert
-
-        from zeeb_orm.db.connection import get_session
-        from zeeb_orm.models.fields import ForeignKeyField
-
-        # Pre-process kwargs: convert model instances to IDs for FK fields
-        processed_kwargs = {}
-        for key, value in kwargs.items():
-            if hasattr(value, "pk"):
-                # It's a model instance - extract the pk
-                processed_kwargs[f"{key}_id"] = value.pk
-            else:
-                processed_kwargs[key] = value
-
-        instance = self.model(**processed_kwargs)
-        table = self.model._get_table()
-
-        # Prepare values for insert
-        values = {}
-        for field in self.model._meta.local_fields:
-            value = None
-
-            # For FK fields, get the _id value
-            if isinstance(field, ForeignKeyField):
-                value = getattr(instance, f"{field.name}_id", None)
-            else:
-                value = getattr(instance, field.name, None)
-
-            # Handle primary key with callable default (e.g., UUIDAutoField)
-            if field.primary_key and value is None:
-                if hasattr(field, 'default') and field.default is not None:
-                    if callable(field.default):
-                        value = field.default()
-                    else:
-                        value = field.default
-                    setattr(instance, field.name, value)
-                else:
-                    # Let DB generate auto PK (for integer auto-increment)
-                    continue
-
-            # Handle auto timestamps - both auto_now and auto_now_add should set on create
-            if hasattr(field, 'auto_now') and field.auto_now and value is None:
-                if hasattr(field, 'timezone'):
-                    value = dt.now(timezone.utc)
-                else:
-                    from datetime import date
-                    value = date.today()
-                setattr(instance, field.name, value)
-            elif hasattr(field, 'auto_now_add') and field.auto_now_add and value is None:
-                if hasattr(field, 'timezone'):
-                    value = dt.now(timezone.utc)
-                else:
-                    from datetime import date
-                    value = date.today()
-                setattr(instance, field.name, value)
-
-            # Handle non-PK callable defaults
-            if value is None and hasattr(field, 'default') and field.default is not None:
-                if callable(field.default):
-                    value = field.default()
-                else:
-                    value = field.default
-                setattr(instance, field.name, value)
-
-            if value is not None:
-                values[field.db_column or field.name] = value
-
-        if validate:
-            await instance.full_clean()
-
-        async with get_session(self._db_alias) as (session, should_commit):
-            stmt = insert(table).values(**values)
-            result = await session.execute(stmt)
-            if should_commit:
-                await session.commit()
-
-            # Get the inserted PK
-            pk_name = self.model._meta.pk_name
-            if result.inserted_primary_key:
-                setattr(instance, pk_name, result.inserted_primary_key[0])
-
-            instance._state.persisted = True
-            instance._state.db_alias = self._db_alias
-            return instance
+        instance = self.model(**kwargs)
+        await instance.save(validate=validate, using=self._db_alias)
+        return instance
 
     async def get_or_create(
         self, defaults: dict[str, Any] | None = None, **kwargs: Any
@@ -1660,17 +1819,24 @@ class QuerySet(Generic[ModelT]):
         deleted through the :class:`~zeeb_orm.models.deletion.Collector`
         (cascades, PROTECT/RESTRICT checks, SET_NULL/SET_DEFAULT updates,
         per-instance delete signals); the returned count then includes
-        cascade-deleted rows.  Otherwise a single fast DELETE statement runs
-        (no signals).
+        cascade-deleted rows.  The same route is taken when a ``pre_delete``
+        or ``post_delete`` receiver is connected for this model, so a
+        registered receiver always runs.  Otherwise a single fast DELETE
+        statement runs.
 
         Returns the number of rows deleted.
         """
         from zeeb_orm.db.connection import get_session
         from zeeb_orm.models.deletion import Collector, model_has_inbound_refs
+        from zeeb_orm.signals import post_delete, pre_delete
 
         self._check_combinator("delete")
 
-        if model_has_inbound_refs(self.model):
+        has_delete_receivers = pre_delete.has_listeners(
+            self.model
+        ) or post_delete.has_listeners(self.model)
+
+        if model_has_inbound_refs(self.model) or has_delete_receivers:
             from zeeb_orm.db.connection import atomic, get_active_session
 
             objs = await self._clone()._fetch_all()
@@ -1861,7 +2027,10 @@ class Prefetch:
 
 
 def resolve_field_path(
-    model: type, field_path: str, annotations: dict[str, Any] | None = None
+    model: type,
+    field_path: str,
+    annotations: dict[str, Any] | None = None,
+    joins: JoinContext | None = None,
 ) -> Any:
     """Resolve a plain field name (or annotation) on ``model`` to a column."""
     parts = field_path.split("__")
@@ -1876,7 +2045,9 @@ def resolve_field_path(
     if annotations and field_name in annotations:
         expr = annotations[field_name]
         if hasattr(expr, "resolve"):
-            return expr.resolve(model)
+            # An aggregate annotation may traverse relations
+            # (Count("posts")); it needs the statement's join context.
+            return expr.resolve(model, joins=joins)
         return literal_column(field_name)
 
     column = getattr(table.c, field_name, None)
@@ -2015,7 +2186,7 @@ def lookup_to_condition(
             )
         column = joins.column(relation_parts, field_name)
     else:
-        column = resolve_field_path(model, field_name, annotations)
+        column = resolve_field_path(model, field_name, annotations, joins)
     if column is None:
         field_names = sorted(f.name for f in model._meta.local_fields)
         raise FieldError(

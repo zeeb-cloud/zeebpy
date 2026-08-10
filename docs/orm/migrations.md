@@ -32,7 +32,10 @@ Migrations for 'all apps':
     - Create model Post
 ```
 
-No `init` step needed — `makemigrations` creates the `migrations/` directory automatically.
+`makemigrations` creates the `migrations/` directory automatically, so `init`
+is rarely needed. Run `python manage.py init` only when you want the directory
+(and its `.gitkeep`) created up front — it is idempotent. Migration files live
+**flat** in `migrations/`, not under a `versions/` subdirectory.
 
 ### Apply Migrations
 
@@ -361,7 +364,7 @@ Zeeb auto-detects these changes (all generated operations are reversible):
 - **Nullability**: Changes to nullable
 - **Server defaults**: Changes to a column's `server_default`
 - **Indexes**: Create, drop
-- **Unique constraints**: Add, drop (named constraints only)
+- **Unique constraints**: Add, drop — including unnamed ones (what `unique=True` on a column produces), which are given a deterministic `uq_{table}_{cols}` name
 
 Foreign-key constraint changes (adding/removing an FK, altering `on_delete`)
 are **not** auto-detected — write a manual migration for those. On SQLite,
@@ -400,6 +403,33 @@ python manage.py makemigrations -n "add views to posts"
 # 3. Apply
 python manage.py migrate
 ```
+
+#### Adding a NOT NULL column
+
+A `null=False` field cannot simply be appended to a table that already has
+rows — there is no value for them. The framework handles this at `migrate`
+time:
+
+- **The field has a scalar `default`.** The default is emitted as a SQL
+  `DEFAULT` on the `ADD COLUMN`, so the database backfills existing rows in the
+  same statement (this is also what makes it work on SQLite, which cannot alter
+  a column afterwards). The `DEFAULT` **stays on the column** — it mirrors the
+  model's default, so schema and model stay in agreement.
+- **The field has no scalar default.** `migrate` raises `MigrationError`:
+
+  ```
+  Cannot add NOT NULL column 'posts.views' with no default: existing rows
+  have no value to fall back on. Give the field a default, or make it
+  nullable.
+  ```
+
+  This is raised **before** anything is written, so the migration is not left
+  half-applied. Fix it by giving the field a `default=`, or by declaring it
+  `null=True`.
+
+Note that a callable default (`default=uuid4`) is not a scalar and cannot be
+pushed into SQL. For those, use the three-step pattern: add the column as
+nullable, backfill it in a data migration, then alter it to `NOT NULL`.
 
 ### Removing a Field
 
@@ -538,8 +568,18 @@ Or disable the check in settings:
 
 ```python
 # settings.py
-CHECK_MIGRATIONS_ON_STARTUP = False
+ENFORCE_MIGRATIONS = False
 ```
+
+The check is skipped under `DEBUG` regardless. See
+[Guarding against unapplied migrations](#guarding-against-unapplied-migrations)
+for the underlying API.
+
+### `MigrationError: Cannot add NOT NULL column ... with no default`
+
+You added a `null=False` field to a model whose table already has rows, and the
+field has no scalar `default`. Nothing was written — see
+[Adding a NOT NULL column](#adding-a-not-null-column) for the three fixes.
 
 ### "No changes detected" when changes exist
 
@@ -695,6 +735,68 @@ showmigrations()
 # Squash migrations
 squashmigrations(start='0001_initial', end='0005_add_views', squashed_name='initial_squashed')
 ```
+
+### Where migration files live
+
+Migration files live **flat** in `migrations/`, not under a `versions/`
+subdirectory:
+
+```
+myproject/
+└── migrations/
+    ├── .gitkeep
+    ├── 0001_initial.py
+    └── 0002_add_article.py
+```
+
+`find_migration_files()` resolves them, and still reads a legacy
+`migrations/versions/` directory if one exists — a flat file wins when both are
+present. `MIGRATIONS_DIR` overrides the location.
+
+### Guarding against unapplied migrations
+
+Serving traffic against a schema that does not match the models produces
+confusing column errors deep in a query. These helpers let you fail fast
+instead:
+
+```python
+from zeeb_orm import (
+    MigrationError,
+    MigrationState,
+    check_migrations_applied,
+    get_migration_state,
+    require_migrations,
+)
+
+# True when the database is up to date. With raise_on_pending=True (the
+# default) it raises MigrationError instead of returning False.
+check_migrations_applied(raise_on_pending=False)
+
+# The full picture, for a health endpoint or a startup log line
+state: MigrationState = get_migration_state()
+state.has_migrations_dir   # bool
+state.total_migrations     # int
+state.applied_migrations   # int
+state.pending_migrations   # int
+state.current_revision     # str | None — where the database is
+state.head_revision        # str | None — where the code says it should be
+```
+
+`require_migrations` is a decorator for entry points that must not run against
+a stale schema:
+
+```python
+@require_migrations
+async def nightly_report():
+    ...   # raises MigrationError if anything is pending
+```
+
+Both `check_migrations_applied()` and `get_migration_state()` accept
+`project_root=` and `db_url=` to inspect a project other than the current one.
+
+The `ENFORCE_MIGRATIONS` setting (default `True`) applies the same check at
+startup outside `DEBUG` — see
+[Settings](../configuration/settings.md).
 
 ## Next Steps
 

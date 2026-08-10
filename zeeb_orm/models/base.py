@@ -96,9 +96,17 @@ class ModelBase(type):
         # Create the class
         new_class = cast("type[Model]", super().__new__(mcs, name, bases, namespace))
 
-        # Process Meta options
+        # Process Meta options. `Meta` is popped from every processed class's
+        # namespace, so a parent's Meta is unreachable via getattr/MRO (it
+        # would resolve to Model.Meta) — inherit from the parent's processed
+        # Options instead. Bases are walked in MRO order: the first one to
+        # supply an option wins, and the model's own Meta always wins.
         new_class._meta = Options.from_meta(meta_class, name)
         new_class._meta.model = new_class
+        for parent in parents:
+            parent_meta = getattr(parent, "_meta", None)
+            if parent_meta is not None:
+                new_class._meta.inherit_from(parent_meta)
 
         # Collect fields from class and parents
         fields: list[Field[Any]] = []
@@ -106,10 +114,20 @@ class ModelBase(type):
         m2m_fields: list[ManyToManyField[Any]] = []
         has_pk = False
 
+        # A primary key declared here replaces an inherited one instead of
+        # joining it into a composite key (which SQLite rejects outright for
+        # autoincrement columns, and which no caller intends).
+        declares_own_pk = any(
+            isinstance(value, Field) and value.primary_key
+            for value in namespace.values()
+        )
+
         # Inherit fields from parents (including abstract parents)
         for parent in reversed(parents):
             if hasattr(parent, "_meta"):
                 for field in parent._meta.local_fields:
+                    if field.primary_key and declares_own_pk:
+                        continue
                     if field.name not in namespace:
                         # Clone field for this class
                         field_copy = field.__class__.__new__(field.__class__)
@@ -118,6 +136,12 @@ class ModelBase(type):
                         fields.append(field_copy)
                         if field_copy.primary_key:
                             has_pk = True
+                            # An inherited PK is still this model's PK; without
+                            # this `_meta.pk` stays None while `has_pk` blocks
+                            # the auto-PK below, and FK typing, joins and
+                            # `obj.pk` all break. An own PK overrides it below.
+                            new_class._meta.pk = field_copy
+                            new_class._meta.pk_name = field_copy.name
                         if isinstance(field_copy, ForeignKeyField):
                             fk_fields.append(field_copy)
 

@@ -37,14 +37,17 @@ from zeeb_orm.exceptions import (
     NotSupportedError,
 )
 from zeeb_orm.query.expressions import (
+    Avg,
     Case,
     Count,
     Exists,
+    F,
     OuterRef,
     Subquery,
     Sum,
     Value,
     When,
+    Window,
 )
 
 
@@ -482,3 +485,179 @@ class TestIntegrityErrorTranslation:
                 await PpSlot.objects.create(code="dup")
         # Transaction rolled back cleanly, connection still usable
         assert await PpSlot.objects.count() == 1
+
+
+class TestGroupByAndValues:
+    """``annotate()`` used to emit no GROUP BY at all.
+
+    Combined with ``values()`` not restricting the SELECT list, an aggregate
+    annotation collapsed the whole table into one row instead of producing
+    one row per group.
+    """
+
+    @staticmethod
+    async def _seed_authors():
+        alice = await PpAuthor.objects.create(name="Alice")
+        bob = await PpAuthor.objects.create(name="Bob")
+        carol = await PpAuthor.objects.create(name="Carol")
+        await PpPost.objects.create(title="a1", views=10, author=alice)
+        await PpPost.objects.create(title="a2", views=20, author=alice)
+        await PpPost.objects.create(title="b1", views=5, author=bob)
+        return alice, bob, carol
+
+    async def test_values_annotate_groups_per_row(self, db):
+        alice, bob, _ = await self._seed_authors()
+        rows = await PpPost.objects.values("author_id").annotate(n=Count("id"))
+        assert sorted((r["author_id"], r["n"]) for r in rows) == sorted(
+            [(alice.pk, 2), (bob.pk, 1)]
+        )
+
+    async def test_group_by_is_emitted(self, db):
+        sql = str(
+            PpPost.objects.values("author_id").annotate(n=Count("id"))._build_select()
+        )
+        assert "GROUP BY" in sql
+
+    async def test_values_restricts_the_select_list(self, db):
+        await _seed_posts()
+        rows = await PpPost.objects.filter(title="Alpha").values("title")
+        assert rows == [{"title": "Alpha"}]
+        sql = str(PpPost.objects.values("title")._build_select())
+        assert "pp_posts.views" not in sql
+
+    async def test_values_without_arguments_returns_dicts(self, db):
+        # Documented in docs/orm/queries.md; used to return model instances.
+        await PpAuthor.objects.create(name="Solo")
+        rows = await PpAuthor.objects.values()
+        assert isinstance(rows[0], dict)
+        assert rows[0]["name"] == "Solo"
+        assert set(rows[0]) == {
+            f.db_column or f.name for f in PpAuthor._meta.local_fields
+        }
+
+    async def test_values_pk_alias(self, db):
+        await _seed_posts()
+        post = await PpPost.objects.filter(title="Alpha").first()
+        assert await PpPost.objects.filter(title="Alpha").values("pk") == [
+            {"pk": post.pk}
+        ]
+
+    async def test_values_fk_by_field_name(self, db):
+        alice, _, _ = await self._seed_authors()
+        rows = await PpPost.objects.filter(title="a1").values("author")
+        assert rows == [{"author": alice.pk}]
+
+    async def test_values_unknown_field_raises(self, db):
+        with pytest.raises(ValueError, match="bogus"):
+            PpPost.objects.values("bogus")._build_select()
+
+
+class TestAggregateTraversal:
+    """``Count("posts")`` / ``Avg("posts__views")`` used to raise ValueError."""
+
+    async def test_count_over_reverse_relation(self, db):
+        await TestGroupByAndValues._seed_authors()
+        rows = await PpAuthor.objects.values("name").annotate(n=Count("posts"))
+        assert sorted((r["name"], r["n"]) for r in rows) == [
+            ("Alice", 2),
+            ("Bob", 1),
+            ("Carol", 0),  # LEFT JOIN keeps authors without posts, as Django does
+        ]
+
+    async def test_avg_over_related_field(self, db):
+        await TestGroupByAndValues._seed_authors()
+        rows = await PpAuthor.objects.values("name").annotate(av=Avg("posts__views"))
+        by_name = {r["name"]: r["av"] for r in rows}
+        assert by_name["Alice"] == 15.0
+        assert by_name["Bob"] == 5.0
+        assert by_name["Carol"] is None
+
+    async def test_distinct_count_over_relation(self, db):
+        await TestGroupByAndValues._seed_authors()
+        rows = await PpAuthor.objects.values("name").annotate(
+            n=Count("posts", distinct=True)
+        )
+        assert {r["name"]: r["n"] for r in rows}["Alice"] == 2
+
+    async def test_annotation_on_instances(self, db):
+        await TestGroupByAndValues._seed_authors()
+        authors = await PpAuthor.objects.annotate(n=Count("posts")).order_by("name")
+        assert [(a.name, a.n) for a in authors] == [
+            ("Alice", 2),
+            ("Bob", 1),
+            ("Carol", 0),
+        ]
+
+    async def test_traversal_without_a_join_context_raises(self, db):
+        with pytest.raises(FieldError, match="Related-field traversal"):
+            F("posts__views").resolve(PpAuthor)
+
+    async def test_unknown_field_still_raises_value_error(self, db):
+        with pytest.raises(ValueError, match="bogus"):
+            F("bogus").resolve(PpPost)
+
+
+class TestHavingClause:
+    """Filtering an aggregate annotation belongs in HAVING, not WHERE.
+
+    In WHERE, SQLite rejects it outright with "misuse of aggregate function".
+    """
+
+    async def test_filter_on_aggregate_annotation(self, db):
+        await TestGroupByAndValues._seed_authors()
+        rows = await PpAuthor.objects.values("name").annotate(
+            n=Count("posts")
+        ).filter(n__gt=1)
+        assert rows == [{"name": "Alice", "n": 2}]
+
+    async def test_having_is_emitted_and_where_stays_clean(self, db):
+        sql = str(
+            PpAuthor.objects.annotate(n=Count("posts"))
+            .filter(n__gt=1)
+            ._build_select()
+        )
+        assert "HAVING" in sql
+        assert "GROUP BY" in sql
+
+    async def test_aggregate_and_plain_filter_are_split(self, db):
+        await TestGroupByAndValues._seed_authors()
+        rows = await PpAuthor.objects.values("name").annotate(n=Count("posts")).filter(
+            n__gte=1, name__startswith="A"
+        )
+        assert rows == [{"name": "Alice", "n": 2}]
+
+    async def test_aggregate_only_or_group_is_allowed(self, db):
+        await TestGroupByAndValues._seed_authors()
+        rows = await PpAuthor.objects.annotate(n=Count("posts")).filter(
+            Q(n__gt=1) | Q(n=1)
+        )
+        assert sorted((r.name, r.n) for r in rows) == [("Alice", 2), ("Bob", 1)]
+
+    async def test_exclude_on_aggregate_annotation(self, db):
+        await TestGroupByAndValues._seed_authors()
+        rows = await PpAuthor.objects.annotate(n=Count("posts")).exclude(n__gt=1)
+        assert sorted(r.name for r in rows) == ["Bob", "Carol"]
+
+    async def test_mixing_aggregate_and_plain_field_in_or_is_rejected(self, db):
+        with pytest.raises(NotSupportedError, match="aggregate annotation"):
+            PpAuthor.objects.annotate(n=Count("posts")).filter(
+                Q(n__gt=1) | Q(name="Bob")
+            )._build_select()
+
+
+class TestNonAggregateAnnotationsDoNotGroup:
+    async def test_window_annotation_does_not_group(self, db):
+        sql = str(PpPost.objects.annotate(r=Window(Sum("views")))._build_select())
+        assert "GROUP BY" not in sql
+
+    async def test_expression_annotation_does_not_group(self, db):
+        sql = str(PpPost.objects.annotate(v2=F("views") + 1)._build_select())
+        assert "GROUP BY" not in sql
+
+    async def test_case_annotation_does_not_group(self, db):
+        sql = str(
+            PpPost.objects.annotate(
+                tier=Case(When(views__gte=100, then=Value("hot")), default=Value("cold"))
+            )._build_select()
+        )
+        assert "GROUP BY" not in sql

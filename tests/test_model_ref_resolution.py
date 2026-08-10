@@ -295,35 +295,27 @@ async def test_make_migrations_with_custom_user_model_and_dotted_fk(tmp_path):
     """Custom user model in 'accounts' + cross-app ForeignKey("accounts.User").
 
     Mirrors the failing spesentool_v1 flow: create_user_model writes
-    AUTH_USER_MODEL = "accounts.User"; a second app references the dotted
+    AUTH_USER_MODEL = "identity.User"; a second app references the dotted
     label. make_migrations must succeed and emit CreateModel for every table.
     """
     res = await agents.create_project("demo", directory=str(tmp_path))
     assert res.success, res.message
     root = tmp_path / "demo"
-    for app in ("accounts", "expenses"):
+    # A user model of one's own, in an app the scaffold did not create — the
+    # scaffolded 'accounts' app already owns a User, so this exercises the
+    # create path rather than colliding with it.
+    for app in ("identity", "expenses"):
         res = await agents.create_app(app, project_id=root)
         assert res.success, res.message
 
-    # create_app scaffolds but does not register — clients add the apps to
-    # INSTALLED_APPS themselves (same as the real flow).
-    settings_path = root / "demo" / "settings.py"
-    settings_path.write_text(
-        settings_path.read_text().replace(
-            "INSTALLED_APPS = [",
-            'INSTALLED_APPS = [\n    "apps.accounts",\n    "apps.expenses",',
-            1,
-        )
-    )
-
     res = await agents.create_user_model(
-        "accounts",
+        "identity",
         "User",
         extra_fields=[{"name": "role", "type": "CharField", "max_length": 32}],
         project_id=root,
     )
     assert res.success, res.message
-    assert res.data["auth_user_model"] == "accounts.User"
+    assert res.data["auth_user_model"] == "identity.User"
 
     res = await agents.create_model(
         "expenses",
@@ -333,7 +325,7 @@ async def test_make_migrations_with_custom_user_model_and_dotted_fk(tmp_path):
             {
                 "name": "owner",
                 "type": "ForeignKey",
-                "to": "accounts.User",
+                "to": "identity.User",
                 "on_delete": "CASCADE",
             },
         ],

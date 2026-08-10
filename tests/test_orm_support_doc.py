@@ -22,7 +22,6 @@ _DOC_PATHS = (
 # Named as unavailable in both docs. If one of these gains an
 # implementation, delete it here AND update both documents.
 ABSENT_QUERYSET_METHODS = (
-    "none",
     "earliest",
     "latest",
     "dates",
