@@ -450,19 +450,16 @@ id = AutoField(primary_key=True)
 
 ### BigAutoField
 
-64-bit auto-increment (default for new models).
+64-bit auto-increment. Rendered as `INTEGER` on SQLite (only
+`INTEGER PRIMARY KEY` is a rowid alias there and auto-assigns values);
+`BIGSERIAL` on PostgreSQL and `BIGINT AUTO_INCREMENT` on MySQL.
 
 ```python
 id = BigAutoField(primary_key=True)
 ```
 
-### SmallAutoField
-
-16-bit auto-increment.
-
-```python
-id = SmallAutoField(primary_key=True)
-```
+The default primary key for a model that declares none is `UUIDAutoField`,
+not an integer field.
 
 ---
 
@@ -471,7 +468,7 @@ id = SmallAutoField(primary_key=True)
 All fields inherit from `Field` base class:
 
 ```python
-from zeeb_orm.fields import Field
+from zeeb_orm.models.fields import Field
 
 class MyCustomField(Field):
     def __init__(self, **kwargs):

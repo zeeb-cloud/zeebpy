@@ -43,6 +43,26 @@ users = await User.objects.exclude(is_active=False).all()
 users = await User.objects.filter(role="user").exclude(is_banned=True).all()
 ```
 
+### none()
+
+Return a QuerySet guaranteed to match nothing.
+
+```python
+# An owner-scoped get_queryset() for an anonymous caller
+def get_queryset(self):
+    user = getattr(self.request.state, "user", None)
+    if user is None:
+        return Article.objects.none()
+    return Article.objects.filter(owner_id=user.id)
+```
+
+Use this rather than filtering on a sentinel value. On a nullable column,
+`filter(owner_id=None)` matches every **unowned** row — the opposite of what
+"this caller sees nothing" means.
+
+Chaining stays sound: the empty marker survives cloning, so
+`.none().filter(...)` is still empty.
+
 ### filter(Q(...))
 
 Complex queries with Q objects.
@@ -227,20 +247,14 @@ users = await User.objects.all()[10:20]
 user = await User.objects.order_by("created_at").all()[0]
 ```
 
-### limit(n)
+### Limit and offset
 
-Limit results.
-
-```python
-users = await User.objects.limit(10).all()
-```
-
-### offset(n)
-
-Skip results.
+There are no `limit()` / `offset()` methods — use slicing, which compiles to
+`LIMIT`/`OFFSET`:
 
 ```python
-users = await User.objects.offset(10).limit(10).all()
+users = await User.objects.all()[:10]        # LIMIT 10
+users = await User.objects.all()[10:20]      # LIMIT 10 OFFSET 10
 ```
 
 ---
@@ -461,7 +475,7 @@ user = await User.objects.create(
 )
 ```
 
-### bulk_create(objects)
+### bulk_create(objects, ignore_conflicts=False)
 
 Create multiple objects efficiently.
 
@@ -471,6 +485,24 @@ users = await User.objects.bulk_create([
     User(name="Jane", email="jane@example.com"),
 ])
 ```
+
+`ignore_conflicts=True` skips rows that violate a unique constraint instead of
+aborting the whole insert:
+
+```python
+users = await User.objects.bulk_create(new_users, ignore_conflicts=True)
+```
+
+Two things to know before relying on it:
+
+- It is **dialect-gated** — PostgreSQL, SQLite and MySQL only. Anything else
+  raises `NotSupportedError`.
+- A conflicting object is **still in the returned list**, unsaved, and its
+  primary key may be `None`. The return value is not a list of what was
+  persisted. Re-query if you need the rows that actually landed.
+
+`bulk_create()` does not fire `pre_save` / `post_save` signals — it is a single
+bulk INSERT, not a loop over `save()`.
 
 ### get_or_create(\*\*kwargs, defaults=None)
 
@@ -516,10 +548,10 @@ users = await User.objects.raw(
 
 | Category | Methods |
 |----------|---------|
-| **Filtering** | `filter()`, `exclude()` |
+| **Filtering** | `filter()`, `exclude()`, `none()` |
 | **Retrieval** | `all()`, `get()`, `first()`, `last()`, `exists()`, `count()` |
 | **Ordering** | `order_by()` |
-| **Slicing** | `limit()`, `offset()`, `[start:end]` |
+| **Slicing** | `[start:end]` |
 | **Annotation** | `annotate()`, `aggregate()` |
 | **Values** | `values()`, `values_list()` |
 | **Field Selection** | `only()`, `defer()` |
