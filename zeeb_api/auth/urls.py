@@ -20,16 +20,18 @@ def get_auth_patterns(
     use_database: bool = True,
     prefix: str = "",
     tags: list[str] | None = None,
+    login_throttle: str | None = None,
 ):
     """
     Get auth URL patterns with custom configuration.
-    
+
     Args:
         enable_registration: Include /register endpoint
         use_database: Use database-backed authentication
         prefix: URL prefix (usually set via include())
         tags: OpenAPI tags
-    
+        login_throttle: Rate limit for /login and /register, e.g. "10/min"
+
     Returns:
         APIRouter with auth endpoints
     """
@@ -38,6 +40,7 @@ def get_auth_patterns(
         tags=tags,
         enable_registration=enable_registration,
         use_database=use_database,
+        login_throttle=login_throttle,
     )
 
 

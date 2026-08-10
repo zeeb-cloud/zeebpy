@@ -176,9 +176,18 @@ def create_oauth_router(
         link_by_email = provider.link_by_email
         if link_by_email is None:
             link_by_email = bool(getattr(settings, "OAUTH_LINK_BY_EMAIL", True))
+        require_verified_email = provider.require_verified_email
+        if require_verified_email is None:
+            require_verified_email = bool(
+                getattr(settings, "OAUTH_REQUIRE_VERIFIED_EMAIL", True)
+            )
 
         return await get_or_create_user_for_identity(
-            name, claims, auto_create=auto_create, link_by_email=link_by_email
+            name,
+            claims,
+            auto_create=auto_create,
+            link_by_email=link_by_email,
+            require_verified_email=require_verified_email,
         )
 
     def _issue_tokens(user: Any) -> TokenResponse:

@@ -150,29 +150,24 @@ class AbstractUser(AbstractBaseUser):
     async def has_perm_async(self, perm: str, obj: Any = None) -> bool:
         """
         Check if user has a specific permission (async, checks DB).
-        
-        Superusers have all permissions.
+
+        Superusers have all permissions. ``perm`` is matched against
+        ``Permission.codename``.
         """
         if self.is_superuser:
             return True
-        
-        # Query UserPermission table
-        from zeeb_api.auth.models import UserPermission, Permission
-        try:
-            user_perm = await UserPermission.objects.filter(
-                user_id=self.id
-            ).select_related('permission').first()
-            
-            if user_perm:
-                # Check if any permission matches
-                perms = await UserPermission.objects.filter(user_id=self.id)
-                for up in perms:
-                    permission = await Permission.objects.get(id=up.permission_id)
-                    if permission.codename == perm:
-                        return True
-        except Exception:
-            pass
-        return False
+
+        # Resolve the specific permission, then check the user holds it. Two
+        # bounded queries — not the previous N+1 (one Permission.get per row).
+        from zeeb_api.auth.models import Permission, UserPermission
+
+        permission = await Permission.objects.filter(codename=perm).first()
+        if permission is None:
+            return False
+        match = await UserPermission.objects.filter(
+            user_id=self.id, permission_id=permission.id
+        ).first()
+        return match is not None
     
     def has_perms(self, perm_list: list[str], obj: Any = None) -> bool:
         """Check if user has all permissions in the list."""

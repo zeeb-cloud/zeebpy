@@ -2,7 +2,70 @@
 
 Zeeb provides a flexible authentication system with swappable user models.
 
+## What a generated project already has
+
+`zeeb startproject` wires authentication end to end, so there is nothing to set
+up before the first login:
+
+| Endpoint | Purpose |
+|----------|---------|
+| `POST {API_PREFIX}/auth/register` | Create an account |
+| `POST {API_PREFIX}/auth/login` | Exchange credentials for an access + refresh token |
+| `POST {API_PREFIX}/auth/refresh` | Rotate the refresh token, get a new access token |
+| `POST {API_PREFIX}/auth/logout` | Invoke the `on_logout` hook; see the note below |
+| `GET {API_PREFIX}/auth/me` | The current user's claims |
+
+Three pieces make that work, and all three are in the scaffold:
+
+1. `"zeeb_api.middleware.JWTAuthMiddleware"` in `MIDDLEWARE`, which resolves the
+   Bearer token into `request.state.user` — every permission class reads it.
+2. `router.include(create_auth_router(...))` in the project `urls.py`;
+   `create_app()` does not mount it for you.
+3. A `SECRET_KEY` that is not one of the framework's known-insecure defaults.
+   `startproject` generates one into `.env`; without it `create_app()` refuses
+   to start once `DEBUG` is off.
+
+`/login` and `/register` are rate limited per client — they are the two routes
+an attacker can drive without a token. The limit comes from
+`AUTH_LOGIN_THROTTLE_RATE` (default `10/min`, empty turns it off) and is passed
+through `create_auth_router(login_throttle=...)`. `/refresh`, `/logout` and
+`/me` are token-bound and stay unthrottled.
+
+Related env variables: `AUTH_URL_PREFIX`, `AUTH_ENABLE_REGISTRATION`,
+`AUTH_LOGIN_THROTTLE_RATE`, `JWT_*`. See
+[Settings](../configuration/settings.md).
+
+> **`/logout` does not revoke anything by itself.** JWTs are stateless: the
+> endpoint calls the optional `on_logout(jti)` hook you pass to
+> `create_auth_router()` and returns success. It receives the **access**
+> token's `jti`, and it does not touch the rotated-refresh-token store — a
+> refresh token stays redeemable after logout unless your `on_logout` hook
+> records it. Clients should discard both tokens locally. To actually
+> invalidate server-side, supply an `on_logout` that writes to a shared
+> denylist your `BaseRefreshTokenStore` consults.
+
 ## User Model
+
+A generated project owns its user model from the first migration: `startproject`
+writes `apps/accounts/models.py` with
+
+```python
+from zeeb_api.auth.models import AbstractUser
+
+
+class User(AbstractUser):
+    class Meta:
+        table_name = "accounts_user"
+```
+
+and sets `AUTH_USER_MODEL = "accounts.User"`. Add your own fields there. The
+built-in `auth_users` table is then never created — everything resolves to your
+class, which is why the model is generated up front rather than swapped in
+later against an existing schema.
+
+Reference it as `ForeignKey("accounts.User")`, not the bare `"User"`: the
+framework's own user class shares that class name and the registry is keyed by
+bare name, so the short form depends on import order.
 
 ### Default User
 
@@ -60,8 +123,8 @@ user.is_authenticated  # True for real users
 user.is_anonymous  # False for real users
 
 # Permissions
-has_perm = await user.has_perm("blog.add_article")
-has_perms = await user.has_perms(["blog.add_article", "blog.change_article"])
+has_perm = await user.has_perm_async("add_article")
+has_perm_cached = user.has_perm("add_article")  # sync, uses already-loaded perms
 
 # JWT claims
 claims = user.get_claims()
@@ -87,6 +150,17 @@ class CustomUser(AbstractUser):
     class Meta:
         table_name = "users"
 ```
+
+Two base classes are available:
+
+| Base | Gives you |
+|---|---|
+| `AbstractUser` | The full model — `email`, `username`, `is_active`, `is_staff`, `is_superuser`, `date_joined`, plus the password and permission methods. Start here. |
+| `AbstractBaseUser` | Password handling only (`set_password`, `check_password`, `is_authenticated`). Use it when you want to define every other field yourself. |
+
+Choosing `AbstractBaseUser` means the permission helpers (`has_perm`,
+`has_perm_async`) and the flags that `IsAdminUser` / `ModelPermissions` read are
+yours to provide.
 
 ### Configure in Settings
 
@@ -127,38 +201,40 @@ user.check_password("secret123")  # True
 user.check_password("wrong")      # False
 ```
 
-### Supported Hashers
+### The Hasher
 
-1. **PBKDF2** (default) - Secure, widely supported
-2. **Argon2** - Modern, recommended (requires `argon2-cffi`)
-3. **BCrypt** - Well-tested (requires `bcrypt`)
-
-Configure in settings:
+Hashing is **bcrypt**, with no pluggable hasher registry — there is no
+`PASSWORD_HASHERS` setting. `set_password()` and `check_password()` on the user
+model delegate to three helpers you can also call directly:
 
 ```python
-# settings.py
-PASSWORD_HASHERS = [
-    "zeeb_api.auth.hashers.Argon2PasswordHasher",
-    "zeeb_api.auth.hashers.PBKDF2PasswordHasher",
-    "zeeb_api.auth.hashers.BCryptPasswordHasher",
-]
+from zeeb_api import make_password
+from zeeb_api.auth.hashers import check_password, is_password_usable
+
+hashed = make_password("secret123")
+check_password("secret123", hashed)   # True
+is_password_usable(hashed)            # False for an unset/unusable password
 ```
 
 ### Password Validation
 
-```python
-from zeeb_api.auth.validators import (
-    MinimumLengthValidator,
-    CommonPasswordValidator,
-    NumericPasswordValidator,
-)
+The framework ships no password-strength validators and has no
+`AUTH_PASSWORD_VALIDATORS` setting. Enforce your own rules in the serializer
+that accepts the password — see
+[Serializers](serializers.md) for field-level `validators`:
 
-# settings.py
-AUTH_PASSWORD_VALIDATORS = [
-    {"NAME": "zeeb_api.auth.validators.MinimumLengthValidator", "OPTIONS": {"min_length": 8}},
-    {"NAME": "zeeb_api.auth.validators.CommonPasswordValidator"},
-    {"NAME": "zeeb_api.auth.validators.NumericPasswordValidator"},
-]
+```python
+def validate_password_strength(value: str) -> str:
+    if len(value) < 12:
+        raise ValueError("Password must be at least 12 characters.")
+    return value
+
+
+class RegisterSerializer(Serializer):
+    password = fields.CharField(
+        write_only=True,
+        validators=[validate_password_strength],
+    )
 ```
 
 ## Authentication Backend
@@ -183,38 +259,48 @@ else:
     print(f"Welcome, {user.username}!")
 ```
 
-### Custom Backend
+### Custom Authentication
+
+There is no pluggable backend registry and no `AUTHENTICATION_BACKENDS`
+setting. `authenticate()` already accepts either `email` or `username`; when you
+need different logic, write a plain async function and call it from your own
+login route:
 
 ```python
-# apps/accounts/backends.py
-from zeeb_api.auth.backends import BaseBackend
+# apps/accounts/auth.py
 from zeeb_api.auth import get_user_model
 
 
-class EmailBackend(BaseBackend):
+async def authenticate_by_email(email: str, password: str):
     """Authenticate by email only."""
-    
-    async def authenticate(self, request=None, email=None, password=None):
-        User = get_user_model()
-        
-        try:
-            user = await User.objects.get(email=email)
-            if user.check_password(password):
-                return user
-        except User.DoesNotExist:
-            pass
-        
+    User = get_user_model()
+
+    try:
+        user = await User.objects.get(email=email)
+    except User.DoesNotExist:
         return None
+
+    if not user.check_password(password):
+        return None
+
+    return user
 ```
 
-Configure:
+`set_password()` and `check_password()` on the user model are **sync** — only
+the database calls around them are awaited.
+
+To point the framework at a different user model programmatically, use
+`configure_auth()`:
 
 ```python
-# settings.py
-AUTHENTICATION_BACKENDS = [
-    "apps.accounts.backends.EmailBackend",
-]
+from zeeb_api import configure_auth
+from apps.accounts.models import User
+
+configure_auth(user_model=User)
 ```
+
+In a scaffolded project this is driven by the `AUTH_USER_MODEL` setting
+instead, and you do not need to call `configure_auth()` yourself.
 
 ## Permissions
 
@@ -244,18 +330,26 @@ if await user.has_perm_async("publish_article"):
 
 ### Permission Checking
 
-```python
-# Single permission
-await user.has_perm("blog.add_article")
+Permissions are matched on the bare `Permission.codename` — there is no
+`app_label.` prefix.
 
-# Multiple permissions (AND)
-await user.has_perms(["blog.add_article", "blog.change_article"])
+```python
+# Query the database for the permission (async)
+await user.has_perm_async("add_article")
+
+# Check against permissions already loaded on the instance (sync)
+user.has_perm("add_article")
+user.has_perms(["add_article", "change_article"])   # AND
 
 # Superusers have all permissions
 if user.is_superuser:
     # Has all permissions automatically
     ...
 ```
+
+> `has_perm()` and `has_perms()` are **synchronous** and only see permissions
+> already loaded onto the user object. Only `has_perm_async()` hits the
+> database. Awaiting `has_perm()` is an error.
 
 ### Object-level Permissions
 
@@ -310,16 +404,148 @@ Interactive prompts for username, email, and password.
 ### JWT Tokens
 
 ```python
-from zeeb_api.auth.tokens import create_access_token, decode_access_token
+from zeeb_api.auth.jwt import create_access_token, create_token_pair, decode_token
 
-# Create token
-token = create_access_token(user)
+# Create a token — the first argument is the user *id*, not the user object
+token = create_access_token(user.id)
 # "eyJ0eXAiOiJKV1QiLC..."
 
-# Decode token
-payload = decode_access_token(token)
-# {"user_id": "uuid", "username": "john", ...}
+# Attach extra claims
+token = create_access_token(user.id, {"is_staff": user.is_staff})
+
+# Decode / verify
+payload = decode_token(token)
+# {"sub": "uuid", "type": "access", "exp": ..., "jti": ...}
+
+# Both tokens at once — a (access, refresh) tuple, not a dict
+access_token, refresh_token = create_token_pair(user.id, {"is_staff": user.is_staff})
 ```
+
+The `{"access_token", "refresh_token", "token_type", "expires_in"}` JSON object
+is what the `/auth/login` **endpoint** returns; `create_token_pair()` itself
+returns the two encoded strings.
+
+`decode_token()` raises `TokenExpiredError` or `TokenInvalidError` (both
+subclasses of `TokenError`) rather than returning `None`. When `JWT_ISSUER` or
+`JWT_AUDIENCE` is configured, the corresponding claim is **required** and
+verified — tokens minted before you set them will be rejected.
+
+> `create_refresh_token()` takes `claims` as its **second** argument
+> (`user_id, claims=None, config=None`). An older call written as
+> `create_refresh_token(user_id, config)` now passes the config as claims —
+> pass it by keyword: `create_refresh_token(user_id, config=cfg)`.
+
+### Configuring JWT in code
+
+Settings drive this in a scaffolded project, but `configure_jwt()` sets it
+programmatically and returns the resulting `JWTConfig`:
+
+```python
+from zeeb_api import configure_jwt, get_jwt_config
+
+configure_jwt(
+    secret_key=...,
+    algorithm="HS256",
+    access_token_expire_minutes=60,
+    refresh_token_expire_days=7,
+    issuer="https://api.example.com",
+    audience="myapp",
+)
+
+config = get_jwt_config()   # JWTConfig currently in force
+```
+
+`decode_token()` returns a `TokenPayload` whose fields are `sub` (the user id),
+`type` (`"access"` or `"refresh"`), `exp`, `iat`, `jti`, optional `iss`/`aud`,
+and `claims`.
+
+### Route Dependencies
+
+For plain FastAPI routes — outside a viewset, where `permission_classes` does
+not apply — use the dependencies:
+
+```python
+from fastapi import Depends
+from zeeb_api import get_current_user, get_current_user_optional, require_auth
+
+
+@app.get("/me/dashboard")
+async def dashboard(user=Depends(get_current_user)):
+    """401s when unauthenticated."""
+    return {"user_id": str(user.id)}
+
+
+@app.get("/articles")
+async def articles(user=Depends(get_current_user_optional)):
+    """Returns None instead of raising when unauthenticated."""
+    return {"personalised": user is not None}
+
+
+@app.get("/admin/stats", dependencies=[Depends(require_auth(roles=["admin"]))])
+async def stats():
+    """Requires every listed role; pass any_role=True to require just one."""
+    return {...}
+```
+
+### Refresh Token Rotation
+
+`POST /auth/refresh` **rotates**: it issues a fresh pair and records the
+presented token's `jti` as consumed, so the same refresh token cannot be
+redeemed twice. Replaying one — the signature that a token was stolen — is
+rejected:
+
+```json
+{
+  "success": false,
+  "error": {"code": "AUTH_TOKEN_INVALID", "message": "Refresh token has already been used"}
+}
+```
+
+Clients must therefore store the new refresh token from every `/refresh`
+response and discard the old one. A client that keeps reusing its original
+refresh token will work exactly once.
+
+Refresh tokens also carry the user's claims, so a refresh does not require a
+database round-trip. When `AUTH_LOAD_USER_FROM_DB` is on, claims are reloaded
+and a deleted or inactive user is rejected with `AUTH_TOKEN_INVALID`.
+
+#### Swapping the store
+
+The default `InMemoryRefreshTokenStore` is **per process**: state is lost on
+restart, and behind multiple uvicorn/gunicorn workers each process detects
+reuse independently. That is best-effort, not a guarantee.
+
+For a hard cross-process guarantee, implement `BaseRefreshTokenStore` over a
+shared backend and install it at startup:
+
+```python
+from zeeb_api.auth.refresh_store import (
+    BaseRefreshTokenStore,
+    set_refresh_token_store,
+)
+
+
+class RedisRefreshTokenStore(BaseRefreshTokenStore):
+    def __init__(self, redis):
+        self._redis = redis
+
+    async def is_consumed(self, jti: str) -> bool:
+        return await self._redis.exists(f"rt:{jti}") == 1
+
+    async def consume(self, jti: str, ttl_seconds: float) -> None:
+        await self._redis.set(f"rt:{jti}", "1", ex=int(ttl_seconds))
+
+
+set_refresh_token_store(RedisRefreshTokenStore(redis))
+```
+
+`consume()` receives the token's **remaining** lifetime as `ttl_seconds`, so
+entries can expire rather than accumulating forever. `get_refresh_token_store()`
+returns the active store; call `set_refresh_token_store(None)` to restore the
+default, which is also how tests reset between cases.
+
+These names live in `zeeb_api.auth.refresh_store` and are not re-exported from
+`zeeb_api.auth`.
 
 ### JWT Secret Hardening
 
@@ -341,8 +567,8 @@ production, e.g. from an environment variable.
 ### Token in ViewSet
 
 > **Prefer the built-in auth router.** The recommended path is the shipped
-> `auth_router` (wire it with the `setup_auth` agent tool, or
-> `zeeb_api.auth.auth_router`). Its **actual** contract is:
+> auth router (wire it with the `setup_auth` agent tool, or
+> `zeeb_api.auth.create_auth_router()`). Its **actual** contract is:
 > - `POST /auth/login` — body `{"email", "password"}` → returns
 >   `{"access_token", "refresh_token", "token_type", "expires_in"}`
 > - `POST /auth/refresh`, `POST /auth/logout`, `GET /auth/me`,
@@ -355,7 +581,7 @@ production, e.g. from an environment variable.
 
 ```python
 from zeeb_api.viewsets import ViewSet
-from zeeb_api.auth.tokens import create_access_token
+from zeeb_api.auth.jwt import create_access_token
 from zeeb_api.auth import authenticate
 
 
@@ -401,35 +627,29 @@ class AuthViewSet(ViewSet):
 
 ### Token Middleware
 
+You do not need to write this — `JWTAuthMiddleware` ships with the framework
+and a scaffolded project installs it already. It reads the `Authorization:
+Bearer` header and sets `request.state.user`.
+
 ```python
 # settings.py
 JWT_SECRET_KEY = "your-secret-key"
 JWT_ALGORITHM = "HS256"
-JWT_EXPIRATION_HOURS = 24
+JWT_ACCESS_TOKEN_EXPIRE_MINUTES = 60
+JWT_REFRESH_TOKEN_EXPIRE_DAYS = 7
 ```
 
 ```python
-# middleware.py
-from zeeb_api.auth.tokens import decode_access_token
-from zeeb_api.auth import get_user_model
+from zeeb_api.middleware import JWTAuthMiddleware
 
-
-async def auth_middleware(request, call_next):
-    """Extract user from JWT token."""
-    token = request.headers.get("Authorization", "").replace("Bearer ", "")
-    
-    if token:
-        try:
-            payload = decode_access_token(token)
-            User = get_user_model()
-            request.user = await User.objects.get(pk=payload["user_id"])
-        except Exception:
-            request.user = AnonymousUser()
-    else:
-        request.user = AnonymousUser()
-    
-    return await call_next(request)
+app.add_middleware(JWTAuthMiddleware)
 ```
+
+By default (`AUTH_LOAD_USER_FROM_DB = True`) the middleware loads the full user
+row, and a deleted or inactive user is treated as unauthenticated. Setting it to
+`False` skips the query and builds an `AuthenticatedUser` from the token claims
+alone — faster, but see the warning in
+[Permissions](permissions.md) about combining that with `ModelPermissions`.
 
 ## OAuth2 / OIDC Single Sign-On
 
@@ -459,17 +679,20 @@ walkthrough, tenant modes, SPA flow, external bearer mode, security notes).
 
 ## Anonymous User
 
+There is no `AnonymousUser` class. An unauthenticated request simply has
+`request.state.user is None`:
+
 ```python
-from zeeb_api.auth.models import AnonymousUser
+user = getattr(request.state, "user", None)
 
-anon = AnonymousUser()
-anon.is_authenticated  # False
-anon.is_anonymous      # True
-anon.is_staff          # False
-anon.is_superuser      # False
-
-await anon.has_perm("any.permission")  # Always False
+if user is None:
+    ...  # anonymous
+elif user.is_authenticated:
+    ...  # signed in
 ```
+
+Permission classes already encode this check — use `IsAuthenticated` rather
+than testing for `None` by hand. See [Permissions](permissions.md).
 
 ## Registration Flow
 
