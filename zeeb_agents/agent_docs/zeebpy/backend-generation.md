@@ -17,6 +17,75 @@ How to generate and iterate on all backend components using zeeb_agents tools.
 > `{prefix}list_capabilities(include_docstrings=True)` for the authoritative
 > signature of any tool.
 
+> **Prefer the intent layer for whole outcomes.** This guide documents the
+> per-object tools, which are all `advanced` tier. A new feature is
+> `{prefix}build_feature(spec=...)`, and an edit to an existing one is
+> `{prefix}change_feature(changes=[...])` — both compile to exactly the calls
+> below, in the right order, with migrations and verification attached. Drop to
+> the individual tools when the change is too specific for a spec (a hand-tuned
+> Meta, a one-off repair).
+
+## Custom logic — the `functions` block
+
+Business logic does **not** need the per-object tools. A FeatureSpec declares it
+inline, and the compiler turns each entry into exactly the call it would have
+taken. Functions may sit at the top of the spec or inside an entity (where they
+default their `entity` to the one they sit in).
+
+```json
+{
+  "name": "shop",
+  "entities": [
+    {
+      "name": "Order",
+      "fields": [{"name": "total", "type": "decimal"}],
+      "functions": [
+        {"name": "close", "kind": "action", "detail": true,
+         "methods": ["post"], "actor": "admin",
+         "body": "obj = await self.get_object(id)\nreturn {\"ok\": True}"},
+        {"name": "on_saved", "kind": "hook", "trigger": "post_save"}
+      ]
+    }
+  ],
+  "functions": [
+    {"name": "revenue", "kind": "endpoint", "path": "/orders/revenue",
+     "method": "get", "body": "return {\"total\": 0}"},
+    {"name": "nightly_rollup", "kind": "task", "schedule": "0 2 * * *"},
+    {"name": "IsShopStaff", "kind": "rule", "logic": "staff_only"}
+  ]
+}
+```
+
+| `kind` | becomes | keys |
+|---|---|---|
+| `action` | a routed method on the entity's endpoint (`{prefix}add_viewset_action`) | `entity`, `detail`, `methods`, `body`, `actor`/`permission`, `imports`, `request_schema`, `response_schema` |
+| `endpoint` | a standalone route (`{prefix}create_route`) | `path` (must start with `/`), `method`, `body`, `imports` |
+| `hook` | a model lifecycle receiver (`{prefix}create_signal_receiver`) | `entity`, `trigger` — `pre_save`, `post_save`, `pre_delete`, `post_delete` |
+| `task` | a background task (`{prefix}create_task`) | `schedule` |
+| `rule` | a permission class (`{prefix}create_permission_class`) | `logic` — `deny_all`, `allow_all`, `owner_only`, `staff_only`, `authenticated`; the `name` is a class name |
+
+`actor` (`anyone` / `authenticated` / `owner` / `admin`) or an explicit
+`permission` class gates an action; omitting both inherits the endpoint's
+permission. Actions and workflow transitions become methods on the same
+endpoint, so their names share one namespace — a collision is rejected at
+compile time rather than silently overwriting the state machine.
+
+Add or remove one later without rewriting the spec:
+
+```
+{prefix}change_feature(feature="shop", changes=[
+  {"operation": "add_function",
+   "function": {"name": "refund", "kind": "action", "entity": "Order",
+                "body": "return {}"}},
+  {"operation": "remove_function",
+   "function": {"name": "close", "kind": "action", "entity": "Order"}}
+])
+```
+
+`{prefix}delete_function(app=..., name=..., kind=..., entity=...)` removes one
+directly. An `action` is cut from its own endpoint's body, so a same-named
+action on another entity in the same file survives.
+
 ## Models
 
 ### Field Types Reference
@@ -116,25 +185,76 @@ signal receivers, seed scripts):
 - **`Meta.constraints` check expressions are raw SQL strings**
   (`{"check": "price >= 0", "name": "ck_price"}`), not query objects.
 - **Signals are exactly** `pre_save`, `post_save`, `pre_delete`,
-  `post_delete` — there are no many-to-many-change or init signals.
+  `post_delete` — there are no many-to-many-change or init signals. Save
+  signals fire for `save()`, `create()`, `get_or_create()` and
+  `update_or_create()`, but **not** for `bulk_create()`, `bulk_update()` or
+  `QuerySet.update()` — those write set at a time and never build the
+  instances a receiver expects.
+- `none()` returns a queryset that matches nothing — use it in a scoped
+  `get_queryset()` when the caller may see no rows (filtering on a sentinel
+  value would leak rows whose column is NULL).
 - **Conditional aggregation and correlated subqueries work:**
   `Count("id", filter=Q(status="active"))`, `Sum("amount", filter=Q(...))`,
   `Subquery(inner.values("col")[:1])` / `Exists(...)` with `OuterRef`.
+- **Grouped aggregates work:** an aggregate annotation emits a `GROUP BY`.
+  `values("author_id").annotate(n=Count("id"))` returns one row per author;
+  without `values()` the grouping is by primary key, i.e. one annotated value
+  per instance. Aggregates traverse relations
+  (`Count("posts")`, `Avg("posts__views")`), and filtering the annotation
+  compiles to `HAVING` — but an aggregate and a plain field may not share one
+  `OR`/`NOT` group (raises `NotSupportedError`; use separate `filter()`
+  calls).
+- A relation may be followed by a lookup operator directly:
+  `filter(feed__guild__in=[...])`, `filter(author__isnull=True)`. A
+  ForeignKey is reachable by field name *and* column name
+  (`author` / `author_id`), before and after a relation hop.
 - ISO date/time strings in filter values are coerced for date/time
   columns; passing real `datetime`/`date` objects is still preferred.
-- **Not available — never generate:** `none()`, `earliest()` / `latest()`,
+- **Not available — never generate:** `earliest()` / `latest()`,
   `dates()` / `datetimes()`, `alias()`, `reverse()`, `contains(obj)`,
   `extra()`, `distinct("field")` (per-column distinct — use
-  `values_list(...).distinct()`), related-field paths inside `F()`
-  (`F("author__age")`), JSONField key-path lookups, file/image field
+  `values_list(...).distinct()`), JSONField key-path lookups,
+  file/image field
   types (store paths/URLs in `CharField`/`JSONField`), composite primary
   keys, generic/polymorphic relations.
+
+### Removing and altering
+
+Every creation tool has a counterpart, so a feature can be reshaped without
+hand-editing files. Call them in dependency order — route, then viewset, then
+serializer, then model — or use `{prefix}change_feature`, which sequences them
+for you.
+
+```
+{prefix}alter_field(app="shop", model_name="Product",
+                    field="name = fields.CharField(max_length=500)")
+# Redefines the field IN PLACE. Pass the complete new definition; an unknown
+# field name fails with close-match suggestions.
+
+{prefix}delete_field(app="shop", model_name="Product", field_name="legacy_sku")
+
+{prefix}sync_serializer_field(app="shop", model_name="Product",
+                              field_name="sku", present=False)
+# Adds or drops ONE name in Meta.fields — the surgical counterpart to
+# update_serializer, which rewrites the whole list. Use it after a model
+# field is added or dropped so the serializer follows.
+
+{prefix}unregister_route(app="shop", model_name="Product")
+{prefix}delete_viewset(app="shop", model_name="Product")
+{prefix}delete_serializer(app="shop", model_name="Product")
+{prefix}delete_model(app="shop", model_name="Product")
+```
+
+All of them are idempotent: deleting something already gone reports
+`skipped=true` rather than failing. `delete_viewset` and `delete_serializer`
+also drop the imports only they used, so the module stays lint-clean.
 
 ### Inspecting Models
 
 ```
 {prefix}list_models()
-# result.data["models"] — list of {"app", "model", "fields"} across all apps
+# result.data["models"] — list of {"app", "model", "fields", "field_types"}
+#   across all apps; "field_types" maps each field name to its declared type
 
 {prefix}get_model_json_schema(app="shop", model_name="Product")
 # result.data["schema"] — JSON Schema dict usable for validation / SDK gen
@@ -206,9 +326,13 @@ or a list; every listed class must allow the request — AND semantics).
 Per-viewset authentication is optional: pass `authentication=` (a name or a
 list of `zeeb_api.authentication` classes, tried in order — first match wins)
 to override the global auth middleware for this endpoint; omit it to keep the
-project-wide default. `create_viewset` writes the ViewSet only; register its
-route separately with `register_route` (or use `generate_crud`, which does
-both).
+project-wide default.
+
+**`create_viewset` writes the ViewSet only — it does NOT register the route
+unless you pass `register=True`.** An unregistered ViewSet 404s. Either pass
+`register=True` (optionally with `url_prefix=`), call `{prefix}register_route`
+afterwards, or use `{prefix}generate_crud` / `{prefix}build_feature`, which do
+both.
 
 ```
 {prefix}create_viewset(app="shop", model_name="Product")
@@ -233,8 +357,24 @@ matching imports:
     search_fields=["name", "description"],   # enables ?search=…
     ordering_fields=["price", "created_at"], # enables ?ordering=…
     filterset="ProductFilter",            # from the app's filters.py (see FilterSets)
+    operations=["list", "retrieve", "create"],  # serve only these; unnamed ones get no route
+    owner_field="owner",                  # stamp the caller onto this FK on create
+    owner_scoped_reads=True,              # …and restrict reads to rows they own
+    register=True,                        # also register the route (default False)
+    url_prefix="products",                # the URL segment, when registering
 )
 ```
+
+`operations=` controls the served endpoint set: `list`, `retrieve`, `create`,
+`update`, `partial_update`, `destroy`, `query`. An operation you do not name
+gets no route at all. `data["operations"]` echoes what was actually served, so
+the caller never has to infer it from the base class.
+
+`owner_field=` is the server-side ownership guarantee: the viewset stamps
+`request.state.user` onto that foreign key in `perform_create`, so a client
+cannot claim another user's row by sending a different id. Adding
+`owner_scoped_reads=True` also filters list/retrieve to the caller's own rows.
+Prefer this over hand-written `perform_create` bodies.
 
 Update an existing viewset with the same option names:
 

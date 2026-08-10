@@ -18,6 +18,8 @@ import re
 from pathlib import Path
 
 from zeeb_agents._utils import AgentResult, agent_function
+from zeeb_agents._utils.errors import fail
+from zeeb_agents.tiers import TIER_ORDER, tier_for
 
 # Names exported from the package that are not callable agent tools (result
 # type, URI registry, and the vendor-configuration hooks).
@@ -34,6 +36,7 @@ CATEGORY_BY_MODULE: dict[str, str] = {
     "serializers": "Serializers",
     "viewsets": "ViewSets & Routing",
     "routes": "ViewSets & Routing",
+    "functions": "Custom Logic",
     "migrations": "Migrations",
     "runtime": "Platform Runtime",
     "logs": "Logs",
@@ -41,6 +44,7 @@ CATEGORY_BY_MODULE: dict[str, str] = {
     "files": "File System",
     "database": "Database Introspection",
     "testing": "Testing",
+    "test_scaffold": "Testing",
     "shell": "Shell / Management",
     "seed": "Seed Data",
     "signals": "ORM Signals",
@@ -147,17 +151,17 @@ _BUILD_STEPS: list[dict] = [
         "why": "Scaffold the project (bootstrapping call — project_id optional).",
     },
     {
-        "step": "create_app",
-        "why": "Scaffold an app AND wire it in (INSTALLED_APPS + project urls) so "
-        "its endpoints are served and its models migrate. Auto-wires by default.",
+        "step": "bootstrap_project",
+        "why": "Bring it to a production-ready baseline in one call: user model, "
+        "authentication, health endpoint, first migration. Skip only if you "
+        "want none of that.",
     },
     {
         "step": "build_feature",
-        "why": "Declarative one shot: a FeatureSpec (entities + relations + api) "
-        "becomes models, serializers, endpoints, routes, and migrations — "
-        "verified. plan_feature previews the same plan without writing. For a "
-        "single model, generate_crud; for full control: create_model → "
-        "create_serializer → create_viewset → register_route.",
+        "why": "Declarative one shot: a FeatureSpec (entities + relations + "
+        "functions + api) becomes the app, models, serializers, endpoints, "
+        "routes, tests, and migrations — verified. This is how capability is "
+        "added; plan_feature previews the identical plan without writing.",
     },
     {
         "step": "make_migrations",
@@ -173,6 +177,21 @@ _BUILD_STEPS: list[dict] = [
         "why": "The acceptance gate: structure, migrations, and the live OpenAPI "
         "contract in one verdict. describe_project shows the raw snapshot; "
         "diagnose_problem investigates failures.",
+    },
+    {
+        "step": "change_feature",
+        "why": "Evolve what you built — add/alter/remove fields, relations, "
+        "entities, and functions, or re-gate an endpoint — as semantic changes, "
+        "not file edits. Re-running build_feature with an extended spec also "
+        "adds missing fields; it never removes anything (it reports that as "
+        "drift).",
+    },
+    {
+        "step": "list_features",
+        "why": "See what this project is made of. Each feature can then be "
+        "changed (change_feature), taken off the API without touching its data "
+        "(deactivate_feature / activate_feature), or removed outright "
+        "(delete_feature).",
     },
 ]
 
@@ -197,7 +216,10 @@ async def get_started(project_root: Path | None = None) -> AgentResult:
         docs (dict): resource URIs to read for depth — ``principles``,
             ``project_lifecycle``, ``backend_generation``, ``frontend_generation``,
             ``capabilities``.
-        discover (str): how to enumerate every tool (``"list_capabilities()"``).
+        discover (str): how to enumerate the default tool surface
+            (``"list_capabilities(tier='core')"``).
+        discover_all (str): how to enumerate the per-object tools behind it
+            (``"list_capabilities(tier='advanced')"``).
         next_action (str | None): the recommended next call, present only when a
             ``project_id`` was supplied and its state could be read.
         state (dict | None): the ``describe_project`` snapshot, when available.
@@ -215,7 +237,8 @@ async def get_started(project_root: Path | None = None) -> AgentResult:
             "frontend_generation": "mcp://docs/frontend-generation",
             "capabilities": "mcp://docs/capabilities",
         },
-        "discover": "list_capabilities()",
+        "discover": "list_capabilities(tier='core')",
+        "discover_all": "list_capabilities(tier='advanced')",
         "next_action": None,
         "state": None,
     }
@@ -242,26 +265,28 @@ def _recommend_next_action(state: dict) -> str:
     """Derive the single most useful next call from a describe_project snapshot."""
     apps = state.get("apps", [])
     if not apps:
-        return (
-            "build_feature(spec) — scaffold your first feature (it creates the "
-            "app too), or create_app('<name>') for an empty app."
-        )
+        return "build_feature(spec) — scaffold your first feature (it creates the app too)."
     for app in apps:
         if app["model_count"] and not app["installed"]:
-            return f"install_app('{app['name']}') — it has models but is not registered."
+            return (
+                f"build_feature(spec) for app '{app['name']}' — it has models but "
+                "is not registered, so they never migrate. Re-running the spec "
+                "repairs the wiring; existing files are untouched."
+            )
     for ep in state.get("endpoints", []):
         if not ep.get("served"):
-            return f"wire_app_urls('{ep['app']}') — its endpoints 404."
+            return (
+                f"build_feature(spec) for app '{ep['app']}' — its endpoints 404 "
+                "because the app router is not included. Re-running the spec "
+                "repairs the wiring; existing files are untouched."
+            )
     if not state.get("models"):
-        return (
-            "build_feature(spec) — add your first resource "
-            "(or generate_crud for a single model)."
-        )
+        return "build_feature(spec) — add your first resource."
     migrations = state.get("migrations", {})
     if migrations.get("available") and migrations.get("pending_count"):
         return "run_migrations() — pending migrations."
     if not state.get("endpoints"):
-        return "build_feature(spec) or generate_crud(...) — expose your models as an API."
+        return "build_feature(spec) — expose your models as an API."
     return "verify_project() — confirm the acceptance gate passes, then keep building."
 
 
@@ -269,6 +294,7 @@ def _recommend_next_action(state: dict) -> str:
 async def list_capabilities(
     include_docstrings: bool = False,
     module: str | None = None,
+    tier: str | None = None,
     project_id: str | None = None,
 ) -> AgentResult:
     """Return a machine-readable inventory of every ``zeeb_agents`` tool.
@@ -280,12 +306,22 @@ async def list_capabilities(
     ``Returns data:`` block in the per-tool ``doc`` (pass
     ``include_docstrings=True``).
 
+    Every tool carries a ``tier``.  Start from ``tier="core"``: those tools are
+    declarative and handle almost everything.  ``tier="advanced"`` enumerates
+    the per-object tools (``create_model``, ``add_field``, …) for the rare
+    change a feature spec cannot express — they are fully supported, just not
+    where to start.
+
     Args:
         include_docstrings: When ``True``, each tool entry also carries its
             full docstring under ``doc``.  Defaults to ``False`` (summary only)
             to keep the payload small.
         module: When set, only tools defined in this short module name are
             returned (e.g. ``"models"``, ``"migrations"``, ``"users"``).
+        tier: When set, only tools in this tier are returned — ``"core"``
+            (the declarative default surface), ``"escape_hatch"`` (precise
+            general-purpose control), or ``"advanced"`` (every per-object
+            tool).  Defaults to ``None``: every tool, whatever its tier.
         project_id: Unused; accepted for signature uniformity.  Not resolved.
 
     Returns data (on success):
@@ -294,6 +330,7 @@ async def list_capabilities(
             name (str)        function name, e.g. "create_model"
             module (str)      short module name, e.g. "models"
             category (str)    human category, e.g. "Model Management"
+            tier (str)        "core" | "escape_hatch" | "advanced"
             signature (str)   call signature, e.g.
                               "(app, model_name, fields, meta=None, project_id=None)"
             summary (str)     first line of the docstring
@@ -304,14 +341,25 @@ async def list_capabilities(
         count (int): number of tools returned
         modules (list[str]): sorted unique module names present in ``tools``
         categories (list[str]): human categories present, in display order
+        tiers (dict): tool count per tier across the whole surface, regardless
+            of the ``tier``/``module`` filters — e.g. ``{"core": 20, ...}``
 
     Notes:
         - Tools that operate on a project take a trailing ``project_id`` — the
           opaque id assigned by the host — as the last argument.
         - Entries are sorted by ``(module, name)`` for stable output.
+        - Fails with ``invalid_input`` when ``tier`` is not a known tier name.
     """
     import zeeb_agents
 
+    if tier is not None and tier not in TIER_ORDER:
+        return fail(
+            f"Unknown tier '{tier}'.",
+            code="invalid_input",
+            suggestions=list(TIER_ORDER),
+        )
+
+    tier_counts: dict[str, int] = dict.fromkeys(TIER_ORDER, 0)
     tools: list[dict] = []
     for name in zeeb_agents.__all__:
         if name in _NON_FUNCTION_EXPORTS:
@@ -320,8 +368,13 @@ async def list_capabilities(
         if not callable(func):
             continue
 
+        tool_tier = tier_for(name)
+        tier_counts[tool_tier] += 1
+
         mod = _module_name(func)
         if module is not None and mod != module:
+            continue
+        if tier is not None and tool_tier != tier:
             continue
 
         try:
@@ -337,6 +390,7 @@ async def list_capabilities(
             "name": name,
             "module": mod,
             "category": category_for(mod),
+            "tier": tool_tier,
             "signature": signature,
             "summary": _summary(doc),
             "params": params,
@@ -352,11 +406,20 @@ async def list_capabilities(
 
     return AgentResult(
         success=True,
-        message=f"{len(tools)} agent tool(s) available across {len(modules)} module(s).",
+        message=(
+            f"{len(tools)} agent tool(s) available across {len(modules)} module(s)."
+            + (
+                ""
+                if tier is not None
+                else f" {tier_counts['core']} are core — start there; "
+                "list_capabilities(tier='advanced') for the rest."
+            )
+        ),
         data={
             "tools": tools,
             "count": len(tools),
             "modules": modules,
             "categories": categories,
+            "tiers": tier_counts,
         },
     )
