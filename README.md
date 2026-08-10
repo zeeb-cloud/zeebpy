@@ -23,7 +23,7 @@ A batteries-included framework for building async APIs with FastAPI. Includes a 
 - **Exception Handling**: Standardized error responses with i18n support
 
 ### Agent Functions (zeeb_agents)
-- **43 async functions** — scaffolding, migrations, server lifecycle, logs, config, files, database, testing
+- **111 async functions** — scaffolding, migrations, server lifecycle, logs, config, files, database, testing, plus a high-level intent layer
 - **Zero MCP dependency** — import directly from any Python code; plug into an MCP server externally
 - **Uniform return type** — every function returns `AgentResult(success, message, data)`
 
@@ -41,18 +41,20 @@ pip install "zeebpy[all] @ git+https://github.com/zeeb-cloud/zeebpy.git"        
 
 ## Quick Start - Project Setup
 
-The recommended way to use Zeeb is with the generated project structure:
+`zeeb startproject` gives you a running, authenticated API. There is no wiring
+step: it ships an `accounts` app owning your user model, mounted JWT auth
+endpoints, CORS, rate limiting, API versioning, health probes and rotating logs
+— all driven from a generated `.env`.
 
 ```bash
 # Create a new project
 zeeb startproject myproject
 cd myproject
 
-# Create an app
+# Create an app — it registers itself in INSTALLED_APPS and urls.py
 zeeb-manage startapp posts
 
-# Initialize and run migrations (creates auth tables automatically)
-zeeb-manage init
+# Create and apply migrations (auth tables included)
 zeeb-manage makemigrations --name initial
 zeeb-manage migrate
 
@@ -63,6 +65,20 @@ zeeb-manage createsuperuser
 zeeb-manage runserver
 ```
 
+Authentication is live immediately:
+
+```bash
+curl -X POST localhost:8000/api/v1/auth/register \
+  -H 'content-type: application/json' \
+  -d '{"email":"me@example.com","password":"secret123"}'
+
+curl -X POST localhost:8000/api/v1/auth/login \
+  -H 'content-type: application/json' \
+  -d '{"email":"me@example.com","password":"secret123"}'
+
+curl localhost:8000/api/v1/auth/me -H "Authorization: Bearer <access_token>"
+```
+
 ### Project Structure
 
 ```
@@ -70,26 +86,43 @@ myproject/
 ├── manage.py                 # Management script
 ├── myproject/
 │   ├── __init__.py
-│   ├── settings.py           # Configuration
-│   ├── urls.py               # URL routing
+│   ├── settings.py           # Environment-driven configuration
+│   ├── urls.py               # Auth + OAuth + app routers
 │   └── asgi.py               # ASGI application
 ├── apps/
+│   ├── accounts/             # Your user model (AUTH_USER_MODEL)
 │   └── posts/
 │       ├── models.py         # ORM models
 │       ├── serializers.py    # API serializers
 │       ├── views.py          # ViewSets
 │       └── urls.py           # App routes
-├── migrations/
-│   └── versions/             # Alembic migrations
+├── migrations/               # Migration files
+├── logs/
+├── .env                      # Generated signing key — gitignored
+├── .env.example              # Every supported variable
 └── requirements.txt
 ```
+
+### Configuration
+
+Everything is configured from `.env`; real environment variables always win.
+
+```bash
+DEBUG=false
+DATABASE_URL=postgresql+asyncpg://user:pass@localhost:5432/mydb
+CORS_ALLOW_ORIGINS=https://app.example.com
+THROTTLE_ANON_RATE=60/min
+GOOGLE_CLIENT_ID=...          # mounts the OAuth routes
+```
+
+See [Settings](docs/configuration/settings.md) for the full list.
 
 ## CLI Commands
 
 ```bash
 zeeb startproject <name>      # Create new project
-zeeb-manage startapp <name>   # Create new app
-zeeb-manage init              # Initialize migrations
+zeeb-manage startapp <name>   # Create new app (registers it too)
+zeeb-manage init              # Initialize migrations (rarely needed)
 zeeb-manage makemigrations    # Create migration files
 zeeb-manage migrate           # Apply migrations
 zeeb-manage showmigrations    # Show migration status
@@ -531,7 +564,7 @@ app.include_router(router.routes, prefix="/api")
 
 ViewSets include a query endpoint for complex filtering:
 
-```python
+```http
 # Request
 POST /api/posts/query/
 {
@@ -592,9 +625,9 @@ configure_jwt(
 
 ```python
 # In asgi.py
-from zeeb_api.auth import auth_router
+from zeeb_api.auth import create_auth_router
 
-app.include_router(auth_router, prefix="/api/auth", tags=["auth"])
+app.include_router(create_auth_router(), prefix="/api/auth", tags=["auth"])
 ```
 
 Endpoints:

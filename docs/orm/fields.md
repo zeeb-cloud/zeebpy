@@ -209,9 +209,14 @@ class Article(Model):
 ```
 
 **Options:**
-- `auto_now` - Update to current datetime on every save
+- `auto_now` - Update to current datetime on every save, including the
+  first one; an explicit value passed to `save()`/`create()` is overwritten
 - `auto_now_add` - Set to current datetime on creation
 - `timezone` - Include timezone info (default: True)
+
+> **SQLite note:** SQLite stores datetimes without a UTC offset, so an aware
+> value is written and read back naive — `timezone=True` has no effect there.
+> Keep application datetimes in UTC.
 
 ## UUID Field
 
@@ -322,6 +327,13 @@ Auto-incrementing big integer primary key.
 class Article(Model):
     id = fields.BigAutoField(primary_key=True)
 ```
+
+`BIGSERIAL` on PostgreSQL, `BIGINT AUTO_INCREMENT` on MySQL. On SQLite the
+column is emitted as `INTEGER`, because only `INTEGER PRIMARY KEY` aliases
+the implicit `rowid` and auto-assigns values — a `BIGINT PRIMARY KEY` there
+would reject every INSERT that omits the id. SQLite integers are 64-bit
+either way, so no range is lost. ForeignKeys pointing at the model pick up
+the same per-dialect type automatically.
 
 ### UUIDAutoField
 

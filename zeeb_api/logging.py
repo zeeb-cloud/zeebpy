@@ -398,66 +398,41 @@ def exception(msg: str, **kwargs: Any) -> None:
 
 def configure_logging_from_settings() -> None:
     """
-    Configure logging from project settings.
-    
-    Reads the LOGGING dict from settings.py and applies the configuration.
-    Call this during app startup.
-    
+    Configure logging from the project's ``LOGGING`` setting.
+
+    Reads the ``LOGGING`` dict from the canonical settings singleton
+    (``zeeb_api.conf.settings``) and applies it. ``create_app`` calls this
+    automatically when ``LOGGING`` is set.
+
+    Every key :func:`configure_logging` accepts is forwarded, so a project
+    configures rotation and retention from ``settings.py`` alone and does not
+    have to call :func:`configure_logging` itself — a second call would reset
+    the root handlers this one just installed.
+
     Example settings.py:
         LOGGING = {
             "level": "INFO",
             "json_logs": True,
             "log_file": "logs/app.log",
+            "log_rotation": True,
+            "log_retention_days": 30,
         }
     """
-    import sys
-    from pathlib import Path
-    
-    # Try to find and load settings
-    current = Path.cwd()
-    while current != current.parent:
-        if (current / "manage.py").exists():
-            break
-        current = current.parent
-    else:
-        # No project found, use defaults
-        configure_logging()
-        return
-    
-    # Add to path
-    if str(current) not in sys.path:
-        sys.path.insert(0, str(current))
-    
-    # Find settings module
-    for item in current.iterdir():
-        if item.is_dir() and (item / "settings.py").exists():
-            try:
-                import importlib.util
-                spec = importlib.util.spec_from_file_location(
-                    "settings", item / "settings.py"
-                )
-                if spec and spec.loader:
-                    settings = importlib.util.module_from_spec(spec)
-                    spec.loader.exec_module(settings)
-                    
-                    # Get LOGGING config
-                    logging_config = getattr(settings, "LOGGING", {})
-                    configure_logging(
-                        level=logging_config.get("level", "INFO"),
-                        json_logs=logging_config.get("json_logs", False),
-                        log_file=logging_config.get("log_file"),
-                    )
-                    return
-            except Exception as exc:
-                # Logging is not configured yet, so report directly to stderr
-                # before falling back to the default configuration.
-                sys.stderr.write(
-                    f"zeeb_api.logging: failed to load settings from "
-                    f"{item / 'settings.py'}: {exc}; using default logging config\n"
-                )
+    try:
+        from zeeb_api.conf import settings
+        logging_config = getattr(settings, "LOGGING", None) or {}
+    except Exception:
+        logging_config = {}
 
-    # Fallback to defaults
-    configure_logging()
+    configure_logging(
+        level=logging_config.get("level", "INFO"),
+        json_logs=logging_config.get("json_logs", False),
+        log_file=logging_config.get("log_file"),
+        log_rotation=logging_config.get("log_rotation", True),
+        log_retention_days=logging_config.get("log_retention_days", 30),
+        include_uvicorn=logging_config.get("include_uvicorn", True),
+        include_sqlalchemy=logging_config.get("include_sqlalchemy", False),
+    )
 
 
 __all__ = [

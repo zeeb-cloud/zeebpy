@@ -209,6 +209,19 @@ posts = await Post.objects.readable_by(None).all()
 # SQL: SELECT * FROM posts WHERE status = 'published'
 ```
 
+When a caller should see **nothing at all**, return `none()`:
+
+```python
+def get_queryset(self):
+    user = getattr(self.request.state, "user", None)
+    if user is None:
+        return Post.objects.none()
+    return Post.objects.readable_by(user)
+```
+
+Do not express that as `filter(owner_id=None)`. On a nullable owner column that
+matches every unowned row — it hands out more data, not less.
+
 ## Complete Example
 
 ```python
@@ -256,7 +269,7 @@ class CommentViewSet(ModelViewSet):
 async def test_user_cannot_read_others_draft():
     user = await create_user()
     other = await create_user()
-    post = await Post.objects.create(author=other, status="draft", ...)
+    post = await Post.objects.create(author=other, status="draft", title="Draft")
     
     can_read = await post.check_read_permission(user)
     assert not can_read

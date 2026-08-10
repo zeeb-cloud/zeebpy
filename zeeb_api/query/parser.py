@@ -90,6 +90,35 @@ def parse_q_filter(expr: str) -> Q:
     return _ast_to_q(tree.body)
 
 
+def extract_q_fields(expr: str) -> set[str]:
+    """Return the root field names referenced by a Q filter expression.
+
+    For each ``Q(field__lookup=value)`` keyword the root before the first
+    ``__`` is collected, so callers can validate the expression against an
+    allow-list of permitted fields (preventing filtering on columns the API
+    does not expose, e.g. a password hash).
+    """
+    if not expr or not expr.strip():
+        return set()
+
+    try:
+        tree = ast.parse(expr.strip(), mode="eval")
+    except SyntaxError as e:
+        raise QFilterError(f"Invalid syntax: {e}")
+
+    fields: set[str] = set()
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "Q"
+        ):
+            for kw in node.keywords:
+                if kw.arg:
+                    fields.add(kw.arg.split("__", 1)[0])
+    return fields
+
+
 def _validate_ast(node: ast.AST) -> None:
     """Recursively validate that all AST nodes are allowed."""
     if type(node) not in ALLOWED_NODES:

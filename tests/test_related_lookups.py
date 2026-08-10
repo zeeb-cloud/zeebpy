@@ -46,6 +46,22 @@ class LkPost(Model):
         table_name = "lk_posts"
 
 
+class LkLookupNamed(Model):
+    """Carries a field named like a lookup operator (parse_path only)."""
+
+    range = fields.IntegerField(default=0)
+
+    class Meta:
+        table_name = "lk_lookup_named"
+
+
+class LkRef(Model):
+    target = fields.ForeignKey(LkLookupNamed, related_name="refs")
+
+    class Meta:
+        table_name = "lk_refs"
+
+
 MODELS = (LkAuthor, LkProfile, LkPost)
 
 
@@ -354,6 +370,158 @@ class TestTraversalWithSelectRelated:
             cached = getattr(p, "_cache_author", None)
             assert cached is not None
             assert cached.name == "Alice"
+
+
+class TestCreateWithRelatedInstance:
+    @pytest.mark.asyncio
+    async def test_create_caches_the_related_instance(self, seeded):
+        # create() used to rewrite any kwarg carrying a .pk into "<key>_id",
+        # which stored the id but threw away the descriptor's instance cache.
+        post = await LkPost.objects.create(title="Fresh", author=seeded["alice"])
+        assert post.author_id == seeded["alice"].pk
+        assert getattr(post, "_cache_author", None) is seeded["alice"]
+        # ...so reading the FK needs no query and no await
+        assert post.author is seeded["alice"]
+
+    @pytest.mark.asyncio
+    async def test_create_accepts_a_raw_fk_id(self, seeded):
+        post = await LkPost.objects.create(
+            title="By id", author_id=seeded["bob"].pk
+        )
+        assert post.author_id == seeded["bob"].pk
+
+
+class TestTerminalRelationLookups:
+    """A relation may be followed directly by a lookup operator.
+
+    ``author__in`` / ``author__isnull`` resolve like the bare terminal
+    relation ``author=obj`` does: the local FK column for forward FK/O2O
+    (no JOIN), the related model's PK for reverse accessors.
+    """
+
+    @pytest.mark.asyncio
+    async def test_forward_fk_in_lookup(self, seeded):
+        posts = await LkPost.objects.filter(
+            author__in=[seeded["alice"], seeded["bob"]]
+        )
+        assert len(posts) == 3
+        # Terminal relation: still the local FK column, no JOIN
+        sql = str(
+            LkPost.objects.filter(author__in=[seeded["alice"]])._build_select()
+        )
+        assert "JOIN" not in sql
+
+    @pytest.mark.asyncio
+    async def test_forward_fk_in_lookup_with_raw_pks(self, seeded):
+        posts = await LkPost.objects.filter(author__in=[seeded["bob"].pk])
+        assert [p.title for p in posts] == ["Bob One"]
+
+    @pytest.mark.asyncio
+    async def test_forward_fk_isnull_lookup(self, seeded):
+        assert await LkPost.objects.filter(author__isnull=True).count() == 0
+        assert await LkPost.objects.filter(author__isnull=False).count() == 3
+
+    @pytest.mark.asyncio
+    async def test_two_hop_terminal_relation_with_lookup(self, seeded):
+        # LkProfile -> author -> (terminal) : the second hop collapses to the
+        # FK column on lk_profiles, so only one JOIN is needed.
+        profiles = await LkProfile.objects.filter(
+            author__in=[seeded["alice"]]
+        )
+        assert [p.bio for p in profiles] == ["loves rust and sqlite"]
+
+    @pytest.mark.asyncio
+    async def test_reverse_relation_isnull(self, seeded):
+        carol = await LkAuthor.objects.create(name="Carol", age=41)
+        authors = await LkAuthor.objects.filter(profile__isnull=True)
+        assert [a.name for a in authors] == ["Carol"]
+        assert carol.pk == authors[0].pk
+
+    @pytest.mark.asyncio
+    async def test_reverse_relation_in_lookup(self, seeded):
+        profile = await LkProfile.objects.filter(bio__contains="python").first()
+        authors = await LkAuthor.objects.filter(profile__in=[profile])
+        assert [a.name for a in authors] == ["Bob"]
+
+    @pytest.mark.asyncio
+    async def test_fk_column_name_after_relation_hop(self, seeded):
+        # `author_id` is the db_column of the `author` field; reachable both
+        # ways, before and after a relation hop.
+        alice_id = seeded["alice"].pk
+        assert await LkProfile.objects.filter(author_id=alice_id).count() == 1
+        posts = await LkPost.objects.filter(author__profile__author_id=alice_id)
+        assert sorted(p.title for p in posts) == ["Alice One", "Alice Two"]
+
+    @pytest.mark.asyncio
+    async def test_fk_column_name_with_lookup_after_hop(self, seeded):
+        ids = [seeded["alice"].pk, seeded["bob"].pk]
+        posts = await LkPost.objects.filter(author__profile__author_id__in=ids)
+        assert len(posts) == 3
+
+    def test_field_wins_over_lookup_name(self):
+        # A field literally named like a lookup operator must be read as the
+        # field, not as a terminal-relation lookup.
+        from zeeb_orm.query.q import parse_path
+
+        assert parse_path(LkRef, "target__range") == (
+            ["target"],
+            "range",
+            None,
+            "exact",
+        )
+        assert parse_path(LkRef, "target__range__gte") == (
+            ["target"],
+            "range",
+            None,
+            "gte",
+        )
+        # ...while a name that is only a lookup still collapses the relation
+        assert parse_path(LkRef, "target__in") == ([], "target_id", None, "in")
+
+    def test_reverse_scan_tolerates_registry_growth(self):
+        # resolve_relation scans the model registry for reverse accessors, and
+        # resolving a string-referenced FK target can import a module and
+        # register further models mid-scan. Iterating the live dict raised
+        # "dictionary changed size during iteration".
+        from zeeb_orm.models import base as base_mod
+        from zeeb_orm.models.relations import resolve_relation
+
+        counter = iter(range(100))
+
+        class LazyFk:
+            """An FK whose target resolution registers another model."""
+
+            name = "late"
+            db_column = "late_id"
+            related_name = "lates"
+
+            def get_target_model(self):
+                base_mod._model_registry[f"_Late{next(counter)}"] = LkPost
+                return LkPost
+
+        class Carrier:
+            _fk_fields = [LazyFk()]
+            _m2m_fields = []
+
+        original = dict(base_mod._model_registry)
+        try:
+            # Carrier first, so its FK resolves before the real match is found.
+            base_mod._model_registry.clear()
+            base_mod._model_registry["_Carrier"] = Carrier
+            base_mod._model_registry.update(original)
+            assert resolve_relation(LkAuthor, "posts") is not None
+        finally:
+            base_mod._model_registry.clear()
+            base_mod._model_registry.update(original)
+
+    def test_transform_on_relation_is_rejected(self):
+        # `year` is a datetime transform, but a relation is not a datetime.
+        from zeeb_orm.query.q import parse_path
+
+        with pytest.raises(FieldError) as exc:
+            parse_path(LkRef, "target__year")
+        assert "year" in str(exc.value)
+        assert "LkLookupNamed" in str(exc.value)
 
 
 class TestTraversalErrors:

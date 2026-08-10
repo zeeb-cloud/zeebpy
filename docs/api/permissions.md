@@ -100,8 +100,8 @@ class ArticleViewSet(ModelViewSet):
 ### ModelPermissions
 
 Maps HTTP methods to per-model permissions
-(`view_<model>` / `add_<model>` / `change_<model>` / `delete_<model>`)
-checked via the user's permission set.
+(`view_<model>` / `add_<model>` / `change_<model>` / `delete_<model>`).
+Codenames are **bare** — there is no `app_label.` prefix.
 
 ```python
 from zeeb_api.permissions import ModelPermissions
@@ -110,6 +110,19 @@ from zeeb_api.permissions import ModelPermissions
 class ArticleViewSet(ModelViewSet):
     permission_classes = [ModelPermissions]
 ```
+
+> **Requires a database-backed user.** `ModelPermissions` calls
+> `await user.has_perm_async(...)`, and **denies any user object that does not
+> provide it**. That has two consequences:
+>
+> - With `AUTH_LOAD_USER_FROM_DB = False`, the middleware builds an
+>   `AuthenticatedUser` from token claims alone, which has no
+>   `has_perm_async` — so **every request is rejected with 403**. The same
+>   applies to OAuth external-bearer users. Do not combine that setting with
+>   this permission class.
+> - It also requires `is_authenticated`, and costs two database queries per
+>   required permission per request. For hot endpoints, prefer a custom
+>   `BasePermission` that checks a claim already in the token.
 
 ## Per-Action Permissions
 
@@ -224,15 +237,17 @@ class IsOwnerOrAdmin(BasePermission):
         return obj.author == request.user
 ```
 
-Or use a combinator:
+There are no `OR`/`AND` combinator helpers and no `|` / `&` operator support on
+permission classes. Every entry in `permission_classes` must pass, so the list
+is an implicit **AND**:
 
 ```python
-from zeeb_api.permissions import OR
-
-
 class MyViewSet(ModelViewSet):
-    permission_classes = [OR(IsOwner, IsAdminUser)]
+    # both must allow the request
+    permission_classes = [IsAuthenticated, IsOwner]
 ```
+
+Express **OR** by writing a single class, as `IsOwnerOrAdmin` above does.
 
 ## Permission Examples
 
@@ -341,10 +356,15 @@ class IsBusinessHours(BasePermission):
 
 ## Permission Check Order
 
-1. **Authentication** - User is identified
+1. **Authentication** - `JWTAuthMiddleware` sets `request.state.user`, and
+   records `request.state.auth_error` when a token was present but unusable
 2. **has_permission()** - Check view-level access
 3. **get_object()** - Retrieve object
 4. **has_object_permission()** - Check object-level access
+
+A denial at step 2 or 4 is turned into a 401 or a 403 depending on
+`request.state.user` and `request.state.auth_error` — see
+[Handling Denied Permissions](#handling-denied-permissions).
 
 ```python
 class MyPermission(BasePermission):
@@ -366,7 +386,20 @@ class MyPermission(BasePermission):
 
 ## Handling Denied Permissions
 
-When permission is denied:
+A failed permission check is **not always a 403**. The viewset inspects the
+request before choosing a status:
+
+| Caller | Status | Code |
+|---|---|---|
+| No credentials at all | 401 | `AUTH_TOKEN_MISSING` |
+| Credentials present but the token had expired (`request.state.auth_error`) | 401 | `AUTH_TOKEN_EXPIRED` |
+| Authenticated, but the permission class said no | 403 | `PERM_DENIED` |
+
+This applies to both view-level and object-level denials, so an expired token
+surfaces as something the client can act on (refresh and retry) rather than an
+unrecoverable 403.
+
+Raising `PermissionDenied` yourself always produces a 403:
 
 ```python
 from zeeb_api.exceptions import PermissionDenied

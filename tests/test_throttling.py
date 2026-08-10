@@ -160,9 +160,39 @@ class TestGetIdent:
         request = make_request(headers={"X-Forwarded-For": "1.2.3.4, 5.6.7.8"})
         assert TwoPerMinuteThrottle().get_ident(request) == "10.0.0.1"
 
-    def test_uses_forwarded_for_first_hop_with_proxies(self):
+    def test_uses_forwarded_for_hop_from_the_right_with_proxies(self):
+        # With 1 trusted proxy, the real client is the LAST XFF entry (the hop
+        # our proxy actually observed), not the attacker-controlled first entry.
         settings.THROTTLE_NUM_PROXIES = 1
         request = make_request(headers={"X-Forwarded-For": "1.2.3.4, 5.6.7.8"})
+        assert TwoPerMinuteThrottle().get_ident(request) == "5.6.7.8"
+
+    def test_forwarded_for_counts_from_the_right_for_multiple_proxies(self):
+        settings.THROTTLE_NUM_PROXIES = 2
+        request = make_request(
+            headers={"X-Forwarded-For": "1.1.1.1, 2.2.2.2, 3.3.3.3"}
+        )
+        assert TwoPerMinuteThrottle().get_ident(request) == "2.2.2.2"
+
+    def test_spoofed_leftmost_forwarded_for_does_not_change_ident(self):
+        # An attacker prepending a forged address cannot mint a new throttle key:
+        # the identity is pinned to the hop the trusted proxy saw (the last one).
+        settings.THROTTLE_NUM_PROXIES = 1
+        forged = make_request(
+            headers={"X-Forwarded-For": "9.9.9.9, 5.6.7.8"}
+        )
+        legit = make_request(headers={"X-Forwarded-For": "5.6.7.8"})
+        assert (
+            TwoPerMinuteThrottle().get_ident(forged)
+            == TwoPerMinuteThrottle().get_ident(legit)
+            == "5.6.7.8"
+        )
+
+    def test_short_chain_is_clamped_not_indexerror(self):
+        # More trusted proxies configured than present hops: fall back to the
+        # left-most present hop instead of raising.
+        settings.THROTTLE_NUM_PROXIES = 3
+        request = make_request(headers={"X-Forwarded-For": "1.2.3.4"})
         assert TwoPerMinuteThrottle().get_ident(request) == "1.2.3.4"
 
 

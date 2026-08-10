@@ -132,6 +132,7 @@ class FakeIdP:
                 "sub": "subj-1",
                 "email": "alice@example.com",
                 "name": "Alice Example",
+                "email_verified": True,
                 **self.id_token_claims,
             }
             if self.nonce is not None:
@@ -478,6 +479,84 @@ class TestGitHubProvider:
         assert claims.subject == "99"
         assert claims.email == "octo@example.com"
         assert claims.name == "octocat"
+        # The entry was selected *because* it is verified — say so.
+        assert claims.email_verified is True
+
+    @staticmethod
+    def _provider(user_json, emails_response):
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/user":
+                return httpx.Response(200, json=user_json)
+            if request.url.path == "/user/emails":
+                return emails_response
+            return httpx.Response(404)
+
+        return GitHubProvider(
+            client_id=CLIENT_ID,
+            http_client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+        )
+
+    async def _claims(self, user_json, emails_response):
+        from zeeb_api.auth.oauth import OAuthTokenSet
+
+        p = self._provider(user_json, emails_response)
+        return await p.get_claims(OAuthTokenSet(access_token="gh-token"))
+
+    async def test_public_email_is_marked_verified(self):
+        """A public primary address on /user still needs /user/emails.
+
+        /user carries no verification flag, so without this lookup
+        email_verified stays None and OAUTH_REQUIRE_VERIFIED_EMAIL (default
+        True) rejects every first login with a 401.
+        """
+        claims = await self._claims(
+            {"id": 99, "login": "octocat", "email": "octo@example.com", "name": None},
+            httpx.Response(
+                200,
+                json=[{"email": "octo@example.com", "primary": True, "verified": True}],
+            ),
+        )
+        assert claims.email == "octo@example.com"
+        assert claims.email_verified is True
+
+    async def test_public_email_unverified_is_reported(self):
+        claims = await self._claims(
+            {"id": 99, "login": "octocat", "email": "octo@example.com"},
+            httpx.Response(
+                200,
+                json=[{"email": "octo@example.com", "primary": True, "verified": False}],
+            ),
+        )
+        assert claims.email_verified is False
+
+    async def test_email_match_is_case_insensitive(self):
+        claims = await self._claims(
+            {"id": 99, "login": "octocat", "email": "Octo@Example.com"},
+            httpx.Response(
+                200,
+                json=[{"email": "octo@example.com", "primary": True, "verified": True}],
+            ),
+        )
+        assert claims.email_verified is True
+
+    async def test_emails_endpoint_denied_leaves_verification_unknown(self):
+        """A token without the user:email scope must not break the login."""
+        claims = await self._claims(
+            {"id": 99, "login": "octocat", "email": "octo@example.com"},
+            httpx.Response(403, json={"message": "Requires user:email"}),
+        )
+        assert claims.email == "octo@example.com"
+        assert claims.email_verified is None
+
+    async def test_unknown_address_leaves_verification_unknown(self):
+        claims = await self._claims(
+            {"id": 99, "login": "octocat", "email": "octo@example.com"},
+            httpx.Response(
+                200,
+                json=[{"email": "other@example.com", "primary": True, "verified": True}],
+            ),
+        )
+        assert claims.email_verified is None
 
 
 # Unit tests: state + PKCE
@@ -765,6 +844,62 @@ class TestSPATokenFlow:
         ).first()
         assert identity is not None
         assert identity.user_id == existing.id
+
+    async def test_unverified_email_does_not_link_to_existing_user(self, db, provider, idp):
+        """An unverified IdP email must not take over an existing local account."""
+        from zeeb_api.auth.backends import create_user
+        from zeeb_api.auth.oauth.models import ExternalIdentity
+
+        existing = await create_user(email="alice@example.com", password="local-pass-123")
+        settings.OAUTH_AUTO_CREATE_USERS = False  # force the linking path
+        idp.id_token_claims = {"email_verified": False}
+
+        app = make_app(provider)
+        async with asgi_client(app) as client:
+            response = await client.post("/auth/test/token/", json=SPA_BODY)
+
+        assert response.status_code == 401
+        assert (
+            response.json()["error"]["code"]
+            == ErrorCode.AUTH_OAUTH_EMAIL_UNVERIFIED.value
+        )
+        # No identity was attached to the victim account.
+        identity = await ExternalIdentity.objects.filter(
+            provider="test", subject="subj-1"
+        ).first()
+        assert identity is None
+
+    async def test_unverified_email_does_not_auto_create(self, db, provider, idp):
+        """Auto-provisioning must refuse an unverified email (email absent = unverified)."""
+        from zeeb_api.auth.models import User
+
+        idp.id_token_claims = {"email_verified": False}
+        app = make_app(provider)
+        async with asgi_client(app) as client:
+            response = await client.post("/auth/test/token/", json=SPA_BODY)
+
+        assert response.status_code == 401
+        assert (
+            response.json()["error"]["code"]
+            == ErrorCode.AUTH_OAUTH_EMAIL_UNVERIFIED.value
+        )
+        assert await User.objects.filter(email="alice@example.com").first() is None
+
+    async def test_require_verified_email_disabled_allows_unverified(self, db, provider, idp):
+        """A provider that opts out (trusted IdP) may link unverified emails."""
+        from zeeb_api.auth.oauth.models import ExternalIdentity
+
+        provider.require_verified_email = False
+        idp.id_token_claims = {"email_verified": False}
+        app = make_app(provider)
+        async with asgi_client(app) as client:
+            response = await client.post("/auth/test/token/", json=SPA_BODY)
+
+        assert response.status_code == 200
+        identity = await ExternalIdentity.objects.filter(
+            provider="test", subject="subj-1"
+        ).first()
+        assert identity is not None
 
     async def test_exchange_failure_returns_401(self, db, provider, idp):
         idp.token_status = 400

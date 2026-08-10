@@ -266,14 +266,14 @@ users = await User.objects.annotate(
 Remove whitespace.
 
 ```python
-from zeeb_orm import Trim, LTrim, RTrim
+from zeeb_orm import Trim
 
 users = await User.objects.annotate(
     clean_name=Trim(F("name")),
-    left_trimmed=LTrim(F("name")),
-    right_trimmed=RTrim(F("name")),
 ).all()
 ```
+
+`Trim` strips both ends. There are no one-sided `LTrim`/`RTrim` expressions.
 
 ### Substr
 
@@ -443,6 +443,18 @@ users = await User.objects.annotate(
 ).all()
 ```
 
+`Subquery` requires the inner queryset to select **exactly one column** via
+`values()` or `values_list()` — SQL cannot use a multi-column row as a scalar.
+Anything else raises `ValueError`:
+
+```python
+Subquery(Post.objects.filter(author_id=OuterRef("id")))                    # ValueError
+Subquery(Post.objects.filter(author_id=OuterRef("id")).values("title"))    # OK
+```
+
+Both `Subquery` and `Exists` correlate against the outer table automatically,
+which is what makes `OuterRef` resolve.
+
 ### OuterRef
 
 Reference outer query field in subquery.
@@ -453,9 +465,13 @@ from zeeb_orm import OuterRef
 # Posts by same author
 same_author = Post.objects.filter(
     author_id=OuterRef("author_id"),
-    id__ne=OuterRef("id"),
+).exclude(
+    id=OuterRef("id"),
 ).values("id")
 ```
+
+There is no `__ne` lookup — an unknown lookup raises `FieldError`. Use
+`.exclude()` for negation.
 
 ### Exists
 
@@ -470,12 +486,12 @@ has_posts = Post.objects.filter(author_id=OuterRef("id"))
 users = await User.objects.annotate(
     has_posts=Exists(has_posts)
 ).filter(has_posts=True).all()
-
-# Alternative
-users = await User.objects.filter(
-    Exists(Post.objects.filter(author_id=OuterRef("id")))
-).all()
 ```
+
+> **Always annotate first.** `filter()` accepts only `Q` objects as positional
+> arguments — a bare `Exists(...)` passed positionally is **silently dropped**,
+> and the query returns every row instead of raising. Annotate the subquery to
+> a name, then filter on that name as shown above.
 
 ---
 
@@ -503,7 +519,7 @@ users = await User.objects.annotate(
 | **Conditional** | `Q` |
 | **Aggregates** | `Count`, `Sum`, `Avg`, `Max`, `Min` |
 | **Conditionals** | `Case`, `When`, `Value`, `Coalesce` |
-| **String** | `Concat`, `Lower`, `Upper`, `Length`, `Trim`, `LTrim`, `RTrim`, `Substr` |
+| **String** | `Concat`, `Lower`, `Upper`, `Length`, `Trim`, `Substr` |
 | **Date** | `Now`, `Extract`, `TruncDate`, `TruncMonth`, `TruncYear` |
 | **Math** | `Abs`, `Round`, `Ceil`, `Floor`, `Greatest`, `Least` |
 | **Subquery** | `Subquery`, `OuterRef`, `Exists` |

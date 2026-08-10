@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any, TYPE_CHECKING
 from urllib.parse import urlencode, urlparse, parse_qs
+from datetime import datetime, date
 import base64
 
 from fastapi import Request
@@ -194,12 +195,28 @@ class LimitOffsetPagination(BasePagination):
             "offset": offset,
         }
     
-    def _get_limit(self, request: Request) -> int:
-        try:
-            limit = int(request.query_params.get(self.limit_query_param, self.default_limit))
-            return min(max(1, limit), self.max_limit)
-        except (ValueError, TypeError):
+    def _resolved_default_limit(self) -> int:
+        # A subclass that overrides default_limit wins; otherwise the
+        # DEFAULT_LIMIT setting applies (falling back to the class default).
+        if type(self).default_limit != LimitOffsetPagination.default_limit:
             return self.default_limit
+        from zeeb_api.conf import settings
+        return int(getattr(settings, "DEFAULT_LIMIT", self.default_limit))
+
+    def _resolved_max_limit(self) -> int:
+        if type(self).max_limit != LimitOffsetPagination.max_limit:
+            return self.max_limit
+        from zeeb_api.conf import settings
+        return int(getattr(settings, "MAX_LIMIT", self.max_limit))
+
+    def _get_limit(self, request: Request) -> int:
+        default_limit = self._resolved_default_limit()
+        max_limit = self._resolved_max_limit()
+        try:
+            limit = int(request.query_params.get(self.limit_query_param, default_limit))
+            return min(max(1, limit), max_limit)
+        except (ValueError, TypeError):
+            return default_limit
     
     def _get_offset(self, request: Request) -> int:
         try:
@@ -295,12 +312,49 @@ class CursorPagination(BasePagination):
         return request.query_params.get(self.cursor_query_param)
     
     def _encode_cursor(self, value: Any) -> str:
-        """Encode cursor value to string."""
-        return base64.urlsafe_b64encode(str(value).encode()).decode()
-    
+        """Encode a cursor value, tagging its type.
+
+        The type tag lets ``_decode_cursor`` reconstruct the original Python
+        type so the ``__gt``/``__lt`` comparison is done against a value of the
+        right type — decoding everything as a string produced wrong results (or
+        DB errors) for int/datetime ordering fields.
+        """
+        if isinstance(value, bool):
+            tag, raw = "b", ("1" if value else "0")
+        elif isinstance(value, int):
+            tag, raw = "i", str(value)
+        elif isinstance(value, float):
+            tag, raw = "f", repr(value)
+        elif isinstance(value, datetime):
+            tag, raw = "dt", value.isoformat()
+        elif isinstance(value, date):
+            tag, raw = "d", value.isoformat()
+        else:
+            tag, raw = "s", str(value)
+        token = f"{tag}:{raw}"
+        return base64.urlsafe_b64encode(token.encode()).decode()
+
     def _decode_cursor(self, cursor: str) -> Any:
-        """Decode cursor string to value."""
+        """Decode a cursor string back to its original typed value."""
         try:
-            return base64.urlsafe_b64decode(cursor.encode()).decode()
+            token = base64.urlsafe_b64decode(cursor.encode()).decode()
         except Exception:
+            return None
+        tag, sep, raw = token.partition(":")
+        if not sep:
+            # Legacy/untagged cursor: treat as an opaque string.
+            return token
+        try:
+            if tag == "i":
+                return int(raw)
+            if tag == "f":
+                return float(raw)
+            if tag == "b":
+                return raw == "1"
+            if tag == "dt":
+                return datetime.fromisoformat(raw)
+            if tag == "d":
+                return date.fromisoformat(raw)
+            return raw  # "s" or unknown tag
+        except (ValueError, TypeError):
             return None

@@ -18,6 +18,35 @@ pip install zeebpy[oauth]
 Plain `import zeeb_api` never requires `httpx` — all OAuth names are exported
 lazily.
 
+## In a generated project
+
+`zeeb startproject` already wires OAuth — it just stays dormant. The project
+`settings.py` builds providers from the environment:
+
+```python
+OAUTH_PROVIDERS = env_oauth_providers()   # google / github / azure
+```
+
+and the project `urls.py` mounts the routes only while that is non-empty, so
+half-configured endpoints never reach the schema. Setting a client id is all it
+takes:
+
+```bash
+GOOGLE_CLIENT_ID=...
+GOOGLE_CLIENT_SECRET=...
+```
+
+Two details worth knowing:
+
+- The `auth_external_identities` table ships in the **initial migration**
+  whether or not a provider is configured. `apps/accounts/models.py` imports
+  `ExternalIdentity` for exactly that reason: gating it on the environment
+  would make the generated schema differ between developers, and the next
+  `makemigrations` without credentials would emit a `DeleteModel` against a
+  schema already committed to git. Enabling a provider therefore needs no
+  migration.
+- Install the extra first: `pip install "zeebpy[oauth]"`.
+
 ## Quick Start
 
 Settings-driven (recommended):
@@ -144,9 +173,15 @@ OAUTH_PROVIDERS = {
 
 GitHub does not implement OIDC, so the preset uses manual endpoints
 (`github.com/login/oauth/...`), disables ID token validation and resolves the
-user via `api.github.com/user`. When the user's email is private, it falls
-back to `/user/emails` (the default `user:email` scope covers this). The
-external subject is the numeric GitHub user id.
+user via `api.github.com/user`. The external subject is the numeric GitHub
+user id.
+
+`/user` exposes no verification flag, so `/user/emails` is always queried as
+well — both to fill in a private primary address and to learn whether the
+address is verified. That call needs the `user:email` scope, which the preset
+requests by default. Without it `email_verified` stays unknown, and with
+`OAUTH_REQUIRE_VERIFIED_EMAIL` at its default `True` the first login for that
+identity is rejected with 401 `AUTH_OAUTH_EMAIL_UNVERIFIED`.
 
 ## SPA Flow (POST /token/)
 
@@ -183,18 +218,54 @@ never be redirected to an attacker-controlled origin.
 Azure's `response_mode=form_post` is supported: the callback accepts POST with
 a form body as well as the standard GET.
 
+## Provider Classes
+
+| Class | Use |
+|---|---|
+| `OAuthProvider` | The generic OAuth2/OIDC provider — PKCE, discovery, async JWKS validation. Subclass or instantiate it for an IdP with no preset. |
+| `AzureADProvider` | Microsoft Entra ID preset (tenant modes, issuer validation) |
+| `GoogleProvider` | Google Sign-In preset (pure OIDC via discovery) |
+| `GitHubProvider` | GitHub preset (plain OAuth2 + `/user/emails`) |
+
+Supporting types you will meet when writing hooks or a custom provider:
+
+| Type | What it is |
+|---|---|
+| `OAuth2Client` | Thin async HTTP client for the authorize/token/userinfo calls |
+| `OAuthTokenSet` | What the IdP's token endpoint returned |
+| `ExternalClaims` | Identity claims normalised across providers — this is what `get_or_create_user` receives |
+| `UserInfo` | The user payload `/auth/me` returns |
+| `RefreshRequest` | Body model for the refresh endpoint |
+
+The settings-driven registry is built by `build_providers_from_settings()` and
+read through `get_oauth_provider(name)`, which caches after the first call:
+
+```python
+from zeeb_api.auth.oauth import get_oauth_provider
+
+provider = get_oauth_provider("azure")
+```
+
+Every provider constructor also takes `require_verified_email=` to override
+`OAUTH_REQUIRE_VERIFIED_EMAIL` for that provider alone.
+
 ## User Linking and Provisioning
 
 Logins are tied to local users through the `ExternalIdentity` model
 (table `auth_external_identities`, unique per `(provider, subject)`):
 
 1. An existing identity wins — its user is logged in.
-2. Otherwise, with `OAUTH_LINK_BY_EMAIL = True` (default), an existing user
+2. **The email must be verified.** With `OAUTH_REQUIRE_VERIFIED_EMAIL = True`
+   (default), a provider reporting the address as unverified — or not reporting
+   a flag at all — stops here with `401 AUTH_OAUTH_EMAIL_UNVERIFIED`. This
+   gate precedes both of the next two steps, so it blocks auto-provisioning as
+   well as linking.
+3. Otherwise, with `OAUTH_LINK_BY_EMAIL = True` (default), an existing user
    with the same email gets the identity attached.
-3. Otherwise, with `OAUTH_AUTO_CREATE_USERS = True` (default), a new user is
+4. Otherwise, with `OAUTH_AUTO_CREATE_USERS = True` (default), a new user is
    created **without a usable password** (they can only log in via SSO until
    they set one).
-4. Otherwise the login fails with `401 AUTH_OAUTH_USER_NOT_PROVISIONED`.
+5. Otherwise the login fails with `401 AUTH_OAUTH_USER_NOT_PROVISIONED`.
 
 Both behaviours can also be set per provider
 (`auto_create_user=` / `link_by_email=` on the provider). To replace the whole
@@ -254,6 +325,7 @@ overhead when nothing is configured.
 | `OAUTH_SUCCESS_REDIRECT` | `None` | Browser-flow redirect target (tokens in URL fragment) |
 | `OAUTH_ALLOWED_REDIRECT_HOSTS` | `[]` | Hosts allowed as absolute `next` redirect targets (relative paths are always allowed) |
 | `OAUTH_ACCEPT_EXTERNAL_TOKENS` | `[]` | Provider names whose IdP-issued JWTs are accepted as Bearer tokens |
+| `OAUTH_REQUIRE_VERIFIED_EMAIL` | `True` | Refuse to link or provision when the provider reports the email as unverified (or reports no flag). Override per provider with `require_verified_email=` |
 
 ## Security Notes
 
@@ -267,9 +339,11 @@ overhead when nothing is configured.
   algorithms — `none` and HMAC algorithms are rejected unconditionally;
   audience, expiry, issuer and nonce are checked.
 - **Email linking / account takeover**: `OAUTH_LINK_BY_EMAIL` trusts the IdP's
-  email claim. If an IdP does not verify email ownership, anyone who registers
-  that email there could take over the matching local account. Keep it enabled
-  only for providers that verify emails (Azure AD, Google do; be careful with
+  email claim. `OAUTH_REQUIRE_VERIFIED_EMAIL` (default `True`) mitigates this
+  by refusing to link *or* provision on an unverified address, so an IdP that
+  does not verify email ownership cannot be used to take over a matching local
+  account. If you turn that gate off, keep `OAUTH_LINK_BY_EMAIL` enabled only
+  for providers that verify emails (Azure AD and Google do; be careful with
   custom IdPs), or disable it per provider with `link_by_email=False`.
 - **Tokens in fragments**: the browser success redirect carries tokens in the
   URL fragment, which is not sent to servers or logged; still, prefer the SPA
@@ -291,6 +365,7 @@ overhead when nothing is configured.
 | `AUTH_OAUTH_ID_TOKEN_INVALID` | 401 | ID token failed signature/claims validation |
 | `AUTH_OAUTH_PROVIDER_NOT_FOUND` | 404 | Unknown provider name in the URL |
 | `AUTH_OAUTH_USER_NOT_PROVISIONED` | 401 | No linked user and auto-provisioning disabled |
+| `AUTH_OAUTH_EMAIL_UNVERIFIED` | 401 | `OAUTH_REQUIRE_VERIFIED_EMAIL` is on and the provider reported the address as unverified (or reported no flag) — blocks linking *and* provisioning |
 
 ## Next Steps
 

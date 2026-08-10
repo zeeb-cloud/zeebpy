@@ -11,6 +11,8 @@ from zeeb_agents._utils.code_gen import (
     append_block,
     class_exists,
     ensure_import,
+    remove_class_block,
+    remove_import_name,
     render_serializer_class,
     skip_result,
     validate_if_exists,
@@ -226,4 +228,174 @@ async def update_serializer(
         success=True,
         message=f"'{class_name}' updated: {', '.join(applied)}",
         data={"app": app, "serializer": class_name, "changes": applied},
+    )
+
+
+@agent_function
+async def delete_serializer(
+    app: str,
+    model_name: str,
+    project_root: Path | None = None,
+) -> AgentResult:
+    """Remove ``<ModelName>Serializer`` and its now-unused model import.
+
+    The serializer half of removing an entity. Dropping the class but leaving
+    ``from apps.<app>.models import <Model>`` behind breaks the module at import
+    time once the model is gone, so the import name goes with it.
+
+    Args:
+        app: App directory name.
+        model_name: The model whose serializer to delete (e.g. ``"Post"``).
+
+    Returns data (on success):
+        app (str): the app directory name
+        serializer (str): the class name that was targeted
+        skipped (bool): ``True`` when there was nothing to delete
+        fields (list[str]): the ``Meta.fields`` the removed serializer
+            declared, so the caller can recreate it if needed
+
+    Notes:
+        - No-ops (success, ``skipped=True``) when ``serializers.py`` or the class
+          is absent, so removing an entity twice stays idempotent.
+    """
+    class_name = f"{model_name}Serializer"
+    path = _serializers_file(app, project_root)
+
+    def _skipped(reason: str) -> AgentResult:
+        return AgentResult(
+            success=True,
+            message=f"'{class_name}' not deleted: {reason}",
+            data={"app": app, "serializer": class_name, "skipped": True},
+        )
+
+    if not path.exists():
+        return _skipped("no serializers.py")
+
+    def _delete() -> bool:
+        content = path.read_text(encoding="utf-8")
+        stripped = remove_class_block(content, class_name)
+        if stripped is None:
+            return False
+        path.write_text(remove_import_name(stripped, model_name), encoding="utf-8")
+        return True
+
+    if not await asyncio.to_thread(_delete):
+        return _skipped(f"no class '{class_name}'")
+    return AgentResult(
+        success=True,
+        message=f"Serializer '{class_name}' removed from apps/{app}/serializers.py",
+        data={"app": app, "serializer": class_name, "skipped": False},
+    )
+
+
+#: Trailing audit columns a synced field is inserted before, so a new field lands
+#: next to the model's own fields instead of after the timestamps.
+_TRAILING_FIELDS = ("created_at", "updated_at")
+
+
+@agent_function
+async def sync_serializer_field(
+    app: str,
+    model_name: str,
+    field_name: str,
+    present: bool = True,
+    project_root: Path | None = None,
+) -> AgentResult:
+    """Add or drop ONE field name in an existing serializer's ``Meta.fields``.
+
+    The companion to :func:`~zeeb_agents.models.add_field` /
+    :func:`~zeeb_agents.models.remove_field`: a model field that never reaches the
+    serializer is invisible over the API, so writes to it are silently discarded
+    (and a field removed from the model but left in ``Meta.fields`` breaks the
+    endpoint). This keeps the two in lockstep.
+
+    Deliberately surgical — it edits the single named field and leaves the rest of
+    the list alone, so a hand-curated ``fields`` list survives. No-ops (rather than
+    failing) when there is nothing to keep in sync: no ``serializers.py``, no such
+    serializer class (e.g. a model exposed with ``expose: false``), a ``__all__``
+    field list, or the field is already in the desired state.
+
+    Args:
+        app: App directory name.
+        model_name: The model whose serializer to sync (e.g. ``"Post"``).
+        field_name: The single field name to add or remove.
+        present: ``True`` to ensure the field is listed, ``False`` to remove it.
+
+    Returns data (on success):
+        app (str): the app directory name
+        serializer (str): the class name (``"<ModelName>Serializer"``)
+        fields (list[str] | None): the resulting field list, ``None`` when skipped
+        skipped (bool): ``True`` when there was nothing to sync
+    """
+    class_name = f"{model_name}Serializer"
+    path = _serializers_file(app, project_root)
+
+    def _skipped(reason: str) -> AgentResult:
+        return AgentResult(
+            success=True,
+            message=f"'{class_name}' not synced: {reason}",
+            data={"app": app, "serializer": class_name, "fields": None, "skipped": True},
+        )
+
+    if not path.exists():
+        return _skipped("no serializers.py")
+
+    def _sync() -> list[str] | None:
+        content = path.read_text(encoding="utf-8")
+        if not class_exists(content, class_name):
+            return None
+        block_pattern = re.compile(
+            rf"(^class {re.escape(class_name)}\b.*?)(?=^\S|\Z)",
+            re.DOTALL | re.MULTILINE,
+        )
+        match = block_pattern.search(content)
+        if match is None:
+            return None
+        block = match.group(1)
+        fields_match = re.search(r"^\s+fields\s*=\s*\[(.*?)\]", block, re.MULTILINE | re.DOTALL)
+        if fields_match is None:
+            return None
+        current = re.findall(r"""["']([^"']+)["']""", fields_match.group(1))
+        if "__all__" in current:
+            return None
+
+        updated = list(current)
+        if present:
+            if field_name in updated:
+                return None
+            insert_at = next(
+                (i for i, name in enumerate(updated) if name in _TRAILING_FIELDS),
+                len(updated),
+            )
+            updated.insert(insert_at, field_name)
+        else:
+            if field_name not in updated:
+                return None
+            updated = [name for name in updated if name != field_name]
+
+        fields_repr = ", ".join(f'"{name}"' for name in updated)
+        block = (
+            block[: fields_match.start()]
+            + re.sub(
+                r"^(\s+fields\s*=\s*)\[.*?\]",
+                rf"\g<1>[{fields_repr}]",
+                block[fields_match.start() : fields_match.end()],
+                count=1,
+                flags=re.MULTILINE | re.DOTALL,
+            )
+            + block[fields_match.end() :]
+        )
+        path.write_text(
+            content[: match.start(1)] + block + content[match.end(1) :], encoding="utf-8"
+        )
+        return updated
+
+    result = await asyncio.to_thread(_sync)
+    if result is None:
+        return _skipped("nothing to sync")
+    verb = "added to" if present else "removed from"
+    return AgentResult(
+        success=True,
+        message=f"'{field_name}' {verb} {class_name}",
+        data={"app": app, "serializer": class_name, "fields": result, "skipped": False},
     )

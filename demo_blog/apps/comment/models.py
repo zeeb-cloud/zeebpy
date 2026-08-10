@@ -1,18 +1,15 @@
-"""
-comment models.
-
-Define your Zeeb ORM models here.
-"""
+"""comment models."""
 
 from zeeb_orm import Model, fields
 
 
-# Example model:
 class Comment(Model):
-    name = fields.CharField(max_length=100)
-    description = fields.TextField(null=True)
+    """A comment on a post."""
+
+    post = fields.ForeignKey("post.Post", on_delete="CASCADE", related_name="comments")
+    author = fields.ForeignKey("accounts.User", on_delete="CASCADE", related_name="comments")
+    body = fields.TextField()
     created_at = fields.DateTimeField(auto_now_add=True)
-    updated_at = fields.DateTimeField(auto_now=True)
 
     class Meta:
         table_name = "comment_comment"

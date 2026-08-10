@@ -55,11 +55,11 @@ pip install git+https://github.com/zeeb-cloud/zeebpy.git
 ## Creating a Project
 
 ```bash
-# Create a new project
+# Create a new project — authentication is already wired
 zeeb startproject myproject
 cd myproject
 
-# Create an app
+# Create an app; it registers itself in INSTALLED_APPS and urls.py
 python manage.py startapp blog
 
 # Run migrations
@@ -69,6 +69,10 @@ python manage.py migrate
 # Start the development server
 python manage.py runserver
 ```
+
+The generated project already serves `/api/v1/auth/login`, `/register`,
+`/refresh`, `/logout` and `/me`, plus `/health` and `/ready`. Configure it
+through `.env` — see [Settings](configuration/settings.md).
 
 ## Documentation
 
@@ -84,6 +88,7 @@ python manage.py runserver
 - [Relationships](orm/relationships.md) - ForeignKey, OneToOne, ManyToMany
 - [Migrations](orm/migrations.md) - Database migrations
 - [Signals](orm/signals.md) - Model lifecycle signals
+- [Object Permissions](orm/permissions.md) - Per-object rules and queryset filtering
 
 ### API (zeeb_api)
 - [Serializers](api/serializers.md) - Serialize and validate data
@@ -91,6 +96,8 @@ python manage.py runserver
 - [Authentication](api/authentication.md) - User authentication
 - [OAuth2 / OIDC](api/oauth.md) - Single sign-on (Azure AD, Google, GitHub)
 - [Permissions](api/permissions.md) - Access control
+- [Filtering & Search](api/filtering.md) - Filter backends, search, ordering
+- [Pagination](api/pagination.md) - Page, limit/offset and cursor pagination
 - [Throttling](api/throttling.md) - Rate limiting
 - [Versioning](api/versioning.md) - API versioning
 - [Error Handling](api/errors.md) - The standardized error envelope and error codes

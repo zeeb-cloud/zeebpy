@@ -5,25 +5,16 @@ Build a complete blog API in 10 minutes.
 ## 1. Create Project
 
 ```bash
-# Create project
+# Create project — authentication is already wired and running
 zeeb startproject blog_api
 cd blog_api
 
-# Create blog app
+# Create the blog app; it registers itself in INSTALLED_APPS and urls.py
 python manage.py startapp blog
 ```
 
-## 2. Register the App
+## 2. Define Models
 
-Edit `blog_api/settings.py`:
-
-```python
-INSTALLED_APPS = [
-    "apps.blog",
-]
-```
-
-## 3. Define Models
 
 Edit `apps/blog/models.py`:
 
@@ -78,7 +69,7 @@ class Comment(Model):
         ordering = ["-created_at"]
 ```
 
-## 4. Create and Run Migrations
+## 3. Create and Run Migrations
 
 ```bash
 # Generate migrations
@@ -88,64 +79,59 @@ python manage.py makemigrations
 python manage.py migrate
 ```
 
-## 5. Create Serializers
+## 4. Create Serializers
 
-Edit `apps/blog/serializers.py`:
+Edit `apps/blog/serializers.py`. A `ModelSerializer` derives request validation
+and the response shape from the model, so the two cannot drift:
 
 ```python
-from zeeb_api.serializers import Serializer, fields
+from zeeb_api import serializers
+
+from .models import Author, Comment, Post
 
 
-class AuthorSerializer(Serializer):
-    """Author serializer."""
-    id = fields.UUIDField(read_only=True)
-    name = fields.CharField(max_length=100)
-    email = fields.EmailField()
-    bio = fields.CharField(required=False, allow_null=True)
-    created_at = fields.DateTimeField(read_only=True)
+class AuthorSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Author
+        fields = ["id", "name", "email", "bio", "created_at"]
+        read_only_fields = ["id", "created_at"]
 
 
-class AuthorListSerializer(Serializer):
-    """Simplified author for nested use."""
-    id = fields.UUIDField(read_only=True)
-    name = fields.CharField()
+class CommentSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Comment
+        fields = ["id", "post", "author_name", "content", "approved", "created_at"]
+        # Server-owned: returned, never accepted from the request body.
+        read_only_fields = ["id", "approved", "created_at"]
 
 
-class CommentSerializer(Serializer):
-    """Comment serializer."""
-    id = fields.UUIDField(read_only=True)
-    post_id = fields.UUIDField(write_only=True)
-    author_name = fields.CharField(max_length=100)
-    content = fields.CharField()
-    approved = fields.BooleanField(read_only=True)
-    created_at = fields.DateTimeField(read_only=True)
+class PostSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Post
+        fields = [
+            "id", "title", "slug", "content", "author",
+            "published", "views", "created_at", "updated_at",
+        ]
+        read_only_fields = ["id", "views", "created_at", "updated_at"]
 
 
-class PostSerializer(Serializer):
-    """Post serializer."""
-    id = fields.UUIDField(read_only=True)
-    title = fields.CharField(max_length=200)
-    slug = fields.CharField(max_length=200)
-    content = fields.CharField()
-    author_id = fields.UUIDField(write_only=True)
-    author = AuthorListSerializer(read_only=True)
-    published = fields.BooleanField(default=False)
-    views = fields.IntegerField(read_only=True)
-    created_at = fields.DateTimeField(read_only=True)
-    updated_at = fields.DateTimeField(read_only=True)
+class PostListSerializer(serializers.ModelSerializer):
+    """A narrower shape for list responses — no body, no counters."""
 
-
-class PostListSerializer(Serializer):
-    """Simplified post for list views."""
-    id = fields.UUIDField(read_only=True)
-    title = fields.CharField()
-    slug = fields.CharField()
-    author = AuthorListSerializer(read_only=True)
-    published = fields.BooleanField()
-    created_at = fields.DateTimeField(read_only=True)
+    class Meta:
+        model = Post
+        fields = ["id", "title", "slug", "author", "published", "created_at"]
+        read_only_fields = fields
 ```
 
-## 6. Create ViewSets
+`read_only_fields` is the write boundary: such a field is returned but never
+accepted from the request body. A foreign key is returned under its bare name
+(`author`) and accepted as either `author` or `author_id`.
+
+Declare fields explicitly only where you need to override the model — a
+`SerializerMethodField`, a nested serializer, or a validation rule.
+
+## 5. Create ViewSets
 
 Edit `apps/blog/views.py`:
 
@@ -167,19 +153,19 @@ class AuthorViewSet(ModelViewSet):
     """
     API endpoint for authors.
     
-    list: GET /authors/
-    create: POST /authors/
-    retrieve: GET /authors/{id}/
-    update: PUT /authors/{id}/
-    partial_update: PATCH /authors/{id}/
-    destroy: DELETE /authors/{id}/
+    list: GET /authors
+    create: POST /authors
+    retrieve: GET /authors/{id}
+    update: PUT /authors/{id}
+    partial_update: PATCH /authors/{id}
+    destroy: DELETE /authors/{id}
     """
     queryset = Author.objects.all()
     serializer_class = AuthorSerializer
     
     @action(detail=True, methods=["GET"])
     async def posts(self, request, pk=None):
-        """GET /authors/{id}/posts/ - Get author's posts."""
+        """GET /authors/{id}/posts — the author's published posts."""
         author = await self.get_object()
         posts = await Post.objects.filter(author=author, published=True)
         serializer = PostListSerializer(posts, many=True)
@@ -267,7 +253,7 @@ class CommentViewSet(ModelViewSet):
         return {"status": "approved"}
 ```
 
-## 7. Register Routes
+## 6. Register Routes
 
 Edit `apps/blog/urls.py`:
 
@@ -279,37 +265,71 @@ router = DefaultRouter()
 router.register("authors", AuthorViewSet)
 router.register("posts", PostViewSet)
 router.register("comments", CommentViewSet)
-
-urlpatterns = router.routes
 ```
 
-Edit `blog_api/urls.py`:
+Keep the module-level `router` symbol: it is what the project `urls.py` includes
+and what `startapp` and the agent tooling look for.
+
+`startapp` already added the include to `blog_api/urls.py`, so there is nothing
+to edit:
 
 ```python
-from zeeb_api.routers import DefaultRouter
 from apps.blog.urls import router as blog_router
-
-# Main router
-router = DefaultRouter()
-
-# Include blog routes under /api/
-router.include(blog_router, prefix="api")
-
-urlpatterns = router.routes
+...
+router.include(blog_router)
 ```
 
-## 8. Run the Server
+The app router is included without a prefix on purpose: `router.register(...)`
+already mounts each ViewSet under its own segment, and `API_PREFIX` (`/api/v1`
+by default) is applied to everything by `create_app()`.
+
+## 7. Run the tests
+
+`startproject` shipped a working test harness, and `startapp` added a test for
+this app:
 
 ```bash
-python manage.py runserver
+pytest -q
 ```
 
-## 9. Test the API
+`tests/conftest.py` gives every test a `db`, an anonymous `client`, an
+`auth_client` and an `admin_client` carrying real tokens, and `api_prefix`.
+Write the test for a new endpoint next to those — it is a faster loop than curl,
+and it is what `check` and the agent tooling verify against.
 
-### Create an Author
+## 8. Run the server
 
 ```bash
-curl -X POST http://localhost:8000/api/authors/ \
+python manage.py runserver          # http://127.0.0.1:9000
+python manage.py showurls           # what you can call
+```
+
+## 9. Call the API
+
+The endpoints above use `IsAuthenticatedOrReadOnly`, so reads are open and
+writes need a token. Canonical paths carry **no trailing slash** (a trailing
+slash is also served).
+
+### Get a token
+
+Authentication is already wired — there is nothing to build:
+
+```bash
+curl -X POST http://127.0.0.1:9000/api/v1/auth/register \
+  -H "Content-Type: application/json" \
+  -d '{"email": "jane@example.com", "password": "a-good-password"}'
+
+TOKEN=$(curl -sX POST http://127.0.0.1:9000/api/v1/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"email": "jane@example.com", "password": "a-good-password"}' \
+  | python -c "import json,sys; print(json.load(sys.stdin)['access_token'])")
+```
+
+### Create an author
+
+```bash
+curl -X POST http://127.0.0.1:9000/api/v1/authors \
+  -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"name": "Jane Doe", "email": "jane@example.com", "bio": "Tech writer"}'
 ```
@@ -321,57 +341,56 @@ Response:
   "name": "Jane Doe",
   "email": "jane@example.com",
   "bio": "Tech writer",
-  "created_at": "2024-01-15T10:30:00Z"
+  "created_at": "2026-01-15T10:30:00Z"
 }
 ```
 
-### Create a Post
+### Create a post
 
 ```bash
-curl -X POST http://localhost:8000/api/posts/ \
+curl -X POST http://127.0.0.1:9000/api/v1/posts \
+  -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
     "title": "Getting Started with Zeeb",
     "slug": "getting-started-zeeb",
     "content": "Zeeb is an amazing framework...",
-    "author_id": "550e8400-e29b-41d4-a716-446655440000"
+    "author": "550e8400-e29b-41d4-a716-446655440000"
   }'
 ```
 
-### List Posts
+### Read posts (no token needed)
 
 ```bash
-# All posts
-curl http://localhost:8000/api/posts/
-
-# Published only
-curl http://localhost:8000/api/posts/?published=true
-
-# Search
-curl http://localhost:8000/api/posts/?search=zeeb
+curl http://127.0.0.1:9000/api/v1/posts
+curl "http://127.0.0.1:9000/api/v1/posts?published=true"
+curl "http://127.0.0.1:9000/api/v1/posts?search=zeeb"
 ```
 
-### Publish a Post
+Without a token, a write is rejected with the standard envelope:
+
+```json
+{"success": false, "error": {"code": "AUTH_TOKEN_MISSING", "message": "..."}}
+```
+
+Branch on `error.code`, never on `message`.
+
+### Publish a post
 
 ```bash
-curl -X POST http://localhost:8000/api/posts/getting-started-zeeb/publish/
+curl -X POST http://127.0.0.1:9000/api/v1/posts/getting-started-zeeb/publish \
+  -H "Authorization: Bearer $TOKEN"
 ```
 
-### Add a Comment
+## 10. Interactive documentation
+
+Visit `http://127.0.0.1:9000/docs` for Swagger UI, or fetch
+`http://127.0.0.1:9000/openapi.json` for the schema. To hand the API to a
+frontend developer or an AI app builder:
 
 ```bash
-curl -X POST http://localhost:8000/api/comments/ \
-  -H "Content-Type: application/json" \
-  -d '{
-    "post_id": "post-uuid-here",
-    "author_name": "Reader",
-    "content": "Great article!"
-  }'
+python manage.py frontend-brief
 ```
-
-## 10. Interactive Documentation
-
-Visit `http://localhost:8000/docs` for automatic Swagger/OpenAPI documentation.
 
 ## Next Steps
 

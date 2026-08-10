@@ -146,16 +146,19 @@ class Article(Model):
 
 ### Meta Options Reference
 
-| Option | Description |
-|--------|-------------|
-| `table_name` / `db_table` | Database table name |
-| `ordering` | Default query ordering (list of field names, prefix `-` for descending) |
-| `abstract` | If `True`, no table is created (use as base class) |
-| `verbose_name` | Human-readable singular name |
-| `verbose_name_plural` | Human-readable plural name |
-| `indexes` | List of `Index` objects |
-| `unique_together` | List of field tuples that must be unique together |
-| `constraints` | List of `CheckConstraint` objects |
+| Option | Description | Inherited |
+|--------|-------------|-----------|
+| `table_name` / `db_table` | Database table name | no |
+| `abstract` | If `True`, no table is created (use as base class) | no |
+| `ordering` | Default query ordering (list of field names, prefix `-` for descending) | yes |
+| `managed` | If `False`, migrations leave the table alone | yes |
+| `indexes` | List of `Index` objects | yes |
+| `constraints` | List of `UniqueConstraint` / `CheckConstraint` objects | yes |
+| `unique_together` | List of field tuples that must be unique together | yes |
+| `index_together` | List of field tuples to index together | yes |
+| `app_label` | Application label | yes |
+
+Any other attribute on `class Meta` is ignored; there is no `verbose_name`.
 
 ## Model Inheritance
 
@@ -175,6 +178,52 @@ class Article(TimestampMixin):
     """Article inherits timestamp fields."""
     title = fields.CharField(max_length=200)
     content = fields.TextField()
+```
+
+#### What a subclass inherits
+
+Fields, the primary key, and the inheritable `Meta` options from the table
+above:
+
+```python
+class Base(Model):
+    id = fields.BigAutoField()
+    slug = fields.CharField(max_length=40)
+
+    class Meta:
+        abstract = True
+        ordering = ["-slug"]
+        table_name = "never_used"       # not inherited
+        unique_together = [("slug",)]
+
+
+class Child(Base):
+    name = fields.CharField(max_length=40)
+
+
+Child._meta.db_table         # "child"       — derived, not inherited
+Child._meta.abstract         # False         — never inherited
+Child._meta.ordering         # ["-slug"]     — inherited
+Child._meta.unique_together  # [("slug",)]   — inherited
+Child._meta.pk_name          # "id"          — the inherited BigAutoField
+```
+
+`abstract` and `table_name`/`db_table` are deliberately excluded: inheriting
+them would make every subclass abstract and give siblings the same table.
+
+An option declared in the subclass's own `Meta` wins, and with multiple
+bases the first one in the MRO that supplies an option wins. An inherited
+`Index` or constraint loses an explicit `name` so sibling models do not
+collide on it — each gets a name derived from its own table.
+
+Declaring a primary key in the subclass **replaces** the inherited one
+rather than forming a composite key:
+
+```python
+class Coded(Base):
+    code = fields.CharField(max_length=10, primary_key=True)
+
+Coded._meta.pk_name  # "code"; `slug` is still inherited, `id` is not
 ```
 
 ### Multi-table Inheritance
@@ -399,6 +448,24 @@ class Event(Model):
         """Validate the model."""
         if self.end_date <= self.start_date:
             raise ValidationError({"end_date": "End date must be after start date"})
+```
+
+An error that belongs to the record as a whole rather than to one field is
+raised with a plain message. It is collected under the `NON_FIELD_ERRORS` key
+(the string `"__all__"`) in `ValidationError.message_dict`:
+
+```python
+from zeeb_orm import NON_FIELD_ERRORS, ValidationError
+
+async def clean(self):
+    if self.starts_at and self.venue_id is None:
+        raise ValidationError("A scheduled event needs a venue.")
+
+# Reading it back
+try:
+    await event.full_clean()
+except ValidationError as exc:
+    exc.message_dict[NON_FIELD_ERRORS]   # ["A scheduled event needs a venue."]
 ```
 
 ### full_clean() / clean_fields()

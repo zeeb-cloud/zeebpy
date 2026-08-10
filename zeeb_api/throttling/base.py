@@ -69,9 +69,17 @@ class BaseThrottle:
         """
         Identify the machine making the request.
 
-        Uses the first hop of ``X-Forwarded-For`` when
-        settings.THROTTLE_NUM_PROXIES is set (the app runs behind that many
-        trusted proxies), otherwise the directly connected client address.
+        When ``settings.THROTTLE_NUM_PROXIES`` is set, the app runs behind that
+        many trusted reverse proxies, each of which *appends* the address it saw
+        to ``X-Forwarded-For``. The real client is therefore the
+        ``num_proxies``-th entry counted **from the right** — the last hops are
+        the ones written by infrastructure we control. Reading the *leftmost*
+        entry (as this used to) is unsafe: it is fully attacker-controlled, so a
+        client could forge unlimited distinct throttle keys (bypass) or spoof a
+        victim's address (poisoning). This mirrors DRF's ``BaseThrottle.get_ident``.
+
+        With no configured proxy count, the directly connected client address is
+        used.
         """
         from zeeb_api.conf import settings
 
@@ -79,7 +87,11 @@ class BaseThrottle:
         if num_proxies:
             forwarded_for = request.headers.get("X-Forwarded-For")
             if forwarded_for:
-                return forwarded_for.split(",")[0].strip()
+                addrs = [a.strip() for a in forwarded_for.split(",") if a.strip()]
+                if addrs:
+                    # Clamp so a short/absent proxy chain still yields the
+                    # left-most present hop rather than an IndexError.
+                    return addrs[-min(num_proxies, len(addrs))]
 
         client = getattr(request, "client", None)
         if client is not None and client.host:

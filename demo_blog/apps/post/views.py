@@ -1,22 +1,17 @@
-"""
-post views.
+"""post views."""
 
-Define your API viewsets here.
-"""
+from zeeb_api import permissions, viewsets
 
-from zeeb_api import viewsets, permissions
-# from .models import YourModel
-# from .serializers import YourModelSerializer
+from .models import Post
+from .serializers import PostSerializer
 
 
-# Example viewset:
-# class PostViewSet(viewsets.ModelViewSet):
-#     queryset = Post.objects.all()
-#     serializer_class = PostSerializer
-#     permission_classes = [permissions.IsAuthenticatedOrReadOnly]
-#
-#     @viewsets.action(detail=True, methods=["post"])
-#     async def custom_action(self, request, pk=None):
-#         obj = await self.get_object()
-#         # Do something
-#         return {"status": "success"}
+class PostViewSet(viewsets.ModelViewSet):
+    """Anyone may read; writing needs a token, and the author is the caller."""
+
+    queryset = Post.objects.all()
+    serializer_class = PostSerializer
+    permission_classes = [permissions.IsAuthenticatedOrReadOnly]
+
+    async def perform_create(self, serializer):
+        await serializer.save(author_id=self.request.state.user.id)

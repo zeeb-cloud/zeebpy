@@ -150,6 +150,81 @@ class TestSerializer:
         assert serializer.data == {"name": "Alice"}
 
 
+class TestSerializerFieldConstraints:
+    """B3: declared field constraints/validators must be enforced by the
+    exported (pydantic-backed) Serializer, not silently dropped."""
+
+    def test_max_length_enforced(self):
+        class S(Serializer):
+            name = CharField(max_length=5)
+
+        assert S(data={"name": "abc"}).is_valid() is True
+        bad = S(data={"name": "way-too-long"})
+        assert bad.is_valid() is False
+        assert "name" in bad.errors
+
+    def test_min_length_enforced(self):
+        class S(Serializer):
+            name = CharField(min_length=3)
+
+        assert S(data={"name": "abcd"}).is_valid() is True
+        bad = S(data={"name": "ab"})
+        assert bad.is_valid() is False
+        assert "name" in bad.errors
+
+    def test_allow_blank_false_enforced(self):
+        class S(Serializer):
+            name = CharField(allow_blank=False)
+
+        bad = S(data={"name": ""})
+        assert bad.is_valid() is False
+        assert "name" in bad.errors
+
+    def test_custom_validator_enforced(self):
+        def no_spaces(value):
+            if " " in value:
+                raise ValueError("must not contain spaces")
+
+        class S(Serializer):
+            slug = CharField(validators=[no_spaces])
+
+        assert S(data={"slug": "ok"}).is_valid() is True
+        bad = S(data={"slug": "has space"})
+        assert bad.is_valid() is False
+        assert "slug" in bad.errors
+
+
+class TestSerializerPartialValidation:
+    """B2: PATCH (partial=True) must validate the fields the client sent
+    instead of accepting them verbatim, while allowing omitted fields."""
+
+    def test_partial_rejects_invalid_type(self):
+        class S(Serializer):
+            age = IntegerField()
+
+        ser = S(data={"age": "not-a-number"}, partial=True)
+        assert ser.is_valid() is False
+        assert "age" in ser.errors
+
+    def test_partial_allows_missing_fields(self):
+        class S(Serializer):
+            name = CharField()
+            age = IntegerField()
+
+        ser = S(data={"name": "Alice"}, partial=True)  # age omitted
+        assert ser.is_valid() is True
+        assert ser.validated_data == {"name": "Alice"}
+
+    def test_partial_enforces_constraints_on_provided_fields(self):
+        class S(Serializer):
+            name = CharField(max_length=5)
+
+        assert S(data={"name": "abc"}, partial=True).is_valid() is True
+        bad = S(data={"name": "way-too-long"}, partial=True)
+        assert bad.is_valid() is False
+        assert "name" in bad.errors
+
+
 class TestModelSerializerForeignKey:
     """Regression tests for FK serialization (ForeignKeyLazyLoader leak)."""
 

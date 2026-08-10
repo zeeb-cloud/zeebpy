@@ -1,19 +1,19 @@
 """runserver command - Start FastAPI development server."""
 
-import sys
 import os
+import sys
 from pathlib import Path
 
 
 def find_project_root() -> Path | None:
     """Find the project root by looking for manage.py."""
     current = Path.cwd()
-    
+
     while current != current.parent:
         if (current / "manage.py").exists():
             return current
         current = current.parent
-    
+
     return None
 
 
@@ -31,17 +31,13 @@ def check_migrations_before_start(project_root: Path) -> bool:
     Check migration status before starting server.
     Returns True if OK to start, False if should abort.
     """
-    from zeeb_orm.migrations.state import (
-        get_migration_state, 
-        MigrationError,
-        find_project_root as find_migrations_root
-    )
-    
+    from zeeb_orm.migrations.executor import find_migration_files
+    from zeeb_orm.migrations.state import get_migration_state
+
     migrations_dir = project_root / "migrations"
-    versions_dir = migrations_dir / "versions"
-    
+
     separator = "=" * 60
-    
+
     # Check 1: Does migrations directory exist?
     if not migrations_dir.exists():
         print(f"\n{separator}")
@@ -54,12 +50,10 @@ def check_migrations_before_start(project_root: Path) -> bool:
         print("  python manage.py migrate         # Apply migrations to database")
         print(f"\n{separator}\n")
         return False
-    
-    # Check 2: Are there any migration files?
-    migration_files = list(versions_dir.glob("*.py")) if versions_dir.exists() else []
-    migration_files = [f for f in migration_files if not f.name.startswith("__")]
-    
-    if not migration_files:
+
+    # Check 2: Are there any migration files?  makemigrations writes them flat
+    # into migrations/, so that is where they are looked for.
+    if not find_migration_files(migrations_dir):
         print(f"\n{separator}")
         print("ERROR: No migrations found!")
         print(separator)
@@ -70,11 +64,11 @@ def check_migrations_before_start(project_root: Path) -> bool:
         print("  python manage.py migrate         # Apply migrations to database")
         print(f"\n{separator}\n")
         return False
-    
+
     # Check 3: Are all migrations applied?
     try:
         state = get_migration_state(project_root)
-        
+
         if state.current_revision != state.head_revision:
             pending = state.pending_migrations or "some"
             print(f"\n{separator}")
@@ -85,7 +79,7 @@ def check_migrations_before_start(project_root: Path) -> bool:
             print("  python manage.py migrate         # Apply migrations to database")
             print(f"\n{separator}\n")
             return False
-            
+
     except Exception as e:
         # If we can't check migration state (e.g., alembic not configured),
         # warn but allow startup
@@ -99,25 +93,25 @@ def check_migrations_before_start(project_root: Path) -> bool:
         print("  python manage.py migrate")
         print(f"\n{separator}\n")
         # Continue anyway - let the app fail if tables don't exist
-    
+
     return True
 
 
 def run_server(addrport: str, reload: bool) -> int:
     """Start the development server using uvicorn."""
     project_root = find_project_root()
-    
+
     if project_root is None:
         print("Error: Could not find project root (no manage.py found)")
         return 1
-    
+
     # Find ASGI app
     asgi_app = find_asgi_app(project_root)
     if asgi_app is None:
         print("Error: Could not find ASGI application")
         print("Expected: <project_name>/asgi.py with 'app' variable")
         return 1
-    
+
     # Check if migrations should be enforced
     enforce_migrations = True
     try:
@@ -128,11 +122,11 @@ def run_server(addrport: str, reload: bool) -> int:
         enforce_migrations = getattr(settings_module, "ENFORCE_MIGRATIONS", True)
     except Exception:
         pass  # Default to enforcing migrations
-    
+
     # Check migrations before starting (unless disabled)
     if enforce_migrations and not check_migrations_before_start(project_root):
         return 1
-    
+
     # Parse host:port
     if ":" in addrport:
         host, port_str = addrport.rsplit(":", 1)
@@ -148,19 +142,19 @@ def run_server(addrport: str, reload: bool) -> int:
         except ValueError:
             host = addrport
             port = 8000
-    
+
     # Add project root to path
     sys.path.insert(0, str(project_root))
     os.chdir(project_root)
-    
+
     print(f"Starting development server at http://{host}:{port}/")
     print(f"ASGI app: {asgi_app}")
     print("Quit with CTRL+C")
     print()
-    
+
     try:
         import uvicorn
-        
+
         uvicorn.run(
             asgi_app,
             host=host,
@@ -169,7 +163,7 @@ def run_server(addrport: str, reload: bool) -> int:
             reload_dirs=[str(project_root)] if reload else None,
         )
         return 0
-        
+
     except ImportError:
         print("Error: uvicorn is not installed")
         print("Install it with: pip install uvicorn[standard]")

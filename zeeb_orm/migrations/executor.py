@@ -79,6 +79,21 @@ def list_migration_files(migrations_dir: Path) -> list[tuple[str, Path]]:
     return files
 
 
+def find_migration_files(migrations_dir: Path) -> list[tuple[str, Path]]:
+    """Like :func:`list_migration_files`, but tolerant of the legacy layout.
+
+    ``write_migration`` puts migrations flat into ``migrations/``, and the
+    executor, the autodetector and the state module all read them from there.
+    Projects scaffolded by older versions additionally got an empty
+    ``migrations/versions/`` directory; a few of them have migrations in it.
+    The pre-flight checks in ``runserver`` and ``check`` use this so both
+    layouts report correctly.
+    """
+    return list_migration_files(migrations_dir) or list_migration_files(
+        migrations_dir / "versions"
+    )
+
+
 def load_migration(path: Path) -> Migration:
     """Import a migration file and return its ``Migration`` instance."""
     spec = importlib.util.spec_from_file_location(f"migration_{path.stem}", path)

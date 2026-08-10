@@ -8,12 +8,13 @@ Provides:
 """
 
 from zeeb_api.query.request import QueryRequest, QueryResponse, create_query_response_model
-from zeeb_api.query.parser import parse_q_filter, QFilterError
+from zeeb_api.query.parser import parse_q_filter, extract_q_fields, QFilterError
 
 __all__ = [
     "QueryRequest",
     "QueryResponse",
     "create_query_response_model",
     "parse_q_filter",
+    "extract_q_fields",
     "QFilterError",
 ]

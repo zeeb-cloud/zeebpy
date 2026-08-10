@@ -63,7 +63,7 @@ async def create_superuser_async(email: str, password: str, username: str | None
 
     try:
         # Check if user exists
-        User = get_user_model()
+        User = get_user_model()  # noqa: N806  (a class, despite the assignment)
         existing = await User.objects.filter(email=email).first()
         if existing:
             print(f"Error: User with email '{email}' already exists")

@@ -47,6 +47,7 @@ def _one_pass(ops: list[Operation]) -> tuple[list[Operation], bool]:
         DeleteModel,
         RemoveField,
         RemoveIndex,
+        copy_column,
     )
 
     result: list[Operation] = []
@@ -115,7 +116,7 @@ def _one_pass(ops: list[Operation]) -> tuple[list[Operation], bool]:
                 # Copy the column to preserve all attributes (server_default,
                 # unique, foreign_keys, comment, autoincrement, etc.) and only
                 # override the specific attributes changed by AlterField.
-                new_col = col.copy()
+                new_col = copy_column(col)
                 if later.column_type is not None:
                     new_col.type = later.column_type
                 if later.nullable is not None:

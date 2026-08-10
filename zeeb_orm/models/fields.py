@@ -44,6 +44,11 @@ class Field(Generic[T]):
 
     _column_type: Any = None
     _python_type: type[T] | None = None
+    #: Whether the database assigns this column's value on INSERT. Read by
+    #: :func:`zeeb_orm.models.sa_builder.build_table` to emit
+    #: ``autoincrement=True``; SQLAlchemy's ``"auto"`` default silently
+    #: declines for composite, FK-bearing or server-defaulted primary keys.
+    auto_increment: bool = False
 
     def __init__(
         self,
@@ -164,6 +169,9 @@ class Field(Generic[T]):
         if self.default is not None:
             kwargs["default"] = self.default
 
+        if self.auto_increment:
+            kwargs["autoincrement"] = True
+
         return mapped_column(self.get_column_type(), **kwargs)  # type: ignore
 
 
@@ -172,27 +180,34 @@ class AutoField(Field[int]):
 
     _column_type = Integer
     _python_type = int
+    auto_increment = True
 
     def __init__(self, **kwargs: Any) -> None:
         kwargs["primary_key"] = True
         super().__init__(**kwargs)
-
-    def to_mapped_column(self) -> Mapped[int]:
-        return mapped_column(Integer, primary_key=True, autoincrement=True)  # type: ignore
 
 
 class BigAutoField(Field[int]):
-    """Auto-incrementing big integer primary key."""
+    """Auto-incrementing big integer primary key.
+
+    On SQLite the column is emitted as ``INTEGER``: only ``INTEGER PRIMARY
+    KEY`` is an alias for the implicit ``rowid`` and therefore auto-assigns
+    values — a ``BIGINT PRIMARY KEY`` would fail every INSERT that omits the
+    id. SQLite integers are 64-bit regardless, so no range is lost.
+    PostgreSQL still gets ``BIGSERIAL`` and MySQL ``BIGINT AUTO_INCREMENT``.
+    """
 
     _column_type = BigInteger
     _python_type = int
+    auto_increment = True
 
     def __init__(self, **kwargs: Any) -> None:
         kwargs["primary_key"] = True
         super().__init__(**kwargs)
 
-    def to_mapped_column(self) -> Mapped[int]:
-        return mapped_column(BigInteger, primary_key=True, autoincrement=True)  # type: ignore
+    def get_column_type(self) -> Any:
+        """BIGINT everywhere except SQLite, whose AUTOINCREMENT needs INTEGER."""
+        return BigInteger().with_variant(Integer, "sqlite")
 
 
 class UUIDField(Field[uuid.UUID]):

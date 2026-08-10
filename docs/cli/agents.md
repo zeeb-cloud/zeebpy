@@ -129,21 +129,156 @@ For programmatic discovery of the entire tool surface, call
 ```python
 result = await list_capabilities(include_docstrings=True)
 for tool in result.data["tools"]:
-    print(tool["category"], tool["name"], tool["signature"])
+    print(tool["category"], tool["tier"], tool["name"], tool["signature"])
     # Also per tool: "summary", "params" [{name, annotation, default, required}],
     # "returns" [{key, type, description}] (parsed from the Returns data: block),
     # and "doc" (full docstring, when include_docstrings=True).
-# result.data also carries "count", "modules", and "categories".
+# result.data also carries "count", "modules", "categories", and "tiers"
+# (tool count per tier across the whole surface).
 ```
 
 Pass `module="models"` to filter to one module. This is the function an MCP
 server typically registers so an agent can discover available tools at runtime.
 
+### Tiers — the surface an agent should actually see
+
+Every tool carries a `tier`, and `tier=` filters by it. The split exists
+because a hundred equally-weighted tools is a selection problem: an agent picks
+a long low-level sequence where one declarative call would do.
+
+| tier | count | what it is |
+|---|---|---|
+| `core` | 20 | The default surface: feature lifecycle, project setup, migrations, verification. |
+| `escape_hatch` | 5 | `read_file`, `write_file`, `search_code`, `run_query`, `run_management_command`. |
+| `advanced` | the rest | One tool per object (`create_model`, `add_field`, `create_viewset`, …). |
+
+```python
+core = await list_capabilities(tier="core")        # start here
+rest = await list_capabilities(tier="advanced")    # the long tail
+```
+
+Advanced tools are **not deprecated**: the feature compiler executes exactly
+these, and calling one directly behaves as it always has. The tier is a
+statement about where to start, not about what is supported. The canonical
+lists live in `zeeb_agents/tiers.py` (`CORE_TOOLS`, `ESCAPE_HATCH_TOOLS`,
+`tier_for`), which an MCP server can import to decide what to register.
+
+### `list_capabilities(include_docstrings=False, module=None, tier=None, project_id=None)`
+Return a machine-readable inventory of every `zeeb_agents` tool.
+
+### `configure(project_resolver=None)`
+Configure library-level hooks — currently only the `project_id` resolver.
+
+### `set_project_resolver(resolver)`
+Register the vendor's `project_id` → path resolver (`None` resets). Every tool
+takes an opaque `project_id`; this is how the host maps it to a directory.
+
+---
+
+## Intent Layer
+
+The intent tools work at the level of a *feature* rather than a file. One call
+compiles a spec into a plan, applies every step, runs migrations and verifies
+the result — instead of a dozen `create_model` / `create_serializer` /
+`create_viewset` / `register_route` calls whose ordering the agent has to get
+right.
+
+All of them return `affected` (`{"apps", "entities", "files"}`) so the caller
+knows what was touched, and the executing ones return `verified`. A partial
+failure returns `success=False` with `error_code="partial_failure"` and enough
+metadata to re-run and resume — see
+[error-recovery](#mcp-resource-content).
+
+### `plan_feature(spec, tests=True, project_id=None)`
+Validate a FeatureSpec and return the execution plan — **writes nothing**. The
+dry run: it reports every problem in the spec at once (in `problems`), so a
+malformed spec is fixed in one pass instead of one call per error.
+
+```python
+result = await plan_feature({
+    "app": "blog",
+    "entities": [{"name": "Article", "fields": {"title": "CharField(max_length=200)"}}],
+})
+result.data["plan"]           # the operations that would run
+result.data["preconditions"]  # what must already be true
+```
+
+### `build_feature(spec, migrate=True, verify=True, tests=True, project_id=None)`
+Build a complete feature from a FeatureSpec — compile, apply, verify. The
+one-shot path from spec to served endpoints.
+
+### `apply_plan(plan, migrate=True, verify=True, project_id=None)`
+Execute a plan produced by `plan_feature()`. Use this when you want the agent
+(or a human) to review the plan before anything is written. Re-applying a plan
+whose spec has since changed is refused — the result carries `drift`.
+
+### `change_feature(changes, app=None, migrate=True, verify=True, tests=True, feature=None, project_id=None)`
+Apply semantic changes to existing features — add/alter/drop fields, add
+relations, add or remove functions, rename or remove entities — with the
+serializer, viewset, route and migration consequences handled together. Pass
+`feature=` to attribute the changes to a recorded feature and keep its stored
+spec current.
+
+### `edit_feature(changes, app=None, migrate=True, verify=True, tests=True, feature=None, project_id=None)`
+Alias of `change_feature()`, so the `edit_*` verb works alongside
+`delete_feature` / `activate_feature` / `deactivate_feature`.
+
+### `list_features(status=None, project_id=None)`
+List the features a project is made of — name, app, status, entities,
+endpoints, functions. Projects built before features were recorded still list:
+theirs are reconstructed from disk, one per app, and marked `inferred`.
+
+```python
+result = await list_features(project_id="<id>")
+[f["name"] for f in result.data["features"]]
+```
+
+### `deactivate_feature(feature, verify=True, project_id=None)`
+Take a feature off the API without touching its data. The viewsets,
+serializers, routes, functions and generated tests are archived verbatim under
+`.zeeb/archive/<feature>/`; **`models.py` and the tables are left alone**, so
+no migration is generated and nothing is lost. Reversible with
+`activate_feature`.
+
+### `activate_feature(feature, migrate=True, verify=True, project_id=None)`
+Restore an archived feature — code, routes and tests exactly as they were,
+including edits made after generation. Falls back to rebuilding from the
+stored spec when an archived fragment is missing (`data["rebuilt"]`).
+
+### `delete_feature(feature, confirm=False, migrate=True, verify=True, project_id=None)`
+Remove a feature **and its data**: the models go and a migration drops their
+tables. Requires `confirm=True`; without it the call refuses and reports the
+exact scope under `data["would_delete"]`.
+
+### `bootstrap_project(auth=True, registration=True, health_endpoint=True, user_model=None, migrate=True, project_id=None)`
+Bootstrap the bound project into a production-ready baseline: auth wired,
+registration on, health endpoints, migrations applied.
+
+### `configure_auth(providers=None, registration=True, user_model=None, migrate=True, project_id=None)`
+Configure authentication as one coherent setup — password and/or OAuth
+providers, the user model, and the migration that backs them.
+
+### `verify_project(checks=None, port=8000, project_id=None)`
+Run the deterministic acceptance gate — **the call to make before reporting
+"done"**. `checks` selects among the available groups (e.g.
+`["security", "runtime"]`); with none given it runs the standard set.
+
+```python
+result = await verify_project(checks=["security", "runtime"])
+result.data["verified"]              # the verdict
+result.data["verification"]["checks"]  # per-check detail
+```
+
+### `diagnose_problem(symptom='', endpoint='', lines=200, project_id=None)`
+Diagnose a misbehaving project in one read-only call instead of five —
+correlates settings, wiring, migrations and recent logs against the reported
+`symptom`.
+
 ---
 
 ## Project & App Management
 
-### `create_project(name, framework="zeebpy", directory=".")`
+### `create_project(name, project_id=None, framework='zeebpy', directory='.')`
 Create a new Zeeb project.  Delegates to the CLI `startproject` command so
 the structure is always in sync.  `framework` is recorded in the project's
 `pyproject.toml` (`[tool.zeeb]`) and drives framework-aware doc serving.
@@ -153,17 +288,27 @@ await create_project("myapp", directory="/projects")
 ```
 
 ### `create_app(name, wire=True, project_id=None)`
-Create a new app inside an existing project — **wired and served by default**.
-Besides scaffolding `apps/<name>/`, it appends `"apps.<name>"` to
-`INSTALLED_APPS` and includes the app's router in the project `urls.py`, so its
-models migrate and its endpoints are routed with no manual step. Returns
-`installed_apps_updated` / `urls_wired` in `data`. Pass `wire=False` to scaffold
-files only.
+Ensure an app exists — **scaffolded, wired and served**. Besides scaffolding
+`apps/<name>/`, it appends `"apps.<name>"` to `INSTALLED_APPS` and includes the
+app's router in the project `urls.py`, so its models migrate and its endpoints
+are routed with no manual step. Both edits are idempotent.
+
+**Ensure-semantics, not create-or-fail.** For an app that already exists the
+files are left untouched and only the wiring is re-applied — so this is also
+the *repair* for an app whose models never migrate, or whose endpoints 404,
+because it was never registered. `data["created"]` says which it was.
+
+Returns `created`, `installed_apps_updated` and `urls_wired` in `data`. Pass
+`wire=False` to scaffold files only.
 
 ```python
-await create_app("blog")            # scaffolded + wired
+await create_app("blog")              # scaffolded + wired
+await create_app("blog")              # again: no-op except wiring repair
 await create_app("blog", wire=False)  # files only
 ```
+
+Prefer this over calling `install_app` + `wire_app_urls` by hand; those remain
+available for an app deliberately scaffolded with `wire=False`.
 
 ### `install_app(app, project_id=None)`
 Register a pre-existing app in `INSTALLED_APPS` (idempotent). `create_app` does
@@ -197,7 +342,7 @@ given, the recommended next action. The one call to make first.
 
 ## Model Management
 
-### `create_model(app, model_name, fields, meta=None, project_id=None)`
+### `create_model(app, model_name, fields, meta=None, if_exists='error', project_id=None)`
 Append a `Model` subclass to `apps/<app>/models.py`.
 
 **Field spec dicts:**
@@ -248,13 +393,27 @@ Rename a model and/or update its `class Meta` options.
 Remove a model class from `models.py`.
 
 ### `list_models(project_id=None)`
-Return all models (and their fields) across all apps.
+Return all models across all apps. Each entry carries `app`, `model`, `fields`
+(names) and `field_types` (name → declared type), so a caller can reason about
+a model without reading `models.py`.
 
 ### `add_field(app, model_name, field, project_id=None)`
 Add a single field to an existing model.
 
 ### `remove_field(app, model_name, field_name, project_id=None)`
 Remove a field from an existing model.
+
+### `delete_field(app, model_name, field_name, project_id=None)`
+Drop a single field from a model — alias of `remove_field`.
+
+### `alter_field(app, model_name, field, project_id=None)`
+Redefine an existing field **in place** — type, length, nullability, default.
+Pass the complete new definition; it replaces the old line rather than merging.
+An unknown field name fails with close-match `suggestions`.
+
+```python
+await alter_field("blog", "Article", "title = fields.CharField(max_length=500)")
+```
 
 ### `add_relationship(app, model_name, rel, project_id=None)`
 Convenience wrapper around `add_field` for relation fields.
@@ -273,7 +432,7 @@ await add_relationship("blog", "Post", {
 
 ## Serializer Management
 
-### `create_serializer(app, model_name, fields=None, read_only_fields=None, extra_fields=None, validate_fields=None, project_id=None)`
+### `create_serializer(app, model_name, fields=None, read_only_fields=None, extra_fields=None, validate_fields=None, if_exists='error', project_id=None)`
 Append a `ModelSerializer` to `apps/<app>/serializers.py`. `extra_fields`
 declares serializer fields (`SerializerMethodField` entries get a `get_<name>`
 stub, `{"type": "nested", "serializer": "UserSerializer"}` renders a nested
@@ -295,11 +454,19 @@ await create_serializer("blog", "Post",
 ### `update_serializer(app, model_name, fields=None, read_only_fields=None, project_id=None)`
 Update the `fields` / `read_only_fields` of an existing serializer.
 
+### `sync_serializer_field(app, model_name, field_name, present=True, project_id=None)`
+Add or drop **one** field name in an existing serializer's `Meta.fields`.
+The surgical counterpart to `update_serializer`, which rewrites the whole list —
+use this when a model field was added or dropped and the serializer must follow.
+
+### `delete_serializer(app, model_name, project_id=None)`
+Remove `<ModelName>Serializer` and the model import only it used.
+
 ---
 
 ## ViewSet & Route Management
 
-### `create_viewset(app, model_name, serializer_class=None, permission="IsAuthenticatedOrReadOnly", read_only=False, lookup_field=None, pagination=None, throttles=None, search_fields=None, ordering_fields=None, filterset=None, project_id=None)`
+### `create_viewset(app, model_name, serializer_class=None, permission='IsAuthenticatedOrReadOnly', read_only=False, lookup_field=None, pagination=None, throttles=None, search_fields=None, ordering_fields=None, filterset=None, authentication=None, operations=None, owner_field=None, owner_scoped_reads=False, if_exists='error', register=False, url_prefix=None, project_id=None)`
 Append a `ModelViewSet` (or `ReadOnlyModelViewSet` with `read_only=True`) to
 `apps/<app>/views.py`, with the full viewset option surface:
 
@@ -319,12 +486,12 @@ Permissions are validated against `zeeb_api.permissions` (`AllowAny`,
 `IsOwnerOrReadOnly`, `ModelPermissions`); imports for pagination,
 throttling, and filters are added automatically.
 
-### `update_viewset(app, model_name, permission=None, lookup_field=None, pagination=None, throttles=None, search_fields=None, ordering_fields=None, project_id=None)`
+### `update_viewset(app, model_name, permission=None, lookup_field=None, pagination=None, throttles=None, search_fields=None, ordering_fields=None, authentication=None, project_id=None)`
 Set or update class attributes on an existing ViewSet (same option names as
 `create_viewset`); `filter_backends` is kept in sync when
 `search_fields`/`ordering_fields` are given.
 
-### `add_viewset_action(app, model_name, action_name, detail=True, methods=None, body=None, url_path=None, request_serializer=None, response_serializer=None, request_schema=None, response_schema=None, permission=None, project_id=None)`
+### `add_viewset_action(app, model_name, action_name, detail=True, methods=None, body=None, url_path=None, request_serializer=None, response_serializer=None, request_schema=None, response_schema=None, permission=None, imports=None, if_exists='error', project_id=None)`
 Add a custom `@action` method to an existing ViewSet. Pass the method body via
 `body=` (dedented/indented automatically) so you don't have to edit `views.py`
 by hand.
@@ -350,10 +517,18 @@ await add_viewset_action("blog", "Post", "publish",
     """)
 ```
 
-### `register_route(app, model_name, url_prefix=None, project_id=None)`
-Add a `router.register(...)` line to `apps/<app>/urls.py`.
+### `register_route(app, model_name, url_prefix=None, if_exists='error', project_id=None)`
+Add a `router.register(...)` line to `apps/<app>/urls.py`. `create_viewset`
+does **not** do this unless you pass `register=True`.
 
-### `generate_crud(app, model_name, fields, serializer_fields=None, read_only_fields=None, permission=..., meta=None, extra_fields=None, validate_fields=None, read_only=False, lookup_field=None, pagination=None, throttles=None, search_fields=None, ordering_fields=None, filterset=None, project_id=None)`
+### `unregister_route(app, model_name, project_id=None)`
+Remove a ViewSet's `router.register(...)` line and its import.
+
+### `delete_viewset(app, model_name, project_id=None)`
+Remove `<ModelName>ViewSet` and the imports only it used. Call
+`unregister_route` first, or the router will reference a missing class.
+
+### `generate_crud(app, model_name, fields, serializer_fields=None, read_only_fields=None, permission='IsAuthenticatedOrReadOnly', meta=None, extra_fields=None, validate_fields=None, read_only=False, lookup_field=None, pagination=None, throttles=None, search_fields=None, ordering_fields=None, filterset=None, authentication=None, url_prefix=None, migrate=False, project_id=None)`
 **One-shot scaffold** — creates model + serializer + viewset + registers route.
 Forwards `meta` to `create_model`, `extra_fields`/`validate_fields` to
 `create_serializer`, and all viewset options to `create_viewset`.
@@ -595,8 +770,16 @@ Run the project test suite via pytest and return pass/fail counts and output.
 result = await run_tests()
 # result.success == True
 # result.message == "114 passed, 0 failed"
-# result.data == {"passed": 114, "failed": 0, "errors": 0, "skipped": 0, "output": "..."}
+# result.data == {"passed": 114, "failed": 0, "errors": 0, "skipped": 0,
+#                 "output": "...", "returncode": 0,
+#                 "failed_tests": [],      # node ids of failures, for direct re-run
+#                 "no_tests": False}       # True when the run collected nothing
 ```
+
+### `generate_tests(app, entities, filename=None, project_id=None)`
+Write generated smoke tests for a feature app. Idempotent, and **never
+overwrites** an existing file — pass `filename` to write alongside one.
+`build_feature` calls this when `tests=True`.
 
 ---
 
@@ -650,6 +833,9 @@ Replace the body of an existing receiver function (decorator is preserved).
 result = await edit_signal_receiver("blog", "on_article_saved", "    await notify(instance)")
 ```
 
+### `update_signal_receiver(app, function_name, new_body, project_id=None)`
+Replace a receiver's body — alias of `edit_signal_receiver`.
+
 ### `delete_signal_receiver(app, function_name, project_id=None)`
 Remove a receiver function and its `@receiver(...)` decorator from `signals.py`.
 
@@ -677,7 +863,7 @@ result = await list_apps()
 # result.data == {"apps": ["blog", "users"], "count": 2}
 ```
 
-### `get_project_structure(max_depth=3)`
+### `get_project_structure(project_id=None, max_depth=3)`
 Return a nested directory tree for the project. Skips `__pycache__`, `.git`, `.venv`, etc.
 (Like every project tool, it takes a trailing `project_id`.)
 
@@ -691,7 +877,7 @@ result = await get_project_structure(max_depth=2)
 
 ## Standalone Routes
 
-### `create_route(app, path, method, function_name, response_model=None, body=None, imports=None, project_id=None)`
+### `create_route(app, path, method, function_name, response_model=None, body=None, imports=None, if_exists='error', project_id=None)`
 Append a standalone `@router.<method>(path)` async handler to `{app}/views.py`
 **and** auto-wire it into `{app}/urls.py` so it is actually served. Unlike
 `create_viewset`, this creates a plain function — not a class-based ViewSet. The
@@ -715,6 +901,24 @@ result = await create_route(
 )
 # result.data == {"app": "blog", "path": "/posts/featured", "method": "get",
 #                 "function_name": "get_featured_posts", "response_model": None, "wired": True}
+```
+
+## Custom Logic
+
+A FeatureSpec's `functions` block declares business logic inline — see
+[the backend-generation guide](../../zeeb_agents/agent_docs/zeebpy/backend-generation.md)
+for the full shape — and compiles each entry to the tool above it in this page.
+Removal speaks the same vocabulary:
+
+### `delete_function(app, name, kind='action', entity=None, project_id=None)`
+Remove one generated function: an `action`, `endpoint`, `hook`, `task`, or
+`rule`. Each kind is removed from wherever that kind lives, and nothing else in
+the file is touched — an `action` is cut from its own ViewSet's body, so a
+same-named action on another entity survives. A function that is already gone
+reports `removed: False` with `success: True`.
+
+```python
+await delete_function("blog", "publish", kind="action", entity="Post")
 ```
 
 ---
@@ -788,7 +992,7 @@ result = await generate_seed_script("blog", count=10)
 ## BaaS — User Management
 
 Functions for runtime user CRUD against the project's live database.
-Passwords are always hashed via zeeb_api's PBKDF2 hasher.
+Passwords are always hashed via zeeb_api's bcrypt hasher.
 
 ### `create_user(email, password, is_staff=False, is_superuser=False, project_id=None)`
 Create a new user.  The user table is auto-detected (first table with `email` + `password` columns).
@@ -1178,35 +1382,52 @@ print(result.data["content"])   # markdown with zeeb_* tool names
 result = await get_resource("mcp://docs/deployment", project_id="<id>", tool_prefix="zeeb_")
 ```
 
-### `get_capabilities_doc(project_id=None, tool_prefix="")` → `mcp://docs/capabilities`
+### `get_capabilities_doc(project_id=None, tool_prefix='', framework=None)` → `mcp://docs/capabilities`
 
-Complete inventory of all public `zeeb_agents` functions (80+), organised
-by module with signatures and descriptions.  Tool names use `{prefix}` in
+Complete inventory of all public `zeeb_agents` functions (117), grouped by
+tier — core first — with signatures and descriptions. Auto-generated — regenerate with
+`python -m zeeb_agents._utils.capabilities_doc --write`.  Tool names use `{prefix}` in
 the source file — rendered with the given `tool_prefix` at call time.
 
-### `get_project_lifecycle_doc(project_id=None, tool_prefix="")` → `mcp://docs/project-lifecycle`
+### `get_project_lifecycle_doc(project_id=None, tool_prefix='', framework=None)` → `mcp://docs/project-lifecycle`
 
 Step-by-step guide from `create_project` → apps → models → migrations →
 API → users → server → tasks → monitoring.  Dynamic context: current app
 list and migration status.
 
-### `get_backend_generation_doc(project_id=None, tool_prefix="")` → `mcp://docs/backend-generation`
+### `get_backend_generation_doc(project_id=None, tool_prefix='', framework=None)` → `mcp://docs/backend-generation`
 
 How to generate models, serializers, viewsets, routes, migrations, signals,
 permissions, tasks, and seeds.  Includes field type reference table.
 
-### `get_frontend_generation_doc(project_id=None, tool_prefix="")` → `mcp://docs/frontend-generation`
+### `get_frontend_generation_doc(project_id=None, tool_prefix='', framework=None)` → `mcp://docs/frontend-generation`
 
 Frontend integration: CORS setup, JWT authentication, OpenAPI export, JSON
 Schema for models, route inventory, health endpoints, WebSocket notes.
 Dynamic context: configured CORS origins and registered route count.
 
-### `get_deployment_doc(project_id=None, tool_prefix="")` → `mcp://docs/deployment`
+### `get_deployment_doc(project_id=None, tool_prefix='', framework=None)` → `mcp://docs/deployment`
 
 Production deployment: readiness check, Dockerfile generation,
 requirements.txt, health probes (k8s/Docker Compose examples), migrations
 in CI/CD, environment variable reference, recommended stack.  Dynamic
 context: live readiness check result.
+
+### `get_principles_doc(project_id=None, tool_prefix='', framework=None)` → `mcp://docs/principles`
+
+Operating principles, return-shape conventions, the `error_code` vocabulary and
+the special cases an agent needs before it starts writing. The doc to read first.
+
+### `get_recipes_doc(project_id=None, tool_prefix='', framework=None)` → `mcp://docs/recipes`
+
+Copy-paste task recipes — the shortest correct call sequence for the common
+jobs (add an entity, add a field, wire auth, ship a feature).
+
+### `get_error_recovery_doc(project_id=None, tool_prefix='', framework=None)` → `mcp://docs/error-recovery`
+
+The error-recovery playbook: the failure envelope, what `recoverable` and
+`state_changed` mean, how to resume a `partial_failure`, and how to read a
+failed verification.
 
 ### MCP server integration example
 

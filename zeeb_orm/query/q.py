@@ -179,6 +179,20 @@ def parse_lookup(lookup_string: str) -> tuple[str, str]:
     return lookup_string, "exact"
 
 
+def _resolves_as_field(model: type, name: str) -> bool:
+    """Whether ``name`` addresses a field on ``model``.
+
+    Accepts both the Meta-level field name and the database column name, so a
+    ForeignKey declared as ``guild`` is reachable as ``guild`` *and* as
+    ``guild_id`` — the same convention ``JoinContext.column`` already applies
+    when it resolves the column.
+    """
+    meta = getattr(model, "_meta", None)
+    if meta is None:
+        return False
+    return meta.get_field(name) is not None or meta.get_field_by_column(name) is not None
+
+
 def parse_path(
     model: type, lookup_string: str
 ) -> tuple[list[str], str, str | None, str]:
@@ -201,6 +215,16 @@ def parse_path(
         parse_path(Post, 'created_at__year__gte')  -> ([], 'created_at', 'year', 'gte')
         parse_path(Author, 'posts__views__gt')     -> (['posts'], 'views', None, 'gt')
         parse_path(Post, 'author')                 -> ([], 'author_id', None, 'exact')
+        parse_path(Post, 'author__in')             -> ([], 'author_id', None, 'in')
+        parse_path(Author, 'posts__isnull')        -> (['posts'], 'pk', None, 'isnull')
+        parse_path(Post, 'author__profile_id')     -> (['author'], 'profile_id', None, 'exact')
+
+    A relation may be followed directly by a lookup operator
+    (``author__in``, ``author__isnull``); the relation then resolves the same
+    way as a bare terminal relation — the local FK column for forward
+    FK/O2O (no join), the related model's PK for reverse and M2M accessors.
+    A field of the same name on the related model takes precedence over the
+    lookup interpretation.
 
     Raises:
         FieldError: When trailing parts are neither a valid transform nor a
@@ -225,14 +249,27 @@ def parse_path(
         current_model = relation.target_model
         last_relation = relation
 
-    # 2. The path ended on a relation itself, e.g. filter(author=obj)
+    # 2. The path ended on a relation itself, e.g. filter(author=obj), or on a
+    #    relation plus a lookup operator, e.g. filter(author__in=[...]).
+    terminal_lookup: str | None = None
     if not parts:
+        terminal_lookup = "exact"
+    elif (
+        relation_parts
+        and len(parts) == 1
+        and parts[0] in LOOKUP_EXPRESSIONS
+        and not _resolves_as_field(current_model, parts[0])
+    ):
+        # A field on the related model wins over a lookup of the same name.
+        terminal_lookup = parts[0]
+
+    if terminal_lookup is not None:
         if last_relation is not None and last_relation.kind in ("fk", "o2o"):
             # Forward relation: compare the local FK column directly (no join)
             relation_parts.pop()
-            return relation_parts, last_relation.fk_column, None, "exact"
-        # Reverse relation: join and compare the related model's PK
-        return relation_parts, "pk", None, "exact"
+            return relation_parts, last_relation.fk_column, None, terminal_lookup
+        # Reverse/M2M relation: join and compare the related model's PK
+        return relation_parts, "pk", None, terminal_lookup
 
     # 3. Next part is the field name
     field_name = parts.pop(0)
@@ -242,7 +279,7 @@ def parse_path(
         if (
             field_name != "pk"
             and meta is not None
-            and meta.get_field(field_name) is None
+            and not _resolves_as_field(current_model, field_name)
         ):
             field_names = sorted(f.name for f in meta.local_fields)
             raise FieldError(

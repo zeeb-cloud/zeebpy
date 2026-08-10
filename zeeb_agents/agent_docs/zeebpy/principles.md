@@ -39,6 +39,19 @@ Rules you can rely on:
   (a list of close-match candidates, also echoed as a "Did you mean: …?" in
   the message). Extra context keys (`apps`, `models`, `tables`, `columns`,
   `port`, …) appear where they help; treat any of them as optional.
+- **Failures declare whether you can recover.** `data["recoverable"]` is
+  `true` when a corrected input or a preparatory call in the same session can
+  succeed (bad field type, missing app, thing already exists, …) and `false`
+  for session/context-level faults (missing project id, unknown project,
+  runtime not configured, filesystem permission) that need the platform or
+  the user, not another attempt.
+- **Mutating intent results report their blast radius.** `build_feature`,
+  `apply_plan`, `change_feature`, and `plan_feature` attach
+  `data["affected"]` — `{"apps": [...], "entities": ["app.Model", ...],
+  "files": ["apps/<app>/models.py", ...]}` — computed from the plan's
+  operations. On success it is what was touched; on partial failure it is the
+  scope the call was touching; on `plan_feature` it is what the plan *would*
+  touch.
 - For the exact keys a given tool puts in `data`, read its `Returns data:`
   docstring block (via `{prefix}list_capabilities(include_docstrings=True)`).
 
@@ -46,13 +59,15 @@ Rules you can rely on:
 
 `data["error_code"]` (when present) is one of:
 
-`already_exists`, `app_not_found`, `dependency_missing`, `env_key_not_found`,
+`already_exists`, `app_not_found`, `archive_missing`, `dependency_missing`,
+`env_key_not_found`, `feature_active`, `feature_archived`, `feature_not_found`,
 `field_not_found`, `file_not_found`, `function_not_found`,
 `invalid_authentication`, `invalid_field_spec`,
 `invalid_field_type`, `invalid_identifier`, `invalid_input`, `invalid_meta`,
 `invalid_permission`, `invalid_regex`, `invalid_sql`, `log_file_not_found`,
 `model_not_found`, `no_project_id`, `no_user_table`,
-`outside_project_root`, `permission_denied`, `prefix_conflict`, `project_not_found`,
+`outside_project_root`, `partial_failure`, `permission_denied`, `prefix_conflict`,
+`project_not_found`,
 `runtime_not_configured`, `server_not_reachable`, `setting_not_found`, `table_not_found`,
 `user_not_found`.
 
@@ -115,6 +130,47 @@ this is intentional:
   → `data["applied"]` and `data["pending"]`
 - `{prefix}update_model` → `data["changes"]`
 
+### Tool tiers — where to start
+
+Every tool carries a `tier`, reported by `{prefix}list_capabilities()`:
+
+| tier | what it is | when to use it |
+|---|---|---|
+| `core` | ~20 declarative tools: the feature lifecycle, project setup, migrations, verification. | **Default.** Almost every task is one of these. |
+| `escape_hatch` | `read_file`, `write_file`, `search_code`, `run_query`, `run_management_command`. | When a spec genuinely cannot express the change. |
+| `advanced` | One tool per object — `create_model`, `add_field`, `create_viewset`, `register_route`, … | Rarely. Reach here only when a change is too specific for a spec. |
+
+Advanced tools are **not deprecated** — the feature compiler executes exactly
+these, and calling one directly behaves as it always has. But describing an
+outcome to `{prefix}build_feature` gets the models, serializers, endpoints,
+routes, tests, and migrations wired together and verified, whereas assembling
+the same result by hand is five or more calls, each of which can be forgotten.
+Prefer the outcome.
+
+Discover with `{prefix}list_capabilities(tier="core")`, and
+`{prefix}list_capabilities(tier="advanced")` when you need the long tail.
+
+### Features are addressable things
+
+A feature is a bounded slice of capability built from one FeatureSpec. The
+project records what each one owns, so features can be managed after they are
+built rather than only created:
+
+- `{prefix}list_features()` — what this project is made of.
+- `{prefix}change_feature(feature=..., changes=[...])` — evolve one.
+- `{prefix}deactivate_feature(feature=...)` — take its API off the air.
+  **Its models and tables are untouched**, so no migration runs and no data is
+  lost; the code is parked in `.zeeb/archive/<feature>/`.
+- `{prefix}activate_feature(feature=...)` — put it back exactly as it was,
+  including edits made after it was generated.
+- `{prefix}delete_feature(feature=..., confirm=True)` — the destructive one:
+  the models go and their tables are dropped. Requires `confirm=True`.
+
+Features may share an app; ownership is tracked per artifact, so archiving one
+feature leaves its app-mates serving. Projects built before this was recorded
+still list — their features are reconstructed from disk, one per app, and
+marked `inferred`.
+
 ### Naming conventions & forgiving aliases
 
 Tool names follow verb prefixes — `create_*`, `list_*`, `get_*`, `update_*`,
@@ -123,9 +179,10 @@ aliases** so a reflexive guess still works:
 
 - The app argument is `app=` on every app-scoped tool. `{prefix}create_app` /
   `{prefix}delete_app` name it `name=` but **also accept `app=`**.
-- `{prefix}remove_field` is also exposed as `{prefix}delete_field`, and
-  `{prefix}edit_signal_receiver` as `{prefix}update_signal_receiver`, so the
-  `delete_*`/`update_*` verbs work there too.
+- `{prefix}remove_field` is also exposed as `{prefix}delete_field`,
+  `{prefix}edit_signal_receiver` as `{prefix}update_signal_receiver`, and
+  `{prefix}change_feature` as `{prefix}edit_feature`, so the
+  `delete_*`/`update_*`/`edit_*` verbs work there too.
 - `read_*` (e.g. `read_file`, `read_logs`, `read_signal_receiver`) returns raw
   **content**; `get_*` returns **structured** data — this split is intentional.
 - Config is split by storage: `{prefix}get_settings` / `{prefix}manage_settings`
@@ -215,12 +272,16 @@ Routing is two-tiered:
 - The app's router is in turn included by the **project's `myproject/urls.py`**.
   `{prefix}create_app` wires this include **automatically** (and adds the app to
   `INSTALLED_APPS`), so a registered ViewSet is served with no manual step — no
-  more "scaffolded but 404s". (For a pre-existing/unwired app, wire it with
-  `{prefix}install_app` + `{prefix}wire_app_urls`; confirm with
+  more "scaffolded but 404s". (For a pre-existing/unwired app, re-run
+  `{prefix}create_app` — it has ensure-semantics and repairs the wiring without
+  touching the files; `{prefix}install_app` + `{prefix}wire_app_urls` remain for
+  an app deliberately created with `wire=False`. Confirm with
   `{prefix}describe_project`, whose `served`/`warnings` surface any gap.) A
   `ModelViewSet` registered this way exposes the full CRUD set: `GET /<prefix>`
   (list), `POST /<prefix>/query` (list with a serialized `Q` filter body),
-  `POST /<prefix>` (create), and `GET|PUT|PATCH|DELETE /<prefix>/{id}`.
+  `POST /<prefix>` (create), and `GET|PUT|PATCH|DELETE /<prefix>/{id}`. To serve
+  only part of that set, pass `operations=` (e.g. `["list", "retrieve", "create"]`)
+  — an operation you do not name gets no route at all.
 - **Canonical paths are slash-less** (`/<prefix>`, `/<prefix>/{id}`). The backend
   also serves each with a trailing slash appended (no redirect), so a client that
   adds one still works — but generate clients against the slash-less form (copy

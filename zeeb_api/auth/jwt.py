@@ -39,7 +39,7 @@ class JWTConfig(BaseModel):
         description="JWT signing algorithm"
     )
     access_token_expire_minutes: int = Field(
-        default=15,
+        default=60,
         description="Access token expiration in minutes"
     )
     refresh_token_expire_days: int = Field(
@@ -157,7 +157,7 @@ def _config_from_settings() -> JWTConfig:
             access_token_expire_minutes=getattr(
                 settings, "JWT_ACCESS_TOKEN_EXPIRE_MINUTES", None
             )
-            or 15,
+            or 60,
             refresh_token_expire_days=getattr(
                 settings, "JWT_REFRESH_TOKEN_EXPIRE_DAYS", None
             )
@@ -239,22 +239,27 @@ def create_access_token(
 
 def create_refresh_token(
     user_id: str | uuid.UUID,
+    claims: dict[str, Any] | None = None,
     config: JWTConfig | None = None,
 ) -> str:
     """
     Create a refresh token.
-    
+
     Args:
         user_id: User identifier
+        claims: Additional claims to embed. Refresh tokens carry the claims so
+            that a token refresh does not silently drop ``is_staff``/roles when
+            no other claim source is available. Database-backed refresh flows
+            still reload the user for the authoritative, current claims.
         config: Optional JWT config
-    
+
     Returns:
         Encoded JWT refresh token
     """
     config = config or get_jwt_config()
     _ensure_secure_secret(config)
     now = datetime.now(timezone.utc)
-    
+
     payload = {
         "sub": str(user_id),
         "type": "refresh",
@@ -262,12 +267,14 @@ def create_refresh_token(
         "iat": now,
         "jti": str(uuid.uuid4()),
     }
-    
+
     if config.issuer:
         payload["iss"] = config.issuer
     if config.audience:
         payload["aud"] = config.audience
-    
+    if claims:
+        payload["claims"] = claims
+
     return jwt.encode(payload, config.secret_key, algorithm=config.algorithm)
 
 
@@ -278,18 +285,18 @@ def create_token_pair(
 ) -> tuple[str, str]:
     """
     Create both access and refresh tokens.
-    
+
     Args:
         user_id: User identifier
-        claims: Additional claims for access token
+        claims: Additional claims for both tokens
         config: Optional JWT config
-    
+
     Returns:
         Tuple of (access_token, refresh_token)
     """
     config = config or get_jwt_config()
     access_token = create_access_token(user_id, claims, config)
-    refresh_token = create_refresh_token(user_id, config)
+    refresh_token = create_refresh_token(user_id, claims, config)
     return access_token, refresh_token
 
 
@@ -340,17 +347,25 @@ def decode_token(
     _ensure_secure_secret(config)
 
     try:
-        # Decode with verification
-        options = {}
+        # Decode with verification. When an audience/issuer is configured, both
+        # verify the claim value AND require it to be present — otherwise a token
+        # minted for a different issuer, or one omitting `iss`/`aud` entirely,
+        # would pass. `iss` was previously written but never checked.
+        verify_kwargs: dict[str, Any] = {}
+        require = ["sub", "type", "exp", "iat", "jti"]
         if config.audience:
-            options["audience"] = config.audience
-        
+            verify_kwargs["audience"] = config.audience
+            require.append("aud")
+        if config.issuer:
+            verify_kwargs["issuer"] = config.issuer
+            require.append("iss")
+
         payload = jwt.decode(
             token,
             config.secret_key,
             algorithms=[config.algorithm],
-            options={"require": ["sub", "type", "exp", "iat", "jti"]},
-            **options,
+            options={"require": require},
+            **verify_kwargs,
         )
         
         # Check token type

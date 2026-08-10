@@ -57,6 +57,10 @@ class Atomic:
     """
     Decorator and context manager for atomic transactions.
 
+    Delegates to :func:`zeeb_orm.db.connection.atomic`, so the transaction
+    participates in the active-session context (queries inside the block
+    reuse the transaction session) and nested blocks become SAVEPOINTs.
+
     Usage as context manager:
         async with Atomic():
             await User.objects.create(name='John')
@@ -73,39 +77,29 @@ class Atomic:
     def __init__(self, using: str | None = None, savepoint: bool = True) -> None:
         self.using = using
         self.savepoint = savepoint
-        self._session: AsyncSession | None = None
-        self._cb_token: Any = None
+        self._cm: Any = None
 
-    async def __aenter__(self) -> Atomic:
-        from zeeb_orm.db.connection import get_connection
+    async def __aenter__(self) -> AsyncSession:
+        from zeeb_orm.db.connection import atomic as _atomic
 
-        db = await get_connection(self.using)
-        self._session = await db.session().__aenter__()
-        self._cb_token = _on_commit_callbacks.set([])
-        return self
+        self._cm = _atomic(self.using)
+        return await self._cm.__aenter__()
 
-    async def __aexit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
-        if self._session is None:
-            return
-
-        try:
-            if exc_type is not None:
-                await self._session.rollback()
-            else:
-                await self._session.commit()
-                _run_on_commit_callbacks()
-        finally:
-            if self._cb_token is not None:
-                _on_commit_callbacks.reset(self._cb_token)
-            await self._session.__aexit__(exc_type, exc_val, exc_tb)
+    async def __aexit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> Any:
+        cm, self._cm = self._cm, None
+        if cm is None:
+            return None
+        return await cm.__aexit__(exc_type, exc_val, exc_tb)
 
     def __call__(self, func: Any) -> Any:
-        """Decorator support."""
+        """Decorator support (a fresh transaction per call)."""
         import functools
+
+        from zeeb_orm.db.connection import atomic as _atomic
 
         @functools.wraps(func)
         async def wrapper(*args: Any, **kwargs: Any) -> Any:
-            async with self:
+            async with _atomic(self.using):
                 return await func(*args, **kwargs)
 
         return wrapper

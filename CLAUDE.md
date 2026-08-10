@@ -28,9 +28,17 @@ CLI entry points (both map to `zeeb_orm.cli.main:main`):
 
 ```bash
 zeeb startproject <name>
-zeeb-manage startapp <name> | init | makemigrations | migrate | showmigrations |
-            createsuperuser | check | shell | runserver
+zeeb-manage startapp <name> [--model <Name>] | init | makemigrations | migrate |
+            showmigrations | squashmigrations | showurls | inspect |
+            frontend-brief | createsuperuser | check | shell | runserver
 ```
+
+`zeeb_orm/cli/main.py` owns `build_parser()` and the `COMMANDS` tuple — the
+documentation drift test compares `docs/cli/commands.md` against them, so a new
+subcommand must be added to both. Commands that report a result take `--json`
+and go through `zeeb_orm/cli/output.py`, which emits the same
+`success`/`message`/`data` envelope as `AgentResult` and *requires* a
+`next_command` on every failure.
 
 Demo project: `cd demo_blog && python manage.py runserver`. Runnable examples live at the repo root (`example_basic.py`, `example_api.py`, `example_queries.py`, `example_relationships.py`, `example_migrations.py`).
 
@@ -61,17 +69,61 @@ Demo project: `cd demo_blog && python manage.py runserver`. Runnable examples li
 
 ### zeeb_agents
 
-Every function returns `AgentResult(success, message, data)` (truthy on success) and must not raise — this is enforced by the `@agent_function` decorator (`_utils/decorators.py`: resolves `project_root`, logs failures to the `"zeeb_agents"` logger, wraps exceptions into `AgentResult`). All public functions use it; function signatures, names, and existing `data` keys are the MCP-facing contract — you may enrich docstrings additively (e.g. document the `data` shape, special cases) but must not break the contract (no renamed/removed functions or `data` keys, no signature changes). New `data` keys are fine when additive. Follow the `Returns data:`/`Notes:` docstring convention used across the modules, and document the return-shape conventions in `agent_docs/principles.md`. Functions operate on a generated Zeeb project on disk (scaffolding writes into `apps/<app>/`). `run_query` enforces a read-only SQL gate (comment stripping, single-statement, keyword denylist, always-rollback transaction); `files.py` rejects paths escaping the project root. `resources.py` dispatches MCP resource docs from `agent_docs/*.md`; `capabilities.py::list_capabilities` introspects `__all__` for machine-readable tool discovery.
+Every function returns `AgentResult(success, message, data)` (truthy on success) and must not raise — this is enforced by the `@agent_function` decorator (`_utils/decorators.py`: resolves `project_root`, logs failures to the `"zeeb_agents"` logger, wraps exceptions into `AgentResult`). All public functions use it; function signatures, names, and existing `data` keys are the MCP-facing contract — you may enrich docstrings additively (e.g. document the `data` shape, special cases) but must not break the contract (no renamed/removed functions or `data` keys, no signature changes; a *new optional* parameter must be appended, never inserted, so positional callers keep working). New `data` keys are fine when additive. Follow the `Returns data:`/`Notes:` docstring convention used across the modules, and document the return-shape conventions in `agent_docs/principles.md`. Functions operate on a generated Zeeb project on disk (scaffolding writes into `apps/<app>/`). `run_query` enforces a read-only SQL gate (comment stripping, single-statement, keyword denylist, always-rollback transaction); `files.py` rejects paths escaping the project root. `resources.py` dispatches MCP resource docs from `agent_docs/*.md`; `capabilities.py::list_capabilities` introspects `__all__` for machine-readable tool discovery.
+
+**Tiers — which tools an agent should see.** `tiers.py` is the single source of truth: `CORE_TOOLS` (~20 declarative tools), `ESCAPE_HATCH_TOOLS` (5), and everything else implicitly `advanced`. `list_capabilities` reports a `tier` per tool and filters on `tier=`; an MCP server registers `DEFAULT_SURFACE` and keeps the rest dispatchable. **Advanced is not deprecated** — the feature compiler executes exactly those functions, and they stay importable and supported. Re-tiering a tool is a presentation change and is allowed; removing or renaming one is not. Keep `tiers.py` in sync with the sibling `zeeb-mcp` (`libs/zeeb_codegen/tools.py`), whose `test_capability_partition_is_total` fails if a new export is unmapped.
+
+**Features.** `intent.py` owns the lifecycle (`build_feature`/`change_feature`/`list_features`/`deactivate_feature`/`activate_feature`/`delete_feature`); `feature_spec.py` is the private compiler+executor; `feature_manifest.py` records per-artifact ownership in the project's `.zeeb/features.json`; `feature_archive.py` does the file surgery for archive/restore into `.zeeb/archive/<feature>/`. Two invariants: features may **share an app** (so archiving is surgical AST edits, never directory moves — ownership decides what moves), and **deactivate never touches `models.py`** (the schema stays, no migration is generated, no data can be lost — dropping tables is `delete_feature`'s job and needs `confirm=True`). `.zeeb/` is committed project state, not build output; keep it out of the scaffold's `.gitignore`. A FeatureSpec's `functions` block (`action`/`endpoint`/`hook`/`task`/`rule`) compiles to the same per-object tools; adding a kind means adding to `FUNCTION_KINDS`, `KNOWN_OPS`, `_OP_REQUIRED`, the executor dispatch, and `functions.py::FUNCTION_FILES`.
 
 ### Generated project layout (what scaffolding/CLI assume)
 
 ```
 myproject/
 ├── manage.py
+├── .env / .env.example          # env-driven config; .env holds a generated SECRET_KEY (0600)
+├── AGENTS.md                    # what a coding agent reads; CLAUDE.md + .cursor/rules point here
+├── pyproject.toml               # [tool.zeeb] identity marker + ruff config
+├── pytest.ini
 ├── myproject/{settings.py, urls.py, asgi.py}
-├── apps/<app>/{models.py, serializers.py, views.py, urls.py}
-└── migrations/versions/
+├── apps/accounts/               # scaffolded user model (AUTH_USER_MODEL = "accounts.User")
+├── apps/<app>/{models.py, serializers.py, views.py, urls.py}   # 5 files, no apps.py
+├── tests/{conftest.py, test_smoke.py, test_<app>.py}
+├── logs/
+└── migrations/                  # migration files live FLAT here, not under versions/
 ```
+
+Templates and the AST wiring helpers live in `zeeb_orm/scaffold/` — one source
+of truth for both the CLI and the agent layer. `zeeb_agents/_utils/wiring.py` is
+a thin adapter that re-raises `ScaffoldError` as `AgentError` with the same
+code. `zeeb_orm.scaffold.project.URLS_PY` *is*
+`zeeb_orm.scaffold.wiring.STANDARD_URLS_TEMPLATE`; keep it that way.
+
+`startproject` ships a batteries-on boilerplate: JWT auth endpoints mounted,
+CORS, rate limiting, API versioning, health probes, error envelope and rotating
+logs, all toggleable through `.env` via `zeeb_api.conf.env`
+(`load_env` + `env_str`/`env_bool`/`env_int`/`env_list`). Keep every
+env-driven setting on **one line** — `zeeb_agents.manage_settings` rewrites
+settings with a single-line regex. `startapp` registers the app it creates
+(`INSTALLED_APPS` + project `urls.py`); `--no-wire` opts out, `--model <Name>`
+generates a complete working resource plus a passing test.
+
+Three more pieces of `zeeb_orm/scaffold/` are load-bearing:
+
+- `harness.py` owns `pytest.ini` + `tests/conftest.py` + `tests/test_smoke.py`.
+  `zeeb_agents.test_scaffold` imports them rather than defining its own, so a
+  feature generated by the agent layer runs against the fixtures the CLI shipped.
+  A freshly scaffolded project passes `pytest` **before** its first migration —
+  the `db` fixture builds the schema from the model registry. Keep that true.
+- `agent_guide.py` owns `AGENTS.md`; `CLAUDE.md` and `.cursor/rules/zeebpy.mdc`
+  are rendered from the same constant. `tests/test_scaffold_agent_docs.py`
+  asserts every path, command and flag it names actually exists.
+- The app templates carry their example in the **module docstring**, not as
+  commented-out code. That means anything inspecting a generated file must read
+  the AST, never the text — see `code_gen.router_registrations` and
+  `code_gen.imports_name`. A substring match sees the example and acts on it.
+
+A generated project must stay `ruff check .` clean
+(`tests/test_scaffold_boilerplate.py::test_a_generated_project_passes_its_own_lint`).
 
 ## Conventions
 

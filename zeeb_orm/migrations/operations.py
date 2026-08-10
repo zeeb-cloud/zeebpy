@@ -15,6 +15,93 @@ def _quote(connection, identifier: str) -> str:
     return connection.dialect.identifier_preparer.quote(identifier)
 
 
+def _default_clause(column):
+    """A ``DefaultClause`` rendering the column's default, or ``None`` if it has none.
+
+    Strings are passed through as-is so SQLAlchemy renders (and escapes) them as
+    quoted literals; other scalars are emitted as raw SQL text, which keeps
+    booleans and numbers correct across SQLite and Postgres.
+    """
+    from sqlalchemy import DefaultClause, text
+
+    value = _scalar_default(column)
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return DefaultClause(value)
+    if isinstance(value, bool):
+        return DefaultClause(text("true" if value else "false"))
+    return DefaultClause(text(str(value)))
+
+
+def copy_column(column):
+    """Copy a Column, preserving its foreign keys.
+
+    ``Column.copy()`` / ``._copy()`` silently drop ``ForeignKey`` constructs once the
+    column is detached from its Table (their target resolution is table-bound), so
+    copying a column on the way into a migration operation strips the relation —
+    tables then get plain columns with no REFERENCES clause and no referential
+    integrity at all. Re-attach the foreign keys from their ``target_fullname``,
+    which is a plain ``"table.column"`` string and needs no table binding.
+    """
+    from sqlalchemy import Column, ForeignKey
+
+    foreign_keys = [
+        ForeignKey(fk.target_fullname, ondelete=fk.ondelete, onupdate=fk.onupdate)
+        for fk in column.foreign_keys
+    ]
+    copied = column._copy() if hasattr(column, "_copy") else column.copy()
+    if not foreign_keys:
+        return copied
+    return Column(
+        copied.name,
+        copied.type,
+        *foreign_keys,
+        nullable=copied.nullable,
+        unique=copied.unique,
+        index=copied.index,
+        primary_key=copied.primary_key,
+        default=copied.default,
+        server_default=copied.server_default,
+        autoincrement=copied.autoincrement,
+    )
+
+
+def _register_fk_target_stubs(metadata, table_name: str, columns) -> None:
+    """Add minimal stand-ins for tables this table's foreign keys point at.
+
+    A migration operation builds its table in a throwaway ``MetaData`` holding only
+    itself, so a ``ForeignKey("other.id")`` has nothing to resolve against and
+    SQLAlchemy raises ``NoReferencedTableError``. Registering a one-column stub for
+    each referenced table makes the reference resolvable; the stubs are never
+    created (only the real table's ``.create()`` is called), and the referenced
+    tables already exist in the database because the compiler orders relation
+    targets first.
+    """
+    from sqlalchemy import Column, Table
+
+    for column in columns:
+        for fk in getattr(column, "foreign_keys", ()):
+            target = str(fk.target_fullname)
+            target_table, _, target_column = target.rpartition(".")
+            # A self-reference resolves against the table being built.
+            if not target_table or target_table == table_name or target_table in metadata.tables:
+                continue
+            Table(target_table, metadata, Column(target_column, column.type))
+
+
+def _with_server_default(column, server_default):
+    """Copy ``column`` with ``server_default`` attached.
+
+    A copy, because the original belongs to the migration file's operation object
+    and may be reused (e.g. by ``backward``); mutating it would leak the one-off
+    backfill default into later use.
+    """
+    copied = copy_column(column)
+    copied.server_default = server_default
+    return copied
+
+
 class Operation:
     """Base class for migration operations.
 
@@ -78,6 +165,7 @@ class CreateModel(Operation):
             cols.append(PrimaryKeyConstraint(*self.primary_key))
         for c in self.constraints:
             cols.append(c)
+        _register_fk_target_stubs(tmp_meta, self.table, self.columns)
         table = Table(self.table, tmp_meta, *cols)
         table.create(connection, checkfirst=True)
 
@@ -144,7 +232,26 @@ class AddField(Operation):
         from alembic.runtime.migration import MigrationContext
         ctx = MigrationContext.configure(connection)
         op = Operations(ctx)
-        op.add_column(self.table, self.column)
+        column = self.column
+        # A NOT NULL column cannot simply be appended to a table that already has
+        # rows — Postgres rejects it with NotNullViolation and the migration then
+        # fails on every retry, wedging the project. Emit the field's own default as
+        # a SQL DEFAULT so the database backfills existing rows in the same ALTER
+        # (single statement, so it also works on SQLite, which cannot alter columns
+        # afterwards). The DEFAULT mirrors the model's default, so leaving it in
+        # place keeps the schema and the model in agreement.
+        if not column.nullable and column.server_default is None:
+            from zeeb_orm.migrations.state import MigrationError
+
+            backfill = _default_clause(column)
+            if backfill is None:
+                raise MigrationError(
+                    f"Cannot add NOT NULL column '{self.table}.{self.name}' with no default: "
+                    f"existing rows have no value to fall back on. Give the field a "
+                    f"default, or make it nullable."
+                )
+            column = _with_server_default(column, backfill)
+        op.add_column(self.table, column)
 
     def backward(self, connection) -> None:
         from alembic.operations import Operations
@@ -725,15 +832,55 @@ def _repr_column(col) -> str:
         parts.append(", nullable=False")
     if col.unique:
         parts.append(", unique=True")
+    # The Python-side default must survive into the migration file: AddField reads
+    # it to backfill existing rows when adding a NOT NULL column. Without it the
+    # ALTER dies on NotNullViolation and the migration can never be applied.
+    default = _scalar_default(col)
+    if default is not None:
+        parts.append(f", default={default!r}")
     if col.server_default is not None:
         parts.append(f", server_default={col.server_default.arg!r}")
+    # SQLAlchemy's "auto" default declines whenever the PK is composite, bears
+    # a ForeignKey or has a server_default. An explicitly requested
+    # autoincrement must therefore survive into the migration file.
+    if col.autoincrement is True:
+        parts.append(", autoincrement=True")
 
     parts.append(")")
     return "".join(parts)
 
 
+def _scalar_default(col):
+    """The column's Python-side default when it is a plain scalar, else ``None``.
+
+    Callables (``datetime.now``, sequences, …) cannot be rendered into DDL or a
+    migration file, so they are deliberately ignored.
+    """
+    default = getattr(col, "default", None)
+    if default is None:
+        return None
+    arg = getattr(default, "arg", default)
+    if callable(arg) or isinstance(arg, (list, dict, set)):
+        return None
+    return arg if isinstance(arg, (str, int, float, bool)) else None
+
+
 def _repr_sa_type(sa_type) -> str:
-    """Generate repr for a SQLAlchemy type."""
+    """Generate repr for a SQLAlchemy type.
+
+    Dialect variants (``BigInteger().with_variant(Integer, "sqlite")``, which
+    ``BigAutoField`` uses) live in ``_variant_mapping``, not in the class name
+    — rendering only the base type would recreate the broken ``BIGINT``
+    primary key on SQLite.
+    """
+    base = _repr_sa_base_type(sa_type)
+    for dialect, variant in (getattr(sa_type, "_variant_mapping", None) or {}).items():
+        base += f".with_variant({_repr_sa_base_type(variant)}, {dialect!r})"
+    return base
+
+
+def _repr_sa_base_type(sa_type) -> str:
+    """Generate repr for a SQLAlchemy type, ignoring any dialect variants."""
     from sqlalchemy import types as satypes
 
     type_name = type(sa_type).__name__

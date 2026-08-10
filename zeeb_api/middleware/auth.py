@@ -63,32 +63,53 @@ class AuthenticatedUser:
 async def default_user_loader(payload: TokenPayload) -> Any:
     """
     Default user loader that fetches user from database.
-    
+
     Uses get_user_model() to get the configured User model and
     queries by the user ID from the token.
+
+    SECURITY: this loader must fail *closed*. It never falls back to a
+    claims-only ``AuthenticatedUser``, because that would keep a deleted or
+    deactivated user authenticated (with the ``is_staff``/``is_superuser``
+    baked into the token) and would authenticate every request from stale
+    token claims during a database outage. Instead:
+      - user not found (deleted) or inactive -> return None (anonymous);
+      - any other error (e.g. DB unavailable) -> propagate, so the request
+        fails rather than authenticating from unverifiable claims.
     """
+    import logging
     from uuid import UUID
     from zeeb_api.auth.backends import get_user_model
-    
+
     User = get_user_model()
+
+    # Convert string UUID to UUID object for proper comparison
+    user_id = payload.sub
     try:
-        # Convert string UUID to UUID object for proper comparison
-        user_id = payload.sub
-        try:
-            user_id = UUID(user_id)
-        except (ValueError, TypeError):
-            pass  # Not a UUID, use as-is
-        
+        user_id = UUID(user_id)
+    except (ValueError, TypeError):
+        pass  # Not a UUID, use as-is
+
+    try:
         user = await User.objects.get(id=user_id)
-        # Attach token payload for access to claims
-        user._token_payload = payload
-        return user
-    except Exception as e:
-        # Log the actual exception for debugging
-        import logging
-        logging.getLogger(__name__).warning(f"Failed to load user {payload.sub}: {type(e).__name__}: {e}")
-        # User not found or DB error - fall back to AuthenticatedUser
-        return AuthenticatedUser(payload)
+    except (User.DoesNotExist, User.MultipleObjectsReturned):
+        # The subject no longer resolves to exactly one account: treat as
+        # anonymous rather than trusting the token's embedded claims.
+        logging.getLogger(__name__).info(
+            "Token subject %s does not resolve to a user; treating as anonymous",
+            payload.sub,
+        )
+        return None
+
+    # Deactivated accounts must not stay authenticated for the token's lifetime.
+    if not getattr(user, "is_active", True):
+        logging.getLogger(__name__).info(
+            "User %s is inactive; treating as anonymous", payload.sub
+        )
+        return None
+
+    # Attach token payload for access to claims
+    user._token_payload = payload
+    return user
 
 
 class JWTAuthMiddleware(BaseHTTPMiddleware):

@@ -40,12 +40,13 @@ htmlcov/
 *.sqlite3
 *.db
 
-# Environment
+# Environment — .env holds this project's signing key, .env.example does not
 .env
-.env.local
+.env.*
+!.env.example
 
 # Logs
 logs/*.log
 
 # Migrations
-migrations/versions/__pycache__/
+migrations/__pycache__/
