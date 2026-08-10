@@ -46,7 +46,7 @@ async def test_generate_tests_writes_suite(fake_project: Path):
     assert "Order.objects.create(total='9.99')" in generated
     assert "note=" not in generated
     assert "status=" not in generated
-    assert 'resp = await client.get(f"{api_prefix}/orders/")' in generated
+    assert 'resp = await client.get(f"{api_prefix}/orders")' in generated
 
     import ast
 
@@ -68,13 +68,82 @@ async def test_generate_tests_never_overwrites(fake_project: Path):
     assert test_file.read_text() == marker
 
 
-async def test_authenticated_entities_get_no_anonymous_smoke(fake_project: Path):
-    entity = {**ORDER_ENTITY, "authentication": "required"}
+async def test_authenticated_entities_are_exercised_with_a_token(fake_project: Path):
+    """An auth-gated endpoint is tested as an authenticated user, not skipped.
+
+    It used to generate no endpoint test at all, which made ``verified: true``
+    mean "the ORM works" for every secured entity.
+    """
+    entity = {**ORDER_ENTITY, "authentication": "required", "permission": ["IsAuthenticated"]}
     res = await generate_tests("shop", [entity], project_id=fake_project)
     assert res.success
     generated = (fake_project / "tests" / "test_shop_generated.py").read_text()
-    assert "client.get" not in generated  # anonymous smoke omitted
+    assert 'await auth_client.get(f"{api_prefix}/orders")' in generated
+    # The anonymous client must never be used for a read on a gated endpoint.
+    assert 'resp = await client.get(f"{api_prefix}/orders")' not in generated
+    # ...and the gate itself is asserted.
+    assert "test_order_rejects_anonymous_create" in generated
+    assert "assert resp.status_code in (401, 403)" in generated
+    assert "orm_roundtrip" in generated
+
+
+async def test_unsatisfiable_permission_generates_no_endpoint_test(fake_project: Path):
+    """No synthesized identity satisfies IsOwner, so no endpoint test is written."""
+    entity = {**ORDER_ENTITY, "permission": ["IsOwner"]}
+    res = await generate_tests("shop", [entity], project_id=fake_project)
+    assert res.success
+    generated = (fake_project / "tests" / "test_shop_generated.py").read_text()
+    assert "endpoint_lists" not in generated
+    assert "crud_over_http" not in generated
     assert "orm_roundtrip" in generated  # ORM layer still exercised
+
+
+async def test_withheld_operations_are_never_exercised(fake_project: Path):
+    """A spec that withholds delete must not generate a DELETE assertion."""
+    entity = {
+        **ORDER_ENTITY,
+        "permission": ["AllowAny"],
+        "operations": ["list", "retrieve", "create"],
+    }
+    res = await generate_tests("shop", [entity], project_id=fake_project)
+    assert res.success
+    generated = (fake_project / "tests" / "test_shop_generated.py").read_text()
+    assert "crud_over_http" in generated
+    assert "client.delete(" not in generated
+    assert "client.patch(" not in generated
+    # The contract test must not demand methods the endpoint does not serve.
+    assert "'delete'" not in generated
+    assert "'post'" in generated
+
+
+async def test_conftest_imports_every_installed_app_before_building_the_schema(
+    fake_project: Path,
+):
+    """A project with a custom user model must not fail at create_all.
+
+    Models only register when their module is imported, and the framework's auth
+    tables carry a foreign key to the user table — so without this the whole
+    generated suite errored at fixture setup on any bootstrapped project.
+    """
+    res = await generate_tests("shop", [ORDER_ENTITY], project_id=fake_project)
+    assert res.success
+    conftest = (fake_project / "tests" / "conftest.py").read_text()
+    assert "_import_all_models" in conftest
+    assert "INSTALLED_APPS" in conftest
+
+
+async def test_generated_requests_use_canonical_slashless_paths(fake_project: Path):
+    """Writes must target the canonical path — a trailing-slash POST 405s.
+
+    zeeb_api serves the trailing-slash variant for reads only, so a generated
+    ``POST /orders/`` returned METHOD_NOT_ALLOWED instead of exercising anything.
+    """
+    entity = {**ORDER_ENTITY, "permission": ["AllowAny"]}
+    res = await generate_tests("shop", [entity], project_id=fake_project)
+    assert res.success
+    generated = (fake_project / "tests" / "test_shop_generated.py").read_text()
+    assert '/orders"' in generated
+    assert '/orders/"' not in generated
 
 
 async def test_required_internal_fk_creates_target_first(fake_project: Path):

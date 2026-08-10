@@ -15,6 +15,7 @@ from pathlib import Path
 import pytest
 
 import zeeb_agents as agents
+from zeeb_agents._utils.code_gen import extract_field_types
 
 SPEC = {
     "name": "blog",
@@ -304,8 +305,11 @@ async def test_bootstrap_project_full(root: Path):
     res = await agents.bootstrap_project(project_id=root)
     assert res.success, res.message
     data = res.data
-    assert "accounts" in data["changes"]["apps_created"]
-    assert "accounts.User" in data["changes"]["models_created"]
+    # The scaffold already ships the accounts app and its user model, so
+    # bootstrap has nothing to create there and says so.
+    assert data["changes"]["apps_created"] == []
+    assert data["changes"]["models_created"] == []
+    assert any("AUTH_USER_MODEL" in w for w in data["warnings"])
     assert data["changes"]["migrations_applied"]
     settings = (root / "demo" / "settings.py").read_text()
     assert 'AUTH_USER_MODEL = "accounts.User"' in settings
@@ -329,8 +333,10 @@ async def test_bootstrap_after_migrations_keeps_default_user_model(root: Path):
     assert (await agents.build_feature(SPEC, project_id=root, verify=False)).success
     res = await agents.bootstrap_project(project_id=root)
     assert res.success, res.message
+    # Never swap the user model out from under an existing schema: the project
+    # already has one from the scaffold, and bootstrap leaves it alone.
     assert "accounts.User" not in res.data["changes"]["models_created"]
-    assert any("must precede" in w for w in res.data["warnings"])
+    assert any("AUTH_USER_MODEL" in w for w in res.data["warnings"])
 
 
 async def test_configure_auth_with_oauth_provider(root: Path):
@@ -384,6 +390,42 @@ async def test_verify_project_rejects_unknown_checks(root: Path):
     assert not res.success
     assert res.data["error_code"] == "invalid_input"
     assert "openapi" in res.data["suggestions"]
+
+
+async def test_verify_project_runtime_check_reports_health(root: Path):
+    assert (await agents.build_feature(SPEC, project_id=root, verify=False)).success
+    res = await agents.verify_project(checks=["runtime"], project_id=root)
+    assert res.success, res.message
+    runtime = res.data["verification"]["checks"]["runtime"]
+    assert runtime["settings"] == "ok"
+    assert runtime["db"] == "ok"
+    assert runtime["ok"] is True
+
+
+async def test_verify_project_security_check_flags_dev_posture(root: Path):
+    """A freshly scaffolded project is deliberately not production-ready."""
+    res = await agents.verify_project(checks=["security"], project_id=root)
+    assert res.success, res.message
+    security = res.data["verification"]["checks"]["security"]
+    assert security["ok"] is False
+    assert security["issues"]
+    assert any("production-readiness" in a for a in res.data["next_actions"])
+
+
+async def test_verify_project_endpoints_check_fails_when_nothing_is_serving(root: Path):
+    """The smoke check must fail loudly when the API is not reachable.
+
+    ``openapi`` proves a route is documented; this proves it responds. With no
+    runtime up, every request errors and the check must not pass.
+    """
+    assert (await agents.build_feature(SPEC, project_id=root, verify=False)).success
+    # Port 9 (discard) is reserved and never serves HTTP.
+    res = await agents.verify_project(checks=["endpoints"], port=9, project_id=root)
+    assert res.success, res.message
+    endpoints = res.data["verification"]["checks"]["endpoints"]
+    assert endpoints["ok"] is False
+    assert endpoints.get("failures")
+    assert any("unreachable" in a or "server error" in a for a in res.data["next_actions"])
 
 
 async def test_diagnose_problem_finds_pending_migrations(root: Path):
@@ -574,8 +616,10 @@ async def test_build_feature_generates_tests_and_verification_gates_on_them(root
     res = await agents.build_feature(SPEC, project_id=root)
     assert res.success, res.message
     created = res.data["changes"]["tests_created"]
-    assert "tests/conftest.py" in created
+    # The shared harness ships with the project now, so build_feature only adds
+    # the feature's own file — but the fixtures it needs are already on disk.
     assert "tests/test_blog_generated.py" in created
+    assert (root / "tests" / "conftest.py").exists()
 
     # The default verification chain auto-included the tests check — and the
     # generated suite actually passes against the scaffolded feature.
@@ -608,3 +652,206 @@ async def test_generated_workflow_transition_test_passes_live(root: Path):
     assert run.success, (run.data or {}).get("output", run.message)
     assert (run.data or {}).get("failed") == 0
     assert (run.data or {}).get("passed", 0) > 0
+
+
+# ---------------------------------------------------------------------------
+# Convergence: re-running build_feature with an extended spec
+# ---------------------------------------------------------------------------
+
+
+async def test_build_feature_rerun_converges_new_spec_fields(root: Path):
+    res = await agents.build_feature(SPEC, verify=False, project_id=root)
+    assert res.success, res.message
+
+    extended = {
+        **SPEC,
+        "entities": [
+            {**e, "fields": [*e["fields"], {"name": "subtitle", "type": "string"}]}
+            if e["name"] == "Post"
+            else e
+            for e in SPEC["entities"]
+        ],
+    }
+    res = await agents.build_feature(extended, verify=False, project_id=root)
+    assert res.success, res.message
+    assert res.data["changes"]["fields_added"] == ["Post.subtitle"]
+    assert res.data["state_changed"] is True
+
+    models = (root / "apps" / "blog" / "models.py").read_text()
+    assert "subtitle = fields.CharField" in models
+    # The serializer must list it too, or writes are silently discarded.
+    serializers = (root / "apps" / "blog" / "serializers.py").read_text()
+    assert '"subtitle"' in serializers
+    # And a third run changes nothing.
+    res = await agents.build_feature(extended, verify=False, project_id=root)
+    assert res.success and res.data["state_changed"] is False
+
+
+async def test_build_feature_rerun_reports_drift_without_applying(root: Path):
+    assert (await agents.build_feature(SPEC, verify=False, project_id=root)).success
+    shrunk = {
+        **SPEC,
+        "entities": [
+            {**e, "fields": [f for f in e["fields"] if f["name"] != "title"]}
+            if e["name"] == "Post"
+            else e
+            for e in SPEC["entities"]
+        ],
+    }
+    res = await agents.build_feature(shrunk, verify=False, project_id=root)
+    assert res.success, res.message
+    drift = res.data["drift"]
+    assert {"entity": "blog.Post", "field": "title", "kind": "missing_from_spec"} in drift[
+        "entries"
+    ]
+    assert drift["suggested_changes"] == [
+        {"operation": "remove_field", "entity": "Post", "app": "blog", "field_name": "title"}
+    ]
+    # Reported only — the field is still there.
+    assert "title = fields.CharField" in (root / "apps" / "blog" / "models.py").read_text()
+    assert any("drift" in action for action in res.data["next_actions"])
+
+    # And the suggested payload is directly sendable.
+    res = await agents.change_feature(
+        drift["suggested_changes"], migrate=False, verify=False, project_id=root
+    )
+    assert res.success, res.message
+    models = (root / "apps" / "blog" / "models.py").read_text()
+    assert "title" not in extract_field_types(models, "Post")
+
+
+# ---------------------------------------------------------------------------
+# New change_feature operations
+# ---------------------------------------------------------------------------
+
+
+async def test_change_feature_alter_field_rewrites_the_definition(root: Path):
+    assert (await agents.build_feature(SPEC, verify=False, project_id=root)).success
+    res = await agents.change_feature(
+        [{"operation": "alter_field", "entity": "Post",
+          "field": {"name": "title", "type": "text"}}],
+        migrate=False, verify=False, project_id=root,
+    )
+    assert res.success, res.message
+    assert res.data["changes"]["fields_altered"] == ["Post.title"]
+    models = (root / "apps" / "blog" / "models.py").read_text()
+    assert "title = fields.TextField" in models
+    # Scoped to the class — the module docstring shows an example model whose
+    # fields are not definitions.
+    assert extract_field_types(models, "Post")["title"] == "TextField"
+
+
+async def test_change_feature_remove_entity_leaves_the_app_importable(root: Path):
+    assert (await agents.build_feature(SPEC, verify=False, project_id=root)).success
+    res = await agents.change_feature(
+        [{"operation": "remove_entity", "entity": "Post"}],
+        migrate=False, verify=False, project_id=root,
+    )
+    assert res.success, res.message
+    assert res.data["changes"]["models_removed"] == ["blog.Post"]
+
+    app_dir = root / "apps" / "blog"
+    models = (app_dir / "models.py").read_text()
+    serializers = (app_dir / "serializers.py").read_text()
+    views = (app_dir / "views.py").read_text()
+    urls = (app_dir / "urls.py").read_text()
+    assert "class Post(" not in models
+    assert "PostSerializer" not in serializers
+    assert "PostViewSet" not in views
+    # The imports must go with the classes, or the module raises at startup and
+    # takes every other endpoint in the app down with it.
+    assert "import Post" not in views and "PostSerializer" not in views
+    assert "PostViewSet" not in urls
+    # Category is untouched.
+    assert "class Category(" in models and "CategoryViewSet" in views
+
+
+async def test_change_feature_skips_migrations_for_non_schema_changes(root: Path):
+    assert (await agents.build_feature(SPEC, verify=False, project_id=root)).success
+    res = await agents.change_feature(
+        [{"operation": "set_permissions", "entity": "Post",
+          "permissions": ["IsAdminUser"]}],
+        verify=False, project_id=root,
+    )
+    assert res.success, res.message
+    assert res.data["changes"]["migrations_created"] == []
+    assert any("migration steps were omitted" in w for w in res.data["warnings"])
+    assert "IsAdminUser" in (root / "apps" / "blog" / "views.py").read_text()
+
+
+async def test_change_feature_add_entity_writes_a_per_entity_test_file(root: Path):
+    assert (await agents.build_feature(SPEC, verify=False, project_id=root)).success
+    assert (root / "tests" / "test_blog_generated.py").exists()
+    res = await agents.change_feature(
+        [{"operation": "add_entity", "app": "blog",
+          "entity": {"name": "Comment", "fields": [{"name": "body", "type": "text"}]}}],
+        migrate=False, verify=False, project_id=root,
+    )
+    assert res.success, res.message
+    # The app-level file already exists and is never overwritten, so the new
+    # entity's tests need their own file to be written at all.
+    assert (root / "tests" / "test_blog_comment_generated.py").exists()
+
+
+# ---------------------------------------------------------------------------
+# Verification honesty and partial-failure resume metadata
+# ---------------------------------------------------------------------------
+
+
+async def test_verification_fails_loudly_when_no_tests_are_collected(root: Path):
+    assert (
+        await agents.build_feature(SPEC, tests=False, verify=False, project_id=root)
+    ).success
+    # Strip every test the scaffold ships so pytest collects nothing — the
+    # shape a broken import produces, which must not read as a pass.
+    for shipped in (root / "tests").glob("test_*.py"):
+        shipped.unlink()
+    res = await agents.verify_project(checks=["tests"], project_id=root)
+    assert res.success, res.message
+    check = res.data["verification"]["checks"]["tests"]
+    assert check["no_tests"] is True
+    assert check["ok"] is False
+    assert res.data["verified"] is False
+    assert any("No tests were collected" in a for a in res.data["next_actions"])
+
+
+async def test_success_envelope_carries_the_verified_flag(root: Path):
+    res = await agents.build_feature(
+        SPEC, tests=False, verify=True, project_id=root,
+        # structure alone is deterministic offline; openapi needs a live runtime.
+    )
+    assert res.success, res.message
+    assert res.data["verified"] == res.data["verification"]["passed"]
+    if not res.data["verified"]:
+        assert "BUILT BUT VERIFICATION FAILED" in res.message
+
+
+async def test_partial_failure_reports_resume_metadata(root: Path, monkeypatch):
+    import zeeb_agents.serializers as serializers_mod
+
+    async def boom(*args, **kwargs):
+        return agents.AgentResult(
+            success=False,
+            message="disk on fire",
+            data={"error_code": "invalid_input", "recoverable": True},
+        )
+
+    monkeypatch.setattr(serializers_mod, "create_serializer", boom)
+    res = await agents.build_feature(SPEC, migrate=False, verify=False, project_id=root)
+    assert not res.success
+    data = res.data
+    assert data["error_code"] == "partial_failure"
+    assert data["recoverable"] is True
+    assert data["verified"] is False
+
+    failed = data["failed_operations"]
+    assert failed and all(f["op"]["op"] == "create_serializer" for f in failed)
+    assert all(f["error_code"] == "invalid_input" and f["recoverable"] for f in failed)
+    # The index locates the failure inside the plan, so a caller can resume
+    # instead of guessing from a single state_changed boolean.
+    assert [f["index"] for f in failed] == sorted(f["index"] for f in failed)
+    assert data["total_count"] == len(
+        [op for op in data["remaining_operations"]]
+    ) + data["completed_count"] + len(failed)
+    assert data["completed_count"] > 0
+    assert any("failed_operations" in a for a in data["next_actions"])

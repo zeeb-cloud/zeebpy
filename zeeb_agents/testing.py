@@ -18,6 +18,26 @@ _COUNT_RES = {
 }
 
 
+#: pytest's short-summary lines ("FAILED tests/test_blog.py::test_create - ...").
+#: Emitted by default and under ``-q``, so the failing node ids are available
+#: without re-running the suite verbosely.
+_FAILED_LINE_RE = re.compile(r"^(?:FAILED|ERROR)\s+(\S+)", re.MULTILINE)
+
+#: Cap on reported node ids — a suite failing wholesale must not push a
+#: thousand-line list through the result envelope.
+_MAX_FAILED_TESTS = 20
+
+
+def _parse_failed_tests(output: str) -> list[str]:
+    """Return the node ids pytest listed as FAILED/ERROR, in order, deduped."""
+    seen: dict[str, None] = {}
+    for node in _FAILED_LINE_RE.findall(output):
+        seen.setdefault(node, None)
+        if len(seen) >= _MAX_FAILED_TESTS:
+            break
+    return list(seen)
+
+
 def _parse_pytest_output(output: str) -> dict:
     """Extract pass/fail/error/skipped counts from pytest's summary line.
 
@@ -53,6 +73,9 @@ async def run_tests(
     Returns data (always):
         passed (int), failed (int), errors (int), skipped (int): counts parsed
             from pytest's summary line.
+        failed_tests (list[str]): node ids of the failing/erroring tests (up to
+            20), so a caller can name them without re-reading the full output.
+        no_tests (bool): pytest collected nothing (exit code 5).
         output (str): full combined pytest stdout + stderr.
         returncode (int): pytest's exit code.
 
@@ -101,5 +124,11 @@ async def run_tests(
     return AgentResult(
         success=success,
         message=", ".join(parts),
-        data={**counts, "output": output, "returncode": returncode, "no_tests": no_tests},
+        data={
+            **counts,
+            "failed_tests": _parse_failed_tests(output),
+            "output": output,
+            "returncode": returncode,
+            "no_tests": no_tests,
+        },
     )

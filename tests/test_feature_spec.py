@@ -307,6 +307,140 @@ def test_read_only_operations_and_auth_required():
     assert any("configure_auth" in w for w in plan["warnings"])
 
 
+def test_partial_operations_compile_to_that_subset():
+    """A subset must compile to that subset — not to full CRUD with a warning."""
+    plan = compile_feature_spec(
+        spec_with(
+            [{"name": "title", "type": "string"}],
+            api={"operations": ["list", "retrieve", "create"]},
+        ),
+        [],
+        [],
+    )
+    (viewset_op,) = ops_by_type(plan, "create_viewset")
+    assert viewset_op["operations"] == ["list", "retrieve", "create"]
+    assert viewset_op["read_only"] is False
+    assert not any("approximated" in w for w in plan["warnings"])
+
+
+def test_ownership_wires_permission_owner_field_and_scoping():
+    """`ownership` must produce all three parts, not just a permission class."""
+    plan = compile_feature_spec(
+        spec_with(
+            [{"name": "body", "type": "text"}],
+            api={"authentication": "required", "ownership": "owner"},
+        ),
+        [],
+        [],
+    )
+    (model_op,) = ops_by_type(plan, "create_model")
+    (viewset_op,) = ops_by_type(plan, "create_viewset")
+
+    # 1. the FK column exists
+    owner = next(f for f in model_op["fields"] if f["name"] == "owner")
+    assert owner["type"] == "fk" and owner["to"] == "User" and owner["null"] is True
+    # 2. permissions are ANDed so anonymous gets 401, not an empty 200
+    assert viewset_op["permission"] == ["IsAuthenticated", "IsOwner"]
+    # 3. the viewset stamps the owner and scopes reads
+    assert viewset_op["owner_field"] == "owner"
+    assert viewset_op["owner_scoped_reads"] is True
+
+
+def test_ownership_leaves_reads_open_on_a_public_endpoint():
+    plan = compile_feature_spec(
+        spec_with(
+            [{"name": "body", "type": "text"}],
+            api={"authentication": "read_only_public", "ownership": {"field": "author"}},
+        ),
+        [],
+        [],
+    )
+    (viewset_op,) = ops_by_type(plan, "create_viewset")
+    assert viewset_op["permission"] == ["IsOwnerOrReadOnly"]
+    assert viewset_op["owner_field"] == "author"
+    # Scoping reads would contradict the declared public readability.
+    assert viewset_op["owner_scoped_reads"] is False
+
+
+def test_problems_carry_a_directly_applicable_fix_for_scalar_mistakes():
+    """A close-match suggestion is only half an answer without where to put it."""
+    problems = validate_feature_spec(
+        {
+            "name": "shop",
+            "entities": [
+                {
+                    "name": "Invoice",
+                    "fields": [
+                        {
+                            "name": "customer",
+                            "type": "relation",
+                            "target": "Custome",
+                            "cardinality": "many-to-one",
+                        }
+                    ],
+                    "api": {"authentication": "requird"},
+                },
+                {"name": "Customer", "fields": [{"name": "name", "type": "string"}]},
+            ],
+        },
+        [],
+        [],
+    )
+    by_code = {p["code"]: p for p in problems}
+
+    # The fix targets the scalar to overwrite, not the field that reported it.
+    relation = by_code["model_not_found"]
+    assert relation["fix"] == {
+        "path": "spec.entities[0].fields[0].target",
+        "set": "Customer",
+    }
+    auth = by_code["invalid_authentication"]
+    assert auth["fix"] == {
+        "path": "spec.entities[0].api.authentication",
+        "set": "required",
+    }
+
+
+def test_list_valued_problems_get_no_fix():
+    """Replacing a whole list with one suggestion would be wrong."""
+    problems = validate_feature_spec(
+        spec_with(
+            [{"name": "title", "type": "string"}],
+            api={"operations": ["list", "destroy"]},
+        ),
+        [],
+        [],
+    )
+    ops = next(p for p in problems if p["path"].endswith("api.operations"))
+    assert ops["suggestions"] == ["delete"]
+    assert "fix" not in ops
+
+
+def test_indexes_reach_the_model_meta():
+    plan = compile_feature_spec(
+        spec_with(
+            [{"name": "title", "type": "string"}, {"name": "region", "type": "string"}],
+            indexes=[{"fields": ["region"], "name": "idx_region"}, ["title"]],
+        ),
+        [],
+        [],
+    )
+    (model_op,) = ops_by_type(plan, "create_model")
+    assert model_op["meta"]["indexes"] == [
+        {"fields": ["region"], "name": "idx_region"},
+        {"fields": ["title"]},
+    ]
+
+
+def test_index_on_unknown_field_is_a_problem():
+    problems = validate_feature_spec(
+        spec_with([{"name": "title", "type": "string"}], indexes=[{"fields": ["nope"]}]),
+        [],
+        [],
+    )
+    assert any(p["path"].endswith("indexes[0]") for p in problems)
+
+
 def test_expose_false_skips_endpoint_ops():
     plan = compile_feature_spec(
         spec_with([{"name": "title", "type": "string"}], api={"expose": False}),
@@ -331,6 +465,10 @@ def test_invalid_operation_and_authentication_are_problems():
     codes = {p["code"] for p in problems}
     assert "invalid_input" in codes  # operations
     assert "invalid_authentication" in codes
+    # "destroy" is the framework's internal action name and the first thing an
+    # agent reaches for; difflib cannot bridge it, so the alias table must.
+    ops_problem = next(p for p in problems if p["path"].endswith("api.operations"))
+    assert ops_problem["suggestions"] == ["delete"]
 
 
 # ---------------------------------------------------------------------------
@@ -418,7 +556,14 @@ def test_compile_is_deterministic():
     assert compile_feature_spec(spec, [], []) == compile_feature_spec(spec, [], [])
 
 
-def test_existing_app_skips_create_app_and_warns_on_existing_model():
+def test_existing_app_still_gets_create_app_and_warns_on_existing_model():
+    """create_app is always planned, so a half-wired app repairs itself.
+
+    It has ensure-semantics — existing files are untouched, INSTALLED_APPS and
+    the project urls include are repaired — so planning it unconditionally is
+    what lets re-running a spec fix an app whose wiring was lost, without the
+    caller dropping to the per-object wiring tools.
+    """
     plan = compile_feature_spec(
         {"name": "shop", "entities": [
             {"name": "Product", "fields": [{"name": "name", "type": "string"}]}
@@ -426,7 +571,7 @@ def test_existing_app_skips_create_app_and_warns_on_existing_model():
         EXISTING,
         APPS,
     )
-    assert not ops_by_type(plan, "create_app")
+    assert ops_by_type(plan, "create_app") == [{"op": "create_app", "app": "shop"}]
     assert any("already exists" in w for w in plan["warnings"])
 
 
@@ -582,9 +727,18 @@ def test_compile_changes_add_field_resolves_app():
         APPS,
         None,
     )
-    (op,) = ops
+    op, sync = ops
     assert op["op"] == "add_field" and op["app"] == "shop"
     assert op["field"]["null"] is True
+    # The serializer must learn about the field too, or it stays invisible over the
+    # API and writes to it are accepted and then silently discarded.
+    assert sync == {
+        "op": "sync_serializer",
+        "app": "shop",
+        "model": "Product",
+        "field_name": "price",
+        "present": True,
+    }
 
 
 def test_compile_changes_add_relation_and_remove_field():
@@ -600,7 +754,16 @@ def test_compile_changes_add_relation_and_remove_field():
     )
     assert ops[0]["op"] == "add_relationship"
     assert ops[0]["rel"]["to"] == "accounts.User"
-    assert ops[1] == {"op": "remove_field", "app": "shop", "model": "Product", "field_name": "name"}
+    # Every field change carries a matching serializer sync, in both directions.
+    assert ops[1] == {
+        "op": "sync_serializer", "app": "shop", "model": "Product",
+        "field_name": "owner", "present": True,
+    }
+    assert ops[2] == {"op": "remove_field", "app": "shop", "model": "Product", "field_name": "name"}
+    assert ops[3] == {
+        "op": "sync_serializer", "app": "shop", "model": "Product",
+        "field_name": "name", "present": False,
+    }
 
 
 def test_compile_changes_add_entity_expands_to_full_scaffold():
@@ -612,7 +775,15 @@ def test_compile_changes_add_entity_expands_to_full_scaffold():
         None,
     )
     kinds = [op["op"] for op in ops]
-    assert kinds == ["create_model", "create_serializer", "create_viewset", "register_route"]
+    assert kinds == [
+        # add_entity reuses the feature compiler, so it inherits the same
+        # ensure-the-app-is-wired step a build gets.
+        "create_app",
+        "create_model",
+        "create_serializer",
+        "create_viewset",
+        "register_route",
+    ]
     assert ops[-1]["prefix"] == "orders"
 
 
@@ -857,3 +1028,311 @@ def test_add_transition_rejects_bad_shapes():
             [{"operation": "add_workflow", "entity": "Order"}],
             existing, ["shop"], None,
         )
+
+
+# ---------------------------------------------------------------------------
+# Convergent reconciliation (re-running a build with an extended spec)
+# ---------------------------------------------------------------------------
+
+
+BLOG_EXISTING = [
+    {
+        "app": "blog",
+        "model": "Post",
+        "fields": ["id", "title", "created_at", "updated_at"],
+        "field_types": {
+            "id": "AutoField",
+            "title": "CharField",
+            "created_at": "DateTimeField",
+            "updated_at": "DateTimeField",
+        },
+    }
+]
+
+
+def test_compile_reconciles_existing_entity_adds_missing_fields():
+    plan = compile_feature_spec(
+        spec_with(
+            [
+                {"name": "title", "type": "string"},
+                {"name": "subtitle", "type": "string"},
+                {"name": "author", "type": "relation", "target": "User"},
+            ]
+        ),
+        BLOG_EXISTING + EXISTING,
+        ["blog", *APPS],
+    )
+    added = {op["field"]["name"] for op in ops_by_type(plan, "add_field")}
+    assert added == {"subtitle"}
+    related = {op["rel"]["name"] for op in ops_by_type(plan, "add_relationship")}
+    assert related == {"author"}
+    # Every reconciled field is also exposed on the serializer, or writes to it
+    # are accepted and silently discarded.
+    synced = {(op["field_name"], op["present"]) for op in ops_by_type(plan, "sync_serializer")}
+    assert synced == {("subtitle", True), ("author", True)}
+    # The create steps stay (skip-idempotent), and reconcile ops come after them.
+    assert ops_by_type(plan, "create_model")
+    kinds = [op["op"] for op in plan["operations"]]
+    assert kinds.index("create_serializer") < kinds.index("sync_serializer")
+    assert "drift" not in plan
+    assert "reconciling 2 field(s)" in plan["summary"]
+    assert any("reconciling: 2 missing field(s)" in w for w in plan["warnings"])
+
+
+def test_compile_reconcile_is_noop_when_spec_matches_disk():
+    plan = compile_feature_spec(
+        spec_with([{"name": "title", "type": "string"}]),
+        BLOG_EXISTING,
+        ["blog"],
+    )
+    assert ops_by_type(plan, "add_field") == []
+    assert ops_by_type(plan, "sync_serializer") == []
+    assert "drift" not in plan
+    assert any("already exists" in w for w in plan["warnings"])
+
+
+def test_compile_reports_drift_without_applying_it():
+    plan = compile_feature_spec(
+        # 'title' is CharField on disk and text in the spec; created_at/updated_at
+        # are not drift because timestamps=True re-declares them.
+        spec_with([{"name": "title", "type": "text"}], timestamps=True),
+        BLOG_EXISTING,
+        ["blog"],
+    )
+    kinds = {entry["kind"] for entry in plan["drift"]["entries"]}
+    assert kinds == {"type_changed"}
+    operations = {op["operation"] for op in plan["drift"]["suggested_changes"]}
+    assert operations == {"alter_field"}
+    # Reported, never applied.
+    assert ops_by_type(plan, "alter_field") == []
+    assert any("Destructive drift" in w for w in plan["warnings"])
+
+
+def test_compile_reports_fields_missing_from_spec_as_drift():
+    existing = [
+        {
+            "app": "blog",
+            "model": "Post",
+            "fields": ["id", "title", "legacy"],
+            "field_types": {"title": "CharField", "legacy": "IntegerField"},
+        }
+    ]
+    plan = compile_feature_spec(
+        spec_with([{"name": "title", "type": "string"}], timestamps=False),
+        existing,
+        ["blog"],
+    )
+    entries = plan["drift"]["entries"]
+    assert [(e["field"], e["kind"]) for e in entries] == [("legacy", "missing_from_spec")]
+    assert plan["drift"]["suggested_changes"] == [
+        {"operation": "remove_field", "entity": "Post", "app": "blog", "field_name": "legacy"}
+    ]
+    assert ops_by_type(plan, "remove_field") == []
+
+
+def test_compile_skips_type_drift_without_field_types_inventory():
+    # Older inventory snapshots carry names only — no types means no type drift,
+    # not drift reported against every field.
+    plan = compile_feature_spec(
+        spec_with([{"name": "title", "type": "text"}], timestamps=False),
+        [{"app": "blog", "model": "Post", "fields": ["id", "title"]}],
+        ["blog"],
+    )
+    assert "drift" not in plan
+
+
+# ---------------------------------------------------------------------------
+# New change_feature operations
+# ---------------------------------------------------------------------------
+
+
+ORDER_EXISTING = [
+    {
+        "app": "shop",
+        "model": "Order",
+        "fields": ["id", "reference", "total"],
+        "field_types": {"reference": "CharField", "total": "IntegerField"},
+    }
+]
+
+
+def test_alter_field_change_compiles_and_warns_on_type_change():
+    ops, warnings = compile_changes(
+        [{"operation": "alter_field", "entity": "Order",
+          "field": {"name": "total", "type": "decimal", "max_digits": 10,
+                     "decimal_places": 2}}],
+        ORDER_EXISTING,
+        ["shop"],
+        None,
+    )
+    assert [op["op"] for op in ops] == ["alter_field"]
+    assert ops[0]["field"]["type"] == "decimal"
+    assert any("IntegerField → DecimalField" in w for w in warnings)
+
+
+def test_alter_field_rejects_unknown_field_with_suggestions():
+    with pytest.raises(AgentError) as exc:
+        compile_changes(
+            [{"operation": "alter_field", "entity": "Order",
+              "field": {"name": "referenc", "type": "text"}}],
+            ORDER_EXISTING,
+            ["shop"],
+            None,
+        )
+    problem = (exc.value.result.data or {})["problems"][0]
+    assert problem["code"] == "field_not_found"
+    assert problem["suggestions"] == ["reference"]
+
+
+def test_remove_entity_emits_cleanup_in_reverse_creation_order():
+    ops, warnings = compile_changes(
+        [{"operation": "remove_entity", "entity": "Order"}],
+        ORDER_EXISTING,
+        ["shop"],
+        None,
+    )
+    assert [op["op"] for op in ops] == [
+        "unregister_route",
+        "delete_viewset",
+        "delete_serializer",
+        "delete_model",
+    ]
+    assert all(op["app"] == "shop" and op["model"] == "Order" for op in ops)
+    assert any("dangling relation" in w for w in warnings)
+
+
+def test_remove_entity_unpublishes_it_from_the_batch_inventory():
+    with pytest.raises(AgentError) as exc:
+        compile_changes(
+            [
+                {"operation": "remove_entity", "entity": "Order"},
+                {"operation": "add_field", "entity": "Order",
+                 "field": {"name": "note", "type": "string"}},
+            ],
+            ORDER_EXISTING,
+            ["shop"],
+            None,
+        )
+    assert (exc.value.result.data or {})["problems"][0]["code"] == "model_not_found"
+
+
+def test_set_permissions_and_authentication_compile_to_update_viewset():
+    ops, _ = compile_changes(
+        [{"operation": "set_permissions", "entity": "Order",
+          "permissions": ["IsAdminUser"]}],
+        ORDER_EXISTING, ["shop"], None,
+    )
+    assert ops == [
+        {"op": "update_viewset", "app": "shop", "model": "Order",
+         "permission": ["IsAdminUser"]}
+    ]
+    ops, _ = compile_changes(
+        [{"operation": "set_authentication", "entity": "Order",
+          "authentication": "required"}],
+        ORDER_EXISTING, ["shop"], None,
+    )
+    assert ops[0]["permission"] == ["IsAuthenticated"]
+
+
+def test_set_permissions_rejects_unknown_class_and_authentication():
+    with pytest.raises(AgentError) as exc:
+        compile_changes(
+            [{"operation": "set_permissions", "entity": "Order",
+              "permissions": ["IsAdminUsr"]}],
+            ORDER_EXISTING, ["shop"], None,
+        )
+    problem = (exc.value.result.data or {})["problems"][0]
+    assert problem["code"] == "invalid_permission"
+    assert "IsAdminUser" in problem["suggestions"]
+
+    with pytest.raises(AgentError) as exc:
+        compile_changes(
+            [{"operation": "set_authentication", "entity": "Order",
+              "authentication": "requird"}],
+            ORDER_EXISTING, ["shop"], None,
+        )
+    assert (exc.value.result.data or {})["problems"][0]["code"] == "invalid_authentication"
+
+
+def test_add_entity_generates_tests_into_a_per_entity_file():
+    ops, _ = compile_changes(
+        [{"operation": "add_entity", "app": "shop",
+          "entity": {"name": "Refund", "fields": [{"name": "amount", "type": "int"}]}}],
+        ORDER_EXISTING, ["shop"], None, tests=True,
+    )
+    generated = [op for op in ops if op["op"] == "generate_tests"]
+    assert [op["filename"] for op in generated] == ["tests/test_shop_refund_generated.py"]
+    # Default stays off — field-level changes never regenerate tests.
+    ops, _ = compile_changes(
+        [{"operation": "add_entity", "app": "shop",
+          "entity": {"name": "Refund", "fields": [{"name": "amount", "type": "int"}]}}],
+        ORDER_EXISTING, ["shop"], None,
+    )
+    assert not [op for op in ops if op["op"] == "generate_tests"]
+
+
+def test_explicit_permissions_reach_the_test_descriptor():
+    """The generated tests must be derived from the permission actually applied.
+
+    An explicit ``api.permissions`` used to be invisible to the test scaffold,
+    which read ``authentication`` instead — so a gated endpoint got an
+    anonymous-GET-expects-200 test that failed against correct code.
+    """
+    from zeeb_agents.test_scaffold import _render_api_smoke
+
+    plan = compile_feature_spec(
+        spec_with(
+            [{"name": "title", "type": "string"}],
+            # authentication left at its read_only_public default on purpose.
+            api={"permissions": ["IsAuthenticated"]},
+        ),
+        [],
+        [],
+    )
+    (viewset_op,) = ops_by_type(plan, "create_viewset")
+    (tests_op,) = ops_by_type(plan, "generate_tests")
+    (descriptor,) = tests_op["entities"]
+
+    assert viewset_op["permission"] == ["IsAuthenticated"]
+    assert descriptor["permission"] == ["IsAuthenticated"]
+    # The endpoint is exercised, but as an authenticated caller — never
+    # anonymously, which is what used to fail against correct code.
+    smoke = _render_api_smoke(descriptor) or ""
+    assert "auth_client" in smoke
+    assert "(client, api_prefix)" not in smoke
+
+
+def test_read_only_public_still_generates_the_anonymous_smoke_test():
+    from zeeb_agents.test_scaffold import _render_api_smoke
+
+    plan = compile_feature_spec(
+        spec_with([{"name": "title", "type": "string"}]),
+        [],
+        [],
+    )
+    (tests_op,) = ops_by_type(plan, "generate_tests")
+    (descriptor,) = tests_op["entities"]
+    assert descriptor["permission"] == ["IsAuthenticatedOrReadOnly"]
+    assert "assert resp.status_code == 200" in (_render_api_smoke(descriptor) or "")
+
+
+# ---------------------------------------------------------------------------
+# Risk
+# ---------------------------------------------------------------------------
+
+
+def test_plan_risk_is_high_when_an_entity_is_dropped():
+    from zeeb_agents.feature_spec import _plan_risk
+
+    ops, _ = compile_changes(
+        [{"operation": "remove_entity", "entity": "Order"}],
+        ORDER_EXISTING, ["shop"], None,
+    )
+    risk = _plan_risk(ops)
+    assert risk == {"level": "high", "destructive": True, "database_changes": True}
+    # A field removal stays medium — routine schema churn, not a dropped table.
+    ops, _ = compile_changes(
+        [{"operation": "remove_field", "entity": "Order", "field_name": "total"}],
+        ORDER_EXISTING, ["shop"], None,
+    )
+    assert _plan_risk(ops)["level"] == "medium"

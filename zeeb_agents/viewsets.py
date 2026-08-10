@@ -8,15 +8,20 @@ from pathlib import Path
 
 from zeeb_agents._utils import AgentResult, agent_function
 from zeeb_agents._utils.code_gen import (
+    VIEWSET_OPERATIONS,
     append_block,
     class_exists,
     ensure_import,
     pluralize,
+    remove_class_block,
+    remove_import_name,
     render_action_method,
     render_viewset_class,
     resolve_authentication,
     resolve_pagination,
     resolve_permissions,
+    resolve_viewset_base,
+    router_registrations,
     skip_result,
     validate_if_exists,
     validate_throttles,
@@ -56,6 +61,11 @@ async def create_viewset(
     ordering_fields: list[str] | None = None,
     filterset: str | None = None,
     authentication: str | list[str] | None = None,
+    # zeebpy-only extension: it must follow the cross-backend parameter port
+    # (see tests/test_django_agents.py::test_signature_parity_with_zeeb_agents).
+    operations: list[str] | None = None,
+    owner_field: str | None = None,
+    owner_scoped_reads: bool = False,
     if_exists: str = "error",
     register: bool = False,
     url_prefix: str | None = None,
@@ -81,7 +91,8 @@ async def create_viewset(
             for OR-logic compose a custom class instead.
             Default: ``"IsAuthenticatedOrReadOnly"``.
         read_only: Generate a ``ReadOnlyModelViewSet`` (query/list/retrieve
-            only) instead of a full-CRUD ``ModelViewSet``.
+            only) instead of a full-CRUD ``ModelViewSet``. Ignored when
+            *operations* is given.
         lookup_field: Field used for detail lookups (default ``"id"``), e.g.
             ``"slug"``.
         pagination: ``"page"``, ``"limit_offset"``, ``"cursor"`` (or the
@@ -108,6 +119,21 @@ async def create_viewset(
             the project's global auth middleware stays in charge. Note: a
             non-empty list takes ownership — requests only the middleware
             would authenticate are treated as anonymous on this viewset.
+        operations: The API operations to expose — any of ``"list"``,
+            ``"retrieve"``, ``"create"``, ``"update"``, ``"delete"``. Only the
+            named operations get an endpoint: all five generate a
+            ``ModelViewSet``, exactly list+retrieve a ``ReadOnlyModelViewSet``,
+            and any other subset an explicit mixin composition. Omitted
+            (default), *read_only* decides.
+        owner_field: Name of the FK to the user model that owns each row (e.g.
+            ``"owner"``). Generates a ``perform_create`` that stamps the
+            authenticated user server-side — the client can never claim
+            ownership through the request body. Pair it with the ``IsOwner`` /
+            ``IsOwnerOrReadOnly`` permission class.
+        owner_scoped_reads: Also generate a ``get_queryset`` restricting every
+            read to the caller's own rows (anonymous callers see nothing). Use
+            for private data; leave off when rows are publicly readable and only
+            writes are owner-gated.
         if_exists: ``"error"`` (default) or ``"skip"`` (succeed and change
             nothing if the ViewSet already exists — makes retries idempotent).
         register: When true, also register the ViewSet's route in
@@ -130,6 +156,14 @@ async def create_viewset(
             ``register=True``)
         prefix (str): the URL segment registered under (only when
             ``register=True`` and registration succeeded)
+        registration_error (str): why registration failed, when
+            ``register=True`` but the route could not be wired
+        operations (list[str]): the operations actually served, so the caller
+            never has to infer the endpoint set from the base class
+        base_class (str): the ViewSet base class that was generated
+        viewset_created (bool): whether the class was written this call
+        skipped (bool): present and ``True`` when the ViewSet already existed
+            and ``if_exists="skip"`` was passed
 
     Notes:
         - Failures carry ``error_code`` in ``data`` (``app_not_found``,
@@ -143,6 +177,7 @@ async def create_viewset(
     """
     ensure_identifier(model_name, "model name")
     validate_if_exists(if_exists)
+    base_class, base_imports = resolve_viewset_base(operations, read_only)
     if pagination:
         resolve_pagination(pagination)
     if throttles:
@@ -181,14 +216,14 @@ async def create_viewset(
             ordering_fields=ordering_fields,
             filterset=filterset,
             authentication=auth_refs or None,
+            operations=operations,
+            owner_field=owner_field,
+            owner_scoped_reads=owner_scoped_reads,
         )
         ensure_import(path, "from zeeb_api import viewsets, permissions")
-        for import_line in (*perm_imports, *auth_imports):
+        for import_line in (*perm_imports, *auth_imports, *base_imports):
             ensure_import(path, import_line)
-        if not read_only:
-            ensure_import(path, "from zeeb_api.viewsets import ModelViewSet")
         for import_line in viewset_option_imports(
-            read_only=read_only,
             pagination=pagination,
             throttles=throttles,
             search_fields=search_fields,
@@ -230,6 +265,12 @@ async def create_viewset(
         "viewset": class_name,
         "read_only": read_only,
         "options": options,
+        # The operations actually served, so the caller never has to infer the
+        # endpoint set from the base class it did not choose.
+        "operations": sorted(operations) if operations else list(
+            ("list", "retrieve") if read_only else VIEWSET_OPERATIONS
+        ),
+        "base_class": base_class,
     }
     if skipped:
         data["skipped"] = True
@@ -355,6 +396,8 @@ async def add_viewset_action(
         url_path (str): the URL segment (``url_path`` or *action_name*)
         wiring (dict): the serializer/schema/permission names that were wired
             (only keys that were set — e.g. ``{"response_serializer": "..."}``)
+        skipped (bool): present and ``True`` when the action already existed
+            and ``if_exists="skip"`` was passed
 
     Notes:
         - On failure (missing ``views.py``, or the ViewSet class is not found)
@@ -762,32 +805,27 @@ async def register_route(
     def _write() -> None:
         content = path.read_text(encoding="utf-8")
         register_line = f'router.register("{prefix}", {viewset_name})'
-        # Scan uncommented lines only — the app scaffold ships a commented
-        # ``# router.register(...)`` example that must not count.
-        active_lines = [
-            line for line in content.splitlines() if not line.lstrip().startswith("#")
-        ]
-        if any(register_line in line for line in active_lines):
+        # Read the registrations out of the AST: the scaffolded urls.py carries
+        # a copy-pasteable example in its module docstring, and a text scan
+        # would refuse a prefix that nothing actually occupies.
+        registered = router_registrations(content)
+        if any(existing == viewset_name for _, existing, _ in registered):
             raise AgentError(
                 f"Route for '{viewset_name}' already registered",
                 code="already_exists",
                 viewset=viewset_name,
                 prefix=prefix,
             )
-        conflict_re = re.compile(
-            rf'router\.register\(\s*"{re.escape(prefix)}"\s*,\s*(\w+)'
-        )
-        for line in active_lines:
-            conflict = conflict_re.search(line)
-            if conflict:
+        for taken_prefix, taken_viewset, _ in registered:
+            if taken_prefix == prefix:
                 raise AgentError(
-                    f"Prefix '{prefix}' is already registered to {conflict.group(1)} "
+                    f"Prefix '{prefix}' is already registered to {taken_viewset} "
                     f"in apps/{app}/urls.py — a second registration at the same "
                     f"prefix is silently shadowed at runtime. Pass url_prefix to "
                     f"mount {viewset_name} under a different segment.",
                     code="prefix_conflict",
                     prefix=prefix,
-                    registered_viewset=conflict.group(1),
+                    registered_viewset=taken_viewset,
                     viewset=viewset_name,
                 )
         ensure_import(path, f"from .views import {viewset_name}")
@@ -829,6 +867,140 @@ async def register_route(
             "installed": True,
             "urls_included": True,
         },
+    )
+
+
+@agent_function
+async def delete_viewset(
+    app: str,
+    model_name: str,
+    project_root: Path | None = None,
+) -> AgentResult:
+    """Remove ``<ModelName>ViewSet`` and the imports only it used.
+
+    The views half of removing an entity. ``views.py`` imports both the model
+    and the serializer of the ViewSet it defines; leaving those imports behind
+    once the model and serializer are gone breaks the module at import time —
+    which takes down every other endpoint in the app, not just this one. So the
+    model and serializer import names go with the class.
+
+    Args:
+        app: App directory name.
+        model_name: The model whose ViewSet to delete (e.g. ``"Post"``).
+
+    Returns data (on success):
+        app (str): the app directory name
+        viewset (str): the class name that was targeted
+        skipped (bool): ``True`` when there was nothing to delete
+        prefix (str): the URL segment the ViewSet had been registered under,
+            when one was found
+
+    Notes:
+        - No-ops (success, ``skipped=True``) when ``views.py`` or the class is
+          absent, so removing an entity twice stays idempotent.
+        - Unregister the route first (:func:`unregister_route`) — ``urls.py``
+          imports this class.
+    """
+    class_name = f"{model_name}ViewSet"
+    path = _views_file(app, project_root)
+
+    def _skipped(reason: str) -> AgentResult:
+        return AgentResult(
+            success=True,
+            message=f"'{class_name}' not deleted: {reason}",
+            data={"app": app, "viewset": class_name, "skipped": True},
+        )
+
+    if not path.exists():
+        return _skipped("no views.py")
+
+    def _delete() -> bool:
+        content = path.read_text(encoding="utf-8")
+        stripped = remove_class_block(content, class_name)
+        if stripped is None:
+            return False
+        stripped = remove_import_name(stripped, model_name)
+        stripped = remove_import_name(stripped, f"{model_name}Serializer")
+        path.write_text(stripped, encoding="utf-8")
+        return True
+
+    if not await asyncio.to_thread(_delete):
+        return _skipped(f"no class '{class_name}'")
+    return AgentResult(
+        success=True,
+        message=f"ViewSet '{class_name}' removed from apps/{app}/views.py",
+        data={"app": app, "viewset": class_name, "skipped": False},
+    )
+
+
+@agent_function
+async def unregister_route(
+    app: str,
+    model_name: str,
+    project_root: Path | None = None,
+) -> AgentResult:
+    """Remove a ViewSet's ``router.register(...)`` line and its import.
+
+    The inverse of :func:`register_route`, and the first step of removing an
+    entity: while the registration stands, ``urls.py`` imports a ViewSet that is
+    about to be deleted. The app itself stays installed and included — other
+    ViewSets in the same app keep serving.
+
+    Args:
+        app: App directory name.
+        model_name: The model whose ``<ModelName>ViewSet`` to unregister.
+
+    Returns data (on success):
+        app (str): the app directory name
+        viewset (str): the class name that was targeted
+        prefix (str | None): the URL segment it was mounted under
+        skipped (bool): ``True`` when no registration was found
+
+    Notes:
+        - No-ops (success, ``skipped=True``) when ``urls.py`` has no active
+          registration for the ViewSet, so re-runs stay idempotent.
+    """
+    viewset_name = f"{model_name}ViewSet"
+    path = _urls_file(app, project_root)
+
+    def _skipped(reason: str) -> AgentResult:
+        return AgentResult(
+            success=True,
+            message=f"'{viewset_name}' not unregistered: {reason}",
+            data={"app": app, "viewset": viewset_name, "prefix": None, "skipped": True},
+        )
+
+    if not path.exists():
+        return _skipped("no urls.py")
+
+    def _delete() -> str | None:
+        content = path.read_text(encoding="utf-8")
+        # Located through the AST: matching the line textually would happily
+        # cut a line out of the middle of the module docstring, which carries a
+        # copy-pasteable registration example.
+        targets = {
+            lineno: found_prefix
+            for found_prefix, found_viewset, lineno in router_registrations(content)
+            if found_viewset == viewset_name
+        }
+        if not targets:
+            return None
+        prefix = next(iter(targets.values()))
+        kept = [
+            line
+            for number, line in enumerate(content.splitlines(keepends=True), start=1)
+            if number not in targets
+        ]
+        path.write_text(remove_import_name("".join(kept), viewset_name), encoding="utf-8")
+        return prefix
+
+    prefix = await asyncio.to_thread(_delete)
+    if prefix is None:
+        return _skipped(f"'{viewset_name}' is not registered")
+    return AgentResult(
+        success=True,
+        message=f"'{viewset_name}' unregistered from '{prefix}/'",
+        data={"app": app, "viewset": viewset_name, "prefix": prefix, "skipped": False},
     )
 
 
@@ -900,6 +1072,7 @@ async def generate_crud(
             when ``migrate=True`` — migration creation/apply).
         migrated (dict): present only when ``migrate=True`` —
             ``{"created": str | None, "applied": list[str]}``.
+        errors (list[str]): step failures that did not stop the run.
 
     Notes:
         - Resumable: each step is issued with ``if_exists="skip"``, so re-running
@@ -1056,12 +1229,8 @@ async def list_endpoints(project_root: Path | None = None) -> AgentResult:
             if not urls_path.exists():
                 continue
             content = urls_path.read_text(encoding="utf-8")
-            for m in re.finditer(r'^[ \t]*router\.register\(["\']([^"\']+)["\'],\s*(\w+)', content, re.MULTILINE):
-                endpoints.append({
-                    "app": app,
-                    "prefix": m.group(1),
-                    "viewset": m.group(2),
-                })
+            for prefix, viewset, _ in router_registrations(content):
+                endpoints.append({"app": app, "prefix": prefix, "viewset": viewset})
         return endpoints
 
     endpoints = await asyncio.to_thread(_scan)

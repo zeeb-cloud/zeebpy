@@ -93,7 +93,7 @@ async def create_app(
     wire: bool = True,
     project_root: Path | None = None,
 ) -> AgentResult:
-    """Create a new app inside an existing Zeeb project — wired and served.
+    """Ensure an app exists in a Zeeb project — scaffolded, wired, and served.
 
     Delegates to the existing ``run_startapp`` CLI logic to scaffold
     ``apps/<name>/``, then (when *wire* is true, the default) **registers the
@@ -101,6 +101,11 @@ async def create_app(
     ``INSTALLED_APPS`` (so migrations see its models) and includes the app's
     router in the project ``urls.py`` (so its endpoints are routed). Both edits
     are idempotent.
+
+    Ensure-semantics, not create-or-fail: for an app that already exists the
+    files are left untouched and only the wiring is (re)applied. That makes this
+    the repair for an app whose models never migrate, or whose endpoints 404,
+    because it was never registered.
 
     Args:
         name: App directory name (a valid Python identifier). Also accepted as
@@ -113,7 +118,9 @@ async def create_app(
 
     Returns data (on success):
         name (str): the app name
-        path (str): absolute path to the created app directory
+        path (str): absolute path to the app directory
+        created (bool): whether this call scaffolded the app directory
+            (``False`` when it already existed and only wiring ran)
         installed_apps_updated (bool): whether ``INSTALLED_APPS`` was changed
             (``False`` when *wire* is false or the app was already registered)
         urls_wired (bool): whether the project ``urls.py`` was changed
@@ -128,19 +135,24 @@ async def create_app(
     """
     ensure_identifier(name, "app name")
     root = require_project_root(project_root)
+    existed = get_app_path(name, root).is_dir()
 
     def _run() -> int:
         old_cwd = os.getcwd()
         os.chdir(root)
         try:
             from zeeb_orm.cli.commands.startapp import run_startapp
-            return run_startapp(name)
+            # Scaffold only: the wiring below reports whether each edit
+            # actually changed anything, which it could not do if
+            # run_startapp had already applied them.
+            return run_startapp(name, wire=False)
         finally:
             os.chdir(old_cwd)
 
-    rc = await asyncio.to_thread(_run)
-    if rc != 0:
-        return AgentResult(success=False, message=f"App creation failed (exit code {rc})")
+    if not existed:
+        rc = await asyncio.to_thread(_run)
+        if rc != 0:
+            return AgentResult(success=False, message=f"App creation failed (exit code {rc})")
 
     installed_updated = False
     urls_wired = False
@@ -154,13 +166,19 @@ async def create_app(
         installed_updated, urls_wired = await asyncio.to_thread(_wire)
 
     app_path = str(get_app_path(name, root))
-    served = " and wired into the project" if wire else ""
+    if not existed:
+        message = f"App '{name}' created{' and wired into the project' if wire else ''}"
+    elif installed_updated or urls_wired:
+        message = f"App '{name}' already existed — wiring repaired"
+    else:
+        message = f"App '{name}' already exists and is wired"
     return AgentResult(
         success=True,
-        message=f"App '{name}' created{served}",
+        message=message,
         data={
             "name": name,
             "path": app_path,
+            "created": not existed,
             "installed_apps_updated": installed_updated,
             "urls_wired": urls_wired,
         },
@@ -529,19 +547,22 @@ async def describe_project(project_root: Path | None = None) -> AgentResult:
         if a["model_count"] and not a["installed"]:
             warnings.append(
                 f"App '{a['name']}' has models but is not in INSTALLED_APPS — "
-                f"its models will not migrate. Run install_app('{a['name']}')."
+                f"its models will not migrate. Run create_app('{a['name']}') to "
+                "repair the wiring (existing files are untouched)."
             )
         if a["has_signals"] and not a["installed"]:
             warnings.append(
                 f"App '{a['name']}' has signal receivers (signals.py) but is not "
-                f"in INSTALLED_APPS — they never load. Run install_app('{a['name']}')."
+                f"in INSTALLED_APPS — they never load. Run create_app('{a['name']}') "
+                "to repair the wiring (existing files are untouched)."
             )
     for ep in endpoints:
         if not ep["served"]:
             warnings.append(
                 f"Endpoint '{ep['prefix']}' ({ep['viewset']}) is registered but "
                 f"app '{ep['app']}' router is not included in urls.py — it 404s. "
-                f"Run wire_app_urls('{ep['app']}')."
+                f"Run create_app('{ep['app']}') to repair the wiring (existing "
+                "files are untouched)."
             )
 
     # Duplicate route prefixes: the project router mounts every app's

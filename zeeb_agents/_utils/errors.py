@@ -29,6 +29,10 @@ ERROR_CODES = frozenset(
         "user_not_found",
         "log_file_not_found",
         "field_not_found",
+        "feature_not_found",
+        "feature_archived",
+        "feature_active",
+        "archive_missing",
         "file_not_found",
         "function_not_found",
         "setting_not_found",
@@ -52,6 +56,7 @@ ERROR_CODES = frozenset(
         "no_project_id",
         "project_not_found",
         "runtime_not_configured",
+        "partial_failure",
     }
 )
 
@@ -90,6 +95,12 @@ def fail(
     payload["recoverable"] = (
         recoverable if recoverable is not None else code not in _NON_RECOVERABLE_CODES
     )
+    # Every code in the vocabulary is a lookup/validation failure raised before
+    # anything is written — except partial_failure, which reports its own
+    # progress. Stating it explicitly means a caller never has to infer "did
+    # this leave the project half-changed?" from the absence of a key.
+    if code != "partial_failure":
+        payload.setdefault("state_changed", False)
     if suggestions:
         payload["suggestions"] = suggestions
     return AgentResult(success=False, message=message, data=payload)

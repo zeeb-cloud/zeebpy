@@ -27,6 +27,7 @@ import pytest
 
 import zeeb_agents as agents
 from zeeb_agents import AgentResult
+from zeeb_agents._utils.code_gen import extract_field_types
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -130,7 +131,7 @@ async def test_explicit_project_id_wins_over_project_root(project, tmp_path):
     bogus = tmp_path / "does-not-exist"
     result = await agents.list_apps(project_id=project, project_root=bogus)
     assert result.success
-    assert result.data["apps"] == ["blog"]
+    assert result.data["apps"] == ["accounts", "blog"]
 
 
 # ---------------------------------------------------------------------------
@@ -165,14 +166,16 @@ async def test_create_app(project):
 
 
 async def test_list_apps_and_project_info(project):
+    # Every project is scaffolded with the accounts app that owns its user
+    # model; list_apps sorts, so it comes first.
     result = await agents.list_apps(project_id=project)
     assert result.success
-    assert result.data["apps"] == ["blog"]
+    assert result.data["apps"] == ["accounts", "blog"]
 
     info = await agents.get_project_info(project_id=project)
     assert info.success
     assert info.data["project_package"] == "demo"
-    assert info.data["apps"] == ["blog"]
+    assert info.data["apps"] == ["accounts", "blog"]
     assert "sqlite" in info.data["database_url"]
 
 
@@ -247,6 +250,38 @@ async def test_create_serializer(project):
     assert "class PostSerializer(ModelSerializer):" in content
     assert "from .models import Post" in content
     assert '"title"' in content
+
+
+async def test_sync_serializer_field_round_trip(project):
+    """A model field must reach the serializer, or the API silently drops writes to it."""
+    await agents.create_model("blog", "Post", POST_FIELDS, project_id=project)
+    await agents.create_serializer(
+        "blog", "Post", fields=["id", "title", "created_at"], project_id=project
+    )
+    path = project / "apps" / "blog" / "serializers.py"
+
+    added = await agents.sync_serializer_field("blog", "Post", "subtitle", project_id=project)
+    assert added.success, added.message
+    # Inserted before the trailing audit column, not appended after it.
+    assert added.data["fields"] == ["id", "title", "subtitle", "created_at"]
+    assert '"subtitle"' in path.read_text()
+
+    # Idempotent: a second add is a no-op rather than a duplicate entry.
+    again = await agents.sync_serializer_field("blog", "Post", "subtitle", project_id=project)
+    assert again.success and again.data["skipped"] is True
+
+    removed = await agents.sync_serializer_field(
+        "blog", "Post", "subtitle", present=False, project_id=project
+    )
+    assert removed.data["fields"] == ["id", "title", "created_at"]
+    assert '"subtitle"' not in path.read_text()
+
+
+async def test_sync_serializer_field_skips_when_nothing_to_sync(project):
+    """No serializer (e.g. an unexposed model) is a no-op, not a failure."""
+    await agents.create_model("blog", "Post", POST_FIELDS, project_id=project)
+    result = await agents.sync_serializer_field("blog", "Post", "subtitle", project_id=project)
+    assert result.success and result.data["skipped"] is True
 
 
 async def test_create_viewset(project):
@@ -424,9 +459,11 @@ async def test_add_viewset_action_invalid_permission(project):
 
 
 async def test_env_round_trip(project):
-    # No .env yet
+    # startproject generates a .env holding DEBUG and a per-project SECRET_KEY.
     result = await agents.get_env(project_id=project)
-    assert not result.success
+    assert result.success
+    assert set(result.data["env"]) == {"DEBUG", "SECRET_KEY"}
+    scaffolded = dict(result.data["env"])
 
     result = await agents.set_env("API_KEY", "abc123", project_id=project)
     assert result.success
@@ -439,12 +476,13 @@ async def test_env_round_trip(project):
 
     result = await agents.get_env(project_id=project)
     assert result.success
-    assert result.data["env"] == {"API_KEY": "xyz"}
+    assert result.data["env"] == {**scaffolded, "API_KEY": "xyz"}
 
     result = await agents.delete_env("API_KEY", project_id=project)
     assert result.success
     result = await agents.get_env(project_id=project)
-    assert result.success is True or result.data["env"] == {}
+    assert result.success
+    assert result.data["env"] == scaffolded
 
     result = await agents.delete_env("MISSING", project_id=project)
     assert not result.success
@@ -870,12 +908,28 @@ def test_human_docs_awaited_tool_calls_have_valid_kwargs():
 
 
 def test_error_recovery_codes_are_real():
-    """Every ``error_code`` cell in error-recovery.md is in the ERROR_CODES vocab."""
+    """Every ``error_code`` cell in error-recovery.md is in the ERROR_CODES vocab.
+
+    Scoped to the error-code tables (the ones whose header is
+    ``| `error_code` | Meaning | What to do |``): the doc also documents the
+    failure *envelope*, whose key names are not error codes.
+    """
     from zeeb_agents._utils.errors import ERROR_CODES
 
     text = (_DOCS_DIR / "zeebpy" / "error-recovery.md").read_text(encoding="utf-8")
-    documented = set(re.findall(r"\|\s*`([a-z_]+)`\s*/?\s*`?([a-z_]*)`?\s*\|", text))
-    codes = {c for pair in documented for c in pair if c} - {"error_code"}
+    codes: set[str] = set()
+    in_code_table = False
+    for line in text.splitlines():
+        if line.startswith("|"):
+            # Only the header row opens a code table — an `error_code` row inside
+            # the envelope table must not turn its neighbours into "codes".
+            if line.replace(" ", "").startswith("|`error_code`|Meaning|"):
+                in_code_table = True
+            elif in_code_table:
+                codes.update(re.findall(r"`([a-z_]+)`", line.split("|")[1]))
+        elif line.strip():
+            in_code_table = False
+    assert codes, "found no error-code table in error-recovery.md"
     unknown = codes - set(ERROR_CODES)
     assert not unknown, f"error-recovery.md references unknown error codes: {sorted(unknown)}"
 
@@ -1347,6 +1401,59 @@ async def test_create_viewset_read_only(project):
     assert "from zeeb_api.viewsets import ReadOnlyModelViewSet" in content
 
 
+async def test_create_viewset_operations_subset_omits_unrequested_routes(project):
+    """A partial operations list must not silently serve full CRUD."""
+    await agents.create_model("blog", "Post", POST_FIELDS, project_id=project)
+    await agents.create_serializer("blog", "Post", project_id=project)
+    result = await agents.create_viewset(
+        "blog", "Post", operations=["list", "retrieve", "create"], project_id=project
+    )
+    assert result.success, result.message
+    assert result.data["operations"] == ["create", "list", "retrieve"]
+    path = project / "apps" / "blog" / "views.py"
+    content = path.read_text()
+    assert (
+        "class PostViewSet(CreateModelMixin, QueryModelMixin, ListModelMixin, "
+        "RetrieveModelMixin, GenericViewSet):" in content
+    )
+    # The mixins that would serve PUT/PATCH/DELETE must be absent entirely.
+    assert "UpdateModelMixin" not in content
+    assert "DestroyModelMixin" not in content
+    compile(content, str(path), "exec")
+
+
+async def test_create_viewset_operations_use_prebuilt_bases_for_common_cases(project):
+    """Full CRUD and plain read-only keep the idiomatic prebuilt base classes."""
+    await agents.create_model("blog", "Post", POST_FIELDS, project_id=project)
+    await agents.create_serializer("blog", "Post", project_id=project)
+    full = await agents.create_viewset(
+        "blog", "Post",
+        operations=["list", "retrieve", "create", "update", "delete"],
+        project_id=project,
+    )
+    assert full.success, full.message
+    assert full.data["base_class"] == "ModelViewSet"
+
+    await agents.create_model("blog", "Tag", POST_FIELDS, project_id=project)
+    await agents.create_serializer("blog", "Tag", project_id=project)
+    read = await agents.create_viewset(
+        "blog", "Tag", operations=["retrieve", "list"], project_id=project
+    )
+    assert read.success, read.message
+    assert read.data["base_class"] == "ReadOnlyModelViewSet"
+
+
+async def test_create_viewset_rejects_unknown_operation(project):
+    await agents.create_model("blog", "Post", POST_FIELDS, project_id=project)
+    await agents.create_serializer("blog", "Post", project_id=project)
+    result = await agents.create_viewset(
+        "blog", "Post", operations=["list", "destroy"], project_id=project
+    )
+    assert not result.success
+    assert result.data["error_code"] == "invalid_input"
+    assert "delete" in result.data["suggestions"]
+
+
 async def test_create_viewset_invalid_permission_suggests(project):
     result = await agents.create_viewset(
         "blog", "Post", permission="IsAuthenticatd", project_id=project
@@ -1813,7 +1920,10 @@ def test_json_schema_map_covers_all_field_types():
 async def test_setup_auth_wires_router_idempotent(project):
     result = await agents.setup_auth(access_token_minutes=30, project_id=project)
     assert result.success, result.message
-    assert result.data["wired"] is True
+    # The scaffold already mounts the auth router, so the first call has
+    # nothing left to wire and only applies the settings change.
+    assert result.data["wired"] is False
+    assert result.data["already_wired"] is True
     urls = (project / "demo" / "urls.py").read_text()
     assert "create_auth_router" in urls
     settings = (project / "demo" / "settings.py").read_text()
@@ -2107,3 +2217,148 @@ async def test_add_viewset_action_body_imports_are_wired(project):
     views = (project / "apps" / "blog" / "views.py").read_text()
     ast.parse(views)
     assert "from zeeb_api.exceptions import ResourceConflictException" in views
+
+
+# ---------------------------------------------------------------------------
+# Inventory detail, in-place field edits, and entity teardown
+# ---------------------------------------------------------------------------
+
+
+async def test_list_models_reports_field_types(project):
+    await agents.create_model("blog", "Post", POST_FIELDS, project_id=project)
+    listed = await agents.list_models(project_id=project)
+    assert listed.success
+    entry = next(m for m in listed.data["models"] if m["model"] == "Post")
+    # Types are what let a spec-vs-disk diff tell a new field from a changed one.
+    assert entry["field_types"]["title"] == "CharField"
+    assert list(entry["field_types"]) == entry["fields"]
+
+
+async def test_alter_field_replaces_the_definition_in_place(project):
+    await agents.create_model("blog", "Post", POST_FIELDS, project_id=project)
+    res = await agents.alter_field(
+        "blog", "Post", {"name": "title", "type": "text"}, project_id=project
+    )
+    assert res.success, res.message
+    models = (project / "apps" / "blog" / "models.py").read_text()
+    # Scoped to the class: the scaffolded module docstring shows an example
+    # model whose fields must not be mistaken for the real definitions.
+    assert extract_field_types(models, "Post")["title"] == "TextField"
+    assert "title = fields.TextField" in models
+    # Idempotent: applying the same spec again rewrites the identical line.
+    assert (
+        await agents.alter_field(
+            "blog", "Post", {"name": "title", "type": "text"}, project_id=project
+        )
+    ).success
+    assert (project / "apps" / "blog" / "models.py").read_text() == models
+
+
+async def test_alter_field_reports_unknown_field_with_suggestions(project):
+    await agents.create_model("blog", "Post", POST_FIELDS, project_id=project)
+    res = await agents.alter_field(
+        "blog", "Post", {"name": "titel", "type": "text"}, project_id=project
+    )
+    assert not res.success
+    assert res.data["error_code"] == "field_not_found"
+    assert "title" in res.data["suggestions"]
+
+
+async def test_delete_serializer_and_viewset_drop_their_imports(project):
+    import ast
+
+    await agents.create_model("blog", "Post", POST_FIELDS, project_id=project)
+    await agents.create_serializer("blog", "Post", project_id=project)
+    await agents.create_viewset("blog", "Post", project_id=project)
+    await agents.register_route("blog", "Post", project_id=project)
+
+    assert (await agents.unregister_route("blog", "Post", project_id=project)).success
+    assert (await agents.delete_viewset("blog", "Post", project_id=project)).success
+    assert (await agents.delete_serializer("blog", "Post", project_id=project)).success
+
+    app_dir = project / "apps" / "blog"
+    views = (app_dir / "views.py").read_text()
+    urls = (app_dir / "urls.py").read_text()
+    serializers = (app_dir / "serializers.py").read_text()
+    for source in (views, urls, serializers):
+        ast.parse(source)
+    # A leftover import of a deleted class breaks the module at startup, taking
+    # every other endpoint in the app with it.
+    assert "PostViewSet" not in views and "PostViewSet" not in urls
+    assert "PostSerializer" not in views and "PostSerializer" not in serializers
+    assert "import Post" not in views
+
+
+async def test_entity_teardown_helpers_are_idempotent(project):
+    for call in (
+        agents.unregister_route("blog", "Ghost", project_id=project),
+        agents.delete_viewset("blog", "Ghost", project_id=project),
+        agents.delete_serializer("blog", "Ghost", project_id=project),
+    ):
+        res = await call
+        assert res.success, res.message
+        assert res.data["skipped"] is True
+
+
+async def test_create_app_repairs_wiring_for_an_existing_app(project):
+    settings = project / "demo" / "settings.py"
+    first = await agents.create_app("shop", project_id=project)
+    assert first.success and first.data["created"] is True
+
+    # Simulate an app that exists on disk but was never registered — the exact
+    # state describe_project warns about.
+    settings.write_text(
+        settings.read_text().replace('"apps.shop",', ""), encoding="utf-8"
+    )
+    repaired = await agents.create_app("shop", project_id=project)
+    assert repaired.success, repaired.message
+    assert repaired.data["created"] is False
+    assert repaired.data["installed_apps_updated"] is True
+    assert "apps.shop" in settings.read_text()
+    assert "wiring repaired" in repaired.message
+
+
+async def test_run_tests_reports_failing_node_ids(project, monkeypatch):
+    from zeeb_agents import testing as testing_mod
+
+    output = (
+        "FF\n"
+        "=================================== FAILURES ===================================\n"
+        "=========================== short test summary info ============================\n"
+        "FAILED tests/test_blog_generated.py::test_post_orm_roundtrip - AssertionError\n"
+        "ERROR tests/test_blog_generated.py::test_post_endpoint_lists - ImportError\n"
+        "1 failed, 1 error in 0.10s\n"
+    )
+
+    def fake_run(fn):
+        return (1, output, "")
+
+    async def fake_to_thread(fn, *args, **kwargs):
+        return fake_run(fn)
+
+    monkeypatch.setattr(testing_mod.asyncio, "to_thread", fake_to_thread)
+    res = await agents.run_tests(project_id=project)
+    assert res.data["failed_tests"] == [
+        "tests/test_blog_generated.py::test_post_orm_roundtrip",
+        "tests/test_blog_generated.py::test_post_endpoint_lists",
+    ]
+    assert res.data["no_tests"] is False
+
+
+async def test_generate_tests_filename_override_never_overwrites(project):
+    entities = [
+        {"name": "Post", "exposed": False, "authentication": "required",
+         "prefix": None, "fields": [{"name": "title", "type": "CharField",
+                                      "max_length": 50}]}
+    ]
+    first = await agents.generate_tests("blog", entities, project_id=project)
+    assert first.success and "tests/test_blog_generated.py" in first.data["created"]
+
+    # Same app, own filename: the existing suite is untouched, the new file lands.
+    second = await agents.generate_tests(
+        "blog", entities, filename="tests/test_blog_post_generated.py", project_id=project
+    )
+    assert second.success
+    assert second.data["created"] == ["tests/test_blog_post_generated.py"]
+    assert "tests/test_blog_generated.py" not in second.data["created"]
+    assert (project / "tests" / "test_blog_post_generated.py").exists()
