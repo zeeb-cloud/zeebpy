@@ -89,6 +89,13 @@ def create_app(
     if not settings.is_configured():
         settings._setup()
 
+    # Configure logging from the LOGGING setting when provided. Only when it is
+    # explicitly set, so an app that manages logging elsewhere is never clobbered
+    # by the root-handler reset inside configure_logging().
+    if getattr(settings, 'LOGGING', None):
+        from zeeb_api.logging import configure_logging_from_settings
+        configure_logging_from_settings()
+
     # Fail fast on insecure default secrets outside of DEBUG mode
     if not getattr(settings, 'DEBUG', False) and settings.get_jwt_secret_key() in INSECURE_SECRETS:
         raise ImproperlyConfigured(

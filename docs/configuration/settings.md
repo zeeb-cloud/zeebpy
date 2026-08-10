@@ -4,23 +4,32 @@ Configure your Zeeb project through `settings.py`. Zeeb reads module-level setti
 
 ## Quick Start
 
-Create a minimal `settings.py`:
+`zeeb startproject` writes a complete, environment-driven `settings.py` for you —
+authentication, CORS, rate limiting, API versioning and logging are configured
+and on. You normally change behavior by editing `.env`, not `settings.py`.
+
+Every setting follows the same shape: the literal is the default, the environment
+variable overrides it.
 
 ```python
 # myproject/settings.py
-import os
+from pathlib import Path
 
-DEBUG = True
-SECRET_KEY = os.getenv("SECRET_KEY", "dev-secret-change-in-production")
+from zeeb_api.conf.env import env_bool, env_int, env_list, env_str, load_env
 
-DATABASE = {
-    "url": "sqlite+aiosqlite:///db.sqlite3",
-}
+BASE_DIR = Path(__file__).resolve().parent.parent
+load_env(BASE_DIR / ".env")
+
+DEBUG = env_bool("DEBUG", True)
+SECRET_KEY = env_str("SECRET_KEY", "INSECURE-DEFAULT-KEY-CHANGE-IN-PRODUCTION")
+
+DATABASE = {"url": env_str("DATABASE_URL", f"sqlite+aiosqlite:///{BASE_DIR / 'db.sqlite3'}")}
 
 ROOT_URLCONF = "myproject.urls"
 
 MIDDLEWARE = [
     "zeeb_api.middleware.CORSMiddleware",
+    "zeeb_api.versioning.VersioningMiddleware",
     "zeeb_api.middleware.JWTAuthMiddleware",
 ]
 ```
@@ -31,6 +40,97 @@ Then in your `asgi.py`:
 from zeeb_api import create_app
 
 app = create_app("myproject.settings")
+```
+
+## Environment configuration
+
+`load_env()` reads a `.env` file into a private layer that the typed getters
+consult. Precedence is always:
+
+**real environment variable > `.env` file > the default in `settings.py`**
+
+so a container or CI runner overrides anything a checked-out `.env` says.
+`load_env` does not write to `os.environ`, which keeps one project's
+configuration from leaking into another loaded in the same process.
+
+`startproject` generates two files:
+
+- **`.env`** — gitignored, holds `DEBUG` and a signing key generated for this
+  project. That generated key is why a fresh project runs with `DEBUG=false`
+  out of the box.
+- **`.env.example`** — committed, documents every supported variable.
+
+### Typed getters
+
+```python
+from zeeb_api.conf.env import env_bool, env_int, env_list, env_str, load_env
+
+load_env(BASE_DIR / ".env")   # returns the path read, or None
+
+env_str("JWT_ISSUER", None)                       # "" when set but empty
+env_bool("DEBUG", True)                           # 1/true/yes/on vs 0/false/no/off
+env_int("JWT_ACCESS_TOKEN_EXPIRE_MINUTES", 60)
+env_list("CORS_ALLOW_ORIGINS", ["http://localhost:3000"])   # comma-separated
+```
+
+An **empty value is a value**: `CORS_ALLOW_ORIGINS=` yields `[]`, not the
+default. That is how a variable is switched off from the environment. An
+unparsable boolean or integer warns and falls back to the default rather than
+raising — a `settings.py` that raises at import time makes the CLI and the
+agent tooling fall back to defaults silently.
+
+Pass the path explicitly, as the generated template does. `settings.py` is
+executed with an arbitrary working directory by the migration tooling,
+`zeeb check`, `createsuperuser` and the agent layer, so a relative lookup would
+find the wrong project.
+
+### Environment variables
+
+Every variable read by the generated `settings.py`:
+
+| Variable | Default | Setting |
+|----------|---------|---------|
+| `DEBUG` | `true` | `DEBUG` |
+| `SECRET_KEY` | generated into `.env` | `SECRET_KEY` |
+| `DATABASE_URL` | `sqlite+aiosqlite:///db.sqlite3` | `DATABASE["url"]` |
+| `ENFORCE_MIGRATIONS` | `true` | `ENFORCE_MIGRATIONS` |
+| `API_TITLE` / `API_DESCRIPTION` / `API_VERSION` / `API_PREFIX` | `<project> API` / `` / `1.0.0` / `/api/v1` | the matching `API_*` |
+| `DEFAULT_LIMIT` / `MAX_LIMIT` | `20` / `100` | pagination bounds |
+| `CORS_ALLOW_ORIGINS` | `http://localhost:3000,http://localhost:5173` | `CORS_ALLOW_ORIGINS` |
+| `CORS_ALLOW_ORIGIN_REGEX` | `None` | `CORS_ALLOW_ORIGIN_REGEX` |
+| `CORS_ALLOW_CREDENTIALS` / `CORS_ALLOW_METHODS` / `CORS_ALLOW_HEADERS` / `CORS_EXPOSE_HEADERS` / `CORS_MAX_AGE` | `true` / `*` / `*` / `` / `600` | the matching `CORS_*` |
+| `JWT_SECRET_KEY` | `SECRET_KEY` | `JWT_SECRET_KEY` |
+| `JWT_ALGORITHM` | `HS256` | `JWT_ALGORITHM` |
+| `JWT_ACCESS_TOKEN_EXPIRE_MINUTES` | `60` | `JWT_ACCESS_TOKEN_EXPIRE_MINUTES` |
+| `JWT_REFRESH_TOKEN_EXPIRE_DAYS` | `7` | `JWT_REFRESH_TOKEN_EXPIRE_DAYS` |
+| `JWT_ISSUER` / `JWT_AUDIENCE` | unset | `JWT_ISSUER` / `JWT_AUDIENCE` |
+| `AUTH_URL_PREFIX` | `/auth` | where the auth router mounts |
+| `AUTH_ENABLE_REGISTRATION` | `true` | whether `/register` exists |
+| `AUTH_LOGIN_THROTTLE_RATE` | `10/min` | per-client limit on `/login` and `/register` |
+| `AUTH_LOAD_USER_FROM_DB` | `true` | `AUTH_LOAD_USER_FROM_DB` |
+| `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | unset | adds `google` to `OAUTH_PROVIDERS` |
+| `GITHUB_CLIENT_ID` / `GITHUB_CLIENT_SECRET` | unset | adds `github` to `OAUTH_PROVIDERS` |
+| `AZURE_CLIENT_ID` / `AZURE_CLIENT_SECRET` / `AZURE_TENANT_ID` | unset / `common` | adds `azure` to `OAUTH_PROVIDERS` |
+| `OAUTH_AUTO_CREATE_USERS` / `OAUTH_LINK_BY_EMAIL` / `OAUTH_REQUIRE_VERIFIED_EMAIL` | `true` | the matching `OAUTH_*` |
+| `OAUTH_STATE_TTL_SECONDS` | `600` | `OAUTH_STATE_TTL_SECONDS` |
+| `OAUTH_REDIRECT_URI` / `OAUTH_SUCCESS_REDIRECT` | unset | the matching `OAUTH_*` |
+| `OAUTH_ALLOWED_REDIRECT_HOSTS` / `OAUTH_ACCEPT_EXTERNAL_TOKENS` | empty | the matching `OAUTH_*` |
+| `THROTTLE_ANON_RATE` / `THROTTLE_USER_RATE` | `120/min` / `1200/min` | `DEFAULT_THROTTLE_RATES` |
+| `DEFAULT_THROTTLE_CLASSES` | anon + user | `DEFAULT_THROTTLE_CLASSES` |
+| `THROTTLE_NUM_PROXIES` | `0` | `THROTTLE_NUM_PROXIES` |
+| `DEFAULT_VERSIONING_CLASS` | `zeeb_api.versioning.HeaderVersioning` | `DEFAULT_VERSIONING_CLASS` |
+| `DEFAULT_VERSION` / `ALLOWED_VERSIONS` | `1.0` / `1.0` | `DEFAULT_VERSION` / `ALLOWED_VERSIONS` |
+| `VERSION_PARAM` / `VERSION_HEADER` | `version` / `X-API-Version` | the matching setting |
+| `LOG_LEVEL` / `JSON_LOGS` / `LOG_FILE` / `LOG_ROTATION` / `LOG_RETENTION_DAYS` | see below | `LOGGING` |
+
+Turning a battery off is a single variable:
+
+```bash
+DEFAULT_THROTTLE_CLASSES=      # no rate limiting
+ALLOWED_VERSIONS=              # accept any API version
+DEFAULT_VERSIONING_CLASS=      # no versioning at all
+AUTH_LOGIN_THROTTLE_RATE=      # no login throttle
+CORS_ALLOW_ORIGINS=            # no CORS
 ```
 
 ## Application Factory
@@ -62,6 +162,53 @@ async def lifespan(app):
 
 app = create_app("myproject.settings", lifespan=lifespan)
 ```
+
+### Building the app by hand
+
+`create_app()` composes five public steps. Call them directly when you need a
+FastAPI app the factory would not produce — mounting Zeeb into an existing
+application, say:
+
+```python
+from fastapi import FastAPI
+from zeeb_api import (
+    configure_settings,
+    install_error_response_schema,
+    install_middleware,
+    load_urlconf,
+)
+
+configure_settings("myproject.settings")   # or configure_settings(DEBUG=False, ...)
+
+app = FastAPI()
+install_middleware(app)                    # from settings.MIDDLEWARE
+for router in load_urlconf("myproject.urls"):
+    app.include_router(router)
+install_error_response_schema(app)         # documents the error envelope in OpenAPI
+```
+
+`get_asgi_application()` is the entry point a generated `asgi.py` uses; it
+returns the configured `FastAPI` instance for the given settings module.
+
+### Reading the loaded environment
+
+Beyond the typed getters, `zeeb_api.conf.env` exposes:
+
+```python
+from zeeb_api.conf.env import clear_env_cache, loaded_env_path, parse_env
+
+parse_env(path)      # parse a .env file to a dict without touching os.environ
+loaded_env_path()    # which .env load_env() actually read, or None
+clear_env_cache()    # forget it — mainly for tests switching between projects
+```
+
+`load_env()` also accepts `override=True` (write into `os.environ`, which it
+otherwise never does) and `encoding=`. Called with a directory — or with
+nothing — it walks up from the current directory looking for a `.env`, stopping
+at the nearest `manage.py` so it cannot escape into a parent project.
+
+Only `clear_env_cache` is re-exported from `zeeb_api.conf`; import
+`parse_env` and `loaded_env_path` from `zeeb_api.conf.env`.
 
 ## Core Settings
 
@@ -275,7 +422,23 @@ CORS_ALLOW_METHODS = ["*"]
 CORS_ALLOW_HEADERS = ["*"]
 ```
 
-**Note:** `CORSMiddleware` is only active if `CORS_ALLOW_ORIGINS` is non-empty.
+### Preview deployments
+
+A frontend built by Lovable, Vercel or Netlify gets a new hostname on every
+deploy, so an exact origin list would need editing each time. Match the host
+pattern instead:
+
+```python
+CORS_ALLOW_ORIGIN_REGEX = r"https://.*\.(lovable\.app|lovableproject\.com)$"
+```
+
+Anchor it with `$` and escape the dots. An unanchored `.vercel.app` also matches
+`https://evil-vercel.app.attacker.com`. A pattern that matches everything
+(`.*`) together with `CORS_ALLOW_CREDENTIALS = True` is refused outside `DEBUG`,
+exactly like a `"*"` origin — it is the same hole.
+
+**Note:** `CORSMiddleware` is active as soon as either `CORS_ALLOW_ORIGINS` or
+`CORS_ALLOW_ORIGIN_REGEX` is set; with both empty it is skipped.
 
 ## API Settings
 
@@ -292,6 +455,87 @@ API_PREFIX = "/api"  # Prefix for all routes
 DEFAULT_LIMIT = 20
 MAX_LIMIT = 100
 ```
+
+## Rate Limiting
+
+On by default in a generated project. The classes apply to every ViewSet that
+does not set its own `throttle_classes`.
+
+```python
+DEFAULT_THROTTLE_CLASSES = [
+    "zeeb_api.throttling.AnonRateThrottle",
+    "zeeb_api.throttling.UserRateThrottle",
+]
+DEFAULT_THROTTLE_RATES = {"anon": "120/min", "user": "1200/min"}
+THROTTLE_NUM_PROXIES = None   # trusted reverse proxies in front of the app
+```
+
+Rates are `"<count>/<period>"` with period `s`/`sec`, `m`/`min`, `h`/`hour`,
+`d`/`day`. Set `DEFAULT_THROTTLE_CLASSES` empty to turn throttling off.
+
+`/login` and `/register` carry their own per-client limit, set through
+`AUTH_LOGIN_THROTTLE_RATE` (default `10/min`), because they are the two routes
+an attacker can drive without a token.
+
+The default cache is per process: behind several workers the effective limit
+multiplies by the worker count. Install a shared cache with
+`zeeb_api.throttling.set_throttle_cache()` before deploying more than one.
+
+## API Versioning
+
+On by default. Clients send `X-API-Version: 1.0`; a request without the header
+gets `DEFAULT_VERSION`, and a version outside `ALLOWED_VERSIONS` is rejected
+with a 400 `API_VERSION_INVALID` envelope.
+
+```python
+DEFAULT_VERSIONING_CLASS = "zeeb_api.versioning.HeaderVersioning"
+DEFAULT_VERSION = "1.0"
+ALLOWED_VERSIONS = ["1.0"]
+VERSION_PARAM = "version"        # QueryParameterVersioning / URLPathVersioning
+VERSION_HEADER = "X-API-Version"  # HeaderVersioning
+```
+
+This needs `"zeeb_api.versioning.VersioningMiddleware"` in `MIDDLEWARE` — the
+generated project lists it. Keep `CORSMiddleware` ahead of it: an invalid
+version is answered by the middleware itself, and without CORS on the outside
+a browser sees an opaque CORS failure instead of the error.
+
+Set `ALLOWED_VERSIONS` empty to accept any version, or
+`DEFAULT_VERSIONING_CLASS` empty to switch versioning off.
+
+## OAuth2 / OIDC
+
+Requires the extra: `pip install "zeebpy[oauth]"`.
+
+A provider activates as soon as its client id is in the environment, and the
+generated `urls.py` mounts the OAuth routes only while `OAUTH_PROVIDERS` is
+non-empty — so half-configured endpoints never reach the schema.
+
+```python
+from zeeb_api.conf.env import env_oauth_providers
+
+OAUTH_PROVIDERS = env_oauth_providers()   # google / github / azure, from the env
+OAUTH_AUTO_CREATE_USERS = True
+OAUTH_LINK_BY_EMAIL = True
+OAUTH_REQUIRE_VERIFIED_EMAIL = True
+OAUTH_STATE_TTL_SECONDS = 600
+OAUTH_REDIRECT_URI = None
+OAUTH_SUCCESS_REDIRECT = None
+OAUTH_ALLOWED_REDIRECT_HOSTS = []
+OAUTH_ACCEPT_EXTERNAL_TOKENS = []   # e.g. ["azure"] to accept its bearer tokens
+```
+
+Or write the dict yourself:
+
+```python
+OAUTH_PROVIDERS = {
+    "google": {"client_id": "...", "client_secret": "..."},
+    "azure": {"client_id": "...", "client_secret": "...", "tenant": "common"},
+}
+```
+
+The `auth_external_identities` table ships in the initial migration whether or
+not a provider is configured, so enabling one later needs no schema change.
 
 ## Logging
 
@@ -397,7 +641,9 @@ LOGGING = {
 
 ## Default Settings Reference
 
-All available settings with their defaults:
+Every setting the framework reads, with the default it falls back to. A
+generated project sets most of them from the environment — see
+[Environment configuration](#environment-configuration).
 
 | Setting | Default | Description |
 |---------|---------|-------------|
@@ -405,24 +651,50 @@ All available settings with their defaults:
 | `SECRET_KEY` | (unsafe default; refused when `DEBUG=False`) | Secret key for JWT |
 | `DATABASE` | SQLite | Database configuration |
 | `ROOT_URLCONF` | `None` | URL configuration module |
-| `MIDDLEWARE` | JWT + CORS | Middleware classes |
+| `MIDDLEWARE` | CORS + JWT | Middleware classes |
 | `INSTALLED_APPS` | `[]` | Installed applications |
-| `AUTH_USER_MODEL` | `None` | Custom user model |
+| `MIGRATIONS_DIR` | `None` | Migration files directory (None = framework default) |
+| `ENFORCE_MIGRATIONS` | `True` | Refuse to start with unapplied migrations (outside `DEBUG`) |
+| `AUTH_USER_MODEL` | `None` | Custom user model (the scaffold sets `"accounts.User"`) |
 | `AUTH_LOAD_USER_FROM_DB` | `True` | Load user from database |
 | `JWT_SECRET_KEY` | `SECRET_KEY` | JWT signing key (insecure defaults refused when `DEBUG=False`) |
 | `JWT_ALGORITHM` | `"HS256"` | JWT algorithm |
 | `JWT_ACCESS_TOKEN_EXPIRE_MINUTES` | `60` | Access token lifetime |
 | `JWT_REFRESH_TOKEN_EXPIRE_DAYS` | `7` | Refresh token lifetime |
-| `CORS_ALLOW_ORIGINS` | `[]` | Allowed CORS origins |
-| `CORS_ALLOW_CREDENTIALS` | `True` | Allow credentials |
+| `JWT_ISSUER` | `None` | Expected `iss` claim (verified when set) |
+| `JWT_AUDIENCE` | `None` | Expected `aud` claim (verified when set) |
+| `OAUTH_PROVIDERS` | `{}` | Provider configs; non-empty mounts the OAuth routes |
+| `OAUTH_AUTO_CREATE_USERS` | `True` | Provision a user on first OAuth login |
+| `OAUTH_LINK_BY_EMAIL` | `True` | Link an external identity to an existing account by email |
+| `OAUTH_REQUIRE_VERIFIED_EMAIL` | `True` | Require `email_verified` before linking/provisioning by email |
+| `OAUTH_STATE_TTL_SECONDS` | `600` | Lifetime of the signed OAuth state |
+| `OAUTH_REDIRECT_URI` | `None` | Override the callback URL sent to the provider |
+| `OAUTH_SUCCESS_REDIRECT` | `None` | Where to send the browser after a successful login |
+| `OAUTH_ALLOWED_REDIRECT_HOSTS` | `[]` | Hosts a caller may request a redirect to |
+| `OAUTH_ACCEPT_EXTERNAL_TOKENS` | `[]` | Providers whose bearer tokens are accepted directly |
+| `CORS_ALLOW_ORIGINS` | `[]` | Allowed CORS origins (the middleware is skipped when this and the regex are both empty) |
+| `CORS_ALLOW_ORIGIN_REGEX` | `None` | Origin pattern for preview deployments whose hostname changes per build |
+| `CORS_ALLOW_CREDENTIALS` | `True` | Allow credentials (refused with a `"*"` origin outside `DEBUG`) |
 | `CORS_ALLOW_METHODS` | `["*"]` | Allowed methods |
 | `CORS_ALLOW_HEADERS` | `["*"]` | Allowed headers |
+| `CORS_EXPOSE_HEADERS` | `[]` | Response headers exposed to the browser |
+| `CORS_MAX_AGE` | `600` | Preflight cache lifetime (seconds) |
 | `API_TITLE` | `"Zeeb API"` | API title |
 | `API_DESCRIPTION` | `""` | API description |
 | `API_VERSION` | `"1.0.0"` | API version |
 | `API_PREFIX` | `""` | URL prefix |
-| `DEFAULT_LIMIT` | `20` | Default pagination limit |
-| `MAX_LIMIT` | `100` | Maximum pagination limit |
+| `DEFAULT_LIMIT` | `20` | Default pagination limit (query endpoint + LimitOffsetPagination) |
+| `MAX_LIMIT` | `100` | Maximum pagination limit (query endpoint + LimitOffsetPagination) |
+| `DEFAULT_THROTTLE_CLASSES` | `[]` | Throttle classes for ViewSets that set none |
+| `DEFAULT_THROTTLE_RATES` | `{"anon": None, "user": None}` | Rate per throttle scope |
+| `THROTTLE_NUM_PROXIES` | `None` | Trusted reverse proxies when reading `X-Forwarded-For` |
+| `DEFAULT_VERSIONING_CLASS` | `None` | Versioning scheme (needs `VersioningMiddleware`) |
+| `DEFAULT_VERSION` | `None` | Version assumed when the client sends none |
+| `ALLOWED_VERSIONS` | `None` | Accepted versions (empty/None accepts any) |
+| `VERSION_PARAM` | `"version"` | Query/path parameter carrying the version |
+| `VERSION_HEADER` | `"X-API-Version"` | Header carrying the version |
+| `LOGGING` | level `INFO`, no file | Logging configuration, applied by `create_app()` |
+| `INSTALL_HEALTH_ROUTES` | `False` | Install default `/health` and `/ready` routes |
 | `INSTALL_EXCEPTION_HANDLERS` | `True` | Install default handlers |
 
 ## Next Steps

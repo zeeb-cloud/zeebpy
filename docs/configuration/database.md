@@ -151,13 +151,10 @@ DATABASE = {
 Use environment variables for security:
 
 ```python
-import os
+from zeeb_api.conf.env import env_str
 
 DATABASE = {
-    "url": os.environ.get(
-        "DATABASE_URL",
-        "sqlite+aiosqlite:///./db.sqlite3"
-    ),
+    "url": env_str("DATABASE_URL", "sqlite+aiosqlite:///./db.sqlite3"),
 }
 ```
 
@@ -166,11 +163,14 @@ DATABASE = {
 DATABASE_URL=postgresql+asyncpg://user:password@localhost/mydb
 ```
 
-Load with python-dotenv:
-```python
-from dotenv import load_dotenv
-load_dotenv()
-```
+A scaffolded project already calls `load_env()` at the top of its `settings.py`,
+so no third-party dotenv package is needed — `zeeb_api.conf.env` reads `.env`
+using only the standard library. See
+[Settings](settings.md) for the full set of `env_*` helpers.
+
+`zeeb_orm` also reads the `DATABASE_URL` and `DATABASE_ECHO` environment
+variables directly, so the default connection works even before any
+`settings.py` is loaded.
 
 ## Database Operations
 
@@ -196,48 +196,64 @@ python manage.py showmigrations
 ### Access Database Programmatically
 
 ```python
-from zeeb_orm.core import Database
+from zeeb_orm import Database, close_all_connections, get_connection
 
-# Initialize with settings
-db = Database.from_settings()
+# The default connection is created lazily from settings
+db = await get_connection()
 
-# Or with explicit URL
+# Or build one explicitly
 db = Database("postgresql+asyncpg://localhost/mydb")
+await db.connect()
 
-# Create tables
-await db.init_db()
+# Create tables from the model registry
+await db.create_all()
 
-# Get async session
+# Get an async session
 async with db.session() as session:
     result = await session.execute(...)
+
+# Release every registered connection (e.g. on shutdown)
+await close_all_connections()
 ```
+
+`get_connection()`, `close_all_connections()` and `Database.connect()` /
+`.disconnect()` / `.create_all()` / `.drop_all()` / `.execute()` are all
+coroutines — `Database.session()` is the one exception, an async context
+manager.
 
 ## Multiple Databases
 
-For read replicas or multi-database setups:
+There is a single `DATABASE` setting, which configures the `default`
+connection. Additional connections — read replicas, a reporting database — are
+registered at runtime rather than declared in settings:
 
 ```python
-DATABASES = {
-    "default": {
-        "url": "postgresql+asyncpg://localhost/primary",
-        "pool_size": 20,
-    },
-    "replica": {
-        "url": "postgresql+asyncpg://localhost/replica",
-        "pool_size": 10,
-    },
-}
+from zeeb_orm import Database, register_database
+
+replica = Database(
+    "postgresql+asyncpg://localhost/replica",
+    pool_size=10,
+)
+await replica.connect()
+register_database(replica, alias="replica")
 ```
 
-Use in code:
+Once registered, route a queryset at it with `using()`:
+
 ```python
-from zeeb_orm.core import get_database
+articles = await Article.objects.using("replica").all()
+```
 
-# Default database
-db = get_database()
+An alias that was never registered raises `ConnectionDoesNotExist` rather than
+silently falling back to the default database:
 
-# Specific database
-replica_db = get_database("replica")
+```python
+from zeeb_orm import ConnectionDoesNotExist
+
+try:
+    await Article.objects.using("reporting").all()
+except ConnectionDoesNotExist:
+    ...  # register_database(Database(...), alias="reporting") first
 ```
 
 ## SSL/TLS Connections
@@ -331,14 +347,15 @@ DATABASE = {
 ```python
 # conftest.py
 import pytest
-from zeeb_orm.core import Database
+from zeeb_orm import Database
 
 @pytest.fixture
 async def db():
     database = Database("sqlite+aiosqlite:///:memory:")
-    await database.init_db()
+    await database.connect()
+    await database.create_all()
     yield database
-    await database.close()
+    await database.disconnect()
 
 @pytest.fixture
 async def session(db):
@@ -381,14 +398,15 @@ volumes:
 ```python
 # manage.py or startup script
 import asyncio
+from sqlalchemy import text
 from sqlalchemy.exc import OperationalError
 
 async def wait_for_db(max_retries=30, delay=1):
     """Wait for database to be ready."""
-    from zeeb_orm.core import Database
-    
-    db = Database.from_settings()
-    
+    from zeeb_orm import get_connection
+
+    db = await get_connection()
+
     for i in range(max_retries):
         try:
             async with db.session() as session:

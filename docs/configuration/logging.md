@@ -81,6 +81,11 @@ Logs rotate at midnight. Old logs are named `app.log.2024-01-15`.
 | `log_file` | `None` | File path for logs |
 | `log_rotation` | `True` | Rotate logs daily |
 | `log_retention_days` | `30` | Days to keep old logs |
+| `include_uvicorn` | `True` | Route uvicorn's access/error loggers through this configuration |
+| `include_sqlalchemy` | `False` | Route SQLAlchemy's loggers too — noisy; turn on to see emitted SQL |
+
+These are the keys `create_app()` forwards from the `LOGGING` setting to
+`configure_logging()`. Anything else in the dict is ignored.
 
 ## Using the Logger
 
@@ -157,7 +162,7 @@ except Exception as e:
 
 ## Console Formatter
 
-For development, console output is colorized:
+For development, `ConsoleFormatter` colorizes output by level:
 
 - 🟦 DEBUG - Blue
 - 🟩 INFO - Green  
@@ -172,7 +177,7 @@ Format:
 
 ## JSON Formatter
 
-For production, logs are structured JSON:
+For production, `JsonFormatter` emits structured JSON:
 
 ```json
 {
@@ -186,6 +191,10 @@ For production, logs are structured JSON:
 }
 ```
 
+Both accept constructor options (`use_colors=` on the console formatter;
+`include_timestamp=` / `include_level=` / `include_logger=` on the JSON one) if
+you attach them to a handler yourself.
+
 ## Programmatic Configuration
 
 ```python
@@ -198,8 +207,19 @@ configure_logging(
     log_file="logs/debug.log",
     log_rotation=True,
     log_retention_days=7,
+    include_uvicorn=True,
+    include_sqlalchemy=False,
 )
 ```
+
+> **Call this before `create_app()`, not after.** `create_app()` invokes
+> `configure_logging_from_settings()`, which reads the `LOGGING` setting and
+> **replaces the root handlers**. A `configure_logging()` call afterwards is
+> what survives; a call before it is discarded. Configure through the `LOGGING`
+> setting unless you have a reason not to.
+
+`configure_logging_from_settings()` reads `zeeb_api.conf.settings` in-process —
+it does not search the filesystem for a `settings.py`.
 
 ## Quick Functions
 
