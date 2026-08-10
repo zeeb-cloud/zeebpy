@@ -1,16 +1,16 @@
-"""
-post models.
-
-Define your Zeeb ORM models here.
-"""
+"""post models."""
 
 from zeeb_orm import Model, fields
 
 
-# Example model:
 class Post(Model):
-    name = fields.CharField(max_length=100)
-    description = fields.TextField(null=True)
+    """A blog post, owned by the user who wrote it."""
+
+    title = fields.CharField(max_length=200)
+    slug = fields.SlugField(max_length=220, unique=True)
+    body = fields.TextField()
+    published = fields.BooleanField(default=False)
+    author = fields.ForeignKey("accounts.User", on_delete="CASCADE", related_name="posts")
     created_at = fields.DateTimeField(auto_now_add=True)
     updated_at = fields.DateTimeField(auto_now=True)
 

@@ -1,13 +1,8 @@
-"""
-comment URL configuration.
-
-Register your viewsets with the router here.
-"""
+"""comment URL configuration."""
 
 from zeeb_api.routers import DefaultRouter
-# from .views import YourModelViewSet
+
+from .views import CommentViewSet
 
 router = DefaultRouter()
-
-# Register viewsets:
-# router.register("comment", YourModelViewSet)
+router.register("comments", CommentViewSet)
