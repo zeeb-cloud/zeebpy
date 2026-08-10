@@ -10,7 +10,7 @@ Provides serializers that:
 from __future__ import annotations
 
 from typing import (
-    Any, TypeVar, Generic, ClassVar, Sequence, 
+    Annotated, Any, Optional, TypeVar, Generic, ClassVar, Sequence,
     get_type_hints, TYPE_CHECKING,
 )
 from datetime import datetime, date, time
@@ -20,9 +20,48 @@ import inspect
 import uuid
 
 from pydantic import (
-    AliasChoices, BaseModel, Field, ConfigDict, field_validator, model_validator,
+    AfterValidator, AliasChoices, BaseModel, Field, ConfigDict,
+    field_validator, model_validator,
 )
 from pydantic.fields import FieldInfo
+
+
+def _field_has_constraints(field: Any) -> bool:
+    """True if a declared serializer field carries validation beyond its type."""
+    return bool(
+        getattr(field, "max_length", None) is not None
+        or getattr(field, "min_length", None) is not None
+        or getattr(field, "allow_blank", True) is False
+        or getattr(field, "validators", None)
+    )
+
+
+def _constraint_validator(field: Any):
+    """Pydantic AfterValidator that enforces a declared field's own rules.
+
+    Reuses the field's ``run_validation`` (max_length/min_length/allow_blank and
+    any custom ``validators=[...]``) so declared constraints are actually applied
+    by the exported serializer, and converts the field's error into a plain
+    ``ValueError`` that Pydantic surfaces as a normal validation error.
+    """
+
+    def _validate(value: Any) -> Any:
+        if value is None:
+            return value  # nullability is handled by the type itself
+        try:
+            return field.run_validation(value)
+        except Exception as exc:  # field raises zeeb_api ValidationError
+            detail = getattr(exc, "detail", None)
+            if isinstance(detail, dict):
+                messages = [
+                    str(m)
+                    for msgs in detail.values()
+                    for m in (msgs if isinstance(msgs, list) else [msgs])
+                ]
+                raise ValueError("; ".join(messages) or str(exc)) from exc
+            raise ValueError(str(exc)) from exc
+
+    return _validate
 
 if TYPE_CHECKING:
     from zeeb_orm.models.base import Model
@@ -320,10 +359,18 @@ class Serializer(metaclass=SerializerMetaclass):
             # Add to response schema (unless write_only)
             if not write_only:
                 response_fields[field_name] = (python_type, default_value if default_value is not ... else None)
-            
-            # Add to request schema (unless read_only)
+
+            # Add to request schema (unless read_only). Declared constraints
+            # (max_length/min_length/allow_blank/custom validators) are enforced
+            # on input by attaching the field's own run_validation as a Pydantic
+            # AfterValidator — otherwise they would be silently dropped.
             if not read_only:
-                request_fields[field_name] = (python_type, default_value)
+                request_type = python_type
+                if _field_has_constraints(field):
+                    request_type = Annotated[
+                        python_type, AfterValidator(_constraint_validator(field))
+                    ]
+                request_fields[field_name] = (request_type, default_value)
         
         # Create Pydantic models
         if response_fields:
@@ -346,7 +393,21 @@ class Serializer(metaclass=SerializerMetaclass):
                     **{k: Field(default=v[1]) for k, v in request_fields.items()},
                 },
             )
-        
+
+            # PATCH schema: every field optional (so a partial payload is
+            # accepted) but still constraint-checked when present, since the
+            # request type (incl. any AfterValidator) is preserved.
+            cls.PartialRequestSchema = type(
+                f"{cls.__name__}PartialRequest",
+                (BaseModel,),
+                {
+                    "__annotations__": {
+                        k: Optional[v[0]] for k, v in request_fields.items()
+                    },
+                    **{k: Field(default=None) for k in request_fields},
+                },
+            )
+
         # Default Schema
         cls.Schema = cls.ResponseSchema or cls.RequestSchema
     
@@ -648,16 +709,21 @@ class Serializer(metaclass=SerializerMetaclass):
         try:
             # Validate with Pydantic
             if self.partial:
-                # For partial updates, only validate provided fields
-                validated = schema_class.model_construct(**initial_data)
-                self._validated_data = {
-                    k: v for k, v in initial_data.items()
-                    if k in schema_class.model_fields
-                }
+                # PATCH: validate ONLY the provided fields against their real
+                # types/constraints (not model_construct, which skips validation
+                # entirely and let e.g. {"age": "abc"} through). The all-optional
+                # PartialRequestSchema allows missing fields; a value with the
+                # wrong type is still rejected.
+                partial_schema = self.PartialRequestSchema or schema_class
+                validated = partial_schema.model_validate(initial_data)
             else:
                 validated = schema_class.model_validate(initial_data)
-                self._validated_data = validated.model_dump()
-            
+            # Return exactly the keys the caller supplied (validated/coerced).
+            # Fields the caller omitted are excluded so model-level defaults apply
+            # on create instead of being overwritten with an explicit None, and
+            # PATCH touches only what was sent.
+            self._validated_data = validated.model_dump(exclude_unset=True)
+
             self._errors = {}
             return True
             

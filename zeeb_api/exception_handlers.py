@@ -400,6 +400,47 @@ def create_orm_exception_handlers() -> dict[type[Exception], Callable]:
     except ImportError:
         pass
 
+    async def integrity_error_handler(request: Request, exc: Exception) -> JSONResponse:
+        """Handle database constraint violations as 409s, not 500s.
+
+        Writing a row that breaks a foreign key or a unique constraint is an
+        ordinary client error — the referenced object does not exist, or the value
+        is already taken. Without this handler it reaches the generic 500 handler
+        and the client gets an opaque server error (with a raw driver traceback in
+        debug) instead of something it can branch on.
+        """
+        text = str(getattr(exc, "orig", None) or exc)
+        lowered = text.lower()
+        if "foreign key" in lowered:
+            message = "Referenced object does not exist."
+        elif "unique" in lowered or "duplicate" in lowered:
+            message = "A record with these values already exists."
+        else:
+            message = "The request violates a database constraint."
+        return _create_error_response(
+            code=ErrorCode.RESOURCE_CONFLICT.value,
+            message=message,
+            status_code=409,
+            request=request,
+        )
+
+    # Both layers can surface: the ORM wraps driver errors where it manages the
+    # transaction, but a violation raised while flushing inside a request escapes
+    # as the SQLAlchemy error itself.
+    try:
+        from zeeb_orm.exceptions import IntegrityError as ORMIntegrityError
+
+        handlers[ORMIntegrityError] = integrity_error_handler
+    except ImportError:
+        pass
+
+    try:
+        from sqlalchemy.exc import IntegrityError as SAIntegrityError
+
+        handlers[SAIntegrityError] = integrity_error_handler
+    except ImportError:
+        pass
+
     return handlers
 
 

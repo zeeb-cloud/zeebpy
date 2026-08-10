@@ -59,6 +59,35 @@ else:
     # {"title": ["This field is required."]}
 ```
 
+> **`validated_data` contains only the keys the client actually sent.** A field
+> the request omitted is **absent** from the dict — it does not come back as
+> `None` or as its default. This matters most in `perform_create()` /
+> `perform_update()` hooks that reach into `validated_data` for a field the
+> client may not have supplied.
+
+Read optional fields with `.get()`, never by subscript:
+
+```python
+summary = serializer.validated_data.get("summary")   # None when omitted
+serializer.validated_data["summary"]                 # KeyError when omitted
+```
+
+### Partial Updates
+
+`partial=True` (what `PATCH` uses) validates against an all-optional variant of
+the schema, exposed as `Serializer.PartialRequestSchema` alongside the usual
+`Schema` / `RequestSchema` / `ResponseSchema`:
+
+```python
+serializer = ArticleSerializer(instance=article, data=data, partial=True)
+serializer.is_valid(raise_exception=True)
+```
+
+Missing fields are allowed; **supplied fields are fully validated**. A `PATCH`
+carrying `{"views": "abc"}` is a 400, and combined with the rule above,
+`validated_data` holds exactly the fields the client sent — which is what makes
+a partial update safe to apply directly.
+
 ### Raise on Invalid
 
 ```python
@@ -198,6 +227,11 @@ class ArticleSerializer(Serializer):
 | `source` | - | Attribute to get value from |
 | `validators` | `[]` | List of validator functions |
 | `error_messages` | `{}` | Custom error message overrides |
+
+`max_length`, `min_length`, `allow_blank=False` and `validators` are enforced
+on **input**, not only in the generated OpenAPI schema — the field's own
+validation runs as part of Pydantic validation. A value that violates one is a
+400 before your `create()`/`update()` sees it.
 
 ## Foreign Keys
 
@@ -533,8 +567,31 @@ class ArticleSerializer(Serializer):
 | `DictField` | Dictionary |
 | `JSONField` | JSON data |
 
+### Relational Fields
+
+| Field | Description |
+|-------|-------------|
+| `PrimaryKeyRelatedField` | Accepts and returns the related object's primary key. What `ModelSerializer` uses for a `ForeignKey` by default. |
+| `SlugRelatedField` | Accepts and returns a unique non-PK column (`slug_field=`), e.g. a `username` or `slug` instead of a UUID. |
+| `NestedSerializer` | Marker that embeds another serializer's output; `many=True` for to-many, `read_only=True` by default. |
+
+```python
+from zeeb_api.serializers import PrimaryKeyRelatedField, SlugRelatedField
+
+
+class ArticleSerializer(Serializer):
+    author = PrimaryKeyRelatedField(queryset=User.objects.all())
+    tags = SlugRelatedField(slug_field="name", queryset=Tag.objects.all(), many=True)
+```
+
+### Response Schema Helpers
+
+`create_list_response_schema(item_schema, name=None)` builds a paginated
+list-response model from an item schema — useful when you hand-write a route
+and want its OpenAPI response to match what a paginated viewset returns.
+
 ## Next Steps
 
 - [ViewSets](viewsets.md) - Use serializers in APIs
-- [Validation](../reference/validation.md) - Validation reference
-- [Fields Reference](../reference/serializer-fields.md) - All field types
+- [Field Types](../reference/field-types.md) - All field types and their options
+- [Error Handling](errors.md) - How validation failures reach the client

@@ -230,17 +230,38 @@ class OrderingFilter(BaseFilter):
         # Validate fields
         allowed_fields = getattr(view, "ordering_fields", None)
         if allowed_fields is None:
-            # Allow all fields by default
-            return fields
-        
+            # Default to the serializer's exposed fields (mirrors DRF) so a
+            # client cannot order by a column the API does not surface. Only
+            # when those cannot be resolved do we fall back to permissive.
+            allowed_fields = self._default_valid_fields(view)
+            if allowed_fields is None:
+                return fields
+
         if allowed_fields == "__all__":
             return fields
-        
-        # Filter to only allowed fields
+
+        # Filter to only allowed fields (compare the root, before any __ lookup).
         valid_fields = []
         for field in fields:
-            field_name = field.lstrip("-")
+            field_name = field.lstrip("-").split("__", 1)[0]
             if field_name in allowed_fields:
                 valid_fields.append(field)
-        
+
         return valid_fields if valid_fields else None
+
+    def _default_valid_fields(self, view: ViewSet) -> set[str] | None:
+        """Serializer-exposed field names, or None if not resolvable."""
+        get_serializer_class = getattr(view, "get_serializer_class", None)
+        if get_serializer_class is None:
+            return None
+        try:
+            serializer_class = get_serializer_class()
+        except Exception:
+            return None
+        schema = getattr(serializer_class, "ResponseSchema", None) or getattr(
+            serializer_class, "Schema", None
+        )
+        model_fields = getattr(schema, "model_fields", None)
+        if model_fields:
+            return set(model_fields.keys())
+        return None

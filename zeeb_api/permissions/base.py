@@ -178,43 +178,54 @@ class ModelPermissions(BasePermission):
     - DELETE: delete_<model>
     """
     
+    # Permission codenames follow the standard add_/change_/delete_/view_<model>
+    # convention. They are matched against ``Permission.codename`` (which carries
+    # no app-label prefix in this ORM), via the user's ``has_perm_async``.
     perms_map = {
-        "GET": ["%(app_label)s.view_%(model_name)s"],
+        "GET": ["view_%(model_name)s"],
         "OPTIONS": [],
         "HEAD": [],
-        "POST": ["%(app_label)s.add_%(model_name)s"],
-        "PUT": ["%(app_label)s.change_%(model_name)s"],
-        "PATCH": ["%(app_label)s.change_%(model_name)s"],
-        "DELETE": ["%(app_label)s.delete_%(model_name)s"],
+        "POST": ["add_%(model_name)s"],
+        "PUT": ["change_%(model_name)s"],
+        "PATCH": ["change_%(model_name)s"],
+        "DELETE": ["delete_%(model_name)s"],
     }
-    
+
     async def has_permission(self, request: Request, view: ViewSet) -> bool:
         user = getattr(request.state, "user", None)
-        if user is None:
+        if user is None or not getattr(user, "is_authenticated", False):
             return False
-        
+
         # Get model info
         queryset = getattr(view, "queryset", None)
         if queryset is None:
             return True
-        
+
         model = getattr(queryset, "model", None)
         if model is None:
             return True
-        
+
         # Get required permissions
         perms = self._get_required_permissions(request.method, model)
-        
-        # Check user has permissions
-        user_perms = getattr(user, "permissions", set())
-        return all(perm in user_perms for perm in perms)
-    
+        if not perms:
+            return True
+
+        # Verify each required permission against the DB-backed user. A user
+        # object without ``has_perm_async`` (e.g. a token-only AuthenticatedUser
+        # with no database row) cannot have model permissions verified, so deny.
+        check = getattr(user, "has_perm_async", None)
+        if not callable(check):
+            return False
+        for perm in perms:
+            if not await check(perm):
+                return False
+        return True
+
     def _get_required_permissions(self, method: str, model: Any) -> list[str]:
-        """Get the required permissions for a method."""
+        """Get the required permission codenames for a method."""
         kwargs = {
-            "app_label": getattr(model._meta, "app_label", "app"),
             "model_name": model.__name__.lower(),
         }
-        
+
         perms = self.perms_map.get(method, [])
         return [perm % kwargs for perm in perms]

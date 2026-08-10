@@ -4,14 +4,33 @@ Scheme-based API versioning: a configurable scheme determines the requested API
 version for each request and makes it available as `request.state.version`,
 `viewset.version`, or via the `get_api_version` dependency.
 
+## What a generated project already has
+
+`zeeb startproject` turns versioning on with `HeaderVersioning`: clients send
+`X-API-Version: 1.0`, a request without the header gets `DEFAULT_VERSION`, and
+anything outside `ALLOWED_VERSIONS` is rejected with a 400 `API_VERSION_INVALID`
+envelope.
+
+Loosen or disable it from `.env`:
+
+```bash
+ALLOWED_VERSIONS=              # accept any version
+DEFAULT_VERSIONING_CLASS=      # no versioning at all
+```
+
+Note the middleware order in the generated `settings.py`: `CORSMiddleware`
+comes **before** `VersioningMiddleware`. An invalid version is answered by the
+middleware itself, so without CORS on the outside a browser sees an opaque CORS
+failure instead of the actual error.
+
 ## Quick Start
 
 ```python
 # settings.py
 MIDDLEWARE = [
     "zeeb_api.middleware.CORSMiddleware",
-    "zeeb_api.middleware.JWTAuthMiddleware",
     "zeeb_api.versioning.VersioningMiddleware",
+    "zeeb_api.middleware.JWTAuthMiddleware",
 ]
 
 DEFAULT_VERSIONING_CLASS = "zeeb_api.versioning.HeaderVersioning"
