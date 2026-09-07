@@ -275,7 +275,7 @@ _REQUIREMENT_NAME = re.compile(r"^([A-Za-z0-9][A-Za-z0-9._-]*)")
 
 
 def _canonical_name(name: str) -> str:
-    """PEP 503 normalisation, so ``Django_Filter`` and ``django-filter`` are one line."""
+    """PEP 503 normalisation, so ``Requests_Cache`` and ``requests-cache`` are one line."""
     return re.sub(r"[-_.]+", "-", name).lower()
 
 
@@ -291,12 +291,12 @@ async def add_dependency(
     ``generate_requirements`` snapshots what is installed; this goes the other
     way: declare a package the generated code needs and the runtime installs
     it on the next deploy. A line for the same package (any spelling —
-    ``Django_Filter`` matches ``django-filter``) is replaced, so pinning or
+    ``Requests_Cache`` matches ``requests-cache``) is replaced, so pinning or
     re-pinning is the same call.
 
     Args:
         requirement: A requirement specifier, e.g. ``"httpx"``,
-            ``"httpx>=0.27"``, ``"django-filter==24.2"``.
+            ``"httpx>=0.27"``, ``"requests-cache==1.2"``.
         remove: Remove the package's line instead of adding one.
         requirements_file: Project-relative requirements path (default
             ``requirements.txt``); created when absent.
