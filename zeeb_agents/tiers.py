@@ -63,6 +63,8 @@ CORE_TOOLS: frozenset[str] = frozenset(
         "make_migrations",
         "run_migrations",
         "run_tests",
+        "regenerate_tests",
+        "check_code",
         # The acceptance gate and its debugger.
         "verify_project",
         "diagnose_problem",
@@ -77,6 +79,9 @@ ESCAPE_HATCH_TOOLS: frozenset[str] = frozenset(
         "search_code",
         "run_query",
         "run_management_command",
+        "edit_file",
+        "delete_file",
+        "add_dependency",
     }
 )
 

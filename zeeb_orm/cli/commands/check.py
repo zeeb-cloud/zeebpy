@@ -6,10 +6,58 @@ carries the exact command that resolves it: a red ``check`` hands the caller its
 own to-do list rather than a description of a problem.
 """
 
+import json
+import os
+import subprocess
+import sys
 from pathlib import Path
 
 from zeeb_orm.cli.output import fail, no_project, ok
 from zeeb_orm.scaffold.naming import find_project_root
+
+#: Directories never scanned for project code.
+_SKIP_DIRS = frozenset({".venv", "venv", "node_modules", ".git", ".zeeb", "__pycache__"})
+
+#: An app's generated modules, in the order they depend on each other.
+_APP_MODULES = (
+    "models", "serializers", "permissions", "filters", "views", "urls", "signals", "tasks"
+)
+
+#: How long the import pass may take before it is reported as a failure.
+_IMPORT_TIMEOUT = 60
+
+# Runs in a subprocess so a module that crashes or hangs at import time
+# cannot take the caller down with it. One JSON line per failed module.
+_IMPORT_SCRIPT = r"""
+import importlib, json, os, sys, traceback
+root = os.path.realpath(sys.argv[1])
+sys.path.insert(0, root)
+for module in sys.argv[2:]:
+    try:
+        importlib.import_module(module)
+    except BaseException as exc:
+        frame = None
+        for entry in traceback.extract_tb(exc.__traceback__):
+            if os.path.realpath(entry.filename).startswith(root + os.sep):
+                frame = entry
+        rel = (
+            os.path.relpath(os.path.realpath(frame.filename), root).replace(os.sep, "/")
+            if frame else None
+        )
+        print(json.dumps({
+            "module": module,
+            "exception_type": type(exc).__name__,
+            "message": str(exc),
+            "missing_module": (
+                getattr(exc, "name", None) if isinstance(exc, ModuleNotFoundError) else None
+            ),
+            "file": rel,
+            "line": frame.lineno if frame else None,
+            "traceback": "".join(
+                traceback.format_exception(type(exc), exc, exc.__traceback__)[-12:]
+            ),
+        }))
+"""
 
 
 def _issue(code: str, message: str, next_command: str) -> dict:
@@ -218,6 +266,160 @@ def check_deployment(settings) -> list[dict]:
     return issues
 
 
+def _python_files(project_root: Path, paths: list[str] | None) -> list[Path]:
+    """The files the code check covers — the whole project, or just *paths*."""
+    if paths:
+        found: list[Path] = []
+        for entry in paths:
+            target = project_root / entry
+            if target.is_file():
+                found.append(target)
+            elif target.is_dir():
+                found += _walk(target)
+        return found
+    return _walk(project_root)
+
+
+def _walk(directory: Path) -> list[Path]:
+    files: list[Path] = []
+    for dirpath, dirnames, filenames in os.walk(directory):
+        dirnames[:] = sorted(d for d in dirnames if d not in _SKIP_DIRS)
+        files += [Path(dirpath) / f for f in sorted(filenames) if f.endswith(".py")]
+    return files
+
+
+def _code_issue(kind: str, file: str | None, line: int | None, message: str, **extra) -> dict:
+    where = f"{file}:{line}" if file and line else (file or extra.get("module") or "project")
+    return {
+        "code": "invalid_input",
+        "message": f"{where}: {message}",
+        "next_command": f"Fix {where}",
+        "kind": kind,
+        "file": file,
+        "line": line,
+        "col": extra.pop("col", None),
+        "module": extra.pop("module", None),
+        "exception_type": extra.pop("exception_type", None),
+        "missing_module": extra.pop("missing_module", None),
+        "traceback": extra.pop("traceback", None),
+    }
+
+
+def _syntax_issues(project_root: Path, files: list[Path]) -> list[dict]:
+    issues: list[dict] = []
+    for path in files:
+        rel = path.relative_to(project_root).as_posix()
+        try:
+            compile(path.read_text(encoding="utf-8", errors="replace"), str(path), "exec")
+        except SyntaxError as exc:
+            issues.append(
+                _code_issue(
+                    "syntax", rel, exc.lineno, exc.msg, col=exc.offset, exception_type="SyntaxError"
+                )
+            )
+    return issues
+
+
+def _project_modules(project_root: Path, only: set[str] | None, broken: set[str]) -> list[str]:
+    """Importable project modules, filtered to *only* (when given) minus *broken*."""
+    package = next(
+        (
+            item.name
+            for item in sorted(project_root.iterdir())
+            if item.is_dir() and item.name != "apps" and (item / "settings.py").exists()
+        ),
+        None,
+    )
+    candidates: list[tuple[str, str]] = []
+    if package:
+        candidates.append((f"{package}.settings", f"{package}/settings.py"))
+    apps_dir = project_root / "apps"
+    if apps_dir.is_dir():
+        for app in sorted(d for d in apps_dir.iterdir() if (d / "__init__.py").exists()):
+            for stem in _APP_MODULES:
+                if (app / f"{stem}.py").exists():
+                    candidates.append((f"apps.{app.name}.{stem}", f"apps/{app.name}/{stem}.py"))
+    if package and (project_root / package / "urls.py").exists():
+        candidates.append((f"{package}.urls", f"{package}/urls.py"))
+    return [
+        module
+        for module, file in candidates
+        if file not in broken and (only is None or file in only or module.endswith(".settings"))
+    ]
+
+
+def _import_issues(project_root: Path, modules: list[str]) -> list[dict]:
+    if not modules:
+        return []
+    try:
+        proc = subprocess.run(
+            [sys.executable, "-c", _IMPORT_SCRIPT, str(project_root), *modules],
+            cwd=str(project_root),
+            capture_output=True,
+            text=True,
+            timeout=_IMPORT_TIMEOUT,
+        )
+    except subprocess.TimeoutExpired:
+        return [
+            _code_issue(
+                "import",
+                None,
+                None,
+                f"importing the project modules did not finish within {_IMPORT_TIMEOUT}s",
+            )
+        ]
+    issues: list[dict] = []
+    for line in proc.stdout.splitlines():
+        try:
+            entry = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(entry, dict) or "module" not in entry:
+            continue
+        issues.append(
+            _code_issue(
+                "import",
+                entry.get("file"),
+                entry.get("line"),
+                f"{entry.get('exception_type')}: {entry.get('message')}",
+                module=entry["module"],
+                exception_type=entry.get("exception_type"),
+                missing_module=entry.get("missing_module"),
+                traceback=entry.get("traceback"),
+            )
+        )
+    if proc.returncode and not issues:
+        issues.append(
+            _code_issue(
+                "import", None, None, (proc.stderr or "import check crashed").strip()[-2000:]
+            )
+        )
+    return issues
+
+
+def check_code(project_root: Path, imports: bool = True, paths: list[str] | None = None) -> dict:
+    """Compile every project file and, optionally, import every project module.
+
+    Returns ``{"issues": [...], "checked": n, "imports_checked": bool}``. Each
+    issue is a ``check`` issue (``code``/``message``/``next_command``) plus
+    ``kind`` (``syntax`` | ``import``), ``file``, ``line``, ``col``, ``module``,
+    ``exception_type``, ``missing_module`` and ``traceback``. The import pass
+    skips modules whose file failed to compile and runs in a subprocess so a
+    crashing module cannot take the caller down.
+    """
+    files = _python_files(project_root, paths)
+    issues = _syntax_issues(project_root, files)
+    imports_checked = False
+    # A file that does not parse fails every module that imports it, so the
+    # import pass would only repeat the syntax error as cascades; it runs once
+    # everything parses.
+    if imports and not issues:
+        only = {p.relative_to(project_root).as_posix() for p in files} if paths else None
+        issues += _import_issues(project_root, _project_modules(project_root, only, set()))
+        imports_checked = True
+    return {"issues": issues, "checked": len(files), "imports_checked": imports_checked}
+
+
 def run_check(deploy: bool = False, json_output: bool = False) -> int:
     """Verify the project can actually serve, and say what to run if it cannot."""
     project_root = find_project_root()
@@ -232,6 +434,11 @@ def run_check(deploy: bool = False, json_output: bool = False) -> int:
     issues += app_issues
     migration_issues, migrations = check_migrations(project_root)
     issues += migration_issues
+    # Syntax only: a file that does not parse fails every request, and this is
+    # the check an agent runs before deploying. The import pass belongs to the
+    # agents' check_code — it spawns a process and needs the runtime's deps.
+    code = check_code(project_root, imports=False)
+    issues += code["issues"]
 
     settings = _load_settings(project_root) if package else None
     if package and settings is None:
@@ -253,6 +460,7 @@ def run_check(deploy: bool = False, json_output: bool = False) -> int:
         "apps": apps,
         "migrations": migrations,
         "database": database,
+        "code_check": {"checked": code["checked"], "errors": len(code["issues"])},
         "deploy": deploy,
         "issues": issues,
     }

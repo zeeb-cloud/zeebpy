@@ -190,7 +190,8 @@ async def test_build_feature_verification_envelope(root: Path):
     assert res.success, res.message
     verification = res.data["verification"]
     # tests=True (default) generated a suite, so the tests check auto-joins.
-    assert set(verification["checks"]) == {"structure", "migrations", "openapi", "tests"}
+    assert set(verification["checks"]) == {"structure", "code", "migrations", "openapi", "tests"}
+    assert verification["checks"]["code"]["ok"] is True
     assert verification["checks"]["tests"]["ok"] is True
     assert verification["checks"]["structure"]["ok"] is True
     assert verification["checks"]["migrations"]["ok"] is True

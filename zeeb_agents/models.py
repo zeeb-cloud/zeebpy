@@ -18,6 +18,7 @@ from zeeb_agents._utils.code_gen import (
     remove_field_from_class,
     render_model_class,
     replace_field_in_class,
+    set_class_attribute_in_block,
     skip_result,
     validate_if_exists,
 )
@@ -589,14 +590,15 @@ async def update_model(
             the original ``model_name``).
         changes (list[str]): human-readable descriptions of each change applied
             (e.g. ``"renamed to 'X'"``, ``"meta.ordering updated"``,
-            ``"meta.X not found (add manually)"``); empty if nothing changed.
+            ``"meta.table_name added"``); empty if nothing changed.
 
     Notes:
         - Failures carry ``error_code`` in ``data`` (``app_not_found``,
           ``model_not_found``, …) plus close-match ``suggestions`` where
           applicable.
-        - A meta key that is not already present in the class is reported in
-          ``changes`` (``"... not found (add manually)"``) rather than added.
+        - A meta key that is not already present is added — and a model
+          without a ``class Meta`` gets one. Values are rendered as Python
+          literals (``ordering=["-created_at"]``, ``table_name="posts"``).
     """
     if rename_to:
         ensure_identifier(rename_to, "model name")
@@ -622,30 +624,20 @@ async def update_model(
             changes.append(f"renamed to '{rename_to}'")
 
         if meta_changes:
-            # Scope replacements to this class's block so a meta key in another
-            # model is never touched.
             current_name = rename_to if (rename_to and rename_to != model_name) else model_name
-            block_pattern = re.compile(
-                rf"^(class {re.escape(current_name)}\b.*?)(?=\nclass |\Z)",
-                re.MULTILINE | re.DOTALL,
-            )
-            block_match = block_pattern.search(content)
-            if block_match is None:
-                raise AgentError(
-                    f"Model '{current_name}' not found in {path}",
-                    code="model_not_found",
-                    model=current_name,
-                )
-            block = block_match.group(1)
             for key, val in meta_changes.items():
-                rendered = render_py_literal(val)
-                pattern = re.compile(rf"(^\s+{re.escape(key)}\s*=\s*).*$", re.MULTILINE)
-                if pattern.search(block):
-                    block = pattern.sub(rf"\g<1>{rendered}", block)
-                    changes.append(f"meta.{key} updated")
-                else:
-                    changes.append(f"meta.{key} not found (add manually)")
-            content = content[: block_match.start(1)] + block + content[block_match.end(1):]
+                # Scoped to this class's Meta (created when absent) so a meta
+                # key in another model is never touched.
+                result = set_class_attribute_in_block(
+                    content, current_name, key, render_py_literal(val), nested="Meta"
+                )
+                if result is None:
+                    raise AgentError(
+                        f"{path} does not parse — repair it with edit_file before editing Meta.",
+                        code="invalid_input",
+                    )
+                content, action = result
+                changes.append(f"meta.{key} {'updated' if action == 'replaced' else 'added'}")
 
         if changes:
             path.write_text(content, encoding="utf-8")
