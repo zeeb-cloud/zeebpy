@@ -274,6 +274,13 @@ Diagnose a misbehaving project in one read-only call instead of five —
 correlates settings, wiring, migrations and recent logs against the reported
 `symptom`.
 
+### `regenerate_tests(feature, project_id=None)`
+Rewrite a feature's generated test file from its stored spec. `build_feature`
+writes `tests/test_<app>_generated.py` once and never overwrites it, so after
+the feature's fields change the suite can fail on assertions that were true
+when it was written; this is the refresh. Only the generated test file is
+rewritten. An `inferred` feature has no stored spec and is refused.
+
 ---
 
 ## Project & App Management
@@ -550,14 +557,26 @@ Return all `router.register(...)` calls found across all apps.
 ### `make_migrations(name=None, project_id=None)`
 Detect model changes and write a migration file.
 
-### `run_migrations(project_id=None)`
-Apply all pending migrations.
+### `run_migrations(target=None, fake=False, fake_initial=False, project_id=None)`
+Apply all pending migrations — or move the schema to a named migration.
+`target="0003_x"` walks forward or backward to it (`"zero"` unapplies
+everything); `fake=True` records migrations as applied without running them.
 
 ### `get_migration_status(project_id=None)`
 Return list of migrations with `applied: bool` for each.
 
 ### `rollback_migration(steps=1, project_id=None)`
 Roll back the last N migration(s).
+
+### `show_migration(name, project_id=None)`
+Read one migration — its source, parsed operations, dependencies, `replaces`
+and whether the database has it. Accepts a name, a number (`"0003"`) or a
+file name. The step before repairing a migration.
+
+### `squash_migrations(start, end, name=None, project_id=None)`
+Squash a range of migrations into one file whose `replaces` lists the
+originals; the executor never applies them twice. Delete the originals with
+`delete_file` once the squashed migration is deployed everywhere.
 
 ---
 
@@ -710,6 +729,19 @@ result = await search_code(r"class Post", glob="**/*.py")
 # result.data == {"files": [{"file": "...", "matches": [{"line_no": 5, "content": "class Post(Model):"}]}], "total_matches": 1}
 ```
 
+### `edit_file(path, find, replace, count=1, project_id=None)`
+Replace an exact text span in one file — the surgical alternative to
+`write_file`. `find` must occur exactly `count` times; any other number is
+refused rather than guessed at. For code inside a generated class prefer
+`edit_function` / `set_class_method` / `set_class_attribute`, which locate the
+span by parsing.
+
+### `delete_file(path, project_id=None)`
+Delete one file — a stray test, a bad migration, an orphaned module. Refuses
+the project skeleton (`manage.py`, every `__init__.py`, the settings package,
+`.zeeb/`, `.git/`). Generated artifacts have their own removal tools that also
+unwire them.
+
 ---
 
 ## Database Introspection
@@ -776,10 +808,19 @@ result = await run_tests()
 #                 "no_tests": False}       # True when the run collected nothing
 ```
 
-### `generate_tests(app, entities, filename=None, project_id=None)`
-Write generated smoke tests for a feature app. Idempotent, and **never
-overwrites** an existing file — pass `filename` to write alongside one.
-`build_feature` calls this when `tests=True`.
+### `generate_tests(app, entities, filename=None, overwrite=False, project_id=None)`
+Write generated smoke tests for a feature app. Idempotent, and never
+overwrites an existing file unless `overwrite=True` — and then only the
+generated test file, never `conftest.py`/`pytest.ini`. Pass `filename` to
+write alongside an existing suite. `build_feature` calls this when
+`tests=True`; `regenerate_tests` calls it with `overwrite=True`.
+
+### `check_code(paths=None, imports=True, project_id=None)`
+Read-only. Compile every project file and import every project module in a
+subprocess; report each failure with `kind` (`syntax` | `import`), `file`,
+`line`, `col`, `message` and, for a `ModuleNotFoundError`, `missing_module`.
+`verify_project` runs it as the `code` check; `diagnose_problem` turns its
+findings into a `syntax_error` / `import_error` root cause.
 
 ---
 
@@ -919,6 +960,60 @@ reports `removed: False` with `success: True`.
 
 ```python
 await delete_function("blog", "publish", kind="action", entity="Post")
+```
+
+### `edit_function(app, name, body, kind='action', entity=None, imports=None, project_id=None)`
+Replace the body of one generated function — the mirror of `delete_function`.
+The decorator and signature stay exactly as they are, so an endpoint keeps its
+route, methods and permissions while its logic is fixed in place. `body` may
+be indented however you like — nested blocks are re-indented, never flattened.
+For `kind="rule"` the permission class's `has_permission` body is replaced.
+
+```python
+await edit_function("blog", "publish", entity="Post", body='''
+    post = await self.get_object()
+    if post.published:
+        raise ResourceConflictException("already published")
+    post.published = True
+    await post.save()
+    return PostSerializer(post).data
+''', imports=["from zeeb_api.exceptions import ResourceConflictException"])
+```
+
+---
+
+## Class-Level Surgery
+
+One method or one attribute of a generated class, without touching the rest
+of the file — the layer between the per-object tools (whole artifacts) and the
+field tools (one field).
+
+### `set_class_method(app, class_name, method_name, source=None, file=None, remove=False, imports=None, project_id=None)`
+Add, replace or remove one method on a model, serializer, viewset or
+permission class: a `get_queryset` / `perform_create` override, a
+`validate_<field>`, a `__str__` or `save`. `source` is the whole method
+(decorators, `def`, body) and must define exactly `method_name`. The class is
+found across `models.py`, `serializers.py`, `views.py`, `permissions.py`,
+`filters.py` unless `file` names one.
+
+```python
+await set_class_method("blog", "PostViewSet", "get_queryset", source='''
+    def get_queryset(self):
+        return Post.objects.filter(author=self.request.user)
+''')
+```
+
+### `set_class_attribute(app, class_name, attribute, value=None, file=None, meta=False, remove=False, imports=None, project_id=None)`
+Set or unset one class attribute — or, with `meta=True`, one `Meta` key,
+creating the `Meta` class when the model has none. `value` is Python source
+written verbatim: `queryset`, `filterset_class`, `filter_backends`,
+`ordering`, `Meta.table_name`, a serializer's `Meta.extra_kwargs`. Fields have
+their own migration-aware tools (`alter_field`, `remove_field`).
+
+```python
+await set_class_attribute("blog", "PostViewSet", "filterset_class", "PostFilter",
+                          imports=["from .filters import PostFilter"])
+await set_class_attribute("blog", "Post", "ordering", '["-created_at"]', meta=True)
 ```
 
 ---
@@ -1204,6 +1299,13 @@ result = await check_production_readiness()
 # }
 ```
 
+### `add_dependency(requirement, remove=False, requirements_file='requirements.txt', project_id=None)`
+Add, update or remove one requirement line — the fix for a
+`dependency_missing` failure or an `import_error` root cause.
+`generate_requirements` snapshots what is installed; this declares what the
+generated code needs, and the runtime installs it on the next deploy. A line
+for the same package (any spelling) is replaced.
+
 ---
 
 ## BaaS — Permission Class Scaffolding
@@ -1384,7 +1486,7 @@ result = await get_resource("mcp://docs/deployment", project_id="<id>", tool_pre
 
 ### `get_capabilities_doc(project_id=None, tool_prefix='', framework=None)` → `mcp://docs/capabilities`
 
-Complete inventory of all public `zeeb_agents` functions (117), grouped by
+Complete inventory of all public `zeeb_agents` functions (127), grouped by
 tier — core first — with signatures and descriptions. Auto-generated — regenerate with
 `python -m zeeb_agents._utils.capabilities_doc --write`.  Tool names use `{prefix}` in
 the source file — rendered with the given `tool_prefix` at call time.

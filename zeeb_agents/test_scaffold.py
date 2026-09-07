@@ -536,9 +536,10 @@ async def generate_tests(
     app: str,
     entities: list[dict],
     filename: str | None = None,
+    overwrite: bool = False,
     project_root: Path | None = None,
 ) -> AgentResult:
-    """Write generated smoke tests for a feature app (idempotent, never overwrites).
+    """Write generated smoke tests for a feature app (idempotent; overwrites only when asked).
 
     Creates ``tests/__init__.py``, ``tests/conftest.py`` (project app against
     an isolated sqlite file, plus anonymous/authenticated/admin clients), a root
@@ -558,13 +559,18 @@ async def generate_tests(
             ``tests/test_<app>_generated.py``). Because existing files are never
             overwritten, adding an entity to an app that already has a generated
             suite needs its own filename or nothing would be written.
+        overwrite: Rewrite the generated test file when it already exists
+            (default false). Only that file — ``conftest.py`` and
+            ``pytest.ini`` are still never overwritten.
         project_id: The host-assigned project id (required).
 
     Returns data (on success):
         created (list[str]): project-relative paths written.
         skipped (list[str]): paths that already existed and were kept.
+        overwritten (list[str]): paths that existed and were rewritten
+            (only ever the generated test file, only with ``overwrite``).
         tests (int): number of test functions in the generated file (0 when
-            the file already existed).
+            the file already existed and was kept).
     """
     root = project_root
     if root is None or not Path(root).is_dir():
@@ -596,17 +602,21 @@ async def generate_tests(
 
     created: list[str] = []
     skipped: list[str] = []
+    overwritten: list[str] = []
+    target = filename or f"tests/test_{app}_generated.py"
 
     def _write(relative: str, content: str) -> None:
         path = root / relative
         if path.exists():
+            if overwrite and relative == target:
+                path.write_text(content, encoding="utf-8")
+                overwritten.append(relative)
+                return
             skipped.append(relative)
             return
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content, encoding="utf-8")
         created.append(relative)
-
-    target = filename or f"tests/test_{app}_generated.py"
 
     def _write_all() -> None:
         _write("pytest.ini", _PYTEST_INI)
@@ -618,14 +628,20 @@ async def generate_tests(
         _write(target, body)
 
     await asyncio.to_thread(_write_all)
-    test_count = len(blocks) if target in created else 0
-    message = (
-        f"Generated {len(created)} test file(s) for '{app}'"
-        if created
-        else f"Test files for '{app}' already exist; skipped"
-    )
+    test_count = len(blocks) if target in created or target in overwritten else 0
+    if overwritten:
+        message = f"Regenerated {target} for '{app}' ({test_count} test(s))"
+    elif created:
+        message = f"Generated {len(created)} test file(s) for '{app}'"
+    else:
+        message = f"Test files for '{app}' already exist; skipped"
     return AgentResult(
         success=True,
         message=message,
-        data={"created": created, "skipped": skipped, "tests": test_count},
+        data={
+            "created": created,
+            "skipped": skipped,
+            "overwritten": overwritten,
+            "tests": test_count,
+        },
     )

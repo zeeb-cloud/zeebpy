@@ -44,7 +44,7 @@ data    : dict|None   — structured output (see per-tool docs)
 
 <!-- BEGIN AUTO-GENERATED INVENTORY -->
 
-### Core (20)
+### Core (22)
 
 Start here. These are declarative and cover almost every task.
 
@@ -55,6 +55,7 @@ Start here. These are declarative and cover almost every task.
 | `{prefix}bootstrap_project(auth=True, registration=True, health_endpoint=True, user_model=None, migrate=True)` | Bootstrap the bound project into a production-ready baseline. |
 | `{prefix}build_feature(spec, migrate=True, verify=True, tests=True)` | Build a complete feature from a FeatureSpec — compile, apply, verify. |
 | `{prefix}change_feature(changes, app=None, migrate=True, verify=True, tests=True, feature=None)` | Apply semantic changes to existing features — fields, relations, entities. |
+| `{prefix}check_code(paths=None, imports=True)` | Syntax-check the project's Python files and import each project module. |
 | `{prefix}configure_auth(providers=None, registration=True, user_model=None, migrate=True)` | Configure authentication as one coherent setup — password and/or OAuth. |
 | `{prefix}create_project(name, framework="zeebpy", directory=".")` | Create a new Zeeb project and record its framework. |
 | `{prefix}deactivate_feature(feature, verify=True)` | Take a feature off the API without touching its data — reversible. |
@@ -67,11 +68,12 @@ Start here. These are declarative and cover almost every task.
 | `{prefix}list_features(status=None)` | List the features this project is made of — the map for every other change. |
 | `{prefix}make_migrations(name=None)` | Detect model changes and write a new migration file. |
 | `{prefix}plan_feature(spec, tests=True)` | Validate a FeatureSpec and return the execution plan — writes NOTHING. |
-| `{prefix}run_migrations()` | Apply all pending migrations. |
+| `{prefix}regenerate_tests(feature)` | Rewrite a feature's generated test file from its stored spec. |
+| `{prefix}run_migrations(target=None, fake=False, fake_initial=False)` | Apply pending migrations — or move the schema to a named migration. |
 | `{prefix}run_tests(path=None, verbose=False)` | Run the project test suite via pytest. |
 | `{prefix}verify_project(checks=None, port=8000)` | Run the deterministic acceptance gate — the call to make before "done". |
 
-### Escape hatches (5)
+### Escape hatches (8)
 
 Precise, general-purpose control for what a feature spec cannot
 express. Reaching for these first usually means the wrong problem
@@ -79,13 +81,16 @@ is being solved.
 
 | Tool | Description |
 |---|---|
+| `{prefix}add_dependency(requirement, remove=False, requirements_file="requirements.txt")` | Add, update or remove one requirement line — the fix for ``dependency_missing``. |
+| `{prefix}delete_file(path)` | Delete one file from the project — a stray test, a bad migration, an orphaned module. |
+| `{prefix}edit_file(path, find, replace, count=1)` | Replace an exact text span in a project file — the surgical alternative to ``write_file``. |
 | `{prefix}read_file(path)` | Read a file from the project and return its contents. |
 | `{prefix}run_management_command(command, args=None)` | Run a ``manage.py`` management command and return its output. |
 | `{prefix}run_query(sql)` | Execute a read-only SQL query against the project database. |
 | `{prefix}search_code(pattern, glob="**/*.py")` | Search for a regex pattern across project source files. |
 | `{prefix}write_file(path, content)` | Write (or overwrite) a file in the project. |
 
-### Advanced (92)
+### Advanced (97)
 
 One tool per object. Fully supported — the feature compiler runs
 exactly these — but reach for them only when a spec cannot express
@@ -153,6 +158,9 @@ the change. Grouped by category below.
 | Tool | Description |
 |---|---|
 | `{prefix}delete_function(app, name, kind="action", entity=None)` | Remove one generated function — action, endpoint, hook, task, or rule. |
+| `{prefix}edit_function(app, name, body, kind="action", entity=None, imports=None)` | Replace the body of one generated function — action, endpoint, hook, task, or rule. |
+| `{prefix}set_class_attribute(app, class_name, attribute, value=None, file=None, meta=False, remove=False, imports=None)` | Set or unset one class attribute — or one ``Meta`` key — on a generated class. |
+| `{prefix}set_class_method(app, class_name, method_name, source=None, file=None, remove=False, imports=None)` | Add, replace or remove one method on a model, serializer, viewset or permission class. |
 
 #### Migrations
 
@@ -160,6 +168,8 @@ the change. Grouped by category below.
 |---|---|
 | `{prefix}get_migration_status()` | Return the status of all migrations (applied / pending). |
 | `{prefix}rollback_migration(steps=1)` | Roll back the last *steps* migration(s). |
+| `{prefix}show_migration(name)` | Show one migration file — its source, operations, dependencies and applied state. |
+| `{prefix}squash_migrations(start, end, name=None)` | Squash a range of migrations into one file. |
 
 #### Platform Runtime
 
@@ -203,7 +213,7 @@ the change. Grouped by category below.
 
 | Tool | Description |
 |---|---|
-| `{prefix}generate_tests(app, entities, filename=None)` | Write generated smoke tests for a feature app (idempotent, never overwrites). |
+| `{prefix}generate_tests(app, entities, filename=None, overwrite=False)` | Write generated smoke tests for a feature app (idempotent; overwrites only when asked). |
 
 #### Seed Data
 

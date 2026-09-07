@@ -7,6 +7,7 @@ import re
 from pathlib import Path
 
 from zeeb_agents._utils import AgentResult, agent_function
+from zeeb_agents._utils.code_gen import replace_function_body
 from zeeb_agents._utils.errors import AgentError, close_matches, did_you_mean, fail
 from zeeb_agents._utils.project import load_project_settings, require_project_root
 from zeeb_agents._utils.validation import ensure_app_exists, ensure_identifier
@@ -359,28 +360,20 @@ async def edit_signal_receiver(
     def _edit() -> str:
         path = _require_signals_file(root, app)
         source = path.read_text()
-        lines = source.splitlines(keepends=True)
         receivers = _parse_receivers(source)
-        for r in receivers:
-            if r["func_name"] != function_name:
-                continue
-            # Preserve decorator + def line(s), replace body
-            func_def_line = r["func_start"]
-            # Ensure new_body is properly indented
-            body_lines = []
-            for line in new_body.splitlines():
-                stripped = line.lstrip()
-                body_lines.append(f"    {stripped}\n" if stripped else "    pass\n")
-            if not body_lines:
-                body_lines = ["    pass\n"]
-            new_lines = (
-                lines[: func_def_line + 1]  # up to and including def line
-                + body_lines
-                + (lines[r["func_end"]:] if r["func_end"] < len(lines) else [])
+        if function_name not in {r["func_name"] for r in receivers}:
+            raise _receiver_not_found(app, function_name, receivers)
+        # The decorator and signature stay; the body is re-indented as a block,
+        # so an ``if``/``for`` in new_body keeps its nesting (a line-by-line
+        # re-indent used to flatten it into an IndentationError).
+        updated = replace_function_body(source, function_name, new_body)
+        if updated is None:
+            raise AgentError(
+                f"{app}/signals.py does not parse — repair it with edit_file first.",
+                code="invalid_input",
             )
-            path.write_text("".join(new_lines))
-            return str(path.relative_to(root))
-        raise _receiver_not_found(app, function_name, receivers)
+        path.write_text(updated)
+        return str(path.relative_to(root))
 
     rel_path = await asyncio.to_thread(_edit)
     return AgentResult(

@@ -15,6 +15,7 @@ from zeeb_agents._utils.code_gen import (
     pluralize,
     remove_class_block,
     remove_import_name,
+    remove_method_from_class,
     render_action_method,
     render_viewset_class,
     resolve_authentication,
@@ -385,8 +386,11 @@ async def add_viewset_action(
         if_exists: What to do when the ViewSet already defines a method named
             *action_name*: ``"error"`` (default) fails with
             ``already_exists``; ``"skip"`` returns success with
-            ``data["skipped"]=True``. Note: previously a duplicate was
-            silently appended (shadowing the original) — that was a bug.
+            ``data["skipped"]=True``; ``"replace"`` removes the existing
+            method and writes this one in its place (to change only the body,
+            ``edit_function`` keeps the decorator and signature for you).
+            Note: previously a duplicate was silently appended (shadowing the
+            original) — that was a bug.
         project_id: The host-assigned project id (required).
 
     Returns data (on success):
@@ -396,6 +400,8 @@ async def add_viewset_action(
         url_path (str): the URL segment (``url_path`` or *action_name*)
         wiring (dict): the serializer/schema/permission names that were wired
             (only keys that were set — e.g. ``{"response_serializer": "..."}``)
+        replaced (bool): ``True`` when an existing method was replaced
+            (``if_exists="replace"``)
         skipped (bool): present and ``True`` when the action already existed
             and ``if_exists="skip"`` was passed
 
@@ -420,9 +426,9 @@ async def add_viewset_action(
         )
     """
     ensure_identifier(action_name, "action name")
-    if if_exists not in ("error", "skip"):
+    if if_exists not in ("error", "skip", "replace"):
         return fail(
-            f"if_exists must be 'error' or 'skip', got {if_exists!r}",
+            f"if_exists must be 'error', 'skip' or 'replace', got {if_exists!r}",
             code="invalid_input",
         )
     action_methods = [m.lower() for m in (methods or ["get"])]
@@ -453,9 +459,10 @@ async def add_viewset_action(
 
     class_name = f"{model_name}ViewSet"
 
-    def _insert() -> bool:
-        """Splice the action into the class; returns False on a skipped duplicate."""
+    def _insert() -> str:
+        """Splice the action into the class: ``added``, ``replaced`` or ``skipped``."""
         content = path.read_text(encoding="utf-8")
+        outcome = "added"
         if not class_exists(content, class_name):
             raise AgentError(
                 f"'{class_name}' not found in {path}",
@@ -471,14 +478,20 @@ async def add_viewset_action(
         block = class_match.group(1) if class_match else ""
         if re.search(rf"^\s+(?:async\s+)?def {re.escape(action_name)}\(", block, re.MULTILINE):
             if if_exists == "skip":
-                return False
-            raise AgentError(
-                f"'{class_name}' already defines '{action_name}' — pass "
-                "if_exists='skip' to keep it, or pick a different action name",
-                code="already_exists",
-                viewset=class_name,
-                action=action_name,
-            )
+                return "skipped"
+            if if_exists != "replace":
+                raise AgentError(
+                    f"'{class_name}' already defines '{action_name}' — pass "
+                    "if_exists='skip' to keep it, if_exists='replace' to overwrite it, "
+                    "or pick a different action name",
+                    code="already_exists",
+                    viewset=class_name,
+                    action=action_name,
+                )
+            content = remove_method_from_class(content, class_name, action_name) or content
+            class_match = class_pattern.search(content)
+            block = class_match.group(1) if class_match else ""
+            outcome = "replaced"
 
         action_code = render_action_method(
             action_name,
@@ -517,10 +530,10 @@ async def add_viewset_action(
         for ref in serializer_refs.values():
             if ref:
                 ensure_import(path, f"from .serializers import {ref}")
-        return True
+        return outcome
 
-    inserted = await asyncio.to_thread(_insert)
-    if not inserted:
+    outcome = await asyncio.to_thread(_insert)
+    if outcome == "skipped":
         return AgentResult(
             success=True,
             message=f"'{class_name}' already defines '{action_name}'; skipped",
@@ -534,15 +547,19 @@ async def add_viewset_action(
     wiring = {label: ref for label, ref in serializer_refs.items() if ref}
     if permission:
         wiring["permission"] = permission
+    replaced = outcome == "replaced"
     return AgentResult(
         success=True,
-        message=f"Action '{action_name}' added to '{class_name}'",
+        message=(
+            f"Action '{action_name}' {'replaced in' if replaced else 'added to'} '{class_name}'"
+        ),
         data={
             "app": app,
             "viewset": class_name,
             "action": action_name,
             "url_path": url_path or action_name,
             "wiring": wiring,
+            "replaced": replaced,
         },
     )
 

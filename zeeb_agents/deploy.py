@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import re
 from pathlib import Path
 from typing import Any
 
 from zeeb_agents._utils import AgentResult, agent_function
+from zeeb_agents._utils.errors import fail
 from zeeb_agents._utils.project import load_project_settings
 
 _DOCKERFILE_TEMPLATE = """\
@@ -266,4 +268,113 @@ async def check_production_readiness(
             else f"Project has {issue_count} production issue(s)."
         ),
         data=result,
+    )
+
+
+_REQUIREMENT_NAME = re.compile(r"^([A-Za-z0-9][A-Za-z0-9._-]*)")
+
+
+def _canonical_name(name: str) -> str:
+    """PEP 503 normalisation, so ``Django_Filter`` and ``django-filter`` are one line."""
+    return re.sub(r"[-_.]+", "-", name).lower()
+
+
+@agent_function
+async def add_dependency(
+    requirement: str,
+    remove: bool = False,
+    requirements_file: str = "requirements.txt",
+    project_root: Path | None = None,
+) -> AgentResult:
+    """Add, update or remove one requirement line — the fix for ``dependency_missing``.
+
+    ``generate_requirements`` snapshots what is installed; this goes the other
+    way: declare a package the generated code needs and the runtime installs
+    it on the next deploy. A line for the same package (any spelling —
+    ``Django_Filter`` matches ``django-filter``) is replaced, so pinning or
+    re-pinning is the same call.
+
+    Args:
+        requirement: A requirement specifier, e.g. ``"httpx"``,
+            ``"httpx>=0.27"``, ``"django-filter==24.2"``.
+        remove: Remove the package's line instead of adding one.
+        requirements_file: Project-relative requirements path (default
+            ``requirements.txt``); created when absent.
+        project_id: The host-assigned project id (required).
+
+    Returns data (on success):
+        path (str): the requirements file, relative to the project root.
+        requirement (str): the specifier as written (or removed).
+        name (str): the normalised package name.
+        action (str): ``"added"``, ``"updated"``, ``"removed"``, or
+            ``"unchanged"`` (already present as written / already absent).
+        restart_required (bool): ``True`` when the file changed — the runtime
+            installs on redeploy (``redeploy_preview``).
+
+    Notes:
+        - Fails with ``invalid_input`` when the specifier does not start with
+          a package name or the path escapes the project.
+    """
+    root = project_root
+    spec = requirement.strip()
+    match = _REQUIREMENT_NAME.match(spec)
+    if not match:
+        return fail(
+            f"'{requirement}' is not a requirement specifier (expected e.g. 'httpx>=0.27').",
+            code="invalid_input",
+        )
+    name = _canonical_name(match.group(1))
+    target = Path(requirements_file)
+    if target.is_absolute() or ".." in target.parts:
+        return fail(
+            f"requirements_file must be a project-relative path, got '{requirements_file}'.",
+            code="invalid_input",
+        )
+    path = root / target
+
+    def _line_name(line: str) -> str | None:
+        stripped = line.strip()
+        if not stripped or stripped.startswith(("#", "-")):
+            return None
+        found = _REQUIREMENT_NAME.match(stripped)
+        return _canonical_name(found.group(1)) if found else None
+
+    def _apply() -> str:
+        lines = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
+        index = next((i for i, line in enumerate(lines) if _line_name(line) == name), None)
+        if remove:
+            if index is None:
+                return "unchanged"
+            del lines[index]
+            action = "removed"
+        elif index is None:
+            lines.append(spec)
+            action = "added"
+        elif lines[index].strip() == spec:
+            return "unchanged"
+        else:
+            lines[index] = spec
+            action = "updated"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
+        return action
+
+    action = await asyncio.to_thread(_apply)
+    rel = target.as_posix()
+    messages = {
+        "added": f"Added '{spec}' to {rel}",
+        "updated": f"Updated '{name}' in {rel} to '{spec}'",
+        "removed": f"Removed '{name}' from {rel}",
+        "unchanged": f"{rel} already {'lacks' if remove else 'has'} '{spec}'; nothing to do",
+    }
+    return AgentResult(
+        success=True,
+        message=messages[action],
+        data={
+            "path": rel,
+            "requirement": spec,
+            "name": name,
+            "action": action,
+            "restart_required": action != "unchanged",
+        },
     )

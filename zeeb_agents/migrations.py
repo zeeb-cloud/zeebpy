@@ -7,6 +7,7 @@ import re
 from pathlib import Path
 
 from zeeb_agents._utils import AgentResult, agent_function
+from zeeb_agents._utils.errors import AgentError, close_matches
 from zeeb_agents._utils.project import (
     list_apps as list_apps_util,
 )
@@ -44,39 +45,85 @@ def _unregistered_apps_with_models(root: Path) -> list[str]:
 
 
 @agent_function
-async def run_migrations(project_root: Path | None = None) -> AgentResult:
-    """Apply all pending migrations.
+async def run_migrations(
+    target: str | None = None,
+    fake: bool = False,
+    fake_initial: bool = False,
+    project_root: Path | None = None,
+) -> AgentResult:
+    """Apply pending migrations — or move the schema to a named migration.
 
-    Equivalent to ``python manage.py migrate``.
+    Equivalent to ``python manage.py migrate [target] [--fake] [--fake-initial]``.
+    Without arguments every pending migration is applied. ``target`` walks the
+    schema forward or backward to that migration (``"zero"`` unapplies
+    everything) — the repair move when a bad migration must be unapplied
+    before its file is deleted. ``fake`` records migrations as applied without
+    running them, for a database whose schema was changed by hand.
+
+    Args:
+        target: Migration name to migrate to (``"0003_add_status"``, or
+            ``"zero"``). Default ``None`` applies all pending.
+        fake: Mark as applied without executing (default false).
+        fake_initial: Skip the initial migration when its tables already
+            exist (default false).
+        project_id: The host-assigned project id (required).
 
     Returns data (on success):
         applied (list[str]): names of the migrations that were applied
-            (empty list when there was nothing pending).
+            (or faked), in order; empty when there was nothing to do.
+        unapplied (list[str]): names of the migrations that were rolled back
+            to reach ``target``; empty otherwise.
+        target (str | None): the target that was requested.
+        fake (bool): whether the run was faked.
 
     Notes:
         - "Nothing to apply" is reported as ``success=True`` with
           ``applied=[]``, not as a failure.
+        - An unknown ``target`` fails with ``file_not_found`` and close-match
+          ``suggestions``.
     """
     root = project_root
 
-    def _run() -> list[str]:
+    def _run() -> dict:
         from zeeb_orm.migrations import executor
+
         settings = load_project_settings(root)
         db_url = resolve_db_url(settings, root)
-        return executor.migrate(database_url=db_url, project_root=root)
-
-    applied = await asyncio.to_thread(_run)
-    if applied:
-        return AgentResult(
-            success=True,
-            message=f"Applied {len(applied)} migration(s)",
-            data={"applied": applied},
+        status = executor.showmigrations(database_url=db_url, project_root=root)
+        names = [name for name, _ in status]
+        if target not in (None, "zero") and target not in names:
+            raise AgentError(
+                f"No migration named '{target}'.",
+                code="file_not_found",
+                suggestions=close_matches(target, names),
+            )
+        before = {name for name, is_applied in status if is_applied}
+        executor.migrate(
+            target=target,
+            database_url=db_url,
+            project_root=root,
+            fake=fake,
+            fake_initial=fake_initial,
         )
-    return AgentResult(
-        success=True,
-        message="No pending migrations",
-        data={"applied": []},
-    )
+        status = executor.showmigrations(database_url=db_url, project_root=root)
+        after = {name for name, is_applied in status if is_applied}
+        order = [name for name, _ in status]
+        return {
+            "applied": [name for name in order if name in after - before],
+            "unapplied": [name for name in reversed(order) if name in before - after],
+            "target": target,
+            "fake": fake,
+        }
+
+    result = await asyncio.to_thread(_run)
+    if result["applied"]:
+        verb = "Faked" if fake else "Applied"
+        message = f"{verb} {len(result['applied'])} migration(s)"
+    elif result["unapplied"]:
+        message = f"Rolled back {len(result['unapplied'])} migration(s) to {target}"
+    else:
+        message = "No pending migrations"
+    return AgentResult(success=True, message=message, data=result)
 
 
 @agent_function
@@ -233,4 +280,177 @@ async def rollback_migration(
         success=True,
         message=f"Rolled back {len(rolled_back)} migration(s)",
         data={"rolled_back": rolled_back},
+    )
+
+
+def _find_migration(migrations_dir: Path, name: str) -> tuple[list[str], tuple[str, Path] | None]:
+    """Resolve ``0003``, ``0003_x`` or ``0003_x.py`` to a migration file."""
+    from zeeb_orm.migrations.executor import list_migration_files
+
+    files = list_migration_files(migrations_dir) if migrations_dir.is_dir() else []
+    wanted = name[:-3] if name.endswith(".py") else name
+    names = [n for n, _ in files]
+    exact = next(((n, p) for n, p in files if n == wanted), None)
+    if exact:
+        return names, exact
+    by_number = [(n, p) for n, p in files if n.split("_", 1)[0] == wanted]
+    if len(by_number) == 1:
+        return names, by_number[0]
+    return names, None
+
+
+@agent_function
+async def show_migration(
+    name: str,
+    project_root: Path | None = None,
+) -> AgentResult:
+    """Show one migration file — its source, operations, dependencies and applied state.
+
+    Read-only. The step before repairing a migration: read what it does and
+    whether the database has it, then roll it back with
+    ``run_migrations(target=...)``, squash it, or delete its file.
+
+    Args:
+        name: The migration name (``"0003_add_status"``), its number
+            (``"0003"``), or the file name (``"0003_add_status.py"``).
+        project_id: The host-assigned project id (required).
+
+    Returns data (on success):
+        name (str): the resolved migration name.
+        path (str): project-relative path of the file.
+        content (str): the file's source.
+        operations (list[str]): human-readable descriptions of its operations.
+        dependencies (list[str]): migrations it depends on.
+        replaces (list[str]): migrations it squashes (empty unless squashed).
+        applied (bool | None): whether the database has it; ``None`` when the
+            database could not be reached.
+
+    Notes:
+        - Fails with ``file_not_found`` (with close-match ``suggestions``) for
+          an unknown migration.
+    """
+    root = require_project_root(project_root)
+
+    def _run() -> dict:
+        from zeeb_orm.migrations import executor
+        from zeeb_orm.migrations.executor import load_migration
+
+        migrations_dir = root / "migrations"
+        names, found = _find_migration(migrations_dir, name)
+        if found is None:
+            raise AgentError(
+                f"No migration named '{name}'.",
+                code="file_not_found",
+                suggestions=close_matches(name, names),
+            )
+        resolved, path = found
+        migration = load_migration(path)
+        applied: bool | None
+        try:
+            settings = load_project_settings(root)
+            db_url = resolve_db_url(settings, root)
+            status = dict(executor.showmigrations(database_url=db_url, project_root=root))
+            applied = bool(status.get(resolved))
+        except Exception:
+            applied = None
+        return {
+            "name": resolved,
+            "path": path.relative_to(root).as_posix(),
+            "content": path.read_text(encoding="utf-8"),
+            "operations": [op.describe() for op in migration.operations],
+            "dependencies": list(migration.dependencies),
+            "replaces": list(migration.replaces),
+            "applied": applied,
+        }
+
+    data = await asyncio.to_thread(_run)
+    states = {True: "applied", False: "pending", None: "database unreachable"}
+    state = states[data["applied"]]
+    return AgentResult(
+        success=True,
+        message=f"{data['name']}: {len(data['operations'])} operation(s), {state}",
+        data=data,
+    )
+
+
+@agent_function
+async def squash_migrations(
+    start: str,
+    end: str,
+    name: str | None = None,
+    project_root: Path | None = None,
+) -> AgentResult:
+    """Squash a range of migrations into one file.
+
+    Equivalent to ``python manage.py squashmigrations``. The new file records
+    the originals in ``replaces``, so the executor treats them as superseded:
+    applying is never repeated, and a database that already has the originals
+    is marked as having the squashed one. The original files may be deleted
+    (``delete_file``) once the squashed migration has been deployed
+    everywhere.
+
+    Args:
+        start: First migration in the range (inclusive), by name or number.
+        end: Last migration in the range (inclusive), by name or number.
+        name: Optional human-readable suffix for the squashed file.
+        project_id: The host-assigned project id (required).
+
+    Returns data (on success):
+        created (str): the squashed migration's name.
+        path (str): project-relative path of the new file.
+        replaces (list[str]): the migrations it supersedes, in order.
+        output (str): what the squash reported (optimizer summary).
+
+    Notes:
+        - Fails with ``file_not_found`` (with ``suggestions``) when ``start``
+          or ``end`` is unknown, and ``invalid_input`` when ``start`` comes
+          after ``end``.
+    """
+    root = require_project_root(project_root)
+
+    def _run() -> dict:
+        import contextlib
+        import io
+
+        from zeeb_orm.migrations.cli import squashmigrations
+        from zeeb_orm.migrations.executor import load_migration
+
+        migrations_dir = root / "migrations"
+        names, first = _find_migration(migrations_dir, start)
+        _, last = _find_migration(migrations_dir, end)
+        for label, found in (("start", first), ("end", last)):
+            if found is None:
+                wanted = start if label == "start" else end
+                raise AgentError(
+                    f"No migration named '{wanted}' ({label}).",
+                    code="file_not_found",
+                    suggestions=close_matches(wanted, names),
+                )
+        if names.index(first[0]) > names.index(last[0]):
+            raise AgentError(
+                f"'{first[0]}' comes after '{last[0]}' — start must precede end.",
+                code="invalid_input",
+            )
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            created = squashmigrations(
+                first[0], last[0], squashed_name=name, migrations_dir=str(migrations_dir)
+            )
+        output = buffer.getvalue().strip()
+        if created is None:
+            raise AgentError(output or "Squash failed.", code="invalid_input")
+        path = migrations_dir / f"{created}.py"
+        migration = load_migration(path)
+        return {
+            "created": created,
+            "path": path.relative_to(root).as_posix(),
+            "replaces": list(migration.replaces),
+            "output": output,
+        }
+
+    data = await asyncio.to_thread(_run)
+    return AgentResult(
+        success=True,
+        message=f"Squashed {len(data['replaces'])} migration(s) into {data['created']}",
+        data=data,
     )

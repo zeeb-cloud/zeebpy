@@ -1432,6 +1432,298 @@ def remove_route_function(content: str, function_name: str) -> str | None:
     return _function_block_pattern(function_name).sub("", content, count=1).rstrip("\n") + "\n"
 
 
+# ---------------------------------------------------------------------------
+# AST-located surgery: methods, function bodies, class attributes
+#
+# The regex helpers above locate a whole class or top-level function, which is
+# enough to move an artifact in or out of a file. Editing *inside* one — the
+# body of a method, a single attribute of a class — needs the exact span the
+# parser sees: a decorator stack, a multi-line signature, a nested ``class
+# Meta`` and a trailing class attribute all defeat an indentation heuristic.
+# These helpers parse, splice by line, and return ``None`` on a file that does
+# not parse — repairing that file is what ``edit_file`` is for.
+# ---------------------------------------------------------------------------
+
+
+def _parse(content: str) -> ast.Module | None:
+    try:
+        return ast.parse(content)
+    except SyntaxError:
+        return None
+
+
+def _class_node(tree: ast.Module | None, class_name: str) -> ast.ClassDef | None:
+    if tree is None:
+        return None
+    for node in tree.body:
+        if isinstance(node, ast.ClassDef) and node.name == class_name:
+            return node
+    return None
+
+
+def _def_node(body: list[ast.stmt], name: str) -> ast.FunctionDef | ast.AsyncFunctionDef | None:
+    for node in body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == name:
+            return node
+    return None
+
+
+def _span(node: ast.AST) -> tuple[int, int]:
+    """1-based inclusive ``(first, last)`` line of *node*, decorators included."""
+    first = min([node.lineno, *(d.lineno for d in getattr(node, "decorator_list", []))])
+    return first, node.end_lineno or node.lineno
+
+
+def _splice(lines: list[str], first: int, last: int, replacement: list[str]) -> list[str]:
+    """Replace the 1-based inclusive lines ``first..last`` with *replacement*."""
+    return lines[: first - 1] + replacement + lines[last:]
+
+
+def _reindent(source: str, indent: str) -> list[str]:
+    """Dedent *source*, drop blank edges, and re-indent every non-blank line.
+
+    Blank lines stay empty rather than becoming whitespace-only lines, so the
+    spliced result is what a formatter would have written.
+    """
+    body = textwrap.dedent(source).strip("\n")
+    return [(indent + line) if line.strip() else "" for line in body.splitlines()]
+
+
+def _join(lines: list[str]) -> str:
+    return "\n".join(lines) + "\n"
+
+
+def extract_method_from_class(content: str, class_name: str, method_name: str) -> str | None:
+    """Return the source of one method (decorators included), or ``None``."""
+    cls = _class_node(_parse(content), class_name)
+    node = _def_node(cls.body, method_name) if cls else None
+    if node is None:
+        return None
+    first, last = _span(node)
+    return _join(content.splitlines()[first - 1 : last])
+
+
+def set_method_in_class(
+    content: str, class_name: str, method_name: str, source: str
+) -> tuple[str, str] | None:
+    """Add *source* as a method of *class_name*, or replace the one it defines.
+
+    *source* is the whole method — decorators, ``def`` line, body — at any
+    indentation; it is re-indented to the class body. Returns ``(content,
+    "added" | "replaced")``, or ``None`` when the class is absent or the file
+    does not parse.
+    """
+    cls = _class_node(_parse(content), class_name)
+    if cls is None:
+        return None
+    indent = " " * cls.body[0].col_offset
+    rendered = _reindent(source, indent)
+    lines = content.splitlines()
+    node = _def_node(cls.body, method_name)
+    if node is not None:
+        first, last = _span(node)
+        return _join(_splice(lines, first, last, rendered)), "replaced"
+    # A placeholder-only body is replaced rather than appended to.
+    if len(cls.body) == 1 and isinstance(cls.body[0], ast.Pass):
+        placeholder = cls.body[0]
+        spliced = _splice(lines, placeholder.lineno, placeholder.end_lineno, rendered)
+        return _join(spliced), "added"
+    end = cls.end_lineno or cls.lineno
+    return _join(lines[:end] + [""] + rendered + lines[end:]), "added"
+
+
+def replace_function_body(
+    content: str, function_name: str, new_body: str, class_name: str | None = None
+) -> str | None:
+    """Replace the body of a function (or of a method when *class_name* is given).
+
+    The decorators and the signature are kept verbatim — only the statements
+    change. *new_body* may be indented however the caller likes; it is
+    dedented and re-indented to the body's level, so nested blocks survive. An
+    empty body becomes ``pass``. Returns ``None`` when the function is absent
+    or the file does not parse.
+    """
+    tree = _parse(content)
+    if tree is None:
+        return None
+    container: list[ast.stmt] = tree.body
+    if class_name is not None:
+        cls = _class_node(tree, class_name)
+        if cls is None:
+            return None
+        container = cls.body
+    node = _def_node(container, function_name)
+    if node is None:
+        return None
+    lines = content.splitlines()
+    first_stmt = node.body[0]
+    header = lines[first_stmt.lineno - 1][: first_stmt.col_offset]
+    last = node.end_lineno or node.lineno
+    if header.strip():
+        # ``def f(): return 1`` — keep the header up to its colon and move the
+        # body onto its own lines.
+        indent = " " * (node.col_offset + 4)
+        body = _reindent(new_body, indent) or [indent + "pass"]
+        return _join(_splice(lines, first_stmt.lineno, last, [header.rstrip(), *body]))
+    indent = " " * first_stmt.col_offset
+    body = _reindent(new_body, indent) or [indent + "pass"]
+    return _join(_splice(lines, first_stmt.lineno, last, body))
+
+
+def _assignment_of(body: list[ast.stmt], attr: str) -> ast.stmt | None:
+    for stmt in body:
+        if isinstance(stmt, ast.Assign) and any(
+            isinstance(target, ast.Name) and target.id == attr for target in stmt.targets
+        ):
+            return stmt
+        if (
+            isinstance(stmt, ast.AnnAssign)
+            and isinstance(stmt.target, ast.Name)
+            and stmt.target.id == attr
+        ):
+            return stmt
+    return None
+
+
+def _is_docstring(stmt: ast.stmt) -> bool:
+    return (
+        isinstance(stmt, ast.Expr)
+        and isinstance(stmt.value, ast.Constant)
+        and isinstance(stmt.value.value, str)
+    )
+
+
+def _attribute_lines(attr: str, rendered: str, indent: str) -> list[str]:
+    """``attr = rendered`` at *indent*; continuation lines of a multi-line value kept."""
+    value_lines = textwrap.dedent(rendered).strip("\n").splitlines() or [""]
+    return [f"{indent}{attr} = {value_lines[0]}"] + [
+        (indent + line) if line.strip() else "" for line in value_lines[1:]
+    ]
+
+
+def set_class_attribute_in_block(
+    content: str,
+    class_name: str,
+    attr: str,
+    rendered: str | None = None,
+    nested: str | None = None,
+) -> tuple[str, str] | None:
+    """Set, replace or remove ``attr = rendered`` on a class.
+
+    *rendered* is Python source for the value (``'["-created_at"]'``); ``None``
+    removes the assignment. *nested* targets an inner class — ``"Meta"`` — and
+    creates it when it is missing, so a model that never had a ``Meta`` can be
+    given one. Removing the last attribute of an inner class removes the inner
+    class; removing the last statement of the outer class leaves ``pass``.
+
+    Returns ``(content, "set" | "replaced" | "removed" | "skipped")``, or
+    ``None`` when the class is absent or the file does not parse.
+    """
+    cls = _class_node(_parse(content), class_name)
+    if cls is None:
+        return None
+    lines = content.splitlines()
+    target: ast.ClassDef = cls
+    if nested is not None:
+        inner = next(
+            (n for n in cls.body if isinstance(n, ast.ClassDef) and n.name == nested), None
+        )
+        if inner is None:
+            if rendered is None:
+                return _join(lines), "skipped"
+            indent = " " * cls.body[0].col_offset
+            block = [f"{indent}class {nested}:", *_attribute_lines(attr, rendered, indent + "    ")]
+            if len(cls.body) == 1 and isinstance(cls.body[0], ast.Pass):
+                placeholder = cls.body[0]
+                spliced = _splice(lines, placeholder.lineno, placeholder.end_lineno, block)
+                return _join(spliced), "set"
+            end = cls.end_lineno or cls.lineno
+            return _join(lines[:end] + [""] + block + lines[end:]), "set"
+        target = inner
+
+    indent = " " * target.body[0].col_offset
+    existing = _assignment_of(target.body, attr)
+    if rendered is None:
+        if existing is None:
+            return _join(lines), "skipped"
+        if len(target.body) == 1:
+            if nested is not None:
+                first, last = _span(target)
+                return _join(_splice(lines, first, last, [])), "removed"
+            spliced = _splice(lines, existing.lineno, existing.end_lineno, [indent + "pass"])
+            return _join(spliced), "removed"
+        return _join(_splice(lines, existing.lineno, existing.end_lineno, [])), "removed"
+
+    block = _attribute_lines(attr, rendered, indent)
+    if existing is not None:
+        return _join(_splice(lines, existing.lineno, existing.end_lineno, block)), "replaced"
+    # Keep attributes together: insert after the last one, else after the
+    # docstring, else right at the top of the body.
+    anchor = None
+    for stmt in target.body:
+        if isinstance(stmt, (ast.Assign, ast.AnnAssign)):
+            anchor = stmt
+    if anchor is not None:
+        at = anchor.end_lineno
+    elif len(target.body) == 1 and isinstance(target.body[0], ast.Pass):
+        placeholder = target.body[0]
+        return _join(_splice(lines, placeholder.lineno, placeholder.end_lineno, block)), "set"
+    elif _is_docstring(target.body[0]):
+        at = target.body[0].end_lineno
+    else:
+        at = target.body[0].lineno - 1
+    return _join(lines[:at] + block + lines[at:]), "set"
+
+
+_DEF_HEADER = re.compile(r"^\s*(?:async\s+)?def\s+(\w+)")
+_CLASS_HEADER = re.compile(r"^\s*class\s+(\w+)")
+
+
+def locate_definition(content: str, line: int) -> dict[str, str | None]:
+    """Name the innermost ``def`` and ``class`` enclosing 1-based *line*.
+
+    Works by indentation, not by parsing, because its main customer is a
+    diagnosis pointing at a ``SyntaxError`` — a file that by definition does
+    not parse. Returns ``{"function", "class", "outer_class"}`` (any of them
+    ``None``); ``class`` is the innermost enclosing class (``Meta`` for a line
+    inside one) and ``outer_class`` the top-level one.
+    """
+    lines = content.splitlines()
+    result: dict[str, str | None] = {"function": None, "class": None, "outer_class": None}
+    if not 1 <= line <= len(lines):
+        return result
+
+    def _indent(text: str) -> int:
+        return len(text) - len(text.lstrip())
+
+    own = lines[line - 1]
+    current = _indent(own) if own.strip() else 1 << 30
+    classes: list[str] = []
+    for index in range(line - 1, -1, -1):
+        text = lines[index]
+        stripped = text.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        depth = _indent(text)
+        is_own = index == line - 1
+        if depth >= current and not is_own:
+            continue
+        if (match := _DEF_HEADER.match(text)) and result["function"] is None and not classes:
+            result["function"] = match.group(1)
+            current = depth
+        elif match := _CLASS_HEADER.match(text):
+            classes.append(match.group(1))
+            current = depth
+        elif not is_own:
+            current = depth
+        if depth == 0:
+            break
+    if classes:
+        result["class"] = classes[0]
+        result["outer_class"] = classes[-1]
+    return result
+
+
 def class_has_field(content: str, class_name: str, field_name: str) -> bool:
     """Return ``True`` if *field_name* is already assigned in *class_name*'s body.
 

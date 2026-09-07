@@ -30,7 +30,7 @@ from __future__ import annotations
 
 import asyncio
 import re
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from zeeb_agents._utils import AgentResult, agent_function
 from zeeb_agents._utils.errors import AgentError, close_matches, fail
@@ -66,9 +66,10 @@ from zeeb_agents.feature_spec import (
     validate_plan,
 )
 
-_DEFAULT_CHECKS = ("structure", "migrations", "openapi")
+_DEFAULT_CHECKS = ("structure", "code", "migrations", "openapi")
 _VALID_CHECKS = (
     "structure",
+    "code",
     "migrations",
     "openapi",
     "tests",
@@ -268,6 +269,18 @@ async def _run_verification(
                 "served": bool(data.get("served")),
                 "warnings": data.get("warnings", []) if res.success else [res.message],
             }
+        elif check == "code":
+            from zeeb_agents.checks import check_code
+
+            res = await check_code(project_id=project_root)
+            data = res.data or {}
+            errors = data.get("errors", []) if res.success else []
+            results["code"] = {
+                "ok": bool(res.success) and not errors,
+                "errors": errors[:20],
+                "count": len(errors),
+                **({"error": res.message} if not res.success else {}),
+            }
         elif check == "migrations":
             res = await get_migration_status(project_id=project_root)
             pending = (res.data or {}).get("pending_count") if res.success else None
@@ -359,17 +372,170 @@ async def _run_verification(
     }
 
 
+def _fix_for_location(root: Path, file: str | None, line: int | None) -> tuple[dict | None, str]:
+    """The tool that edits the definition at ``file:line`` — and how to use it.
+
+    A code error is fixed where it lives: a method of a generated ViewSet is an
+    ``edit_function`` action, any other method is ``set_class_method``, a
+    top-level hook/task/endpoint is ``edit_function`` of that kind, and a
+    module-level line (an import, a constant) is ``edit_file``. The returned
+    call omits the new code — that is the agent's to write — and the text says
+    what to supply.
+    """
+    from zeeb_agents._utils.code_gen import locate_definition
+    from zeeb_agents.functions import FUNCTION_FILES
+
+    if not file:
+        return None, (
+            "Read the traceback under findings; check_code() lists every file that "
+            "fails to parse or import."
+        )
+    where: dict[str, str | None] = {"function": None, "class": None, "outer_class": None}
+    if line:
+        try:
+            where = locate_definition((root / file).read_text(encoding="utf-8"), line)
+        except OSError:
+            pass
+    parts = PurePosixPath(file).parts
+    app = parts[1] if len(parts) == 3 and parts[0] == "apps" else None
+    basename = parts[-1]
+    function, cls = where["function"], where["outer_class"]
+    at = f"{file}:{line}" if line else file
+    if app and function and cls:
+        if basename == "views.py" and cls.endswith("ViewSet"):
+            return (
+                {
+                    "tool": "edit_function",
+                    "arguments": {
+                        "app": app,
+                        "name": function,
+                        "kind": "action",
+                        "entity": cls[: -len("ViewSet")],
+                    },
+                },
+                f"The error is in {cls}.{function} ({at}) — read_file the file, then "
+                "edit_function with the corrected body (the decorator and signature stay).",
+            )
+        if basename == "permissions.py" and function == "has_permission":
+            return (
+                {"tool": "edit_function", "arguments": {"app": app, "name": cls, "kind": "rule"}},
+                f"The error is in {cls}.has_permission ({at}) — read_file the file, then "
+                "edit_function(kind='rule') with the corrected body.",
+            )
+        return (
+            {
+                "tool": "set_class_method",
+                "arguments": {
+                    "app": app,
+                    "class_name": cls,
+                    "method_name": function,
+                    "file": basename,
+                },
+            },
+            f"The error is in {cls}.{function} ({at}) — read_file the file, then "
+            "set_class_method with the corrected method source.",
+        )
+    kind = next(
+        (k for k, f in FUNCTION_FILES.items() if f == basename and k not in ("action", "rule")),
+        None,
+    )
+    if app and function and kind and not cls:
+        return (
+            {"tool": "edit_function", "arguments": {"app": app, "name": function, "kind": kind}},
+            f"The error is in {function} ({at}) — read_file the file, then edit_function "
+            f"(kind='{kind}') with the corrected body.",
+        )
+    return (
+        {"tool": "edit_file", "arguments": {"path": file}},
+        f"The error is at module level ({at}) — read_file the file, then edit_file with "
+        "the exact text to replace.",
+    )
+
+
+_TRACEBACK_LOCATION = re.compile(r'File "([^"]+)", line (\d+)')
+
+
+def _location_in_logs(root: Path, lines: list[str]) -> tuple[str | None, int | None]:
+    """The innermost project ``file:line`` a logged traceback points at, if any."""
+    for text in reversed(lines):
+        for file, line in reversed(_TRACEBACK_LOCATION.findall(text)):
+            try:
+                rel = Path(file).resolve().relative_to(root.resolve()).as_posix()
+            except (ValueError, OSError):
+                continue
+            return rel, int(line)
+    return None, None
+
+
+def _is_project_module(root: Path, top_level: str) -> bool:
+    return (
+        top_level == "apps"
+        or (root / top_level).is_dir()
+        or (root / f"{top_level}.py").is_file()
+    )
+
+
+async def _route_fix(root: Path, endpoint: str) -> tuple[dict | None, str]:
+    """Name the call that makes *endpoint* exist, when a model of that name does."""
+    from zeeb_agents._utils.code_gen import class_exists, pluralize
+    from zeeb_agents.models import list_models
+
+    segments = {segment.lower() for segment in endpoint.strip("/").split("/") if segment}
+    models_res = await list_models(project_id=root)
+    models = (models_res.data or {}).get("models", []) if models_res.success else []
+    for entry in models:
+        model = entry["model"]
+        if not {model.lower(), pluralize(model.lower())} & segments:
+            continue
+        views = root / "apps" / entry["app"] / "views.py"
+        has_viewset = views.is_file() and class_exists(
+            views.read_text(encoding="utf-8"), f"{model}ViewSet"
+        )
+        if has_viewset:
+            return (
+                {"tool": "register_route", "arguments": {"app": entry["app"], "model_name": model}},
+                f"'{model}ViewSet' exists but is not registered — register_route mounts it; "
+                "then retry the request.",
+            )
+        return (
+            {"tool": "create_viewset", "arguments": {"app": entry["app"], "model_name": model}},
+            f"Model '{model}' has no endpoint — create_viewset scaffolds and registers one; "
+            "then retry the request.",
+        )
+    return (
+        None,
+        "No model matches the endpoint — build_feature (or generate_crud) scaffolds "
+        "model + endpoint + route in one call.",
+    )
+
+
 def _verification_next_actions(verification: dict) -> list[str]:
-    """Turn failed checks into concrete follow-up actions."""
+    """Turn failed checks into concrete follow-up actions, each naming its tool."""
     actions: list[str] = []
     checks = verification.get("checks", {})
+    code = checks.get("code")
+    if code and not code["ok"]:
+        first = (code.get("errors") or [{}])[0]
+        where = (
+            f"{first.get('file')}:{first.get('line')}"
+            if first.get("file") and first.get("line")
+            else first.get("file") or first.get("module") or "a project module"
+        )
+        actions.append(
+            f"Fix the {first.get('kind') or 'code'} error at {where} ({first.get('message')}) — "
+            "edit_function / set_class_method for code inside a generated class, "
+            "edit_file otherwise, add_dependency for a package that is not installed; "
+            "check_code() re-checks."
+        )
     migrations = checks.get("migrations")
     if migrations and not migrations["ok"]:
         actions.append("Apply the pending migrations (run_migrations).")
     structure = checks.get("structure")
     if structure and not structure["ok"]:
         actions.append(
-            "Fix the wiring gaps listed under verification.checks.structure.warnings."
+            "Fix the wiring gaps listed under verification.checks.structure.warnings — "
+            "create_app(name=...) re-applies an app's registration and url include, "
+            "setup_auth() re-wires auth, configure_cors() re-wires CORS."
         )
     openapi = checks.get("openapi")
     if openapi and not openapi["ok"]:
@@ -389,8 +555,8 @@ def _verification_next_actions(verification: dict) -> list[str]:
         if tests.get("no_tests"):
             actions.append(
                 "No tests were collected — generate them with "
-                "build_feature(tests=True), or check that the existing suite "
-                "still imports (a broken import collects zero tests)."
+                "build_feature(tests=True), or run check_code(): a broken import "
+                "collects zero tests."
             )
         elif tests.get("failed_tests"):
             named = ", ".join(tests["failed_tests"][:3])
@@ -399,15 +565,24 @@ def _verification_next_actions(verification: dict) -> list[str]:
                 if len(tests["failed_tests"]) > 3
                 else ""
             )
-            actions.append(f"Fix the failing tests: {named}{more}.")
+            actions.append(
+                f"Fix the failing tests: {named}{more} — run_tests(path=<node id>) shows "
+                "the traceback; fix the code with edit_function / set_class_method; if "
+                "the generated suite is stale after a spec change, "
+                "regenerate_tests(feature=...)."
+            )
         else:
-            actions.append("Fix the failing tests (run_tests shows the detail).")
+            actions.append(
+                "Fix the failing tests (run_tests shows the detail) — edit_function / "
+                "set_class_method fix the code in place."
+            )
     runtime = checks.get("runtime")
     if runtime and not runtime["ok"]:
         actions.append(
             "The runtime is not healthy "
             f"(settings={runtime.get('settings')}, db={runtime.get('db')}) — "
-            "check the database connection and settings, then read_logs."
+            "get_env() shows DATABASE_URL, set_env(key=..., value=...) fixes it, "
+            "check_system_health() confirms; read_logs for the detail."
         )
     endpoints = checks.get("endpoints")
     if endpoints and not endpoints["ok"]:
@@ -415,12 +590,18 @@ def _verification_next_actions(verification: dict) -> list[str]:
         named = ", ".join(str(f.get("endpoint")) for f in failing[:3])
         actions.append(
             "Endpoints returned a server error or were unreachable: "
-            f"{named or endpoints.get('error')} — read_logs shows the traceback."
+            f"{named or endpoints.get('error')} — read_logs shows the traceback, "
+            "diagnose_problem(endpoint=...) names the fix, check_code() catches a "
+            "module that no longer imports."
         )
     security = checks.get("security")
     if security and not security["ok"]:
         issues = "; ".join(security.get("issues", [])[:3])
-        actions.append(f"Resolve the production-readiness issues: {issues}.")
+        actions.append(
+            f"Resolve the production-readiness issues: {issues} — set_env(key=..., "
+            "value=...) for DEBUG/SECRET_KEY/DATABASE_URL, generate_requirements() and "
+            "generate_dockerfile() for the missing files."
+        )
     return actions
 
 
@@ -1958,15 +2139,17 @@ async def verify_project(
 
     Args:
         checks: Which checks to run — any of ``"structure"`` (wiring
-            consistency via the project snapshot), ``"migrations"`` (nothing
-            pending), ``"openapi"`` (live contract reachable and containing
-            every registered route), ``"tests"`` (project test suite),
+            consistency via the project snapshot), ``"code"`` (every file
+            parses and every project module imports — file/line/col for
+            anything that does not), ``"migrations"`` (nothing pending),
+            ``"openapi"`` (live contract reachable and containing every
+            registered route), ``"tests"`` (project test suite),
             ``"runtime"`` (settings load, database reachable, tables present),
             ``"endpoints"`` (GET every registered collection against the
             running API — a 5xx fails; 401/403 counts as reachable), or
             ``"security"`` (production readiness: DEBUG off, real SECRET_KEY,
             non-SQLite database, Dockerfile/requirements present).
-            Default: structure, migrations, openapi.
+            Default: structure, code, migrations, openapi.
         port: Port the API listens on for the openapi and endpoints checks
             (default 8000).
         project_id: The host-assigned project id (required).
@@ -2055,25 +2238,29 @@ async def diagnose_problem(
 
     Returns data (on success):
         findings (list[dict]): each ``{"area", "detail", "evidence"?}`` —
-            areas: ``health``, ``structure``, ``migrations``, ``routing``,
-            ``logs``.
+            areas: ``code``, ``health``, ``structure``, ``migrations``,
+            ``routing``, ``logs``.
         root_cause (dict | None): ``{"type", "confidence", "evidence"}`` for
             the most likely cause, or ``None`` when nothing conclusive.
         recommended_fix (dict | None): ``{"tool", "arguments"}`` — the call
             that most likely fixes it (library function name), when one
-            clearly applies.
+            clearly applies. For a code error the arguments locate the
+            definition (app, name/class, kind) and the new code is left for
+            the caller to supply; ``next_actions`` says which parameter.
         next_actions (list[str]): ordered follow-ups.
         state_changed (bool): always ``False``.
         symptom (str): the symptom string the diagnosis ran against,
             echoed back so a caller can correlate batched calls.
 
     Notes:
-        - Root-cause types: ``migrations_pending``, ``schema_mismatch``,
-          ``wiring_gap``, ``route_not_registered``, ``database_unreachable``,
+        - Root-cause types, in the order they are tried: ``syntax_error``,
+          ``import_error``, ``database_unreachable``, ``migrations_pending``,
+          ``schema_mismatch``, ``wiring_gap``, ``route_not_registered``,
           ``runtime_error``.
         - Heuristics are ordered and deterministic — the first matching cause
           wins; everything observed still appears under ``findings``.
     """
+    from zeeb_agents.checks import check_code
     from zeeb_agents.health import check_system_health
     from zeeb_agents.logs import read_logs, search_logs
     from zeeb_agents.project import describe_project
@@ -2082,6 +2269,22 @@ async def diagnose_problem(
     root = require_project_root(project_root)
     findings: list[dict] = []
     next_actions: list[str] = []
+
+    # Code first: a file that does not parse or import explains every other
+    # symptom, and the runtime cannot report it (it never started).
+    code_res = await check_code(project_id=root)
+    code_errors = (code_res.data or {}).get("errors", []) if code_res.success else []
+    syntax_errors = [e for e in code_errors if e.get("kind") == "syntax"]
+    import_errors = [e for e in code_errors if e.get("kind") == "import"]
+    for error in code_errors:
+        where = error.get("file") or error.get("module")
+        findings.append(
+            {
+                "area": "code",
+                "detail": f"{error.get('kind')} error in {where}: {error.get('message')}",
+                "evidence": [line for line in [error.get("traceback")] if line],
+            }
+        )
 
     health_res = await check_system_health(project_id=root)
     health_checks = (health_res.data or {}).get("checks", {})
@@ -2162,14 +2365,42 @@ async def diagnose_problem(
 
     root_cause: dict | None = None
     recommended_fix: dict | None = None
-    if db_error:
+    if syntax_errors:
+        first = syntax_errors[0]
+        root_cause = {
+            "type": "syntax_error",
+            "confidence": 0.95,
+            "evidence": [f"{first.get('file')}:{first.get('line')}: {first.get('message')}"],
+        }
+        recommended_fix, hint = _fix_for_location(root, first.get("file"), first.get("line"))
+        next_actions.append(hint)
+    elif import_errors:
+        first = import_errors[0]
+        root_cause = {
+            "type": "import_error",
+            "confidence": 0.9,
+            "evidence": [f"{first.get('module')}: {first.get('message')}"],
+        }
+        top_level = (first.get("missing_module") or "").split(".")[0]
+        if top_level and not _is_project_module(root, top_level):
+            recommended_fix = {"tool": "add_dependency", "arguments": {"requirement": top_level}}
+            next_actions.append(
+                f"'{top_level}' is not installed — add_dependency adds it to "
+                "requirements.txt; redeploy_preview so the runtime installs it."
+            )
+        else:
+            recommended_fix, hint = _fix_for_location(root, first.get("file"), first.get("line"))
+            next_actions.append(hint)
+    elif db_error:
         root_cause = {
             "type": "database_unreachable",
             "confidence": 0.9,
             "evidence": [db_error],
         }
         next_actions.append(
-            "Check the DATABASE settings (get_settings) and the database service."
+            "The database is unreachable — get_env() shows DATABASE_URL, "
+            "set_env(key='DATABASE_URL', value=...) fixes it, check_system_health() "
+            "confirms; the database service itself is platform-managed."
         )
     elif pending_count:
         root_cause = {
@@ -2196,30 +2427,44 @@ async def diagnose_problem(
             "confidence": 0.7,
             "evidence": structure_warnings,
         }
-        next_actions.append(
-            "Fix the wiring gaps listed in the findings (apps not installed / "
-            "routers not included make endpoints 404)."
-        )
+        joined = "\n".join(structure_warnings)
+        if app_match := re.search(r"create_app\('([^']+)'\)", joined):
+            recommended_fix = {"tool": "create_app", "arguments": {"name": app_match.group(1)}}
+            next_actions.append(
+                f"create_app('{app_match.group(1)}') re-applies the app's registration and "
+                "url include (existing files are untouched); then retry."
+            )
+        elif "setup_auth()" in joined:
+            recommended_fix = {"tool": "setup_auth", "arguments": {}}
+            next_actions.append("Re-run setup_auth() to restore the auth middleware; then retry.")
+        else:
+            next_actions.append(
+                "Fix the wiring gaps listed in the findings (apps not installed / "
+                "routers not included make endpoints 404); each warning names its call."
+            )
     elif endpoint_missing:
         root_cause = {
             "type": "route_not_registered",
             "confidence": 0.7,
             "evidence": [f"'{endpoint}' matches no registered route"],
         }
-        next_actions.append(
-            "Register the resource (generate_crud scaffolds model + endpoint + "
-            "route in one call)."
-        )
+        recommended_fix, hint = await _route_fix(root, endpoint)
+        next_actions.append(hint)
     elif error_lines:
         root_cause = {
             "type": "runtime_error",
             "confidence": 0.5,
             "evidence": error_lines[-3:],
         }
-        next_actions.append(
-            "Inspect the ERROR log lines in the findings; read_logs shows more "
-            "context."
-        )
+        file, line = _location_in_logs(root, error_lines)
+        if file:
+            recommended_fix, hint = _fix_for_location(root, file, line)
+            next_actions.append(hint)
+        else:
+            next_actions.append(
+                "Inspect the ERROR log lines in the findings; read_logs shows more "
+                "context and check_code() catches a module that no longer imports."
+            )
 
     if symptom and not root_cause:
         next_actions.append(
@@ -2243,5 +2488,80 @@ async def diagnose_problem(
             "recommended_fix": recommended_fix,
             "next_actions": next_actions,
             "state_changed": False,
+        },
+    )
+
+
+@agent_function
+async def regenerate_tests(
+    feature: str,
+    project_root: Path | None = None,
+) -> AgentResult:
+    """Rewrite a feature's generated test file from its stored spec.
+
+    ``build_feature(tests=True)`` writes ``tests/test_<app>_generated.py`` once
+    and never overwrites it, so after the feature's fields change the suite it
+    generated can fail on assertions that were true when it was written. This
+    is the refresh: the feature's current spec (``change_feature`` keeps it
+    current) is compiled again and only the generated test file is rewritten
+    — ``conftest.py``, ``pytest.ini`` and hand-written tests are never
+    touched.
+
+    Args:
+        feature: Feature name, as reported by ``list_features``.
+        project_id: The host-assigned project id (required).
+
+    Returns data (on success):
+        feature (str): the feature name.
+        file (str): project-relative path of the rewritten test file.
+        tests (int): number of test functions written.
+        state_changed (bool): always ``True``.
+        next_actions (list[str]): ``run_tests(path=<file>)``.
+
+    Notes:
+        - Fails with ``feature_not_found`` (with ``suggestions``) for an
+          unknown name, and ``invalid_input`` for a feature reconstructed from
+          disk (``inferred``) — it has no stored spec to compile; rebuild it
+          with ``build_feature`` to record one.
+    """
+    from zeeb_agents.test_scaffold import generate_tests
+
+    root = require_project_root(project_root)
+    entry, failure = await _resolve_feature(root, feature)
+    if failure is not None:
+        return failure
+    spec = entry.get("spec") if entry else None
+    if not spec:
+        return fail(
+            f"Feature '{feature}' has no stored spec (it was reconstructed from disk) — "
+            "rebuild it with build_feature to record one.",
+            code="invalid_input",
+        )
+    existing_models, existing_apps = await _project_inventory(root)
+    plan = compile_feature_spec(spec, existing_models, existing_apps, tests=True)
+    op = next((o for o in plan["operations"] if o["op"] == "generate_tests"), None)
+    if op is None:
+        return fail(
+            f"Feature '{feature}' compiles to no tests (no exposed entities).",
+            code="invalid_input",
+        )
+    res = await generate_tests(op["app"], op["entities"], overwrite=True, project_id=root)
+    if not res.success:
+        return res
+    data = res.data or {}
+    written = [*data.get("overwritten", []), *data.get("created", [])]
+    file = next(
+        (path for path in written if path.startswith("tests/test_")),
+        f"tests/test_{op['app']}_generated.py",
+    )
+    return AgentResult(
+        success=True,
+        message=f"Regenerated {file} ({data.get('tests', 0)} test(s))",
+        data={
+            "feature": feature,
+            "file": file,
+            "tests": data.get("tests", 0),
+            "state_changed": True,
+            "next_actions": [f'run_tests(path="{file}")'],
         },
     )

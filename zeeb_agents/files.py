@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import fnmatch
 import re
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from zeeb_agents._utils import AgentResult, agent_function
 from zeeb_agents._utils.errors import AgentError, fail
@@ -225,4 +225,150 @@ async def search_code(
         success=True,
         message=f"Found {total} match(es) in {len(results)} file(s) for pattern '{pattern}'",
         data={"pattern": pattern, "glob": glob, "files": results, "total_matches": total},
+    )
+
+
+@agent_function
+async def edit_file(
+    path: str | Path,
+    find: str,
+    replace: str,
+    count: int = 1,
+    project_root: Path | None = None,
+) -> AgentResult:
+    """Replace an exact text span in a project file — the surgical alternative to ``write_file``.
+
+    For the fixes no structural tool expresses: a broken import line, a wrong
+    constant, a typo in a module that is not generated. ``find`` must occur in
+    the file exactly ``count`` times; any other number is refused rather than
+    guessed at, so a too-short needle can never rewrite the wrong place.
+
+    Args:
+        path: File path relative to the project root (``apps/blog/services.py``,
+            ``requirements.txt``).
+        find: The exact text to replace (whitespace included).
+        replace: The replacement text.
+        count: How many occurrences to expect and replace (default 1).
+        project_id: The host-assigned project id (required).
+
+    Returns data (on success):
+        path (str): the file path, relative to the project root.
+        replacements (int): occurrences replaced (== ``count``).
+        size (int): len(new content), in characters.
+
+    Notes:
+        - Fails with ``file_not_found`` when the file does not exist and
+          ``invalid_input`` when ``find`` is empty or occurs a different number
+          of times than ``count`` — the message says how many were found.
+        - Prefer ``edit_function`` / ``set_class_method`` /
+          ``set_class_attribute`` for code inside a generated class: they
+          locate the span by parsing, so they cannot cut in the wrong place.
+    """
+    root = project_root
+    if not find:
+        return fail("find must not be empty.", code="invalid_input")
+    if count < 1:
+        return fail("count must be at least 1.", code="invalid_input")
+    full = _resolve_path(root, path)
+    if not full.exists():
+        return fail(f"File not found: {path}", code="file_not_found", path=str(path))
+    if not full.is_file():
+        return fail(f"Path is not a file: {path}", code="invalid_input", path=str(path))
+
+    def _edit() -> tuple[int, int]:
+        content = full.read_text(encoding="utf-8", errors="replace")
+        occurrences = content.count(find)
+        if occurrences != count:
+            raise AgentError(
+                f"Found {occurrences} occurrence(s) of the text in {path}, expected {count} — "
+                + (
+                    "make find more specific, or pass count to replace every occurrence."
+                    if occurrences
+                    else "read the file and copy the exact text."
+                ),
+                code="invalid_input",
+                occurrences=occurrences,
+            )
+        updated = content.replace(find, replace)
+        full.write_text(updated, encoding="utf-8")
+        return occurrences, len(updated)
+
+    replacements, size = await asyncio.to_thread(_edit)
+    rel = str(full.relative_to(root)) if full.is_relative_to(root) else str(full)
+    return AgentResult(
+        success=True,
+        message=f"Replaced {replacements} occurrence(s) in {rel}",
+        data={"path": rel, "replacements": replacements, "size": size},
+    )
+
+
+#: Files whose deletion breaks the project or loses its recorded state.
+_PROTECTED_FILES = frozenset({"manage.py", "pyproject.toml", ".env"})
+_PROTECTED_DIRS = frozenset({".zeeb", ".git"})
+_PROTECTED_PACKAGE_FILES = frozenset({"settings.py", "urls.py", "asgi.py"})
+
+
+def _is_protected(rel: PurePosixPath) -> bool:
+    parts = rel.parts
+    if str(rel) in _PROTECTED_FILES or rel.name == "__init__.py":
+        return True
+    if parts and parts[0] in _PROTECTED_DIRS:
+        return True
+    # <project>/settings.py, urls.py, asgi.py — the settings package sits at the
+    # top level next to apps/.
+    return len(parts) == 2 and parts[0] != "apps" and rel.name in _PROTECTED_PACKAGE_FILES
+
+
+@agent_function
+async def delete_file(
+    path: str | Path,
+    project_root: Path | None = None,
+) -> AgentResult:
+    """Delete one file from the project — a stray test, a bad migration, an orphaned module.
+
+    Files the project cannot live without are refused: ``manage.py``,
+    ``pyproject.toml``, ``.env``, every ``__init__.py``, the settings package's
+    ``settings.py``/``urls.py``/``asgi.py``, and anything under ``.zeeb/`` or
+    ``.git/``. Generated artifacts have their own removal tools
+    (``delete_model``, ``delete_viewset``, ``delete_function``, …) that also
+    unwire them — prefer those; this is for files no tool owns.
+
+    Args:
+        path: File path relative to the project root.
+        project_id: The host-assigned project id (required).
+
+    Returns data (on success):
+        path (str): the file path, relative to the project root.
+        deleted (bool): ``False`` when the file was already absent — a skip,
+            not a failure, so re-runs stay idempotent.
+
+    Notes:
+        - Fails with ``permission_denied`` for a protected file and
+          ``invalid_input`` for a directory.
+        - A migration that has already been applied should be rolled back
+          (``run_migrations(target=...)``) before its file is deleted.
+    """
+    root = project_root
+    full = _resolve_path(root, path)
+    rel = PurePosixPath(full.resolve().relative_to(Path(root).resolve()).as_posix())
+    if _is_protected(rel):
+        return fail(
+            f"'{rel}' is part of the project's skeleton and cannot be deleted.",
+            code="permission_denied",
+            path=str(rel),
+        )
+    if full.is_dir():
+        return fail(f"Path is a directory: {rel}", code="invalid_input", path=str(rel))
+
+    def _delete() -> bool:
+        if not full.exists():
+            return False
+        full.unlink()
+        return True
+
+    deleted = await asyncio.to_thread(_delete)
+    return AgentResult(
+        success=True,
+        message=f"Deleted {rel}" if deleted else f"{rel} does not exist; nothing to do",
+        data={"path": str(rel), "deleted": deleted},
     )
