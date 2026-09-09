@@ -1027,6 +1027,10 @@ async def apply_plan(
         "Plan",
         extra_next_actions=extra_actions,
         feature=(plan.get("feature") or {}).get("name"),
+        # plan_feature embeds the spec it compiled; carrying it into the manifest
+        # is what makes "apply a reviewed plan" and "build from the spec"
+        # actually equivalent, including for the tools that recompile later.
+        spec=plan.get("spec"),
     )
 
 
