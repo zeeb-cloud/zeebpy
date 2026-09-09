@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import asyncio
 import json
 import re
@@ -47,9 +48,14 @@ _FIELD_TYPE_MAP: dict[str, dict[str, Any]] = {
 
 _DEFAULT_SCHEMA_TYPE: dict[str, Any] = {"type": "string"}
 
-# Patterns for route scanning
+# Route scanning is AST-based (see _scan_routes): the generated urls.py carries a
+# worked example in its module docstring, and a textual scan reports that example
+# as a real registration — a phantom prefix the served contract can never contain,
+# which fails the verification chain's `openapi` check forever. These patterns are
+# the fallback for a file that does not parse.
 _VIEWSET_RE = re.compile(r'^[ \t]*router\.register\(\s*["\']([^"\']+)["\']\s*,\s*(\w+)', re.MULTILINE)
 _ROUTE_RE = re.compile(r'^[ \t]*@router\.(get|post|put|patch|delete)\(\s*["\']([^"\']+)["\']', re.MULTILINE)
+_ROUTE_METHODS = frozenset({"get", "post", "put", "patch", "delete"})
 # Field lines are single-line in generated code — capture params to EOL so
 # nested parens/brackets (choices, validators) don't truncate the match.
 _FIELD_DEF_RE = re.compile(r"^\s{4}(\w+)\s*=\s*fields\.(\w+)\s*\((.*)$", re.MULTILINE)
@@ -235,6 +241,72 @@ async def get_model_json_schema(
     )
 
 
+def _string_arg(node: ast.Call, index: int = 0) -> str | None:
+    """The literal string at *index* of a call's positional args, if it is one."""
+    if len(node.args) <= index:
+        return None
+    arg = node.args[index]
+    return arg.value if isinstance(arg, ast.Constant) and isinstance(arg.value, str) else None
+
+
+def _scan_routes(app: str, fname: str, source: str) -> list[dict[str, Any]]:
+    """Route registrations that this file actually executes.
+
+    Parsed rather than matched: ``router.register(...)`` and ``@router.get(...)``
+    also appear in the docstrings of generated modules, and counting those
+    invents endpoints that no runtime will ever serve. Falls back to the textual
+    scan for a file that does not parse, so a syntactically broken module still
+    yields a best-effort inventory for diagnosis.
+    """
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        where = {"app": app, "file": fname}
+        return [
+            *(
+                {**where, "type": "viewset", "prefix": m.group(1), "viewset": m.group(2)}
+                for m in _VIEWSET_RE.finditer(source)
+            ),
+            *(
+                {**where, "type": "route", "method": m.group(1).upper(), "path": m.group(2)}
+                for m in _ROUTE_RE.finditer(source)
+            ),
+        ]
+
+    where = {"app": app, "file": fname}
+    viewsets: list[tuple[int, dict[str, Any]]] = []
+    handlers: list[tuple[int, dict[str, Any]]] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
+            continue
+        target = node.func.value
+        if not (isinstance(target, ast.Name) and target.id == "router"):
+            continue
+        attr = node.func.attr
+        first = _string_arg(node)
+        if first is None:
+            continue
+        if attr == "register":
+            second = node.args[1] if len(node.args) > 1 else None
+            viewset = getattr(second, "id", None) or getattr(second, "attr", None)
+            if viewset:
+                viewsets.append((
+                    node.lineno,
+                    {**where, "type": "viewset", "prefix": first, "viewset": viewset},
+                ))
+        elif attr in _ROUTE_METHODS:
+            handlers.append((
+                node.lineno,
+                {**where, "type": "route", "method": attr.upper(), "path": first},
+            ))
+    # Viewsets before standalone routes, each in source order — the shape callers
+    # (and the verification chain) already read. Keyed sort: two registrations can
+    # share a line, and dicts do not compare.
+    viewsets.sort(key=lambda pair: pair[0])
+    handlers.sort(key=lambda pair: pair[0])
+    return [entry for _, entry in viewsets] + [entry for _, entry in handlers]
+
+
 @agent_function
 async def list_all_routes(
     project_root: Path | None = None,
@@ -270,22 +342,7 @@ async def list_all_routes(
                 if not fpath.exists():
                     continue
                 source = fpath.read_text(encoding="utf-8")
-                for m in _VIEWSET_RE.finditer(source):
-                    routes.append({
-                        "app": app,
-                        "file": fname,
-                        "type": "viewset",
-                        "prefix": m.group(1),
-                        "viewset": m.group(2),
-                    })
-                for m in _ROUTE_RE.finditer(source):
-                    routes.append({
-                        "app": app,
-                        "file": fname,
-                        "type": "route",
-                        "method": m.group(1).upper(),
-                        "path": m.group(2),
-                    })
+                routes.extend(_scan_routes(app, fname, source))
         return routes
 
     routes = await asyncio.to_thread(_scan)

@@ -1719,6 +1719,12 @@ def compile_feature_spec(
         "risk": _plan_risk(operations),
         "preconditions": plan_preconditions(operations, existing_models, existing_apps),
         "warnings": warnings,
+        # The source spec rides along with the plan so applying a reviewed plan
+        # records the same manifest entry a direct build does. Without it the
+        # plan → apply half of the workflow produces a spec-less feature, and
+        # every lifecycle tool that recompiles from the spec (regenerate_tests,
+        # restoring an archived feature) refuses to touch it.
+        "spec": spec,
     }
     if drift_entries:
         plan["drift"] = {"entries": drift_entries, "suggested_changes": suggested_changes}

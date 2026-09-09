@@ -119,6 +119,40 @@ async def test_build_feature_records_the_feature_with_its_artifacts(built: Path)
     assert owned["routes"][0]["model"] == "Post"
 
 
+async def test_applying_a_plan_records_the_spec_like_a_direct_build(root: Path):
+    """plan → apply must leave a feature the lifecycle tools can still recompile.
+
+    A plan-applied feature used to land in the manifest without its spec, so it
+    read as spec-less: regenerate_tests refused it and restoring it from
+    archived had nothing to rebuild from — for a feature built through the
+    structured flow, not one reconstructed off disk.
+    """
+    plan_res = await agents.plan_feature(BLOG, project_id=root)
+    assert plan_res.success, plan_res.message
+    apply_res = await agents.apply_plan(
+        plan_res.data, migrate=False, verify=False, project_id=root
+    )
+    assert apply_res.success, apply_res.message
+
+    listed = await agents.list_features(project_id=root)
+    feature = next(f for f in listed.data["features"] if f["name"] == "blog")
+    assert feature["inferred"] is False
+    assert feature["has_spec"] is True
+    assert load_manifest(root)["features"]["blog"]["spec"] == BLOG
+
+
+async def test_regenerate_tests_works_on_a_plan_applied_feature(root: Path):
+    """The tool that consumes the stored spec, on the path that used to lose it."""
+    plan_res = await agents.plan_feature(BLOG, project_id=root)
+    assert plan_res.success, plan_res.message
+    assert (await agents.apply_plan(
+        plan_res.data, migrate=False, verify=False, project_id=root
+    )).success
+
+    res = await agents.regenerate_tests("blog", project_id=root)
+    assert res.success, res.message
+
+
 async def test_list_features_rejects_an_unknown_status(built: Path):
     res = await agents.list_features(status="parked", project_id=built)
     assert not res.success
