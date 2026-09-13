@@ -1,0 +1,19 @@
+# Commits that changed line endings and nothing else. `git blame` on any file
+# they touched would otherwise point here instead of at the change that last
+# touched the content.
+#
+# GitHub applies this file automatically in its blame view. Locally it is
+# opt-in, once per clone:
+#
+#     git config blame.ignoreRevsFile .git-blame-ignore-revs
+#
+# Adding it is what stops the next person mistaking a normalisation for
+# authorship. New CRLF churn should not happen again — .gitattributes pins the
+# stored form to LF — so this file should stay short.
+
+# chore: add .gitattributes and normalise stored line endings to LF (#16)
+53efad1b83285360354aefe392ac26680d455c19
+
+# feat(orm): add zeeb_orm.testing (#15) — carried a CRLF re-commit of 346 files
+# alongside the feature, before .gitattributes existed to prevent it.
+ac628faf2763cd27968cf247a91d13f6cae35247
