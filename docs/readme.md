@@ -89,6 +89,7 @@ through `.env` — see [Settings](configuration/settings.md).
 - [Migrations](orm/migrations.md) - Database migrations
 - [Signals](orm/signals.md) - Model lifecycle signals
 - [Object Permissions](orm/permissions.md) - Per-object rules and queryset filtering
+- [Testing](orm/testing.md) - Run tests against a real database instead of a mocked queryset
 
 ### API (zeeb_api)
 - [Serializers](api/serializers.md) - Serialize and validate data
