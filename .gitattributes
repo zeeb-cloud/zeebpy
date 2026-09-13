@@ -1,0 +1,38 @@
+# Store every text file with LF endings, regardless of the platform it was
+# edited on.
+#
+# Git on Windows defaults to core.autocrlf=true, which rewrites files to CRLF on
+# checkout and hands them back to git that way on commit. With no .gitattributes
+# to normalise them, those rewrites get stored. That is how 347 files in this
+# repository were once re-committed with nothing changed but their line endings,
+# rewriting 108,214 lines and pointing `git blame` at the normalisation commit
+# instead of the change that last touched the content.
+#
+# `text=auto` lets git detect binary content and leave it alone; `eol=lf` pins
+# the working-tree ending too, so a file is byte-identical on every checkout and
+# a diff can only ever show a real change.
+* text=auto eol=lf
+
+# Shell scripts especially: these run as container entrypoints, and a CRLF
+# checkout makes the shebang interpreter unresolvable — the image fails to start
+# with "exec ...: no such file or directory". Covered by the rule above; kept
+# explicit so the consequence is written down next to the rule.
+*.sh text eol=lf
+
+# Binary formats listed explicitly, so a content heuristic misfiring on an
+# unusual file can never corrupt one by "normalising" it.
+*.png  binary
+*.jpg  binary
+*.jpeg binary
+*.gif  binary
+*.ico  binary
+*.webp binary
+*.pdf  binary
+*.zip  binary
+*.gz   binary
+*.woff binary
+*.woff2 binary
+*.ttf  binary
+*.eot  binary
+*.db   binary
+*.sqlite3 binary
