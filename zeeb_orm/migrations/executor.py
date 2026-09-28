@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, NamedTuple
 
+from zeeb_orm.db.urls import sync_database_url
 from zeeb_orm.migrations.migration import Migration
 
 
@@ -36,14 +37,6 @@ CREATE TABLE IF NOT EXISTS {_TRACKING_TABLE} (
     applied_at TIMESTAMP NOT NULL
 )
 """
-
-
-def _get_sync_url(url: str) -> str:
-    return (
-        url.replace("+asyncpg", "")
-        .replace("+aiomysql", "")
-        .replace("+aiosqlite", "")
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -373,7 +366,7 @@ def migrate(
         from zeeb_orm.conf.settings import get_settings
         database_url = get_settings().database.url
 
-    sync_url = _get_sync_url(database_url)
+    sync_url = sync_database_url(database_url)
     engine = create_engine(sync_url)
 
     migrations_dir = get_migrations_dir(project_root)
@@ -447,7 +440,7 @@ def showmigrations(
         from zeeb_orm.conf.settings import get_settings
         database_url = get_settings().database.url
 
-    sync_url = _get_sync_url(database_url)
+    sync_url = sync_database_url(database_url)
     engine = create_engine(sync_url)
 
     migrations_dir = get_migrations_dir(project_root)

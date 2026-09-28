@@ -20,6 +20,24 @@ DATABASE = {
 | MySQL | `mysql+aiomysql://...` | aiomysql |
 | MariaDB | `mysql+aiomysql://...` | aiomysql |
 
+### Synchronous connections
+
+Migrations, `showmigrations`, the agent layer's schema inspection and a
+`Database` given a URL without an async driver all connect synchronously. They
+never leave the driver to SQLAlchemy's default for the scheme — that default
+moves between SQLAlchemy versions (2.1 made psycopg v3 the default for a bare
+`postgresql://`) — but name the one zeebpy installs:
+
+| Configured URL | Synchronous connection |
+|----------------|------------------------|
+| `postgresql+asyncpg://`, `postgresql://`, `postgres://` | `postgresql+psycopg2://` (psycopg2, `postgresql` extra) |
+| `mysql+aiomysql://`, `mysql://` | `mysql+pymysql://` (pymysql, `mysql` extra) |
+| `sqlite+aiosqlite://` | `sqlite://` (standard library) |
+
+A URL that already names a driver (`postgresql+psycopg://…`) is used as given.
+`zeeb_orm.db.sync_database_url(url)` does the mapping, for your own sync
+engines too.
+
 ## SQLite
 
 Best for development and small applications.

@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import (
 from sqlalchemy.orm import Session, sessionmaker
 
 from zeeb_orm.conf.settings import DatabaseConfig, get_settings
+from zeeb_orm.db.urls import sync_database_url
 
 # Global connection registry
 _connections: dict[str, Database] = {}
@@ -124,9 +125,10 @@ class Database:
                 expire_on_commit=False,
             )
         else:
-            # Create sync engine for non-async drivers
+            # Create sync engine for non-async drivers, with the driver named:
+            # a bare scheme gets SQLAlchemy's default, which is not ours to pick.
             self._sync_engine = create_engine(
-                self.config.url,
+                sync_database_url(self.config.url),
                 echo=self.config.echo,
                 connect_args=self.config.connect_args,
                 **pool_kwargs,
