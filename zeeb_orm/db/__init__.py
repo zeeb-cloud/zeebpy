@@ -10,6 +10,7 @@ from zeeb_orm.db.connection import (
     setup_database,
 )
 from zeeb_orm.db.transaction import Atomic, TransactionManager
+from zeeb_orm.db.urls import sync_database_url
 
 __all__ = [
     "Database",
@@ -21,4 +22,5 @@ __all__ = [
     "atomic",
     "Atomic",
     "TransactionManager",
+    "sync_database_url",
 ]

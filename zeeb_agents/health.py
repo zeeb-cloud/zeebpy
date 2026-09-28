@@ -9,6 +9,7 @@ from typing import Any
 from zeeb_agents._utils import AgentResult, agent_function
 from zeeb_agents._utils.errors import fail
 from zeeb_agents._utils.project import load_project_settings, resolve_db_url
+from zeeb_orm.db.urls import sync_database_url
 
 _HEALTH_MODULE = '''\
 """Health check endpoints.
@@ -58,12 +59,7 @@ async def readiness_check():
 
 
 def _sync_db_url(root: Path) -> str:
-    settings = load_project_settings(root)
-    url = resolve_db_url(settings, root)
-    url = url.replace("sqlite+aiosqlite://", "sqlite://")
-    url = url.replace("postgresql+asyncpg://", "postgresql://")
-    url = url.replace("mysql+aiomysql://", "mysql://")
-    return url
+    return sync_database_url(resolve_db_url(load_project_settings(root), root))
 
 
 def _project_slug(root: Path) -> str:
