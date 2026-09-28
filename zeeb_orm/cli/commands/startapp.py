@@ -13,19 +13,18 @@ from zeeb_orm.scaffold.app import (
     SERIALIZERS_PY,
     SLICE_MODELS_PY,
     SLICE_SERIALIZERS_PY,
-    SLICE_TESTS_PY,
     SLICE_URLS_PY,
     SLICE_VIEWS_PY,
     TESTS_PY,
     URLS_PY,
     VIEWS_PY,
+    app_template_context,
+    render_app_tests,
 )
 from zeeb_orm.scaffold.errors import ScaffoldError
 from zeeb_orm.scaffold.harness import ensure_test_scaffold
 from zeeb_orm.scaffold.naming import (
     find_project_root,
-    pluralize,
-    singularize,
     to_class_name,
     to_title,
 )
@@ -123,28 +122,12 @@ def run_startapp(
         # Create directory structure
         app_path.mkdir()
 
-        # Template context. The example model's name is singularized through
-        # the shared helper: a plain rstrip("s") turns "address" into "addre"
-        # and "class" into "clas", and those names reach a table definition.
-        app_class = to_class_name(name)
-        app_title = to_title(name)
-        model_name = model or to_class_name(singularize(name))
-        model_slug = model_name.lower()
+        context = app_template_context(name, model)
 
-        context = {
-            "app_name": name,
-            "app_class": app_class,
-            "app_title": app_title,
-            "model_name": model_name,
-            "model_slug": model_slug,
-            "table_name": f"{name}_{model_slug}",
-            "route_prefix": pluralize(model_slug),
-        }
-
-        models_py, serializers_py, views_py, urls_py, tests_py = (
-            (SLICE_MODELS_PY, SLICE_SERIALIZERS_PY, SLICE_VIEWS_PY, SLICE_URLS_PY, SLICE_TESTS_PY)
+        models_py, serializers_py, views_py, urls_py = (
+            (SLICE_MODELS_PY, SLICE_SERIALIZERS_PY, SLICE_VIEWS_PY, SLICE_URLS_PY)
             if model
-            else (MODELS_PY, SERIALIZERS_PY, VIEWS_PY, URLS_PY, TESTS_PY)
+            else (MODELS_PY, SERIALIZERS_PY, VIEWS_PY, URLS_PY)
         )
 
         # Create files
@@ -172,7 +155,7 @@ def run_startapp(
         test_file = project_root / "tests" / f"test_{name}.py"
         if not test_file.exists():
             test_file.parent.mkdir(parents=True, exist_ok=True)
-            test_file.write_text(tests_py.format(**context))
+            test_file.write_text(render_app_tests(name, model))
             written.append(f"tests/test_{name}.py")
 
         if not json_output:

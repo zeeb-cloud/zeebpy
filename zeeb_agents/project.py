@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
 import shutil
 from pathlib import Path
 
@@ -25,6 +26,7 @@ from zeeb_agents._utils.wiring import (
     ensure_installed_app,
     find_project_package,
 )
+from zeeb_orm.scaffold.app import render_app_tests
 
 _AUTH_MIDDLEWARE = "zeeb_api.middleware.JWTAuthMiddleware"
 _CORS_MIDDLEWARE = "zeeb_api.middleware.CORSMiddleware"
@@ -257,10 +259,17 @@ async def delete_app(name: str, project_root: Path | None = None) -> AgentResult
     Returns data (on success):
         name (str): the app name
         path (str): absolute path to the deleted app directory
+        removed (list[str]): project-relative files removed besides the
+            directory — the ``tests/test_<name>.py`` ``startapp`` wrote
+        kept (list[str]): that test file when it was edited by hand, left in
+            place because it may hold tests worth keeping
 
     Notes:
         - If the app directory does not exist, returns ``success=False``
           with ``data=None``.
+        - ``startapp`` writes the app's test to ``tests/``, not into the app
+          directory, so removing the directory alone left it behind. It is
+          removed only while it is still exactly what ``startapp`` wrote.
     """
     root = require_project_root(project_root)
     app_path = get_app_path(name, root)
@@ -276,11 +285,42 @@ async def delete_app(name: str, project_root: Path | None = None) -> AgentResult
         )
 
     await asyncio.to_thread(shutil.rmtree, app_path)
+    removed, kept = await asyncio.to_thread(_remove_app_test_stub, name, root)
+    message = f"App '{name}' deleted"
+    if kept:
+        message += f"; {kept[0]} was edited by hand, so it was left in place"
     return AgentResult(
         success=True,
-        message=f"App '{name}' deleted",
-        data={"name": name, "path": str(app_path)},
+        message=message,
+        data={"name": name, "path": str(app_path), "removed": removed, "kept": kept},
     )
+
+
+#: The header ``startapp --model`` writes, naming the model its test imports.
+_SLICE_TEST_HEADER = re.compile(r"written by `startapp --model (\w+)`")
+
+
+def _remove_app_test_stub(name: str, root: Path) -> tuple[list[str], list[str]]:
+    """Remove the ``tests/test_<name>.py`` ``startapp`` wrote, unless it was edited.
+
+    Returns ``(removed, kept)`` as project-relative paths. The file is
+    compared with what ``startapp`` renders for the app — with the ``--model``
+    it names, if its header names one — so a stub nobody touched goes, and a
+    file someone wrote tests into stays.
+    """
+    relative = f"tests/test_{name}.py"
+    path = root / relative
+    if not path.is_file():
+        return [], []
+    text = path.read_text(encoding="utf-8").replace("\r\n", "\n").strip()
+    rendered = {render_app_tests(name).strip()}
+    header = _SLICE_TEST_HEADER.search(text)
+    if header:
+        rendered.add(render_app_tests(name, header.group(1)).strip())
+    if text not in rendered:
+        return [], [relative]
+    path.unlink()
+    return [relative], []
 
 
 @agent_function
