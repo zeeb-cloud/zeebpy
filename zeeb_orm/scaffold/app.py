@@ -21,6 +21,8 @@ An embedded example must never contain a triple quote: it lives inside the
 generated file's own docstring.
 """
 
+from zeeb_orm.scaffold.naming import pluralize, singularize, to_class_name, to_title
+
 MODELS_PY = '''"""{app_title} models.
 
 A model is a class over a database table. The canonical shape:
@@ -281,3 +283,38 @@ async def test_creating_a_{model_slug}_requires_a_token(client, auth_client, api
     # The owner comes from the token, never from the request body.
     assert created.json()["owner"] is not None
 '''
+
+
+# ---------------------------------------------------------------------------
+# Rendering — one place for startapp to write with and delete_app to compare to
+# ---------------------------------------------------------------------------
+
+
+def app_template_context(name: str, model: str | None = None) -> dict[str, str]:
+    """The names every app template above is formatted with.
+
+    The example model's name is singularized through the shared helper: a plain
+    ``rstrip("s")`` turns "address" into "addre" and "class" into "clas", and
+    those names reach a table definition.
+    """
+    model_name = model or to_class_name(singularize(name))
+    model_slug = model_name.lower()
+    return {
+        "app_name": name,
+        "app_class": to_class_name(name),
+        "app_title": to_title(name),
+        "model_name": model_name,
+        "model_slug": model_slug,
+        "table_name": f"{name}_{model_slug}",
+        "route_prefix": pluralize(model_slug),
+    }
+
+
+def render_app_tests(name: str, model: str | None = None) -> str:
+    """The ``tests/test_<name>.py`` that ``startapp`` writes for an app.
+
+    With ``model`` it is the ``--model`` slice's test, otherwise the boot
+    check. ``delete_app`` renders it again to recognise a stub nobody edited.
+    """
+    template = SLICE_TESTS_PY if model else TESTS_PY
+    return template.format(**app_template_context(name, model))

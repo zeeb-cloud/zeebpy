@@ -327,7 +327,9 @@ Include a pre-existing app's router in the project `urls.py` (idempotent). Leave
 prefixes.
 
 ### `delete_app(name, project_id=None)`
-Delete an app directory.
+Delete an app directory, and the `tests/test_<name>.py` `startapp` wrote for it
+(`data.removed`) — unless that file was edited, in which case it stays and is
+reported in `data.kept`.
 
 ### `rename_app(old_name, new_name, project_id=None)`
 Rename an app directory.

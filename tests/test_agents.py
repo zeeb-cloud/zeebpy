@@ -165,6 +165,50 @@ async def test_create_app(project):
     assert "from zeeb_orm import Model, fields" in (app_dir / "models.py").read_text()
 
 
+async def test_delete_app_takes_the_test_stub_startapp_wrote(project):
+    """startapp writes tests/test_<app>.py outside the app directory, so
+    removing the directory alone left a test for an app that no longer exists."""
+    stub = project / "tests" / "test_blog.py"
+    assert stub.exists()
+
+    result = await agents.delete_app("blog", project_id=project)
+
+    assert result.success, result.message
+    assert not (project / "apps" / "blog").exists()
+    assert not stub.exists()
+    assert result.data["removed"] == ["tests/test_blog.py"]
+    assert result.data["kept"] == []
+
+
+async def test_delete_app_keeps_a_test_file_someone_wrote_tests_into(project):
+    stub = project / "tests" / "test_blog.py"
+    stub.write_text(stub.read_text() + "\n\nasync def test_mine():\n    assert True\n")
+
+    result = await agents.delete_app("blog", project_id=project)
+
+    assert result.success, result.message
+    assert stub.exists()
+    assert result.data["removed"] == []
+    assert result.data["kept"] == ["tests/test_blog.py"]
+    assert "left in place" in result.message
+
+
+async def test_delete_app_recognises_a_model_slice_stub(project, monkeypatch):
+    """``startapp --model`` writes a different test; it is just as much the app's."""
+    from zeeb_orm.cli.commands.startapp import run_startapp
+
+    monkeypatch.chdir(project)
+    assert run_startapp("shop", wire=False, model="Product") == 0
+    stub = project / "tests" / "test_shop.py"
+    assert "startapp --model Product" in stub.read_text()
+
+    result = await agents.delete_app("shop", project_id=project)
+
+    assert result.success, result.message
+    assert not stub.exists()
+    assert result.data["removed"] == ["tests/test_shop.py"]
+
+
 async def test_list_apps_and_project_info(project):
     # Every project is scaffolded with the accounts app that owns its user
     # model; list_apps sorts, so it comes first.
