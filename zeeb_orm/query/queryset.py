@@ -1754,37 +1754,63 @@ class QuerySet(Generic[ModelT]):
         results = await clone._fetch_all()
         return results[0] if results else None
 
-    async def count(self) -> int:
-        """Count objects matching the query."""
-        from zeeb_orm.db.connection import get_session
+    def _build_count_select(self) -> Any:
+        """``SELECT count(*)`` for this queryset.
 
+        Counts over the full SELECT as a subquery whenever the row set is not
+        simply "the filtered table": a slice, ``distinct()``, a GROUP BY from
+        aggregate annotations (whose filters live in HAVING) or a combinator.
+        Otherwise the cheap ``count(*) FROM <table> WHERE ...`` form is used.
+        """
         if self._combinator is not None:
-            stmt = select(func.count()).select_from(
+            return select(func.count()).select_from(
                 self._build_combined_select().subquery()
             )
-            async with get_session(self._db_alias) as (session, _):
-                result = await session.execute(stmt)
-                return result.scalar() or 0
+
+        if (
+            self._limit is not None
+            or self._offset is not None
+            or self._distinct_fields
+            or self._aggregate_aliases()
+        ):
+            inner = self._build_select()
+            if self._limit is None and self._offset is None:
+                inner = inner.order_by(None)  # ordering cannot change a count
+            return select(func.count()).select_from(inner.subquery("_count"))
 
         table = self.model._get_table()
         joins = self._make_join_context()
-
         where_clause = self._build_where_clause(joins)
-
         stmt = select(func.count()).select_from(
             joins.apply(table) if joins.has_joins else table
         )
         if where_clause is not None:
             stmt = stmt.where(where_clause)
+        return stmt
 
+    async def count(self) -> int:
+        """Count the rows this queryset yields.
+
+        Respects slicing (``qs[:10].count()`` is at most 10), ``distinct()``
+        and filters on aggregate annotations. An already evaluated queryset
+        answers from its result cache.
+        """
+        from zeeb_orm.db.connection import get_session
+
+        if self._result_cache is not None:
+            return len(self._result_cache)
+
+        stmt = self._build_count_select()
         async with get_session(self._db_alias) as (session, _):
             result = await session.execute(stmt)
             return result.scalar() or 0
 
     async def exists(self) -> bool:
         """Check if any objects match the query."""
+        if self._result_cache is not None:
+            return bool(self._result_cache)
         clone = self._clone()
-        clone._limit = 1
+        clone._limit = 1 if self._limit is None else min(self._limit, 1)
         results = await clone._fetch_all()
         return len(results) > 0
 

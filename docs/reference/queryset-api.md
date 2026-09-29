@@ -207,7 +207,17 @@ Return count of results.
 ```python
 total = await User.objects.count()
 active = await User.objects.filter(is_active=True).count()
+
+# Counts exactly what the queryset yields
+page = await User.objects.order_by("id")[:20].count()          # at most 20
+tagged = await Post.objects.filter(tags__name="x").distinct().count()
+busy = await Author.objects.annotate(n=Count("posts")).filter(n__gt=5).count()
 ```
+
+A slice, `distinct()` or an aggregate annotation makes `count()` count over
+the full query as a subquery; a plain filtered queryset uses a single
+`SELECT count(*) ... WHERE ...`. An already evaluated queryset answers from
+its result cache without a query.
 
 ---
 
