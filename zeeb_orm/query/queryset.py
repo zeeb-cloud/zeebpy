@@ -53,6 +53,9 @@ class QuerySet(Generic[ModelT]):
         self._filters: list[Q] = []
         self._excludes: list[Q] = []
         self._order_by: list[str] = []
+        # False once order_by() was called: Meta.ordering no longer applies,
+        # so a bare order_by() clears the ordering altogether.
+        self._default_ordering: bool = True
         self._distinct_fields: list[str] = []
         self._select_related: list[str] = []
         self._prefetch_related: list[Any] = []
@@ -103,6 +106,7 @@ class QuerySet(Generic[ModelT]):
         clone._filters = self._filters.copy()
         clone._excludes = self._excludes.copy()
         clone._order_by = self._order_by.copy()
+        clone._default_ordering = self._default_ordering
         clone._distinct_fields = self._distinct_fields.copy()
         clone._select_related = self._select_related.copy()
         clone._prefetch_related = self._prefetch_related.copy()
@@ -318,6 +322,7 @@ class QuerySet(Generic[ModelT]):
         """
         clone = self._clone()
         clone._order_by = list(fields)
+        clone._default_ordering = False
         return clone
 
     # Distinct
@@ -786,35 +791,59 @@ class QuerySet(Generic[ModelT]):
         return resolve_field_path(self.model, field_path, self._annotations, joins)
 
     def _build_order_by(self, joins: JoinContext | None = None) -> list[Any]:
-        """Build SQLAlchemy ORDER BY clause."""
+        """Build SQLAlchemy ORDER BY clause.
+
+        Uses the explicit ``order_by()`` fields, else ``Meta.ordering``.
+        Every name must resolve — an unknown one raises ``FieldError``
+        instead of being dropped from the ORDER BY.
+        """
         from sqlalchemy import asc, desc
 
         order_clauses = []
-        table = self.model._get_table()
-
-        for field in self._order_by:
+        fields = self._order_by
+        if self._default_ordering and not fields:
+            fields = list(self.model._meta.ordering or [])
+        for field in fields:
             descending = field.startswith("-")
             field_name = field[1:] if descending else field
-
-            # Check if it's an annotation
-            if field_name in self._annotations:
-                expr = self._annotations[field_name]
-                if hasattr(expr, 'resolve'):
-                    column = expr.resolve(self.model, joins=joins)
-                else:
-                    column = literal_column(field_name)
-            elif "__" in field_name:
-                column = self._resolve_path_expression(field_name, joins)
-            else:
-                column = getattr(table.c, field_name, None)
-
-            if column is not None:
-                if descending:
-                    order_clauses.append(desc(column))
-                else:
-                    order_clauses.append(asc(column))
+            column = self._order_expression(field_name, joins)
+            order_clauses.append(desc(column) if descending else asc(column))
 
         return order_clauses
+
+    def _order_expression(self, field_name: str, joins: JoinContext | None) -> Any:
+        """The expression an ``order_by()`` / ``Meta.ordering`` name sorts by.
+
+        Annotations, local fields (a ForeignKey name sorts by its FK column,
+        ``pk`` by the primary key), ``__`` paths across relations and
+        datetime transforms (``created_at__year``).
+        """
+        from zeeb_orm.exceptions import FieldError
+
+        if field_name in self._annotations:
+            expr = self._annotations[field_name]
+            if hasattr(expr, "resolve"):
+                return expr.resolve(self.model, joins=joins)
+            return literal_column(field_name)
+
+        table = self.model._get_table()
+        meta = self.model._meta
+        if field_name == "pk":
+            return table.c[self._pk_column_name()]
+        field = meta.get_field(field_name) or meta.get_field_by_column(field_name)
+        if field is not None:
+            return table.c[field.db_column or field.name]
+
+        column = self._resolve_path_expression(field_name, joins)
+        if column is None:
+            choices = sorted(
+                {f.name for f in meta.local_fields} | set(self._annotations)
+            )
+            raise FieldError(
+                f"Cannot resolve keyword {field_name!r} into field for ordering "
+                f"on {self.model.__name__}. Choices are: {', '.join(choices)}"
+            )
+        return column
 
     def _resolve_path_expression(
         self, path: str, joins: JoinContext | None
@@ -1148,21 +1177,11 @@ class QuerySet(Generic[ModelT]):
         if having_clause is not None:
             stmt = stmt.having(having_clause)
 
-        # Apply ordering - can also order by annotations and "__" paths
+        # Apply ordering (explicit order_by, else Meta.ordering) - can also
+        # order by annotations and "__" paths
         order_clauses = self._build_order_by(joins)
         if order_clauses:
             stmt = stmt.order_by(*order_clauses)
-        elif self.model._meta.ordering:
-            # Apply default ordering from Meta
-            for field in self.model._meta.ordering:
-                if field.startswith("-"):
-                    col = getattr(table.c, field[1:], None)
-                    if col is not None:
-                        stmt = stmt.order_by(col.desc())
-                else:
-                    col = getattr(table.c, field, None)
-                    if col is not None:
-                        stmt = stmt.order_by(col.asc())
 
         # One FROM clause containing all registered JOINs
         if joins.has_joins:
@@ -1708,7 +1727,7 @@ class QuerySet(Generic[ModelT]):
         """
         if self._order_by:
             return list(self._order_by)
-        if self.model._meta.ordering:
+        if self._default_ordering and self.model._meta.ordering:
             return list(self.model._meta.ordering)
         return [self.model._meta.pk_name or "id"]
 

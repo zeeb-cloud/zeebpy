@@ -321,8 +321,13 @@ articles = await Article.objects.order_by("-created_at")
 # Multiple fields
 articles = await Article.objects.order_by("-featured", "-created_at", "title")
 
-# Clear ordering
+# Clear ordering (Meta.ordering included)
 articles = await Article.objects.order_by()  # No ordering
+
+# A ForeignKey name sorts by the FK column
+articles = await Article.objects.order_by("author")
+
+# Unknown names raise FieldError instead of being ignored
 
 # Order by related field
 posts = await Post.objects.order_by("author__name")
