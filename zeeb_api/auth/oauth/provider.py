@@ -41,6 +41,26 @@ class ExternalClaims(BaseModel):
     raw: dict[str, Any] = Field(default_factory=dict)
 
 
+def parse_email_verified(value: Any) -> bool | None:
+    """Read an IdP's ``email_verified`` claim strictly.
+
+    ``True``/``False`` and the strings ``"true"``/``"false"`` (any case — some
+    IdPs, e.g. Cognito and older Azure B2C policies, send strings) are
+    understood. Anything else — absent, ``None``, a number, an unexpected
+    string — is ``None``, which ``OAUTH_REQUIRE_VERIFIED_EMAIL`` treats as
+    unverified. ``bool(value)`` used to turn the string ``"false"`` into True.
+    """
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered == "true":
+            return True
+        if lowered == "false":
+            return False
+    return None
+
+
 def _dotted_lookup(data: dict[str, Any], path: str) -> Any:
     """Resolve a dotted path (``"a.b.c"``) inside a nested dict."""
     current: Any = data
@@ -251,11 +271,10 @@ class OAuthProvider:
             )
         email = _dotted_lookup(raw, self.claim_mapping.get("email", "email"))
         name_ = _dotted_lookup(raw, self.claim_mapping.get("name", "name"))
-        email_verified = raw.get("email_verified")
         return ExternalClaims(
             subject=str(subject),
             email=str(email) if email else None,
-            email_verified=bool(email_verified) if email_verified is not None else None,
+            email_verified=parse_email_verified(raw.get("email_verified")),
             name=str(name_) if name_ else None,
             raw=raw,
         )

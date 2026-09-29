@@ -94,6 +94,7 @@ This registers (default prefix `/auth`):
 |----------|--------|---------|
 | `/auth/{provider}/authorize/` | GET | Redirect the browser to the IdP (sets state + PKCE cookie) |
 | `/auth/{provider}/callback/` | GET, POST | Complete the browser login (POST supports Azure's `form_post`) |
+| `/auth/{provider}/state/` | GET | SPA flow: issue a signed state + nonce for an IdP URL the SPA builds itself |
 | `/auth/{provider}/token/` | POST | SPA flow: exchange an authorization code for Zeeb JWTs |
 | `/auth/providers/` | GET | List configured providers and their authorize URLs |
 
@@ -189,15 +190,21 @@ Single-page apps drive the redirect themselves (e.g. with MSAL or a plain
 OAuth client) and exchange the code at the API:
 
 ```text
-1. SPA -> GET /auth/azure/authorize/        (or builds the IdP URL itself)
+1. SPA -> GET /auth/azure/authorize/        (the API builds the IdP URL)
+   or SPA -> GET /auth/azure/state/?redirect_uri=...  -> {"state", "nonce"}
+          and builds the IdP URL itself with that state and nonce
 2. Browser -> IdP login -> redirect back to the SPA with ?code=...&state=...
 3. SPA -> POST /auth/azure/token/
        {"code": "...", "redirect_uri": "...", "code_verifier": "...", "state": "..."}
 4. API responds with a JSON TokenResponse (Zeeb-issued JWTs)
 ```
 
-`state` is optional in step 3 but recommended: when supplied, the ID token's
-`nonce` is verified against the one embedded in the signed state token.
+`state` is **required** in step 3 (a request without it is a 422): it must be a
+state token this API signed for the same provider, and the ID token's `nonce`
+is checked against the one it carries. Without that check an authorization
+code or ID token obtained for any other login could be replayed at `/token/`.
+An SPA that used to build the IdP URL without asking the API for a state must
+now call `GET /{provider}/state/` first.
 
 ## Browser Flow
 
@@ -260,12 +267,34 @@ Logins are tied to local users through the `ExternalIdentity` model
    a flag at all — stops here with `401 AUTH_OAUTH_EMAIL_UNVERIFIED`. This
    gate precedes both of the next two steps, so it blocks auto-provisioning as
    well as linking.
-3. Otherwise, with `OAUTH_LINK_BY_EMAIL = True` (default), an existing user
-   with the same email gets the identity attached.
+3. If a local user already has that email, it is linked only when
+   `OAUTH_LINK_BY_EMAIL = True` (default `False`) **and** that local account is
+   known to own the address — the user model has an `email_verified` attribute
+   that is `True` (a column your own verification flow sets), or the user
+   already has an identity from a provider that verified the same address.
+   Otherwise the login fails with `401 AUTH_OAUTH_ACCOUNT_EXISTS`; a second
+   account with the same email is never created beside it.
 4. Otherwise, with `OAUTH_AUTO_CREATE_USERS = True` (default), a new user is
    created **without a usable password** (they can only log in via SSO until
    they set one).
 5. Otherwise the login fails with `401 AUTH_OAUTH_USER_NOT_PROVISIONED`.
+
+A deactivated local account never logs in through SSO: an existing identity or
+an email link that resolves to it fails with `401 AUTH_ACCOUNT_DISABLED`.
+
+### Why linking by email is off by default
+
+`POST /auth/register` does not verify the address it is given. With email
+linking on and no check of the local side, an attacker could register
+`victim@example.com` first; the victim's later Google or GitHub login would be
+linked to the attacker's account, and the attacker keeps its password
+(pre-registration account hijack). Hence the default and the rule in step 3.
+
+**Upgrading:** `OAUTH_LINK_BY_EMAIL` used to default to `True` and linked any
+local account. If you rely on linking, set it to `True` explicitly and give
+your user model an `email_verified` field that your verification flow sets —
+accounts without it are refused with `AUTH_OAUTH_ACCOUNT_EXISTS` instead of
+being linked.
 
 Both behaviours can also be set per provider
 (`auto_create_user=` / `link_by_email=` on the provider). To replace the whole
@@ -308,10 +337,17 @@ app.add_middleware(
 When a Bearer token is not a locally-issued JWT, the middleware tries each
 validator (first non-None wins): the token is validated against the
 provider's JWKS (signature, `aud` = your client id, issuer, expiry), then
-resolved to the linked database user via `ExternalIdentity`, falling back to a
-lightweight `ExternalAuthenticatedUser` built from the token claims. Invalid
-tokens never raise — `request.state.user` simply stays `None`. There is zero
-overhead when nothing is configured.
+resolved to the linked database user via `ExternalIdentity`. Only a token with
+**no** linked identity falls back to a lightweight `ExternalAuthenticatedUser`
+built from the token claims. Invalid tokens never raise —
+`request.state.user` simply stays `None`. There is zero overhead when nothing is
+configured.
+
+The resolution fails closed: a token whose linked account is deleted or
+deactivated authenticates nobody, and neither does one whose identity lookup
+errors (database down, or the `auth_external_identities` table never
+migrated) — an error is logged and the request proceeds unauthenticated
+rather than as a claims-only user.
 
 ## Settings Reference
 
@@ -319,7 +355,7 @@ overhead when nothing is configured.
 |---------|---------|-------------|
 | `OAUTH_PROVIDERS` | `{}` | Provider registry (`class` inferred for azure/google/github) |
 | `OAUTH_AUTO_CREATE_USERS` | `True` | Provision users on first login |
-| `OAUTH_LINK_BY_EMAIL` | `True` | Attach identities to existing users by email |
+| `OAUTH_LINK_BY_EMAIL` | `False` | Attach identities to existing users by email — only to a local account that verified the address |
 | `OAUTH_STATE_TTL_SECONDS` | `600` | Lifetime of the signed state token (and PKCE cookie) |
 | `OAUTH_REDIRECT_URI` | `None` | Fixed redirect URI (default: derived from the callback route) |
 | `OAUTH_SUCCESS_REDIRECT` | `None` | Browser-flow redirect target (tokens in URL fragment) |
@@ -345,6 +381,10 @@ overhead when nothing is configured.
   account. If you turn that gate off, keep `OAUTH_LINK_BY_EMAIL` enabled only
   for providers that verify emails (Azure AD and Google do; be careful with
   custom IdPs), or disable it per provider with `link_by_email=False`.
+  `email_verified` is read strictly: `true`/`false` booleans or strings; any
+  other value counts as unverified.
+- **Pre-registration hijack**: the local side must prove ownership too — see
+  [Why linking by email is off by default](#why-linking-by-email-is-off-by-default).
 - **Tokens in fragments**: the browser success redirect carries tokens in the
   URL fragment, which is not sent to servers or logged; still, prefer the SPA
   `POST /token/` flow where possible.
@@ -366,6 +406,8 @@ overhead when nothing is configured.
 | `AUTH_OAUTH_PROVIDER_NOT_FOUND` | 404 | Unknown provider name in the URL |
 | `AUTH_OAUTH_USER_NOT_PROVISIONED` | 401 | No linked user and auto-provisioning disabled |
 | `AUTH_OAUTH_EMAIL_UNVERIFIED` | 401 | `OAUTH_REQUIRE_VERIFIED_EMAIL` is on and the provider reported the address as unverified (or reported no flag) — blocks linking *and* provisioning |
+| `AUTH_OAUTH_ACCOUNT_EXISTS` | 401 | A local account already uses the email and may not be linked (linking off, or the local account never verified its address) |
+| `AUTH_ACCOUNT_DISABLED` | 401 | The identity (or email link) resolves to a deactivated or deleted local account |
 
 ## Next Steps
 

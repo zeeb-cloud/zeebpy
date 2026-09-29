@@ -371,6 +371,33 @@ class TestClaimMapping:
         assert claims.email_verified is True
         assert claims.raw["sub"] == "abc"
 
+    @pytest.mark.parametrize(
+        ("raw", "expected"),
+        [
+            (True, True),
+            (False, False),
+            ("true", True),
+            ("TRUE", True),
+            ("false", False),
+            ("False", False),
+            ("yes", None),
+            (1, None),
+            (None, None),
+        ],
+    )
+    def test_email_verified_is_parsed_strictly(self, provider, raw, expected):
+        claims = provider.map_claims({"sub": "abc", "email": "a@b.c", "email_verified": raw})
+        assert claims.email_verified is expected
+
+    @pytest.mark.parametrize("raw", ["false", "False", "0", 0])
+    def test_presets_do_not_read_false_strings_as_verified(self, raw):
+        azure = AzureADProvider(tenant="common", client_id=CLIENT_ID)
+        github = GitHubProvider(client_id=CLIENT_ID)
+        azure_claims = azure.map_claims({"oid": "o", "email": "a@b.c", "email_verified": raw})
+        github_claims = github.map_claims({"id": 1, "email": "a@b.c", "email_verified": raw})
+        assert azure_claims.email_verified is not True
+        assert github_claims.email_verified is not True
+
     def test_dotted_path_lookup(self, mock_http):
         p = make_provider(
             mock_http,
@@ -755,6 +782,18 @@ def asgi_client(app) -> httpx.AsyncClient:
 SPA_BODY = {"code": "spa-code", "redirect_uri": "https://spa.example.com/cb"}
 
 
+def spa_body(idp, **overrides) -> dict:
+    """A POST /token/ body carrying a signed state, as the SPA flow requires.
+
+    The state's nonce is handed to the fake IdP so the ID token echoes it, as
+    a real IdP does with the ``nonce`` the SPA sent it.
+    """
+    nonce = generate_nonce()
+    idp.nonce = nonce
+    state = create_state_token("test", nonce=nonce, redirect_uri=SPA_BODY["redirect_uri"])
+    return {**SPA_BODY, "state": state, **overrides}
+
+
 class TestSPATokenFlow:
     """Flow A: POST /{provider}/token/ (SPA exchanges the code itself)."""
 
@@ -765,7 +804,7 @@ class TestSPATokenFlow:
         app = make_app(provider)
         async with asgi_client(app) as client:
             response = await client.post(
-                "/auth/test/token/", json={**SPA_BODY, "code_verifier": "spa-verifier"}
+                "/auth/test/token/", json=spa_body(idp, code_verifier="spa-verifier")
             )
         assert response.status_code == 200, response.text
         body = response.json()
@@ -797,14 +836,14 @@ class TestSPATokenFlow:
         assert identity.user_id == user.id
         assert identity.email == "alice@example.com"
 
-    async def test_second_login_no_duplicates(self, db, provider):
+    async def test_second_login_no_duplicates(self, db, provider, idp):
         from zeeb_api.auth.models import User
         from zeeb_api.auth.oauth.models import ExternalIdentity
 
         app = make_app(provider)
         async with asgi_client(app) as client:
-            first = await client.post("/auth/test/token/", json=SPA_BODY)
-            second = await client.post("/auth/test/token/", json=SPA_BODY)
+            first = await client.post("/auth/test/token/", json=spa_body(idp))
+            second = await client.post("/auth/test/token/", json=spa_body(idp))
         assert first.status_code == 200
         assert second.status_code == 200
 
@@ -814,27 +853,42 @@ class TestSPATokenFlow:
         assert len(identities) == 1
         assert identities[0].last_login_at is not None
 
-    async def test_auto_create_disabled_returns_401(self, db, provider):
+    async def test_auto_create_disabled_returns_401(self, db, provider, idp):
         settings.OAUTH_AUTO_CREATE_USERS = False
         app = make_app(provider)
         async with asgi_client(app) as client:
-            response = await client.post("/auth/test/token/", json=SPA_BODY)
+            response = await client.post("/auth/test/token/", json=spa_body(idp))
         assert response.status_code == 401
         assert (
             response.json()["error"]["code"]
             == ErrorCode.AUTH_OAUTH_USER_NOT_PROVISIONED.value
         )
 
-    async def test_link_by_email_attaches_to_existing_user(self, db, provider):
+    async def test_link_by_email_attaches_to_existing_user(self, db, provider, idp):
+        """Linking works when enabled and the local account owns the address.
+
+        Ownership is established by an earlier identity whose provider
+        verified the email (e.g. the user signed in with Google before and
+        now uses this provider). A merely registered account does not
+        qualify — see test_registered_account_is_not_linked_*.
+        """
         from zeeb_api.auth.backends import create_user
         from zeeb_api.auth.oauth.models import ExternalIdentity
 
         existing = await create_user(email="alice@example.com", password="local-pass-123")
+        await ExternalIdentity(
+            user_id=existing.id,
+            provider="other",
+            subject="other-subj",
+            email="alice@example.com",
+            extra_data={"email_verified": True},
+        ).save()
+        settings.OAUTH_LINK_BY_EMAIL = True
         settings.OAUTH_AUTO_CREATE_USERS = False  # force the linking path
 
         app = make_app(provider)
         async with asgi_client(app) as client:
-            response = await client.post("/auth/test/token/", json=SPA_BODY)
+            response = await client.post("/auth/test/token/", json=spa_body(idp))
         assert response.status_code == 200
         payload = decode_token(response.json()["access_token"], token_type="access")
         assert payload.sub == str(existing.id)
@@ -844,6 +898,105 @@ class TestSPATokenFlow:
         ).first()
         assert identity is not None
         assert identity.user_id == existing.id
+
+    async def test_link_by_email_is_off_by_default(self):
+        from zeeb_api.conf import default_settings
+
+        assert default_settings.OAUTH_LINK_BY_EMAIL is False
+
+    @pytest.mark.parametrize("link_by_email", [False, True])
+    async def test_registered_account_is_not_linked(self, db, provider, idp, link_by_email):
+        """Pre-registration hijack: whoever registered victim@ first must not
+        receive the victim's later SSO login. A /register account never
+        proved it owns its address, so it is refused whether or not email
+        linking is enabled — and no second account shadows it either."""
+        from zeeb_api.auth.backends import create_user
+        from zeeb_api.auth.models import User
+        from zeeb_api.auth.oauth.models import ExternalIdentity
+
+        await create_user(email="alice@example.com", password="attacker-pass-1")
+        settings.OAUTH_LINK_BY_EMAIL = link_by_email
+
+        app = make_app(provider)
+        async with asgi_client(app) as client:
+            response = await client.post("/auth/test/token/", json=spa_body(idp))
+
+        assert response.status_code == 401, response.text
+        assert response.json()["error"]["code"] == ErrorCode.AUTH_OAUTH_ACCOUNT_EXISTS.value
+        assert await ExternalIdentity.objects.filter(provider="test").first() is None
+        assert len(await User.objects.filter(email="alice@example.com")) == 1
+
+    async def test_local_email_verified_flag_is_honoured(self, db):
+        from zeeb_api.auth.oauth.models import local_email_is_verified
+
+        class _Verified:
+            id = 1
+            email_verified = True
+
+        class _Unverified:
+            id = 2
+            email_verified = False
+
+        assert await local_email_is_verified(_Verified(), "a@example.com") is True
+        assert await local_email_is_verified(_Unverified(), "a@example.com") is False
+
+    async def test_login_to_deactivated_account_is_refused(self, db, provider, idp):
+        from zeeb_api.auth.models import User
+
+        app = make_app(provider)
+        async with asgi_client(app) as client:
+            first = await client.post("/auth/test/token/", json=spa_body(idp))
+            assert first.status_code == 200, first.text
+            user = await User.objects.get(email="alice@example.com")
+            user.is_active = False
+            await user.save()
+            second = await client.post("/auth/test/token/", json=spa_body(idp))
+
+        assert second.status_code == 401, second.text
+        assert second.json()["error"]["code"] == ErrorCode.AUTH_ACCOUNT_DISABLED.value
+
+    async def test_state_is_required(self, db, provider, idp):
+        app = make_app(provider)
+        async with asgi_client(app) as client:
+            response = await client.post("/auth/test/token/", json=SPA_BODY)
+        assert response.status_code == 422, response.text
+        assert any(d["field"] == "state" for d in response.json()["error"]["details"])
+        assert idp.token_requests == []  # the code was never exchanged
+
+    async def test_state_for_another_provider_is_rejected(self, db, provider, idp):
+        app = make_app(provider)
+        state = create_state_token("other", nonce="n", redirect_uri=SPA_BODY["redirect_uri"])
+        async with asgi_client(app) as client:
+            response = await client.post(
+                "/auth/test/token/", json={**SPA_BODY, "state": state}
+            )
+        assert response.status_code == 401
+        assert response.json()["error"]["code"] == ErrorCode.AUTH_OAUTH_STATE_INVALID.value
+
+    async def test_nonce_mismatch_is_rejected(self, db, provider, idp):
+        """The state's nonce is enforced: an ID token minted for another login fails."""
+        app = make_app(provider)
+        body = spa_body(idp)
+        idp.nonce = "a-different-login"
+        async with asgi_client(app) as client:
+            response = await client.post("/auth/test/token/", json=body)
+        assert response.status_code == 401
+        assert response.json()["error"]["code"] == ErrorCode.AUTH_OAUTH_ID_TOKEN_INVALID.value
+
+    async def test_state_endpoint_feeds_the_token_exchange(self, db, provider, idp):
+        app = make_app(provider)
+        async with asgi_client(app) as client:
+            issued = await client.get(
+                "/auth/test/state/", params={"redirect_uri": SPA_BODY["redirect_uri"]}
+            )
+            assert issued.status_code == 200, issued.text
+            body = issued.json()
+            assert decode_state_token(body["state"], "test")["nonce"] == body["nonce"]
+            idp.nonce = body["nonce"]
+            response = await client.post(
+                "/auth/test/token/", json={**SPA_BODY, "state": body["state"]}
+            )
+        assert response.status_code == 200, response.text
 
     async def test_unverified_email_does_not_link_to_existing_user(self, db, provider, idp):
         """An unverified IdP email must not take over an existing local account."""
@@ -856,7 +1009,7 @@ class TestSPATokenFlow:
 
         app = make_app(provider)
         async with asgi_client(app) as client:
-            response = await client.post("/auth/test/token/", json=SPA_BODY)
+            response = await client.post("/auth/test/token/", json=spa_body(idp))
 
         assert response.status_code == 401
         assert (
@@ -876,7 +1029,7 @@ class TestSPATokenFlow:
         idp.id_token_claims = {"email_verified": False}
         app = make_app(provider)
         async with asgi_client(app) as client:
-            response = await client.post("/auth/test/token/", json=SPA_BODY)
+            response = await client.post("/auth/test/token/", json=spa_body(idp))
 
         assert response.status_code == 401
         assert (
@@ -893,7 +1046,7 @@ class TestSPATokenFlow:
         idp.id_token_claims = {"email_verified": False}
         app = make_app(provider)
         async with asgi_client(app) as client:
-            response = await client.post("/auth/test/token/", json=SPA_BODY)
+            response = await client.post("/auth/test/token/", json=spa_body(idp))
 
         assert response.status_code == 200
         identity = await ExternalIdentity.objects.filter(
@@ -905,17 +1058,17 @@ class TestSPATokenFlow:
         idp.token_status = 400
         app = make_app(provider)
         async with asgi_client(app) as client:
-            response = await client.post("/auth/test/token/", json=SPA_BODY)
+            response = await client.post("/auth/test/token/", json=spa_body(idp))
         assert response.status_code == 401
         assert (
             response.json()["error"]["code"]
             == ErrorCode.AUTH_OAUTH_EXCHANGE_FAILED.value
         )
 
-    async def test_unknown_provider_404(self, db, provider):
+    async def test_unknown_provider_404(self, db, provider, idp):
         app = make_app(provider)
         async with asgi_client(app) as client:
-            response = await client.post("/auth/nope/token/", json=SPA_BODY)
+            response = await client.post("/auth/nope/token/", json=spa_body(idp))
         assert response.status_code == 404
         assert (
             response.json()["error"]["code"]
@@ -1133,6 +1286,42 @@ class TestExternalBearer:
                 "/whoami/", headers={"Authorization": f"Bearer {token}"}
             )
         assert response.json()["id"] == str(user.id)
+
+    async def test_external_token_for_deactivated_user_is_anonymous(self, db, provider, rsa_key):
+        from zeeb_api.auth.backends import create_user
+        from zeeb_api.auth.oauth.models import ExternalIdentity
+
+        user = await create_user(email="alice@example.com", password="local-pass-123")
+        await ExternalIdentity(
+            user_id=user.id, provider="test", subject="subj-1", email=user.email
+        ).save()
+        user.is_active = False
+        await user.save()
+
+        app = make_app(provider, external_validators=[ExternalTokenValidator(provider)])
+        token = make_id_token({"sub": "subj-1"}, rsa_key)
+        async with asgi_client(app) as client:
+            response = await client.get(
+                "/whoami/", headers={"Authorization": f"Bearer {token}"}
+            )
+        assert response.json() == {"id": None, "authenticated": False}
+
+    async def test_identity_lookup_error_fails_closed(self, db, provider, rsa_key, monkeypatch):
+        """A database error must not become a claims-only authenticated user."""
+        from zeeb_api.auth.oauth.models import ExternalIdentity
+
+        class _BrokenManager:
+            def filter(self, *args, **kwargs):
+                raise RuntimeError("database is down")
+
+        monkeypatch.setattr(ExternalIdentity, "objects", _BrokenManager())
+        app = make_app(provider, external_validators=[ExternalTokenValidator(provider)])
+        token = make_id_token({"sub": "subj-1"}, rsa_key)
+        async with asgi_client(app) as client:
+            response = await client.get(
+                "/whoami/", headers={"Authorization": f"Bearer {token}"}
+            )
+        assert response.json() == {"id": None, "authenticated": False}
 
     async def test_garbage_token_leaves_user_none(self, db, provider):
         validator = ExternalTokenValidator(provider)

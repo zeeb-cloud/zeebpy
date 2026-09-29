@@ -53,10 +53,20 @@ class TokenExchangeRequest(BaseModel):
     code: str = Field(description="Authorization code returned by the IdP")
     redirect_uri: str = Field(description="Redirect URI used in the authorization request")
     code_verifier: str | None = Field(default=None, description="PKCE code verifier")
-    state: str | None = Field(
-        default=None,
-        description="State token from the authorize endpoint (enables nonce checking)",
+    state: str = Field(
+        description=(
+            "Signed state token from GET /{provider}/authorize/ or "
+            "GET /{provider}/state/. Required: it binds the code to this "
+            "provider and carries the nonce the ID token must echo."
+        ),
     )
+
+
+class StateResponse(BaseModel):
+    """A signed state token plus the nonce to send to the IdP (SPA flow)."""
+
+    state: str = Field(description="Pass as the IdP `state` parameter, then to POST /token/")
+    nonce: str = Field(description="Pass as the IdP `nonce` parameter")
 
 
 class ProviderInfo(BaseModel):
@@ -175,7 +185,7 @@ def create_oauth_router(
             auto_create = bool(getattr(settings, "OAUTH_AUTO_CREATE_USERS", True))
         link_by_email = provider.link_by_email
         if link_by_email is None:
-            link_by_email = bool(getattr(settings, "OAUTH_LINK_BY_EMAIL", True))
+            link_by_email = bool(getattr(settings, "OAUTH_LINK_BY_EMAIL", False))
         require_verified_email = provider.require_verified_email
         if require_verified_email is None:
             require_verified_email = bool(
@@ -369,6 +379,29 @@ def create_oauth_router(
         response.delete_cookie(pkce_cookie_name(provider_name), path="/")
         return response
 
+    @router.get(
+        "/{provider}/state/",
+        response_model=StateResponse,
+        responses={404: {"model": ErrorResponse, "description": "Unknown provider"}},
+        summary="Issue OAuth State (SPA)",
+        description=(
+            "For an SPA that builds the IdP authorization URL itself: returns a "
+            "signed state token and its nonce. Send both to the IdP and the "
+            "state back to POST /{provider}/token/."
+        ),
+    )
+    async def oauth_state(
+        request: Request, provider: str, redirect_uri: str | None = None
+    ) -> StateResponse:
+        provider_obj = _get_provider(provider)
+        nonce = generate_nonce()
+        state = create_state_token(
+            provider,
+            nonce=nonce,
+            redirect_uri=redirect_uri or _resolve_redirect_uri(request, provider_obj, provider),
+        )
+        return StateResponse(state=state, nonce=nonce)
+
     @router.post(
         "/{provider}/token/",
         response_model=TokenResponse,
@@ -387,10 +420,11 @@ def create_oauth_router(
         provider_name = provider
         provider_obj = _get_provider(provider_name)
 
-        nonce = None
-        if body.state:
-            state_claims = decode_state_token(body.state, provider_name)
-            nonce = state_claims.get("nonce")
+        # The state is mandatory: without it the ID token's nonce was never
+        # checked, so a code (or ID token) obtained for any other login could
+        # be replayed here.
+        state_claims = decode_state_token(body.state, provider_name)
+        nonce = state_claims.get("nonce")
 
         return await _complete_login(
             provider_obj,

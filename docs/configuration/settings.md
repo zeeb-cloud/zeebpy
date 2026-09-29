@@ -536,7 +536,7 @@ from zeeb_api.conf.env import env_oauth_providers
 
 OAUTH_PROVIDERS = env_oauth_providers()   # google / github / azure, from the env
 OAUTH_AUTO_CREATE_USERS = True
-OAUTH_LINK_BY_EMAIL = True
+OAUTH_LINK_BY_EMAIL = False         # links only verified local accounts even when True
 OAUTH_REQUIRE_VERIFIED_EMAIL = True
 OAUTH_STATE_TTL_SECONDS = 600
 OAUTH_REDIRECT_URI = None
@@ -685,7 +685,7 @@ generated project sets most of them from the environment — see
 | `JWT_AUDIENCE` | `None` | Expected `aud` claim (verified when set) |
 | `OAUTH_PROVIDERS` | `{}` | Provider configs; non-empty mounts the OAuth routes |
 | `OAUTH_AUTO_CREATE_USERS` | `True` | Provision a user on first OAuth login |
-| `OAUTH_LINK_BY_EMAIL` | `True` | Link an external identity to an existing account by email |
+| `OAUTH_LINK_BY_EMAIL` | `False` | Link an external identity to an existing account by email — only an account whose email is verified (see [OAuth](../api/oauth.md#user-linking-and-provisioning)) |
 | `OAUTH_REQUIRE_VERIFIED_EMAIL` | `True` | Require `email_verified` before linking/provisioning by email |
 | `OAUTH_STATE_TTL_SECONDS` | `600` | Lifetime of the signed OAuth state |
 | `OAUTH_REDIRECT_URI` | `None` | Override the callback URL sent to the provider |
