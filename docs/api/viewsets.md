@@ -163,6 +163,7 @@ class ArticleViewSet(ModelViewSet):
 | `url_path` | Action name | Custom URL path |
 | `url_name` | Action name | Custom URL name for reversing |
 | `permission_classes` | ViewSet's | Override permissions for this action |
+| `permission_type` | From the HTTP method | The `use_object_permissions` rule the action is scoped by: `"read"`, `"change"` or `"delete"` (see below) |
 | `request_schema` | None | Pydantic model for request body validation |
 | `response_schema` | None | Pydantic model for response (OpenAPI docs) |
 | `request_serializer` | None | Custom Serializer for request validation |
@@ -244,6 +245,24 @@ class ArticleViewSet(ModelViewSet):
         )
         return {"updated": len(data["ids"])}
 ```
+
+### Actions and row-level permissions
+
+With `use_object_permissions = True`, a custom action is scoped exactly like the
+built-in ones: `self.get_queryset()` is filtered by the model's rule and
+`self.get_object()` checks the object against it. Which rule applies is the
+action's `permission_type`; left unset, the HTTP method decides — `GET`/`HEAD`/
+`OPTIONS` use `read_permission`, `DELETE` uses `delete_permission`, and every
+other method uses `change_permission`. A `POST` that only reads says so:
+
+```python
+@action(detail=True, methods=["POST"], permission_type="read")
+async def bookmark(self, request, pk=None):
+    article = await self.get_object()  # needs read permission, not change
+    ...
+```
+
+`POST /query` is scoped by `read_permission`, the same as `GET` on the collection.
 
 ### Actions with Custom Permissions
 

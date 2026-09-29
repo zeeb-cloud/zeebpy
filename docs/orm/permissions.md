@@ -206,6 +206,12 @@ With `use_object_permissions = True`:
 | `update` | `change` |
 | `partial_update` | `change` |
 | `destroy` | `delete` |
+| custom `@action` | `permission_type=` if given, else by HTTP method: `GET`/`HEAD`/`OPTIONS` → `read`, `DELETE` → `delete`, anything else → `change` |
+
+Every action is scoped — there is no action for which the filter is skipped. A
+list-type custom action that calls `self.get_queryset()` sees only the rows its
+rule allows, and a detail action that calls `self.get_object()` gets a 404 for a
+row outside the rule (and a 403 when the object check itself fails).
 
 ## Handling Anonymous Users
 

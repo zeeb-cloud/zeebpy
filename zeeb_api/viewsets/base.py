@@ -14,6 +14,19 @@ if TYPE_CHECKING:
     from zeeb_api.throttling.base import BaseThrottle
 
 
+_SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
+
+
+def _permission_type_for_method(method: str) -> str:
+    """Object-permission type implied by an HTTP method (read/change/delete)."""
+    method = method.upper()
+    if method in _SAFE_METHODS:
+        return "read"
+    if method == "DELETE":
+        return "delete"
+    return "change"
+
+
 class ViewSetMeta(type):
     """Metaclass to track action methods."""
     
@@ -220,10 +233,14 @@ class GenericViewSet(ViewSet):
     # Object permission configuration
     use_object_permissions: bool = False
     
-    # Map actions to permission types for queryset filtering
+    # Map actions to permission types for queryset filtering. Actions not
+    # listed here (custom @action methods, anything a subclass routes itself)
+    # are resolved by _get_permission_type_for_action: an explicit
+    # ``@action(permission_type=...)`` wins, otherwise the HTTP method decides.
     _action_permission_map: ClassVar[dict[str, str]] = {
         "list": "read",
         "retrieve": "read",
+        "query": "read",
         "create": "add",
         "update": "change",
         "partial_update": "change",
@@ -256,10 +273,41 @@ class GenericViewSet(ViewSet):
         return None
     
     def _get_permission_type_for_action(self) -> str | None:
-        """Get the permission type for the current action."""
+        """The ``use_object_permissions`` rule type the current action is scoped by.
+
+        The built-in actions map through ``_action_permission_map``. Anything
+        else — a custom ``@action``, or an action name a subclass routes itself
+        — must not come back ``None``, because ``None`` means "no scoping" and
+        would hand the action the unfiltered queryset. So:
+
+        1. an ``@action(permission_type=...)`` declaration wins;
+        2. otherwise the HTTP method decides: GET/HEAD/OPTIONS read, DELETE
+           deletes, anything else (POST/PUT/PATCH) changes;
+        3. without a request, the action's declared methods decide the same way.
+
+        Returns None only when no action is set (the viewset is not serving a
+        request).
+        """
         if self.action is None:
             return None
-        return self._action_permission_map.get(self.action)
+        mapped = self._action_permission_map.get(self.action)
+        if mapped is not None:
+            return mapped
+
+        config = getattr(getattr(type(self), self.action, None), "_action_config", None) or {}
+        declared = config.get("permission_type")
+        if declared:
+            return declared
+
+        method = getattr(self.request, "method", None) if self.request is not None else None
+        if method:
+            return _permission_type_for_method(method)
+        methods = [m.upper() for m in config.get("methods", [])]
+        if methods and all(m in _SAFE_METHODS for m in methods):
+            return "read"
+        if methods and all(m == "DELETE" for m in methods):
+            return "delete"
+        return "change"
     
     def _get_user_from_request(self) -> Any:
         """Extract the authenticated user, or None for anonymous.

@@ -22,6 +22,7 @@ def action(
     request_serializer: type[Serializer] | None = None,
     response_serializer: type[Serializer] | None = None,
     permission_classes: list[type[BasePermission]] | None = None,
+    permission_type: str | None = None,
     **kwargs: Any,
 ) -> Callable:
     """
@@ -38,6 +39,12 @@ def action(
         request_serializer: Custom Serializer class for request validation
         response_serializer: Custom Serializer class for response
         permission_classes: Override permissions for this action
+        permission_type: The ``use_object_permissions`` rule this action is
+                scoped by: ``"read"``, ``"change"`` or ``"delete"``. Both
+                ``self.get_queryset()`` and ``self.get_object()`` apply it.
+                Default: derived from the HTTP method (GET/HEAD/OPTIONS ->
+                read, DELETE -> delete, anything else -> change), so a
+                POST that only reads must say ``permission_type="read"``.
     
     Usage:
         class UserViewSet(ModelViewSet):
@@ -79,6 +86,11 @@ def action(
     """
     methods = methods or ["get"]
     methods = [m.upper() for m in methods]
+    if permission_type is not None and permission_type not in ("read", "change", "delete"):
+        raise ValueError(
+            f"@action(permission_type={permission_type!r}): expected 'read', "
+            "'change' or 'delete'"
+        )
     
     def decorator(func: Callable) -> Callable:
         func._action_config = {
@@ -91,6 +103,7 @@ def action(
             "request_serializer": request_serializer,
             "response_serializer": response_serializer,
             "permission_classes": permission_classes,
+            "permission_type": permission_type,
             "kwargs": kwargs,
         }
         
