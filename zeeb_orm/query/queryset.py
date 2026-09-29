@@ -170,11 +170,35 @@ class QuerySet(Generic[ModelT]):
         clone._is_empty = True
         return clone
 
+    @staticmethod
+    def _call_q(args: tuple[Any, ...], kwargs: dict[str, Any]) -> Q | None:
+        """One Q for everything a single filter()/exclude() call received.
+
+        Keeping one entry per call is what lets the join machinery apply
+        Django's multi-valued rule (conditions of one call refer to the same
+        related row, a later call gets its own join) and makes
+        ``exclude(a, b)`` mean ``NOT (a AND b)``.
+        """
+        q_args = [arg for arg in args if isinstance(arg, Q)]
+        if not kwargs and len(q_args) == 1:
+            return q_args[0]
+        if not kwargs and not q_args:
+            return None
+        return Q(*q_args, **kwargs)
+
     def filter(self, *args: Q, **kwargs: Any) -> QuerySet[ModelT]:
         """
         Return a new QuerySet with the given filters applied.
 
         Accepts Q objects and/or keyword arguments.
+
+        Across a multi-valued relation (reverse FK, M2M) the conditions of
+        one ``filter()`` call must hold for the same related row, while each
+        further ``filter()`` call is matched against any related row
+        (Django semantics)::
+
+            .filter(tags__name="a", tags__color="red")    # one red tag named a
+            .filter(tags__name="a").filter(tags__name="b")  # tagged a and b
 
         Usage:
             .filter(name='John')
@@ -183,30 +207,31 @@ class QuerySet(Generic[ModelT]):
         """
         self._check_combinator("filter")
         clone = self._clone()
-        if args:
-            for arg in args:
-                if isinstance(arg, Q):
-                    clone._filters.append(arg)
-        if kwargs:
-            clone._filters.append(Q(**kwargs))
+        q = self._call_q(args, kwargs)
+        if q is not None:
+            clone._filters.append(q)
         return clone
 
     def exclude(self, *args: Q, **kwargs: Any) -> QuerySet[ModelT]:
         """
         Return a new QuerySet excluding objects matching the given filters.
 
+        ``exclude(a, b)`` removes the rows matching ``a AND b``. Rows where a
+        compared column is NULL are kept (``exclude(x=1)`` keeps ``x IS
+        NULL``), and a condition across a multi-valued relation excludes the
+        objects that have *any* matching related row — objects without
+        related rows stay (Django semantics).
+
         Usage:
             .exclude(deleted=True)
             .exclude(Q(status='inactive'))
+            .exclude(tags__name='draft')   # no tag named "draft"
         """
         self._check_combinator("exclude")
         clone = self._clone()
-        if args:
-            for arg in args:
-                if isinstance(arg, Q):
-                    clone._excludes.append(arg)
-        if kwargs:
-            clone._excludes.append(Q(**kwargs))
+        q = self._call_q(args, kwargs)
+        if q is not None:
+            clone._excludes.append(q)
         return clone
 
     # Permission filtering
@@ -703,15 +728,15 @@ class QuerySet(Generic[ModelT]):
 
         conditions = []
 
-        for q in self._filters:
-            condition = self._q_to_condition(q, joins)
+        for index, q in enumerate(self._filters):
+            condition = self._q_to_condition(q, joins, scope=("filter", index))
             if condition is not None:
                 conditions.append(condition)
 
-        for q in self._excludes:
-            condition = self._q_to_condition(q, joins)
+        for index, q in enumerate(self._excludes):
+            condition = self._exclude_condition(q, joins, scope=("exclude", index))
             if condition is not None:
-                conditions.append(not_(condition))
+                conditions.append(condition)
 
         if not conditions:
             return None
@@ -719,9 +744,32 @@ class QuerySet(Generic[ModelT]):
             return conditions[0]
         return and_(*conditions)
 
-    def _q_to_condition(self, q: Q, joins: JoinContext | None = None) -> Any:
+    def _q_to_condition(
+        self, q: Q, joins: JoinContext | None = None, *, scope: Any = None
+    ) -> Any:
         """Convert a Q object to SQLAlchemy condition."""
-        return q_to_condition(self.model, q, joins=joins, annotations=self._annotations)
+        return q_to_condition(
+            self.model, q, joins=joins, annotations=self._annotations, scope=scope
+        )
+
+    def _exclude_condition(
+        self, q: Q, joins: JoinContext | None = None, *, scope: Any = None
+    ) -> Any:
+        """``NOT (q)`` compiled with exclude() semantics.
+
+        The lookups are built knowing they sit under a negation, so nullable
+        columns keep their NULL rows and multi-valued paths become
+        ``pk IN (subquery)`` tests (see :func:`q_to_condition`).
+        """
+        condition = q_to_condition(
+            self.model,
+            q,
+            joins=joins,
+            annotations=self._annotations,
+            scope=scope,
+            negated=True,
+        )
+        return not_(condition) if condition is not None else None
 
     def _lookup_to_condition(
         self, lookup_string: str, value: Any, joins: JoinContext | None = None
@@ -1031,7 +1079,8 @@ class QuerySet(Generic[ModelT]):
         where_conditions: list[Any] = []
         having_conditions: list[Any] = []
         for source, wrap in ((self._filters, False), (self._excludes, True)):
-            for q in source:
+            for index, q in enumerate(source):
+                scope = ("exclude" if wrap else "filter", index)
                 where_q, having_q = self._split_aggregate_q(q, aggregate_aliases)
                 for part, bucket in (
                     (where_q, where_conditions),
@@ -1039,9 +1088,12 @@ class QuerySet(Generic[ModelT]):
                 ):
                     if part is None:
                         continue
-                    condition = self._q_to_condition(part, joins)
+                    if wrap:
+                        condition = self._exclude_condition(part, joins, scope=scope)
+                    else:
+                        condition = self._q_to_condition(part, joins, scope=scope)
                     if condition is not None:
-                        bucket.append(not_(condition) if wrap else condition)
+                        bucket.append(condition)
 
         def combine(conditions: list[Any]) -> Any:
             """AND a bucket of SQLAlchemy conditions into one, or None if empty."""
@@ -2064,29 +2116,64 @@ def q_to_condition(
     q: Q,
     joins: JoinContext | None = None,
     annotations: dict[str, Any] | None = None,
+    *,
+    scope: Any = None,
+    negated: bool = False,
+    branch_negated: bool = False,
 ) -> Any:
-    """Convert a Q object to a SQLAlchemy condition."""
-    connector, negated, children = q.resolve()
+    """Convert a Q object to a SQLAlchemy condition.
+
+    Args:
+        scope: Identifies the ``filter()`` call the condition belongs to;
+            multi-valued joins are shared only within one scope.
+        negated: The caller negates the result (an odd number of enclosing
+            NOTs). Lookups on nullable columns then keep their NULL rows,
+            as in Django: ``exclude(x=1)`` compiles to
+            ``NOT (x = 1 AND x IS NOT NULL)``.
+        branch_negated: Some enclosing node is negated. A lookup across a
+            multi-valued relation then becomes ``pk IN (subquery)`` instead
+            of a condition on a shared LEFT JOIN, so the negation means "no
+            related row matches" rather than "some related row does not".
+    """
+    connector, q_negated, children = q.resolve()
 
     if q._constant is not None:
         # Q.match_all() / Q.match_none(): a literal TRUE / FALSE, never
         # "no condition" — dropping it would turn match_none into match-all.
         from sqlalchemy import false, true
 
-        return true() if q._constant is not negated else false()
+        return true() if q._constant is not q_negated else false()
+
+    child_negated = negated is not q_negated
+    child_branch = branch_negated or negated or q_negated
 
     sub_conditions = []
     for child in children:
         if isinstance(child, Q):
-            cond = q_to_condition(model, child, joins, annotations)
-            if cond is not None:
-                sub_conditions.append(cond)
+            cond = q_to_condition(
+                model,
+                child,
+                joins,
+                annotations,
+                scope=scope,
+                negated=child_negated,
+                branch_negated=child_branch,
+            )
         else:
             # It's a (field_lookup, value) tuple
             field_lookup, value = child
-            cond = lookup_to_condition(model, field_lookup, value, joins, annotations)
-            if cond is not None:
-                sub_conditions.append(cond)
+            cond = lookup_to_condition(
+                model,
+                field_lookup,
+                value,
+                joins,
+                annotations,
+                scope=scope,
+                negated=child_negated,
+                branch_negated=child_branch,
+            )
+        if cond is not None:
+            sub_conditions.append(cond)
 
     if not sub_conditions:
         return None
@@ -2096,7 +2183,7 @@ def q_to_condition(
     else:  # OR
         result = or_(*sub_conditions) if len(sub_conditions) > 1 else sub_conditions[0]
 
-    if negated:
+    if q_negated:
         result = not_(result)
 
     return result
@@ -2160,13 +2247,27 @@ def lookup_to_condition(
     value: Any,
     joins: JoinContext | None = None,
     annotations: dict[str, Any] | None = None,
+    *,
+    scope: Any = None,
+    negated: bool = False,
+    branch_negated: bool = False,
 ) -> Any:
-    """Convert a Django-style lookup to a SQLAlchemy condition."""
+    """Convert a Django-style lookup to a SQLAlchemy condition.
+
+    ``scope``, ``negated`` and ``branch_negated`` are described on
+    :func:`q_to_condition`.
+    """
     from zeeb_orm.exceptions import FieldError
     from zeeb_orm.query.expressions import Expression
+    from zeeb_orm.query.joins import is_multi_valued_path
     from zeeb_orm.query.transforms import apply_transform
 
     relation_parts, field_name, transform, lookup = parse_path(model, lookup_string)
+
+    if relation_parts and (branch_negated or negated) and is_multi_valued_path(
+        model, relation_parts
+    ):
+        return _multi_valued_condition(model, lookup_string, value)
 
     # SQL forbids window functions in WHERE clauses — referencing a
     # Window annotation in filter()/exclude() must fail loudly.
@@ -2191,7 +2292,7 @@ def lookup_to_condition(
                 f"Related-field traversal ({lookup_string!r}) is not "
                 "supported in this context."
             )
-        column = joins.column(relation_parts, field_name)
+        column = joins.column(relation_parts, field_name, scope=scope)
     else:
         column = resolve_field_path(model, field_name, annotations, joins)
     if column is None:
@@ -2200,6 +2301,7 @@ def lookup_to_condition(
             f"Cannot resolve keyword {field_name!r} into field on "
             f"{model.__name__}. Choices are: {', '.join(field_names)}"
         )
+    base_column = column
 
     # Apply datetime transform (e.g. created_at__year) before the lookup
     if transform is not None:
@@ -2219,7 +2321,62 @@ def lookup_to_condition(
     # Coerce ISO strings against temporal columns (asyncpg rejects str binds)
     value = _coerce_temporal_value(column, transform, lookup, value)
 
-    # Apply lookup
+    condition = _apply_lookup(column, lookup, value)
+
+    if negated and lookup != "isnull" and value is not None:
+        # Under NOT, a comparison with NULL would make the whole row vanish
+        # (NOT NULL is NULL). Django adds "IS NOT NULL" so the negation
+        # keeps such rows: exclude(x=1) keeps x IS NULL.
+        guards = []
+        if relation_parts or _is_nullable_column(base_column):
+            guards.append(base_column.isnot(None))
+        if _is_nullable_column(value):
+            guards.append(value.isnot(None))
+        if guards:
+            condition = and_(condition, *guards)
+
+    return condition
+
+
+def _is_nullable_column(expr: Any) -> bool:
+    """True for a table/alias column declared NULL-able."""
+    from sqlalchemy import Column
+
+    return isinstance(expr, Column) and bool(expr.nullable)
+
+
+def _multi_valued_condition(model: type, lookup_string: str, value: Any) -> Any:
+    """``pk IN (SELECT pk FROM <model> JOIN <path> WHERE <lookup>)``.
+
+    How a lookup across a multi-valued relation is compiled under a
+    negation: ``NOT`` of it then reads "no related row matches" — Django's
+    exclude() semantics — instead of "some related row does not match",
+    which is what negating a condition on a shared LEFT JOIN yields (and it
+    also drops objects without any related row).
+
+    The subquery walks the relation from an alias of the model's own table,
+    so it never collides with the outer statement's joins. A value that
+    references the outer row (``F("field")``) still resolves against the
+    outer table and correlates the subquery.
+    """
+    from zeeb_orm.query.joins import JoinContext
+
+    table = model._get_table()
+    meta = model._meta
+    pk_name = meta.pk.db_column or meta.pk_name
+    inner = table.alias(f"_mv_{table.name}")
+    inner_joins = JoinContext(model, inner, alias_prefix="_mv")
+    condition = lookup_to_condition(model, lookup_string, value, inner_joins)
+    subquery = (
+        select(inner.c[pk_name])
+        .select_from(inner_joins.apply(inner))
+        .where(condition)
+    )
+    return table.c[pk_name].in_(subquery)
+
+
+def _apply_lookup(column: Any, lookup: str, value: Any) -> Any:
+    """The SQL condition for ``column <lookup> value``."""
     if lookup == "exact":
         return column == value
     elif lookup == "iexact":
