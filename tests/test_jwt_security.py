@@ -48,6 +48,14 @@ class TestJWTConfig:
     def test_real_secret_is_secure(self):
         assert not JWTConfig(secret_key="a-real-strong-secret-of-at-least-32-bytes").is_insecure
 
+    @pytest.mark.parametrize("secret", ["", "short", "x" * 31, "ä" * 15])
+    def test_empty_and_short_secrets_are_insecure(self, secret):
+        # "ä" * 15 is 15 characters but 30 bytes: the length is counted in bytes.
+        assert JWTConfig(secret_key=secret).is_insecure
+
+    def test_thirty_two_bytes_is_enough(self):
+        assert not JWTConfig(secret_key="x" * 32).is_insecure
+
 
 class TestInsecureSecretRefusal:
     def test_create_access_token_refused_without_debug(self):
@@ -77,6 +85,13 @@ class TestInsecureSecretRefusal:
         ]
         assert len(warning_records) == 1
         assert "insecure default" in warning_records[0].getMessage()
+
+    @pytest.mark.parametrize("secret", ["", "too-short-secret"])
+    def test_empty_or_short_secret_refused_without_debug(self, secret):
+        settings.DEBUG = False
+        configure_jwt(secret_key=secret)
+        with pytest.raises(InsecureSecretError):
+            create_access_token("user-1")
 
     def test_real_secret_works_without_debug(self):
         settings.DEBUG = False
@@ -122,6 +137,16 @@ class TestCreateAppFailFast:
 
         with pytest.raises(ImproperlyConfigured, match="insecure default"):
             create_app(DEBUG=False)
+
+    @pytest.mark.parametrize(
+        ("secret", "reason"), [("", "empty"), ("sixteen-byte-key", "too short")]
+    )
+    def test_create_app_refuses_empty_or_short_secret_without_debug(self, secret, reason):
+        """``SECRET_KEY=`` in .env loads as "" - which used to pass the guard."""
+        from zeeb_api import create_app
+
+        with pytest.raises(ImproperlyConfigured, match=reason):
+            create_app(DEBUG=False, SECRET_KEY=secret, JWT_SECRET_KEY=None)
 
     def test_create_app_succeeds_with_debug(self):
         from zeeb_api import create_app

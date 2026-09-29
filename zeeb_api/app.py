@@ -67,7 +67,7 @@ def create_app(
         
         app = create_app(lifespan=lifespan)
     """
-    from zeeb_api.auth.jwt import INSECURE_SECRETS, configure_jwt
+    from zeeb_api.auth.jwt import configure_jwt, secret_key_problem
     from zeeb_api.conf import configure_settings, settings
     from zeeb_api.exception_handlers import (
         install_error_response_schema,
@@ -96,10 +96,13 @@ def create_app(
         from zeeb_api.logging import configure_logging_from_settings
         configure_logging_from_settings()
 
-    # Fail fast on insecure default secrets outside of DEBUG mode
-    if not getattr(settings, 'DEBUG', False) and settings.get_jwt_secret_key() in INSECURE_SECRETS:
+    # Fail fast on an insecure secret outside of DEBUG mode: empty (e.g.
+    # `SECRET_KEY=` in .env), a known default, or too short to resist an
+    # offline brute force of a captured token.
+    secret_problem = secret_key_problem(settings.get_jwt_secret_key())
+    if not getattr(settings, 'DEBUG', False) and secret_problem is not None:
         raise ImproperlyConfigured(
-            "create_app(): SECRET_KEY/JWT_SECRET_KEY is an insecure default. "
+            f"create_app(): SECRET_KEY/JWT_SECRET_KEY is {secret_problem}. "
             "Set a strong unique secret or enable DEBUG for local development."
         )
 

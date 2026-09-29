@@ -21,9 +21,9 @@ Three pieces make that work, and all three are in the scaffold:
    Bearer token into `request.state.user` — every permission class reads it.
 2. `router.include(create_auth_router(...))` in the project `urls.py`;
    `create_app()` does not mount it for you.
-3. A `SECRET_KEY` that is not one of the framework's known-insecure defaults.
-   `startproject` generates one into `.env`; without it `create_app()` refuses
-   to start once `DEBUG` is off.
+3. A `SECRET_KEY` of at least 32 bytes that is not one of the framework's
+   known-insecure defaults. `startproject` generates one into `.env`; without
+   it `create_app()` refuses to start once `DEBUG` is off.
 
 `/login` and `/register` are rate limited per client — they are the two routes
 an attacker can drive without a token. The limit comes from
@@ -573,8 +573,11 @@ These names live in `zeeb_api.auth.refresh_store` and are not re-exported from
 
 ### JWT Secret Hardening
 
-Zeeb refuses to sign or verify JWTs with a known insecure default secret
-(e.g. `"change-me-in-production"` or the startproject template default):
+Zeeb refuses to sign or verify JWTs with an insecure secret: an **empty** one
+(`SECRET_KEY=` in `.env` loads as the empty string), a known insecure default
+(e.g. `"change-me-in-production"` or the startproject template default), or one
+**shorter than 32 bytes** (RFC 7518 §3.2: an HS256 key at least as long as the
+hash; a shorter one can be brute-forced offline from a single token):
 
 - **`DEBUG = False`** (the default): `create_access_token()`,
   `create_refresh_token()` and `decode_token()` raise
@@ -583,7 +586,13 @@ Zeeb refuses to sign or verify JWTs with a known insecure default secret
   process reminding you to set a real secret.
 - **`create_app()`** fails fast with
   `zeeb_api.exceptions.ImproperlyConfigured` when `DEBUG` is off and
-  `SECRET_KEY`/`JWT_SECRET_KEY` is an insecure default.
+  `SECRET_KEY`/`JWT_SECRET_KEY` is empty, an insecure default or too short.
+
+`zeeb_api.auth.jwt.secret_key_problem(key)` returns the reason a key is refused
+(or `None`). Upgrading: a deployment whose secret is shorter than 32 bytes now
+refuses to start with `DEBUG` off — generate a new one with
+`python -c "import secrets; print(secrets.token_urlsafe(64))"` (this signs out
+every session, as rotating the key always does).
 
 Always set a strong, unique `SECRET_KEY` (or `JWT_SECRET_KEY`) in
 production, e.g. from an environment variable.
