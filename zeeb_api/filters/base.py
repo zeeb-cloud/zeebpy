@@ -206,27 +206,29 @@ class OrderingFilter(BaseFilter):
         queryset: Any,
         view: ViewSet,
     ) -> Any:
-        ordering = self._get_ordering(request, view)
+        ordering = self._get_ordering(request, view, model=getattr(queryset, "model", None))
         
         if ordering:
             queryset = queryset.order_by(*ordering)
         
         return queryset
     
-    def _get_ordering(self, request: Request, view: ViewSet) -> list[str] | None:
+    def _get_ordering(
+        self, request: Request, view: ViewSet, model: Any = None
+    ) -> list[str] | None:
         # Get ordering from request
         ordering_param = request.query_params.get(self.ordering_param)
-        
-        if ordering_param:
-            fields = [f.strip() for f in ordering_param.split(",")]
-        else:
-            # Use default ordering
+
+        if not ordering_param:
+            # The view's own default ordering is developer-written, not client
+            # input: it is applied as declared.
             default = getattr(view, "ordering", None)
             if default:
-                fields = list(default) if isinstance(default, (list, tuple)) else [default]
-            else:
-                return None
-        
+                return list(default) if isinstance(default, (list, tuple)) else [default]
+            return None
+
+        fields = [f.strip() for f in ordering_param.split(",") if f.strip()]
+
         # Validate fields
         allowed_fields = getattr(view, "ordering_fields", None)
         if allowed_fields is None:
@@ -237,15 +239,19 @@ class OrderingFilter(BaseFilter):
             if allowed_fields is None:
                 return fields
 
-        if allowed_fields == "__all__":
-            return fields
+        # Keep only allowed fields. The whole path is checked, not its root:
+        # with "author" allowed, "author__password" must not sort the rows by
+        # the related user's password hash. "__all__" admits the model's own
+        # fields, never a path through a relation.
+        from zeeb_api.query.paths import FieldPathError, check_field_path
 
-        # Filter to only allowed fields (compare the root, before any __ lookup).
         valid_fields = []
         for field in fields:
-            field_name = field.lstrip("-").split("__", 1)[0]
-            if field_name in allowed_fields:
-                valid_fields.append(field)
+            try:
+                check_field_path(model, field, allowed_fields, allow_regex=False)
+            except FieldPathError:
+                continue
+            valid_fields.append(field)
 
         return valid_fields if valid_fields else None
 

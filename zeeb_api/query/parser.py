@@ -90,13 +90,14 @@ def parse_q_filter(expr: str) -> Q:
     return _ast_to_q(tree.body)
 
 
-def extract_q_fields(expr: str) -> set[str]:
-    """Return the root field names referenced by a Q filter expression.
+def extract_q_paths(expr: str) -> set[str]:
+    """Return every full keyword path a Q filter expression uses.
 
-    For each ``Q(field__lookup=value)`` keyword the root before the first
-    ``__`` is collected, so callers can validate the expression against an
-    allow-list of permitted fields (preventing filtering on columns the API
-    does not expose, e.g. a password hash).
+    ``"Q(author__name__icontains='x') | Q(title='y')"`` gives
+    ``{"author__name__icontains", "title"}``. Validate these — not just their
+    roots — against an allow-list (see ``zeeb_api.query.paths``): a root check
+    lets ``author__password__startswith`` through wherever ``author`` is
+    allowed.
     """
     if not expr or not expr.strip():
         return set()
@@ -106,7 +107,7 @@ def extract_q_fields(expr: str) -> set[str]:
     except SyntaxError as e:
         raise QFilterError(f"Invalid syntax: {e}")
 
-    fields: set[str] = set()
+    paths: set[str] = set()
     for node in ast.walk(tree):
         if (
             isinstance(node, ast.Call)
@@ -115,8 +116,18 @@ def extract_q_fields(expr: str) -> set[str]:
         ):
             for kw in node.keywords:
                 if kw.arg:
-                    fields.add(kw.arg.split("__", 1)[0])
-    return fields
+                    paths.add(kw.arg)
+    return paths
+
+
+def extract_q_fields(expr: str) -> set[str]:
+    """Return the root field names referenced by a Q filter expression.
+
+    For each ``Q(field__lookup=value)`` keyword the root before the first
+    ``__`` is collected. Not sufficient on its own as an allow-list check —
+    it ignores everything after the first hop; use :func:`extract_q_paths`.
+    """
+    return {path.split("__", 1)[0] for path in extract_q_paths(expr)}
 
 
 def _validate_ast(node: ast.AST) -> None:

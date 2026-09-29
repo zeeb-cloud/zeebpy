@@ -636,6 +636,21 @@ A `filter` or `order_by` naming a field outside the allow-list is a **400**
 with the standard `VALIDATION_ERROR` envelope, detailed under the `filter` or
 `order_by` key — see [Error Handling](errors.md).
 
+The **whole** path is checked, not just its first segment. With `author`
+exposed, a client may filter on the relation itself (`Q(author=3)`,
+`Q(author__in=[1, 2])`, `Q(author__id=3)`), but not on a column of the related
+model: `Q(author__password__startswith='$2b$')` would otherwise read a hidden
+field one character at a time. To allow a path through a relation, list it in
+full:
+
+```python
+query_fields = ["title", "author", "author__name"]   # author__name, nothing else on author
+```
+
+`regex` and `iregex` lookups are refused unless the viewset sets
+`query_allow_regex = True`: on SQLite they run Python's `re` inside the
+database, so a crafted pattern can pin a worker.
+
 The request and response bodies are modelled by `QueryRequest` and
 `QueryResponse` (`count`, `limit`, `offset`, `results`).
 `create_query_response_model(item_schema)` builds a concrete, correctly-typed

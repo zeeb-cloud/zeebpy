@@ -73,14 +73,21 @@ class CreateModelMixin:
 class QueryModelMixin:
     """Mixin for query (POST /query/) operation with Q filters."""
 
-    def _allowed_query_fields(self) -> set[str] | None:
-        """Field names a client may filter or order by.
+    #: Whether ``POST /query`` filters may use ``regex``/``iregex`` lookups.
+    #: Off by default: on SQLite they run Python's ``re`` in the database, so a
+    #: crafted pattern (catastrophic backtracking) can pin a worker.
+    query_allow_regex: bool = False
 
-        An explicit ``query_fields`` attribute on the viewset wins. Otherwise the
+    def _allowed_query_fields(self) -> set[str] | None:
+        """Field paths a client may filter or order by.
+
+        An explicit ``query_fields`` attribute on the viewset wins; it may list
+        paths through relations (``"author__name"``). Otherwise the
         serializer's exposed (response) fields are used, so a client cannot
         filter or order by a column the API does not surface (e.g. a password
-        hash). Returns None when the set cannot be determined, leaving the query
-        unrestricted (backwards-compatible for untyped viewsets).
+        hash) — nor by one on a related model. Returns None when the set
+        cannot be determined, leaving the query unrestricted
+        (backwards-compatible for untyped viewsets).
         """
         explicit = getattr(self, "query_fields", None)
         if explicit is not None:
@@ -123,8 +130,17 @@ class QueryModelMixin:
                 "offset": 0,
                 "results": [...]
             }
+
+        Every field path in ``filter`` and ``order_by`` is checked in full
+        against the allow-list (see ``zeeb_api.query.paths``).
         """
-        from zeeb_api.query import parse_q_filter, extract_q_fields, QFilterError
+        from zeeb_api.query import (
+            FieldPathError,
+            QFilterError,
+            check_field_path,
+            extract_q_paths,
+            parse_q_filter,
+        )
 
         # Get query params from request body
         if hasattr(self, "_request_body"):
@@ -136,26 +152,27 @@ class QueryModelMixin:
         queryset = self.get_queryset()
         if hasattr(queryset, 'all'):
             queryset = queryset.all()
+        model = getattr(queryset, "model", None)
 
-        # Fields a client is allowed to filter / order by (None = unrestricted).
+        # Field paths a client is allowed to filter / order by (None = unrestricted).
         allowed_fields = self._allowed_query_fields()
+        allow_regex = bool(getattr(self, "query_allow_regex", False))
 
         # Apply Q filter
         filter_expr = query_params.get("filter")
         if filter_expr:
             try:
-                referenced = extract_q_fields(filter_expr)
+                referenced = extract_q_paths(filter_expr)
             except QFilterError as e:
                 raise ValidationError({"filter": [str(e)]})
-            if allowed_fields is not None:
-                unknown = referenced - allowed_fields
-                if unknown:
-                    raise ValidationError(
-                        {"filter": [
-                            "Cannot filter by field(s): "
-                            + ", ".join(sorted(unknown))
-                        ]}
-                    )
+            refused = []
+            for path in sorted(referenced):
+                try:
+                    check_field_path(model, path, allowed_fields, allow_regex=allow_regex)
+                except FieldPathError as e:
+                    refused.append(str(e))
+            if refused:
+                raise ValidationError({"filter": refused})
             try:
                 q_filter = parse_q_filter(filter_expr)
                 queryset = queryset.filter(q_filter)
@@ -167,13 +184,13 @@ class QueryModelMixin:
         if order_by:
             if isinstance(order_by, str):
                 order_by = [order_by]
-            if allowed_fields is not None:
-                for field in order_by:
-                    root = field.lstrip("-").split("__", 1)[0]
-                    if root not in allowed_fields:
-                        raise ValidationError(
-                            {"order_by": [f"Cannot order by unknown field '{field}'"]}
-                        )
+            for field in order_by:
+                try:
+                    check_field_path(model, field, allowed_fields, allow_regex=False)
+                except FieldPathError as e:
+                    raise ValidationError(
+                        {"order_by": [f"Cannot order by '{field}': {e}"]}
+                    )
             queryset = queryset.order_by(*order_by)
         
         # Get pagination params (limit/offset). Defaults/caps come from the
