@@ -8,7 +8,8 @@ Provides:
 """
 
 from zeeb_api.query.request import QueryRequest, QueryResponse, create_query_response_model
-from zeeb_api.query.parser import parse_q_filter, extract_q_fields, QFilterError
+from zeeb_api.query.parser import parse_q_filter, extract_q_fields, extract_q_paths, QFilterError
+from zeeb_api.query.paths import FieldPathError, check_field_path
 
 __all__ = [
     "QueryRequest",
@@ -16,5 +17,8 @@ __all__ = [
     "create_query_response_model",
     "parse_q_filter",
     "extract_q_fields",
+    "extract_q_paths",
     "QFilterError",
+    "check_field_path",
+    "FieldPathError",
 ]

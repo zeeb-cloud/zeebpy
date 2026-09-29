@@ -80,10 +80,16 @@ defaults to the field names the serializer actually exposes, so a client cannot
 order by a column the API does not surface. Only when those fields cannot be
 resolved does it fall back to permissive.
 
-Set `ordering_fields = "__all__"` to opt back in to unrestricted ordering.
+Set `ordering_fields = "__all__"` to allow every field **of the model
+itself**.
 
-Validation compares the **root** of the path, before any `__`, so listing
-`author` in `ordering_fields` permits `?ordering=author__name`.
+Validation checks the **whole** path. Listing `author` permits
+`?ordering=author` (the foreign key) but not `?ordering=author__name`: ordering
+by a related model's column is a blind oracle over it (`author__password` sorts
+the rows by the hidden hash). To permit a path through a relation, list it in
+full — `ordering_fields = ["title", "author__name"]`. `"__all__"` never admits
+such a path. The view's own default `ordering` is developer-written and is
+applied as declared.
 
 ## FilterSet
 
