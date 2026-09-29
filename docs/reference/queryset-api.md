@@ -226,7 +226,18 @@ users = await User.objects.order_by("-created_at").all()
 
 # Multiple fields
 users = await User.objects.order_by("role", "-created_at").all()
+
+# A ForeignKey name sorts by its FK column; "pk" by the primary key
+posts = await Post.objects.order_by("author", "-pk").all()
+
+# No arguments: no ORDER BY at all (Meta.ordering no longer applies)
+users = await User.objects.order_by().all()
 ```
+
+An explicit `order_by()` replaces `Meta.ordering`. Every name — in
+`order_by()` and in `Meta.ordering` — must resolve to a field, an annotation,
+a `__` path or a datetime transform; an unknown name raises `FieldError`
+when the query is built.
 
 ### order_by with F expressions
 
