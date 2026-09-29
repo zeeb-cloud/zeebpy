@@ -17,6 +17,7 @@ from zeeb_api.routers.default import (
     DefaultRouter,
     SimpleRouter,
     add_slash_alias_routes,
+    served_routes,
 )
 from zeeb_api.viewsets import ViewSet, action
 
@@ -49,7 +50,7 @@ class CrudStubViewSet(ViewSet):
 
 
 def _route_paths(routers: list[APIRouter]) -> set[str]:
-    return {route.path for router in routers for route in router.routes}
+    return {route.path for router in routers for route in served_routes(router.routes)}
 
 
 def _make_client(router: DefaultRouter | SimpleRouter) -> AsyncClient:
@@ -237,3 +238,45 @@ class TestAddSlashAliasRoutesHelper:
         before = len(router.routes)
         add_slash_alias_routes(router)
         assert len(router.routes) == before
+
+
+class TestServedRoutes:
+    """FastAPI 0.137 stopped copying included routes into the including router.
+
+    Its ``routes`` holds one ``_IncludedRouter`` per include instead, with no
+    ``path``: a walk over it saw nothing an app got from included routers. Both
+    tests hold on every FastAPI version.
+    """
+
+    def _outer_router(self) -> APIRouter:
+        inner = APIRouter()
+
+        @inner.get("/ping")
+        async def ping():
+            return {"pong": True}
+
+        outer = APIRouter(prefix="/outer")
+        outer.include_router(inner, prefix="/inner")
+        return outer
+
+    def _app(self, outer: APIRouter) -> FastAPI:
+        app = FastAPI()
+        app.include_router(outer, prefix="/api")
+        return app
+
+    def test_they_see_through_nested_includes_with_their_prefixes(self):
+        app = self._app(self._outer_router())
+        paths = {route.path for route in served_routes(app.routes)}
+        assert "/api/outer/inner/ping" in paths
+
+    async def test_an_included_route_gets_its_alias(self):
+        outer = self._outer_router()
+        add_slash_alias_routes(outer)
+        app = self._app(outer)
+
+        client = AsyncClient(transport=ASGITransport(app=app), base_url="http://test")
+        async with client:
+            for path in ("/api/outer/inner/ping", "/api/outer/inner/ping/"):
+                response = await client.get(path)
+                assert response.status_code == 200, path
+        assert "/api/outer/inner/ping/" not in app.openapi()["paths"]

@@ -3,11 +3,44 @@
 from __future__ import annotations
 
 import uuid
+from collections.abc import Iterable
 from typing import Any, Callable, Type
 from fastapi import APIRouter, Request, Response
 from fastapi.responses import JSONResponse
 
 from zeeb_api.viewsets.base import ViewSet
+
+try:  # FastAPI >= 0.137 includes routers lazily
+    from fastapi.routing import iter_route_contexts as _iter_route_contexts
+except ImportError:  # older versions copy an included router's routes
+    _iter_route_contexts = None
+
+
+def served_routes(routes: Iterable[Any]) -> list[Any]:
+    """Every route *routes* serve, each answering with the path it is served on.
+
+    Up to FastAPI 0.136, ``include_router()`` copied the included router's
+    routes, prefixed, into the router that included it, so walking ``routes``
+    saw every path. From 0.137 it appends one ``_IncludedRouter`` instead,
+    which serves the sub-router's routes lazily under the include's prefix and
+    has no ``path`` of its own: a walk saw only what was added directly, and an
+    app built from included routers looked empty. ``iter_route_contexts`` is
+    how FastAPI's own OpenAPI generator reads them back. Each context answers
+    ``path``, ``methods``, ``name``, ``endpoint``, ``dependencies`` and the
+    rest as the route is served (prefix, include-level dependencies and all),
+    and ``original_route`` is the route object that was declared.
+
+    Before 0.137 the copies are already there, and *routes* come back as they
+    are. Use :func:`declared_route` for an ``isinstance`` check.
+    """
+    if _iter_route_contexts is None:
+        return list(routes)
+    return list(_iter_route_contexts(list(routes)))
+
+
+def declared_route(route: Any) -> Any:
+    """The route object behind an entry of :func:`served_routes`."""
+    return getattr(route, "original_route", route)
 
 
 def add_slash_alias_routes(router: APIRouter) -> None:
@@ -25,9 +58,12 @@ def add_slash_alias_routes(router: APIRouter) -> None:
     """
     from fastapi.routing import APIRoute
 
-    existing = {route.path for route in router.routes}
-    for route in list(router.routes):
-        if not isinstance(route, APIRoute):
+    # Served routes, not ``router.routes``: an included router's are behind one
+    # entry without a path on FastAPI >= 0.137 (see served_routes).
+    served = served_routes(router.routes)
+    existing = {getattr(route, "path", None) for route in served}
+    for route in served:
+        if not isinstance(declared_route(route), APIRoute):
             continue
         path = route.path
         if not path or path == "/":

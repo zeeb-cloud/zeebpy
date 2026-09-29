@@ -65,25 +65,31 @@ def _prepare(project_root: Path) -> str | None:
 def _collect_routes(app) -> list[dict]:
     """Every path the app serves, once each.
 
-    Read from ``app.routes`` rather than from ``app.openapi()``: ``/health`` and
-    ``/ready`` are deliberately excluded from the schema, and schema generation
-    can raise on an unusual model and take the whole command down with it.
+    Read from the app's routes rather than from ``app.openapi()``: ``/health``
+    and ``/ready`` are deliberately excluded from the schema, and schema
+    generation can raise on an unusual model and take the whole command down
+    with it. The routes as served, not ``app.routes`` itself: on FastAPI >= 0.137
+    every included router is one entry there without a path of its own.
 
     The trailing-slash aliases the router adds are dropped — they answer the
     same endpoint, and listing both would double every line.
     """
     from starlette.routing import Route as StarletteRoute
 
-    paths = {getattr(route, "path", None) for route in app.routes}
+    from zeeb_api.routers import declared_route, served_routes
+
+    routes = served_routes(app.routes)
+    paths = {getattr(route, "path", None) for route in routes}
     # One entry per path: FastAPI registers a separate route object per HTTP
     # method, and listing /posts/{id} four times says nothing extra.
     merged: dict[str, dict] = {}
-    for route in app.routes:
+    for route in routes:
         path = getattr(route, "path", None)
         methods = getattr(route, "methods", None)
         if not path or not methods:
             continue
-        if not isinstance(route, StarletteRoute) and not hasattr(route, "endpoint"):
+        declared = declared_route(route)
+        if not isinstance(declared, StarletteRoute) and not hasattr(declared, "endpoint"):
             continue
         # "/posts/" alongside "/posts" is the alias, not a second endpoint.
         if len(path) > 1 and path.endswith("/") and path[:-1] in paths:
