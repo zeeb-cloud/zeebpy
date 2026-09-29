@@ -10,6 +10,8 @@ from zeeb_agents._utils import AgentResult, agent_function
 from zeeb_agents._utils.code_gen import (
     VIEWSET_THROTTLES,
     find_settings_file,
+    render_list_literal,
+    render_py_literal,
     set_or_append_setting,
 )
 from zeeb_agents._utils.errors import AgentError, close_matches, fail
@@ -104,7 +106,9 @@ async def configure_throttling(
             )
             written.append("DEFAULT_THROTTLE_CLASSES")
         if rates:
-            entries = ", ".join(f'"{k}": "{v}"' for k, v in rates.items())
+            entries = ", ".join(
+                f"{render_py_literal(str(k))}: {render_py_literal(v)}" for k, v in rates.items()
+            )
             content = set_or_append_setting(
                 content, "DEFAULT_THROTTLE_RATES", "{" + entries + "}"
             )
@@ -178,17 +182,17 @@ async def configure_versioning(
         settings_path = _require_settings_file(root)
         content = settings_path.read_text(encoding="utf-8")
         content = set_or_append_setting(
-            content, "DEFAULT_VERSIONING_CLASS", f'"{versioning_class}"'
+            content, "DEFAULT_VERSIONING_CLASS", render_py_literal(versioning_class)
         )
         written = ["DEFAULT_VERSIONING_CLASS"]
         if default_version is not None:
             content = set_or_append_setting(
-                content, "DEFAULT_VERSION", f'"{default_version}"'
+                content, "DEFAULT_VERSION", render_py_literal(str(default_version))
             )
             written.append("DEFAULT_VERSION")
         if allowed_versions is not None:
-            versions = ", ".join(f'"{v}"' for v in allowed_versions)
-            content = set_or_append_setting(content, "ALLOWED_VERSIONS", f"[{versions}]")
+            versions = render_list_literal([str(v) for v in allowed_versions])
+            content = set_or_append_setting(content, "ALLOWED_VERSIONS", versions)
             written.append("ALLOWED_VERSIONS")
         settings_path.write_text(content, encoding="utf-8")
         return written

@@ -7,7 +7,7 @@ from pathlib import Path
 
 from zeeb_agents._utils import AgentResult, agent_function
 from zeeb_agents._utils.code_gen import extract_model_names, find_settings_file
-from zeeb_agents._utils.errors import AgentError, close_matches
+from zeeb_agents._utils.errors import AgentError, close_matches, fail
 from zeeb_agents._utils.project import get_app_path, require_project_root
 
 _SEED_FUNC_HEADER = """\
@@ -194,6 +194,8 @@ async def generate_seed_script(
           timestamps, M2M) and nullable relations are omitted, and non-null
           relations are emitted as ``None`` with a ``TODO`` comment.
     """
+    if isinstance(count, bool) or not isinstance(count, int) or count < 0:
+        return fail(f"count must be a non-negative integer, got {count!r}", code="invalid_input")
     root = require_project_root(project_root)
     models_path = get_app_path(app, root) / "models.py"
     if not models_path.exists():

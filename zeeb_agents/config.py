@@ -7,6 +7,7 @@ from pathlib import Path
 
 from zeeb_agents._utils import AgentResult, agent_function
 from zeeb_agents._utils.errors import close_matches, fail
+from zeeb_agents._utils.field_types import render_py_literal
 from zeeb_agents._utils.project import load_project_settings, require_project_root
 from zeeb_agents._utils.validation import ENV_KEY_RE
 
@@ -22,15 +23,8 @@ def _find_settings_file(root: Path) -> Path | None:
 
 
 def _render_value(value: object) -> str:
-    """Render a scalar Python value as source text."""
-    if isinstance(value, bool):
-        return str(value)
-    if isinstance(value, str):
-        escaped = value.replace("\\", "\\\\").replace('"', '\\"')
-        return f'"{escaped}"'
-    if value is None:
-        return "None"
-    return str(value)
+    """Render a scalar Python value as source text (a complete, escaped literal)."""
+    return render_py_literal(value)
 
 
 def _find_env_file(root: Path) -> Path:
@@ -262,6 +256,12 @@ async def manage_settings(
     import re
 
     root = project_root
+    if not isinstance(key, str) or not key.isidentifier():
+        return fail(
+            f"Invalid setting name {key!r}: must be a Python identifier",
+            code="invalid_identifier",
+            key=key if isinstance(key, str) else repr(key),
+        )
     is_read = read_only or (value is None and not read_only)
 
     if is_read:
@@ -303,7 +303,9 @@ async def manage_settings(
         )
         if not pattern.search(content):
             return False  # key not present
-        new_content = pattern.sub(rf"\g<1>{rendered}", content)
+        # A function replacement: the rendered literal is inserted as-is, never
+        # re-read as a regex template (where its backslashes would be escapes).
+        new_content = pattern.sub(lambda m: m.group(1) + rendered, content)
         settings_file.write_text(new_content, encoding="utf-8")
         return True
 

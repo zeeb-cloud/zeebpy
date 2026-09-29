@@ -26,8 +26,14 @@ import asyncio
 from pathlib import Path
 
 from zeeb_agents._utils import AgentResult, agent_function
-from zeeb_agents._utils.errors import fail
-from zeeb_agents._utils.field_types import FIELD_TYPE_MAP
+from zeeb_agents._utils.errors import AgentError, fail
+from zeeb_agents._utils.field_types import FIELD_TYPE_MAP, render_py_literal
+from zeeb_agents._utils.validation import (
+    DOTTED_NAME_RE,
+    ensure_identifier,
+    ensure_identifiers,
+    ensure_url_prefix,
+)
 
 # The shared harness (pytest.ini + the conftest fixtures) lives one layer down
 # so that ``zeeb startproject`` and this module write the *same* file: a feature
@@ -494,6 +500,44 @@ def _anonymous_transition_ok(entity: dict, transition: dict) -> bool:
     return permission is None and _allows_anonymous(entity, write=True)
 
 
+def _validate_descriptors(app: str, entities: object) -> None:
+    """Refuse descriptor values that would become code in the generated tests.
+
+    Names become identifiers (test function names, imports, attribute
+    access), a prefix is spliced into a generated f-string, and a field name
+    lands in a comment — so each must have the shape it is used as. Sample
+    values and workflow states are rendered as literals and need no check.
+    """
+    ensure_identifier(app, "app name")
+    if not isinstance(entities, list) or not all(isinstance(e, dict) for e in entities):
+        raise AgentError("entities must be a list of entity descriptors", code="invalid_input")
+    for entity in entities:
+        ensure_identifier(entity.get("name"), "entity name")
+        if entity.get("prefix"):
+            ensure_url_prefix(entity["prefix"], "entity prefix")
+        fields = entity.get("fields") or []
+        if not isinstance(fields, list) or not all(isinstance(f, dict) for f in fields):
+            raise AgentError(
+                f"Entity '{entity['name']}': fields must be a list of field specs",
+                code="invalid_input",
+            )
+        for field in fields:
+            ensure_identifier(field.get("name"), "field name")
+            to = field.get("to")
+            if to is not None and (not isinstance(to, str) or not DOTTED_NAME_RE.match(to)):
+                raise AgentError(
+                    f"Field '{field['name']}': relation target {to!r} is not a model name",
+                    code="invalid_input",
+                )
+        for group in entity.get("unique_together") or []:
+            ensure_identifiers(group, "unique_together field")
+        workflow = entity.get("workflow")
+        if workflow:
+            ensure_identifier(workflow.get("field", "status"), "workflow field")
+            for transition in workflow.get("transitions") or []:
+                ensure_identifier(transition.get("name"), "transition name")
+
+
 def _render_workflow_test(app: str, entity: dict) -> str | None:
     workflow = entity.get("workflow")
     if not workflow or not entity.get("exposed") or not entity.get("prefix"):
@@ -524,7 +568,7 @@ def _render_workflow_test(app: str, entity: dict) -> str | None:
             f"    obj = await {name}.objects.create({', '.join(kwargs)})",
             f'    first = await client.post(f"{{api_prefix}}/{entity["prefix"]}/{{obj.id}}/{candidate["name"]}")',
             "    assert first.status_code == 200",
-            f'    assert first.json()["{field}"] == "{candidate["to"]}"',
+            f'    assert first.json()["{field}"] == {render_py_literal(candidate["to"])}',
             f'    again = await client.post(f"{{api_prefix}}/{entity["prefix"]}/{{obj.id}}/{candidate["name"]}")',
             "    assert again.status_code == 409",
         ]
@@ -576,6 +620,7 @@ async def generate_tests(
     if root is None or not Path(root).is_dir():
         return fail(f"Project not found: {root}", code="project_not_found")
     root = Path(root)
+    _validate_descriptors(app, entities)
     settings_module = _settings_module(root)
     if settings_module is None:
         return fail(

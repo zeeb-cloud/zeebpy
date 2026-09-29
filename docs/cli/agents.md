@@ -117,7 +117,8 @@ see `create_project`.)
 | `run_query(sql)` | Read-only: SELECT/WITH/EXPLAIN only, single statement, always rolled back. |
 | `export_openapi(...)` | Writes a static snapshot of the spec. For the live contract use `get_openapi_url()` / `get_project_reference()` (platform-managed runtime). |
 | Relation field specs | `to` is **required**; `on_delete="SET_NULL"` needs `null=True`; M2M rejects `on_delete`/`null`. Invalid specs are rejected before anything is written. |
-| Field spec `"raw"` key | Escape hatch for non-literal kwargs (validators, callables): a dict of kwarg → verbatim Python source. |
+| Field spec `"raw"` key | Escape hatch for non-literal kwargs (validators, callables): a dict of kwarg → verbatim Python source. The *values* are the one place (with `body=`/`imports=`) where caller text becomes code verbatim, by design; the *keys* must still be kwargs the field accepts. |
+| Generated-code inputs | Names (apps, models, fields, kwarg keys, actions, handlers, workflow fields/transitions) must be Python identifiers; route paths and router prefixes must match a strict URL shape; every other string is emitted as a complete escaped literal (never spliced between quotes or into an f-string) and docstring text is escaped. A bad value fails with `invalid_identifier` / `invalid_input` / `invalid_field_spec` before anything is written. |
 | `setup_auth` / `setup_oauth` | Idempotent — re-running reports `already_wired` instead of duplicating includes. |
 
 ### Tool discovery — `list_capabilities()`
@@ -365,6 +366,7 @@ Append a `Model` subclass to `apps/<app>/models.py`.
 | `default` | | Any literal value (str/num/bool/None/list/dict) |
 | `choices` | | List of `[value, label]` pairs |
 | `help_text`, `verbose_name`, `db_column`, `unique`, `index` | | Pass through as literals |
+| any other key | | Must be a keyword the field class's constructor accepts (read off zeeb_orm) — anything else fails with `invalid_field_spec` instead of a `TypeError` at import |
 | `to` | FK / O2O / M2M | Target model name — **required** on relation fields |
 | `on_delete` | FK / O2O | One of CASCADE/PROTECT/RESTRICT/SET_NULL/SET_DEFAULT/DO_NOTHING; `SET_NULL` requires `null=True` |
 | `through`, `through_fields`, `related_name`, `db_table` | M2M | Custom through table support |

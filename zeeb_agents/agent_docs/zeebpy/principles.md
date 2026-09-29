@@ -204,6 +204,14 @@ Two tools are deliberately sandboxed:
   transaction that is **always rolled back** — nothing can be committed. To
   mutate data, use the model/ORM tools or `{prefix}run_management_command`,
   not raw SQL.
+- **Generated code never executes your values.** Every name that becomes
+  code — app, model, field, kwarg key, action, handler, workflow field and
+  transition — must be a Python identifier; route paths and router prefixes
+  must match a strict URL shape; every other string (field lists, workflow
+  states, OAuth scopes, settings values, …) is written as a complete escaped
+  literal, never spliced between quotes or into an f-string, and docstring text
+  is escaped. The deliberate exceptions are `body=`, `imports=` and a field
+  spec's `"raw"` values: those *are* code, and are written verbatim.
 - **File tools are confined to the project.** `{prefix}read_file`,
   `{prefix}write_file`, and `{prefix}list_files` resolve every path (following
   symlinks) and reject anything that escapes the project root with an error —

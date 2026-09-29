@@ -7,8 +7,10 @@ import re
 from pathlib import Path
 
 from zeeb_agents._utils import AgentResult, agent_function
+from zeeb_agents._utils.code_gen import escape_docstring
 from zeeb_agents._utils.errors import AgentError, close_matches, did_you_mean, fail
 from zeeb_agents._utils.project import get_app_path
+from zeeb_agents._utils.validation import ensure_identifier
 
 _TASKS_HEADER = '''\
 """Background tasks for the {app} app.
@@ -86,6 +88,9 @@ async def create_task(
         - Raises (and the decorator converts to ``success=False``) if a task with
           the same name already exists; in that case ``data`` is ``None``.
     """
+    ensure_identifier(function_name, "function name")
+    if schedule is not None and not isinstance(schedule, str):
+        return fail(f"schedule must be a string, got {schedule!r}", code="invalid_input")
     root = project_root
     tasks_path = _tasks_file(app, root)
 
@@ -104,7 +109,8 @@ async def create_task(
                 function=function_name,
             )
 
-        schedule_comment = schedule or "manual / call directly"
+        # The schedule is free text that lands in the task's docstring.
+        schedule_comment = escape_docstring(schedule or "manual / call directly")
         block = _TASK_BLOCK.format(
             function_name=function_name,
             schedule_comment=schedule_comment,

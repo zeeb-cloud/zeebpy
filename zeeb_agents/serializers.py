@@ -13,12 +13,17 @@ from zeeb_agents._utils.code_gen import (
     ensure_import,
     remove_class_block,
     remove_import_name,
+    render_list_literal,
     render_serializer_class,
     skip_result,
     validate_if_exists,
 )
 from zeeb_agents._utils.errors import AgentError, fail
-from zeeb_agents._utils.validation import ensure_app_exists, ensure_identifier
+from zeeb_agents._utils.validation import (
+    ensure_app_exists,
+    ensure_identifier,
+    ensure_identifiers,
+)
 
 
 def _serializers_file(app: str, root: Path) -> Path:
@@ -158,6 +163,11 @@ async def update_serializer(
         - If neither ``fields`` nor ``read_only_fields`` is given, ``changes``
           is empty and the file is rewritten unchanged.
     """
+    ensure_identifier(model_name, "model name")
+    if fields is not None:
+        ensure_identifiers(fields, "serializer field")
+    if read_only_fields is not None:
+        ensure_identifiers(read_only_fields, "read-only field")
     path = _serializers_file(app, project_root)
     if not path.exists():
         return fail(
@@ -190,21 +200,21 @@ async def update_serializer(
             )
         block = match.group(1)
         if fields is not None:
-            fields_repr = ", ".join(f'"{f}"' for f in fields)
+            fields_repr = render_list_literal(fields)
             block = re.sub(
                 r"(^\s+fields\s*=\s*).*$",
-                rf"\g<1>[{fields_repr}]",
+                lambda m: m.group(1) + fields_repr,
                 block,
                 count=1,
                 flags=re.MULTILINE,
             )
             changes.append("fields updated")
         if read_only_fields is not None:
-            ro_repr = ", ".join(f'"{f}"' for f in read_only_fields)
+            ro_repr = render_list_literal(read_only_fields)
             if re.search(r"^\s+read_only_fields\s*=", block, re.MULTILINE):
                 block = re.sub(
                     r"(^\s+read_only_fields\s*=\s*).*$",
-                    rf"\g<1>[{ro_repr}]",
+                    lambda m: m.group(1) + ro_repr,
                     block,
                     count=1,
                     flags=re.MULTILINE,
@@ -213,7 +223,7 @@ async def update_serializer(
                 # Insert after the fields line
                 block = re.sub(
                     r"(^\s+fields\s*=.*$)",
-                    rf"\g<1>\n        read_only_fields = [{ro_repr}]",
+                    lambda m: m.group(1) + f"\n        read_only_fields = {ro_repr}",
                     block,
                     count=1,
                     flags=re.MULTILINE,
@@ -327,6 +337,8 @@ async def sync_serializer_field(
         fields (list[str] | None): the resulting field list, ``None`` when skipped
         skipped (bool): ``True`` when there was nothing to sync
     """
+    ensure_identifier(model_name, "model name")
+    ensure_identifier(field_name, "field name")
     class_name = f"{model_name}Serializer"
     path = _serializers_file(app, project_root)
 
@@ -373,12 +385,12 @@ async def sync_serializer_field(
                 return None
             updated = [name for name in updated if name != field_name]
 
-        fields_repr = ", ".join(f'"{name}"' for name in updated)
+        fields_repr = render_list_literal(updated)
         block = (
             block[: fields_match.start()]
             + re.sub(
                 r"^(\s+fields\s*=\s*)\[.*?\]",
-                rf"\g<1>[{fields_repr}]",
+                lambda m: m.group(1) + fields_repr,
                 block[fields_match.start() : fields_match.end()],
                 count=1,
                 flags=re.MULTILINE | re.DOTALL,

@@ -7,6 +7,11 @@ Both up-front validation (:func:`validate_field_spec`) and code emission
 
 from __future__ import annotations
 
+import functools
+import inspect
+import keyword
+import math
+
 from zeeb_agents._utils.errors import AgentError, close_matches
 
 # Friendly aliases → zeeb_orm field class names
@@ -106,6 +111,59 @@ def known_field_types() -> list[str]:
     return sorted(set(FIELD_TYPE_MAP.values()))
 
 
+@functools.cache
+def field_kwargs(field_type: str) -> frozenset[str]:
+    """The keyword arguments zeeb_orm's *field_type* constructor accepts.
+
+    Read off the constructors themselves (every ``__init__`` along the MRO), so
+    the set cannot drift from the ORM. ``Field.__init__`` takes no ``**kwargs``:
+    any other keyword raises ``TypeError`` when the generated module is
+    imported, so an unknown key is refused here rather than written.
+
+    A kwarg key is rendered as a bare name in generated code — validating it
+    against this set is what stops a key from carrying code of its own.
+    """
+    from zeeb_orm.models import fields as orm_fields
+
+    cls = getattr(orm_fields, field_type, None)
+    if cls is None:
+        return frozenset()
+    names: set[str] = set()
+    for klass in cls.__mro__:
+        init = klass.__dict__.get("__init__")
+        if init is None:
+            continue
+        for param in inspect.signature(init).parameters.values():
+            if param.name == "self" or param.kind in (
+                param.VAR_POSITIONAL,
+                param.VAR_KEYWORD,
+            ):
+                continue
+            names.add(param.name)
+    names.discard("to")  # the relation target is positional, rendered from ``to``
+    return frozenset(names)
+
+
+def _check_kwarg_keys(name: str, field_type: str, keys: list[str], where: str) -> None:
+    """Refuse kwarg keys *field_type* does not accept (or that are not names at all)."""
+    allowed = field_kwargs(field_type)
+    for key in keys:
+        if not isinstance(key, str) or not key.isidentifier() or keyword.iskeyword(key):
+            raise AgentError(
+                f"Field '{name}': {where} key {key!r} is not a keyword-argument name",
+                code="invalid_field_spec",
+            )
+        if allowed and key not in allowed:
+            suggestions = close_matches(key, sorted(allowed))
+            hint = f" Did you mean: {', '.join(suggestions)}?" if suggestions else ""
+            raise AgentError(
+                f"Field '{name}': {field_type} does not accept '{key}'.{hint} "
+                f"Accepted: {', '.join(sorted(allowed))}",
+                code="invalid_field_spec",
+                suggestions=suggestions,
+            )
+
+
 def resolve_field_type(type_hint: str) -> str:
     """Resolve a friendly type hint to a zeeb_orm field class name."""
     resolved = FIELD_TYPE_MAP.get(type_hint) or FIELD_TYPE_MAP.get(str(type_hint).lower())
@@ -122,12 +180,28 @@ def resolve_field_type(type_hint: str) -> str:
 
 
 def render_py_literal(val: object) -> str:
-    """Render *val* as Python source. Supports scalars, str, list, tuple, dict."""
+    """Render *val* as Python source. Supports scalars, str, list, tuple, dict.
+
+    This is the one way a caller-supplied value becomes source text. A string is
+    always emitted as a complete literal — never interpolated into a template
+    between quotes — so no value can close the literal and continue as code:
+    anything beyond plain printable text without quotes or backslashes goes
+    through :func:`repr`. A non-finite float has no literal form (``repr``
+    gives ``nan``, a name that does not exist at import time) and is refused.
+    """
     if isinstance(val, str):
-        # Generated code style is double quotes; repr covers the tricky cases.
-        if '"' not in val and "\\" not in val and "\n" not in val:
+        # Generated code style is double quotes; repr covers the tricky cases
+        # (quotes, backslashes, newlines, carriage returns, NUL, other
+        # non-printables).
+        if val.isprintable() and '"' not in val and "\\" not in val:
             return f'"{val}"'
         return repr(val)
+    if isinstance(val, float) and not math.isfinite(val):
+        raise AgentError(
+            f"Cannot render the non-finite float {val!r} as a literal; "
+            'use the "raw" key (e.g. {"raw": {"default": "float(\'inf\')"}})',
+            code="invalid_field_spec",
+        )
     if val is None or isinstance(val, (bool, int, float)):
         return repr(val)
     if isinstance(val, list):
@@ -163,7 +237,7 @@ def validate_field_spec(spec: object) -> tuple[str, str]:
             code="invalid_field_spec",
         )
     name = spec.get("name")
-    if not isinstance(name, str) or not name.isidentifier():
+    if not isinstance(name, str) or not name.isidentifier() or keyword.iskeyword(name):
         raise AgentError(
             f"Field spec needs a 'name' that is a valid identifier, got {name!r}",
             code="invalid_field_spec",
@@ -237,6 +311,15 @@ def validate_field_spec(spec: object) -> tuple[str, str]:
             code="invalid_field_spec",
         )
 
+    # Every kwarg key — plain or raw — is emitted as a bare keyword name, so it
+    # must be one the field's constructor accepts. The values are made safe by
+    # rendering (plain) or are verbatim by design (raw).
+    plain_keys = [k for k in spec if k not in ("name", "type", "to", "raw")]
+    if field_type == "ManyToManyField":
+        plain_keys = [k for k in plain_keys if k not in _M2M_IGNORED]
+    _check_kwarg_keys(name, field_type, plain_keys, "kwarg")
+    _check_kwarg_keys(name, field_type, list(raw or {}), "'raw'")
+
     # Every non-raw kwarg must be renderable as a literal.
     for key, val in spec.items():
         if key in ("name", "type", "to", "raw"):
@@ -262,6 +345,13 @@ def render_field_line(field: dict) -> str:
     - The reserved ``raw`` key maps kwarg names to verbatim Python source
       (escape hatch for validators, callables, ``default=dict``, …); raw
       entries win over same-named plain keys.
+
+    Safety: every plain value goes through :func:`render_py_literal` and every
+    kwarg key — plain or raw — must be a keyword the field's constructor
+    accepts (:func:`field_kwargs`), so neither can inject code. ``raw`` values
+    are the one deliberate exception: they are emitted **verbatim** because
+    arbitrary Python is their purpose. Treat a ``raw`` value exactly like a
+    ``body=`` argument — code the caller chose to write into the project.
     """
     validate_field_spec(field)
 
