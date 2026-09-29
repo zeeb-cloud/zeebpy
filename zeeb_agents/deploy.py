@@ -39,6 +39,8 @@ EXPOSE {port}
 CMD ["python", "manage.py", "runserver", "0.0.0.0:{port}"]
 """
 
+_PYTHON_VERSION_RE = re.compile(r"^\d+\.\d+$")
+
 _DOCKERIGNORE = """\
 __pycache__
 *.pyc
@@ -88,6 +90,15 @@ async def generate_dockerfile(
         - ``.dockerignore`` is only written when absent; an existing one is
           left untouched.
     """
+    # Both values are spliced into the Dockerfile (a FROM tag, EXPOSE and the
+    # CMD), so each must be exactly the shape it stands for.
+    if not isinstance(python_version, str) or not _PYTHON_VERSION_RE.match(python_version):
+        return fail(
+            f"python_version must be a major.minor tag like '3.12', got {python_version!r}",
+            code="invalid_input",
+        )
+    if isinstance(port, bool) or not isinstance(port, int) or not 1 <= port <= 65535:
+        return fail(f"port must be an integer in 1..65535, got {port!r}", code="invalid_input")
     root = project_root
     dockerfile = root / "Dockerfile"
     dockerignore = root / ".dockerignore"

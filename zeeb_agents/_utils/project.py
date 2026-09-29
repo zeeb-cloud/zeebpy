@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import importlib.util
+import re
 import sys
 from pathlib import Path
 from typing import Any
+
+from zeeb_agents._utils.errors import AgentError
 
 
 def find_project_root(start: Path | None = None) -> Path | None:
@@ -31,6 +34,20 @@ def require_project_root(project_root: Path | None) -> Path:
 
 DEFAULT_FRAMEWORK = "zeebpy"
 
+#: A framework key as written into ``[tool.zeeb]`` (``zeebpy``, ``@acme/flask``):
+#: nothing that could end the TOML string it is written into.
+_FRAMEWORK_KEY_RE = re.compile(r"^[A-Za-z0-9@._/\-]+$")
+
+
+def ensure_framework_key(framework: object) -> str:
+    """Validate a framework key before it is written into ``pyproject.toml``."""
+    if not isinstance(framework, str) or not _FRAMEWORK_KEY_RE.match(framework):
+        raise AgentError(
+            f"Invalid framework key {framework!r}: letters, digits and '@._/-' only",
+            code="invalid_input",
+        )
+    return framework
+
 
 def write_framework_marker(project_root: Path, framework: str) -> None:
     """Record ``framework`` under ``[tool.zeeb]`` in the project's pyproject.toml.
@@ -39,6 +56,7 @@ def write_framework_marker(project_root: Path, framework: str) -> None:
     section with a ``framework`` key (a light, dependency-free text edit — no
     TOML writer needed for this one key).
     """
+    ensure_framework_key(framework)
     path = project_root / "pyproject.toml"
     marker = f'[tool.zeeb]\nframework = "{framework}"\n'
     if not path.exists():
@@ -63,8 +81,6 @@ def detect_framework(project_root: Path | None) -> str:
         text = path.read_text(encoding="utf-8")
     except OSError:
         return DEFAULT_FRAMEWORK
-    import re
-
     m = re.search(
         r"\[tool\.zeeb\][^\[]*?\bframework\s*=\s*[\"']([^\"']+)[\"']",
         text,
@@ -111,8 +127,6 @@ def resolve_db_url(settings: dict[str, Any], project_root: Path) -> str:
     resolves against the CWD when passed to SQLAlchemy.  Absolute URLs and
     ``:memory:`` are returned unchanged.
     """
-    import re
-
     url: str = settings.get("DATABASE", {}).get("url", "sqlite+aiosqlite:///db.sqlite3")
     m = re.match(r"^(sqlite(?:\+\w+)?)://(/?)(?!/)(.*)$", url)
     if m:

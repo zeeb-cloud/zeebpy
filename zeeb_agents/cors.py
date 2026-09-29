@@ -10,9 +10,10 @@ from zeeb_agents._utils.code_gen import (
     ensure_asgi_middleware,
     ensure_middleware,
     find_settings_file,
+    render_py_literal,
     set_or_append_setting,
 )
-from zeeb_agents._utils.errors import fail
+from zeeb_agents._utils.errors import AgentError, fail
 from zeeb_agents._utils.project import load_project_settings
 
 _CORS_MIDDLEWARE = "zeeb_api.middleware.CORSMiddleware"
@@ -31,8 +32,11 @@ _set_or_append_setting = set_or_append_setting
 
 
 def _render_list(values: list[str]) -> str:
-    items = ", ".join(f'"{v}"' for v in values)
-    return f"[{items}]"
+    if isinstance(values, str) or not isinstance(values, (list, tuple)):
+        raise AgentError(
+            f"Expected a list of strings, got {type(values).__name__}", code="invalid_input"
+        )
+    return "[" + ", ".join(render_py_literal(str(v)) for v in values) + "]"
 
 
 @agent_function
@@ -97,7 +101,7 @@ async def configure_cors(
         updates = {
             "CORS_ALLOW_ORIGINS": _render_list(origins),
             "CORS_ALLOW_METHODS": _render_list(methods if methods is not None else ["*"]),
-            "CORS_ALLOW_CREDENTIALS": str(allow_credentials),
+            "CORS_ALLOW_CREDENTIALS": render_py_literal(bool(allow_credentials)),
             "CORS_ALLOW_HEADERS": _render_list(allow_headers if allow_headers is not None else ["*"]),
         }
         if expose_headers is not None:

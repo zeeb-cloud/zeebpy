@@ -17,6 +17,8 @@ from zeeb_agents._utils.code_gen import (
     remove_import_name,
     remove_method_from_class,
     render_action_method,
+    render_list_literal,
+    render_py_literal,
     render_viewset_class,
     resolve_authentication,
     resolve_pagination,
@@ -30,7 +32,13 @@ from zeeb_agents._utils.code_gen import (
 )
 from zeeb_agents._utils.errors import AgentError, fail
 from zeeb_agents._utils.project import require_project_root
-from zeeb_agents._utils.validation import ensure_app_exists, ensure_identifier
+from zeeb_agents._utils.validation import (
+    ensure_action_url_path,
+    ensure_app_exists,
+    ensure_field_refs,
+    ensure_identifier,
+    ensure_url_prefix,
+)
 from zeeb_agents._utils.wiring import ensure_app_urls_included, ensure_installed_app
 from zeeb_agents.models import create_model
 from zeeb_agents.serializers import create_serializer
@@ -425,7 +433,10 @@ async def add_viewset_action(
             ''',
         )
     """
+    ensure_identifier(model_name, "model name")
     ensure_identifier(action_name, "action name")
+    if url_path is not None:
+        ensure_action_url_path(url_path)
     if if_exists not in ("error", "skip", "replace"):
         return fail(
             f"if_exists must be 'error', 'skip' or 'replace', got {if_exists!r}",
@@ -574,7 +585,9 @@ def _set_class_attr(block: str, attr: str, rendered: str) -> tuple[str, bool]:
     line = f"    {attr} = {rendered}"
     pattern = re.compile(rf"^\s+{re.escape(attr)}\s*=.*$", re.MULTILINE)
     if pattern.search(block):
-        return pattern.sub(line, block, count=1), True
+        # A function replacement: the rendered value is inserted verbatim, never
+        # re-read as a regex template (where a backslash would be an escape).
+        return pattern.sub(lambda _m: line, block, count=1), True
     for anchor in (r"^\s+serializer_class\s*=.*$", r"^\s+queryset\s*=.*$", r"^class .*:$"):
         m = re.search(anchor, block, re.MULTILINE)
         if m:
@@ -642,6 +655,13 @@ async def update_viewset(
         - With no options given, ``changes`` is empty and the file is left
           untouched.
     """
+    ensure_identifier(model_name, "model name")
+    if lookup_field:
+        ensure_identifier(lookup_field, "lookup_field")
+    if search_fields:
+        ensure_field_refs(search_fields, "search field")
+    if ordering_fields:
+        ensure_field_refs(ordering_fields, "ordering field")
     if pagination:
         resolve_pagination(pagination)
     if throttles:
@@ -676,8 +696,7 @@ async def update_viewset(
         block = block_match.group(1)
         changes: list[str] = []
 
-        def quoted_list(values: list[str]) -> str:
-            return "[" + ", ".join(f'"{v}"' for v in values) + "]"
+        quoted_list = render_list_literal
 
         # authentication_classes is set before permission_classes: fresh
         # insertions of both anchor at the same spot, so setting permission
@@ -695,7 +714,7 @@ async def update_viewset(
             perm_names = [permission] if isinstance(permission, str) else permission
             changes.append(f"permission_classes set to {', '.join(perm_names)}")
         if lookup_field:
-            block, _ = _set_class_attr(block, "lookup_field", f'"{lookup_field}"')
+            block, _ = _set_class_attr(block, "lookup_field", render_py_literal(lookup_field))
             changes.append(f"lookup_field set to '{lookup_field}'")
         if pagination:
             block, _ = _set_class_attr(
@@ -811,6 +830,9 @@ async def register_route(
           shadowed at runtime).
     """
     validate_if_exists(if_exists)
+    ensure_identifier(model_name, "model name")
+    if url_prefix is not None:
+        ensure_url_prefix(url_prefix, "url_prefix")
     root = require_project_root(project_root)
     path = _urls_file(app, root)
     if not path.exists():
@@ -821,7 +843,7 @@ async def register_route(
 
     def _write() -> None:
         content = path.read_text(encoding="utf-8")
-        register_line = f'router.register("{prefix}", {viewset_name})'
+        register_line = f"router.register({render_py_literal(prefix)}, {viewset_name})"
         # Read the registrations out of the AST: the scaffolded urls.py carries
         # a copy-pasteable example in its module docstring, and a text scan
         # would refuse a prefix that nothing actually occupies.

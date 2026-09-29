@@ -11,6 +11,7 @@ from pathlib import Path
 from zeeb_agents._utils import AgentResult, agent_function
 from zeeb_agents._utils.errors import close_matches, fail
 from zeeb_agents._utils.project import (
+    ensure_framework_key,
     get_app_path,
     load_project_settings,
     require_project_root,
@@ -64,6 +65,7 @@ async def create_project(
           bootstrapping call) and resolves a not-yet-existing location.
     """
     ensure_identifier(name, "project name")
+    ensure_framework_key(framework)
     if project_id is not None:
         target = resolve_project_id(project_id, must_exist=False)
         directory = str(target.parent)

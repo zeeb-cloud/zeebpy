@@ -8,10 +8,20 @@ import textwrap
 from pathlib import Path
 
 from zeeb_agents._utils import AgentResult, agent_function
-from zeeb_agents._utils.code_gen import ensure_import, skip_result, validate_if_exists
+from zeeb_agents._utils.code_gen import (
+    ensure_import,
+    escape_docstring,
+    render_py_literal,
+    skip_result,
+    validate_if_exists,
+)
 from zeeb_agents._utils.errors import AgentError, fail
 from zeeb_agents._utils.project import get_app_path, require_project_root
-from zeeb_agents._utils.validation import ensure_identifier
+from zeeb_agents._utils.validation import (
+    ensure_dotted_name,
+    ensure_identifier,
+    ensure_route_path,
+)
 from zeeb_agents._utils.wiring import ensure_app_urls_included, ensure_installed_app
 
 _VALID_METHODS = frozenset({"get", "post", "put", "patch", "delete"})
@@ -23,7 +33,7 @@ _ROUTER_INIT = "router = APIRouter()\n"
 
 _ROUTE_TEMPLATE = """\
 
-@router.{method}("{path}"{response_model_part})
+@router.{method}({path}{response_model_part})
 async def {function_name}({params}):
     \"\"\"{summary}\"\"\"
 {body}
@@ -119,6 +129,13 @@ async def create_route(
         - Fails if *method* is invalid, ``views.py`` or ``apps/{app}/urls.py``
           is missing (the handler write is kept; the failure message says so),
           or a function named *function_name* already exists.
+        - *path* must be ``/``-rooted, made of letters, digits, ``-_.~:@+,=``
+          and ``{name}`` parameters; *response_model* must be a (dotted) class
+          name. Anything else fails with ``invalid_input`` before a file is
+          touched — both end up in generated code.
+        - *body* and *imports* are written **verbatim**: they are the code you
+          asked for, not values to escape. Every other argument is validated
+          or rendered as a literal.
 
     Example::
 
@@ -134,6 +151,9 @@ async def create_route(
         )
     """
     ensure_identifier(function_name, "function name")
+    ensure_route_path(path)
+    if response_model:
+        ensure_dotted_name(response_model, "response_model")
     validate_if_exists(if_exists)
     method = method.lower()
     if method not in _VALID_METHODS:
@@ -184,10 +204,10 @@ async def create_route(
             f", response_model={response_model}" if response_model else ""
         )
 
-        summary = f"{method.upper()} {path}"
+        summary = escape_docstring(f"{method.upper()} {path}")
         block = _ROUTE_TEMPLATE.format(
             method=method,
-            path=path,
+            path=render_py_literal(path),
             response_model_part=response_model_part,
             function_name=function_name,
             params=params_str,

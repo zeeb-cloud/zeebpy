@@ -15,13 +15,17 @@ from zeeb_agents._utils.code_gen import (
     ensure_middleware,
     find_settings_file,
     render_field_line,
+    render_list_literal,
+    render_py_literal,
     set_or_append_setting,
 )
 from zeeb_agents._utils.errors import AgentError, close_matches, fail
 from zeeb_agents._utils.project import require_project_root
 from zeeb_agents._utils.validation import (
+    ENV_KEY_RE,
     ensure_app_exists,
     ensure_identifier,
+    ensure_mount_prefix,
     validate_field_specs,
 )
 from zeeb_agents._utils.wiring import append_router_include
@@ -106,13 +110,20 @@ async def setup_auth(
           :func:`~zeeb_agents.config.set_env`) before deploying with
           ``DEBUG=False``.
     """
+    ensure_mount_prefix(url_prefix, "url_prefix")
+    for label, value in (
+        ("access_token_minutes", access_token_minutes),
+        ("refresh_token_days", refresh_token_days),
+    ):
+        if value is not None and (isinstance(value, bool) or not isinstance(value, int)):
+            return fail(f"{label} must be an integer, got {value!r}", code="invalid_input")
     root = require_project_root(project_root)
 
     def _wire() -> tuple[bool, list[str]]:
         urls_path = _project_urls_file(root)
         include_line = (
-            f'router.include(create_auth_router(prefix="{url_prefix}", '
-            f"enable_registration={enable_registration}))"
+            f"router.include(create_auth_router(prefix={render_py_literal(url_prefix)}, "
+            f"enable_registration={bool(enable_registration)}))"
         )
         # append_router_include verifies the project urls.py still defines a
         # module-level ``router`` before emitting code that references it.
@@ -235,6 +246,19 @@ async def setup_oauth(
         )
     id_env = client_id_env or f"{provider.upper()}_CLIENT_ID"
     secret_env = client_secret_env or f"{provider.upper()}_CLIENT_SECRET"
+    for label, env_name in (("client_id_env", id_env), ("client_secret_env", secret_env)):
+        if not isinstance(env_name, str) or not ENV_KEY_RE.match(env_name):
+            return fail(
+                f"{label} {env_name!r} is not an environment variable name "
+                "([A-Za-z_][A-Za-z0-9_]*)",
+                code="invalid_input",
+            )
+    if scopes is not None and (
+        isinstance(scopes, str) or not all(isinstance(s, str) for s in scopes)
+    ):
+        return fail("scopes must be a list of strings", code="invalid_input")
+    if redirect_uri is not None and not isinstance(redirect_uri, str):
+        return fail("redirect_uri must be a string", code="invalid_input")
     root = require_project_root(project_root)
 
     def _configure() -> tuple[bool, list[str]]:
@@ -245,13 +269,12 @@ async def setup_oauth(
         updated: list[str] = []
 
         entry_lines = [
-            f'    "{provider}": {{',
-            f'        "client_id": os.getenv("{id_env}"),',
-            f'        "client_secret": os.getenv("{secret_env}"),',
+            f"    {render_py_literal(provider)}: {{",
+            f'        "client_id": os.getenv({render_py_literal(id_env)}),',
+            f'        "client_secret": os.getenv({render_py_literal(secret_env)}),',
         ]
         if scopes:
-            scopes_repr = ", ".join(f'"{s}"' for s in scopes)
-            entry_lines.append(f'        "scopes": [{scopes_repr}],')
+            entry_lines.append(f'        "scopes": {render_list_literal(scopes)},')
         entry_lines.append("    },")
         entry = "\n".join(entry_lines)
 
@@ -289,7 +312,7 @@ async def setup_oauth(
 
         if redirect_uri:
             content = set_or_append_setting(
-                content, "OAUTH_REDIRECT_URI", f'"{redirect_uri}"'
+                content, "OAUTH_REDIRECT_URI", render_py_literal(redirect_uri)
             )
             updated.append("OAUTH_REDIRECT_URI")
         settings_path.write_text(content, encoding="utf-8")
@@ -384,7 +407,7 @@ async def create_user_model(
             [
                 "",
                 "    class Meta:",
-                f'        table_name = "{app}_{model_name.lower()}"',
+                f"        table_name = {render_py_literal(f'{app}_{model_name.lower()}')}",
             ]
         )
         ensure_import(models_path, "from zeeb_orm import Model, fields")
@@ -403,7 +426,7 @@ async def create_user_model(
             )
         settings_content = settings_path.read_text(encoding="utf-8")
         settings_content = set_or_append_setting(
-            settings_content, "AUTH_USER_MODEL", f'"{auth_model}"'
+            settings_content, "AUTH_USER_MODEL", render_py_literal(auth_model)
         )
         settings_path.write_text(settings_content, encoding="utf-8")
         return auth_model

@@ -9,6 +9,7 @@ from pathlib import Path
 from zeeb_agents._utils import AgentResult, agent_function
 from zeeb_agents._utils.errors import AgentError
 from zeeb_agents._utils.project import get_app_path
+from zeeb_agents._utils.validation import ensure_identifier
 
 _PERMISSIONS_HEADER = '''\
 """Custom permission classes for the {app} app.
@@ -143,6 +144,7 @@ async def create_permission_class(
             success=False,
             message=f"Unknown logic preset '{logic}'. Choose from: {', '.join(_LOGIC_PRESETS)}.",
         )
+    ensure_identifier(class_name, "class name")
     root = project_root
     perms_file = _permissions_file(app, root)
 

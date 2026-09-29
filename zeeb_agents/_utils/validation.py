@@ -28,6 +28,114 @@ def ensure_identifier(name: object, kind: str = "name") -> str:
     return name
 
 
+def ensure_identifiers(names: object, kind: str = "name") -> list[str]:
+    """Validate every entry of a list of identifiers; return it as a list."""
+    if isinstance(names, str) or not isinstance(names, (list, tuple)):
+        raise AgentError(
+            f"{kind} must be a list of names, got {type(names).__name__}",
+            code="invalid_input",
+        )
+    return [ensure_identifier(name, kind) for name in names]
+
+
+# ---------------------------------------------------------------------------
+# Values that end up in generated code as part of a string literal. Rendering
+# goes through ``render_py_literal`` regardless; these shapes exist because the
+# same value is *also* used somewhere a literal cannot protect it — inside an
+# f-string of a generated test, as a URL the router parses, as a dotted import.
+# ---------------------------------------------------------------------------
+
+_SEGMENT_CHARS = r"A-Za-z0-9._~\-"
+_PATH_PARAM = r"\{[A-Za-z_][A-Za-z0-9_]*\}"
+
+#: A route path: ``/``-rooted, unreserved characters plus ``{identifier}``
+#: parameters (never a brace around anything else).
+ROUTE_PATH_RE = re.compile(rf"^/(?:[{_SEGMENT_CHARS}:@+,=]|{_PATH_PARAM}|/)*$")
+#: A router registration prefix: plain segments, optional edge slashes.
+URL_PREFIX_RE = re.compile(rf"^/?[{_SEGMENT_CHARS}]+(?:/[{_SEGMENT_CHARS}]+)*/?$")
+#: An ``@action`` ``url_path``: segments of unreserved characters and parameters.
+ACTION_URL_PATH_RE = re.compile(
+    rf"^(?:[{_SEGMENT_CHARS}]|{_PATH_PARAM})+(?:/(?:[{_SEGMENT_CHARS}]|{_PATH_PARAM})+)*$"
+)
+#: Where a router is mounted: empty, ``/``, or ``/``-rooted plain segments.
+MOUNT_PREFIX_RE = re.compile(rf"^(?:/[{_SEGMENT_CHARS}]+)*/?$")
+#: A dotted Python import path (``zeeb_api.middleware.CORSMiddleware``).
+DOTTED_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*$")
+#: A field reference in ``search_fields``/``ordering_fields``: a name, optionally
+#: behind one of the search/ordering prefixes (``^``, ``=``, ``@``, ``$``, ``-``).
+FIELD_REF_RE = re.compile(r"^[=^@$\-]?[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def _ensure_shape(value: object, pattern: re.Pattern[str], kind: str, shape: str) -> str:
+    if not isinstance(value, str) or not pattern.match(value):
+        raise AgentError(
+            f"Invalid {kind} {value!r}: must be {shape}",
+            code="invalid_input",
+            value=value if isinstance(value, str) else repr(value),
+        )
+    return value
+
+
+def ensure_route_path(value: object, kind: str = "path") -> str:
+    """A ``/``-rooted route path; parameters only as ``{identifier}``."""
+    return _ensure_shape(
+        value,
+        ROUTE_PATH_RE,
+        kind,
+        "a '/'-rooted path of letters, digits, '-', '_', '.', '~', ':', '@', '+', ',', "
+        "'=' and {name} parameters (e.g. '/items/{item_id}')",
+    )
+
+
+def ensure_url_prefix(value: object, kind: str = "url prefix") -> str:
+    """A router registration prefix — plain URL segments (``posts``, ``blog/posts``)."""
+    return _ensure_shape(
+        value,
+        URL_PREFIX_RE,
+        kind,
+        "URL segments of letters, digits, '-', '_', '.' and '~' (e.g. 'posts')",
+    )
+
+
+def ensure_action_url_path(value: object, kind: str = "url_path") -> str:
+    """An ``@action`` ``url_path`` — segments plus ``{identifier}`` parameters."""
+    return _ensure_shape(
+        value,
+        ACTION_URL_PATH_RE,
+        kind,
+        "URL segments of letters, digits, '-', '_', '.', '~' and {name} parameters, "
+        "without a leading '/'",
+    )
+
+
+def ensure_mount_prefix(value: object, kind: str = "url prefix") -> str:
+    """Where a router is mounted — ``""``, ``/`` or ``/``-rooted plain segments."""
+    return _ensure_shape(
+        value,
+        MOUNT_PREFIX_RE,
+        kind,
+        "empty or a '/'-rooted path of letters, digits, '-', '_', '.' and '~' (e.g. '/auth')",
+    )
+
+
+def ensure_dotted_name(value: object, kind: str = "dotted path") -> str:
+    """A dotted Python import path."""
+    return _ensure_shape(value, DOTTED_NAME_RE, kind, "a dotted Python path (e.g. 'pkg.mod.Name')")
+
+
+def ensure_field_refs(values: object, kind: str = "field") -> list[str]:
+    """Field references for ``search_fields`` / ``ordering_fields``."""
+    if isinstance(values, str) or not isinstance(values, (list, tuple)):
+        raise AgentError(
+            f"{kind} must be a list of field names, got {type(values).__name__}",
+            code="invalid_input",
+        )
+    return [
+        _ensure_shape(v, FIELD_REF_RE, kind, "a field name, optionally prefixed by ^ = @ $ or -")
+        for v in values
+    ]
+
+
 def ensure_app_exists(app: str, project_root: Path) -> Path:
     """Return the app directory, failing with suggestions if it doesn't exist."""
     path = get_app_path(app, project_root)

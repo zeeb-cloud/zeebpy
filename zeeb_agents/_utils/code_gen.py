@@ -10,6 +10,13 @@ from pathlib import Path
 from zeeb_agents._utils import AgentResult
 from zeeb_agents._utils.errors import AgentError, close_matches
 from zeeb_agents._utils.field_types import render_field_line, render_py_literal
+from zeeb_agents._utils.validation import (
+    ensure_action_url_path,
+    ensure_dotted_name,
+    ensure_field_refs,
+    ensure_identifier,
+    ensure_identifiers,
+)
 
 # Re-exported, not redefined: ``startapp`` derives a route prefix with the same
 # helper, so a resource lands under an identical path whichever layer created
@@ -40,6 +47,26 @@ def validate_if_exists(value: str) -> None:
 def skip_result(message: str, **data: object) -> AgentResult:
     """Build a success result for a no-op skip (``data['skipped'] = True``)."""
     return AgentResult(success=True, message=message, data={**data, "skipped": True})
+
+
+def render_list_literal(values: list[str]) -> str:
+    """Render a list of strings as a Python list literal, each entry escaped."""
+    return "[" + ", ".join(render_py_literal(v) for v in values) + "]"
+
+
+def escape_docstring(text: object) -> str:
+    """Make *text* safe to place between the ``\"\"\"`` of a generated docstring.
+
+    Every backslash and double quote is escaped, so the text can neither end
+    the docstring early nor form an escape sequence; NUL (which Python source
+    cannot contain) is dropped. Newlines stay — a docstring may span lines.
+    """
+    return (
+        str(text)
+        .replace("\x00", "")
+        .replace("\\", "\\\\")
+        .replace('"', '\\"')
+    )
 
 
 # The full ``class Meta`` surface zeeb_orm's Options.from_meta understands.
@@ -152,7 +179,10 @@ def _render_serializer_field(spec: dict) -> tuple[str, str | None]:
                 '(e.g. {"name": "author", "type": "nested", "serializer": "UserSerializer"})',
                 code="invalid_field_spec",
             )
-        kwargs = ", ".join(f"{k}={render_py_literal(v)}" for k, v in spec.items())
+        kwargs = ", ".join(
+            f"{ensure_identifier(k, 'serializer field kwarg')}={render_py_literal(v)}"
+            for k, v in spec.items()
+        )
         return f"{name} = {serializer}({kwargs})", None
     if ftype not in SERIALIZER_FIELD_TYPES:
         suggestions = close_matches(str(ftype), sorted(SERIALIZER_FIELD_TYPES))
@@ -163,7 +193,10 @@ def _render_serializer_field(spec: dict) -> tuple[str, str | None]:
             code="invalid_field_type",
             suggestions=suggestions,
         )
-    kwargs = ", ".join(f"{k}={render_py_literal(v)}" for k, v in spec.items())
+    kwargs = ", ".join(
+        f"{ensure_identifier(k, 'serializer field kwarg')}={render_py_literal(v)}"
+        for k, v in spec.items()
+    )
     line = f"{name} = serializers.{ftype}({kwargs})"
     stub: str | None = None
     if ftype == "SerializerMethodField":
@@ -189,7 +222,12 @@ def render_serializer_class(
     appended to an explicit ``fields`` list automatically.  *validate_fields*
     emits ``validate_<field>`` stub methods.
     """
+    ensure_identifier(model_name, "model name")
     class_name = f"{model_name}Serializer"
+    if fields:
+        ensure_identifiers(fields, "serializer field")
+    if read_only_fields:
+        ensure_identifiers(read_only_fields, "read-only field")
 
     declared_lines: list[str] = []
     method_stubs: list[str] = []
@@ -219,9 +257,7 @@ def render_serializer_class(
             if name not in meta_fields:
                 meta_fields.append(name)
     if meta_fields:
-        fields_line = "        fields = [{}]".format(
-            ", ".join(f'"{f}"' for f in meta_fields)
-        )
+        fields_line = f"        fields = {render_list_literal(meta_fields)}"
     else:
         # Must be the bare string, not a one-element list: the serializer
         # Meta compares ``fields == "__all__"`` — ``["__all__"]`` would be
@@ -240,8 +276,7 @@ def render_serializer_class(
         ]
     )
     if read_only_fields:
-        ro_repr = ", ".join(f'"{f}"' for f in read_only_fields)
-        lines.append(f"        read_only_fields = [{ro_repr}]")
+        lines.append(f"        read_only_fields = {render_list_literal(read_only_fields)}")
     for stub in method_stubs:
         lines.append("")
         lines.append(stub)
@@ -729,8 +764,19 @@ def render_viewset_class(
     *ordering_fields*.  The caller is responsible for the matching imports
     (see :func:`viewset_option_imports`).
     """
+    ensure_identifier(model_name, "model name")
     class_name = f"{model_name}ViewSet"
-    ser_class = serializer_class or f"{model_name}Serializer"
+    ser_class = ensure_identifier(serializer_class or f"{model_name}Serializer", "serializer class")
+    if lookup_field:
+        ensure_identifier(lookup_field, "lookup_field")
+    if owner_field:
+        ensure_identifier(owner_field, "owner_field")
+    if search_fields:
+        ensure_field_refs(search_fields, "search field")
+    if ordering_fields:
+        ensure_field_refs(ordering_fields, "ordering field")
+    if filterset:
+        ensure_identifier(filterset, "filterset class name")
     base_class, _ = resolve_viewset_base(operations, read_only)
     perms = [permission] if isinstance(permission, str) else list(permission)
     lines = [
@@ -742,7 +788,7 @@ def render_viewset_class(
     if authentication:
         lines.append(f"    authentication_classes = [{', '.join(authentication)}]")
     if lookup_field:
-        lines.append(f'    lookup_field = "{lookup_field}"')
+        lines.append(f"    lookup_field = {render_py_literal(lookup_field)}")
     if pagination:
         lines.append(f"    pagination_class = {resolve_pagination(pagination)}")
     if throttles:
@@ -759,11 +805,9 @@ def render_viewset_class(
     if backends:
         lines.append(f"    filter_backends = [{', '.join(backends)}]")
     if search_fields:
-        quoted = ", ".join(f'"{f}"' for f in search_fields)
-        lines.append(f"    search_fields = [{quoted}]")
+        lines.append(f"    search_fields = {render_list_literal(search_fields)}")
     if ordering_fields:
-        quoted = ", ".join(f'"{f}"' for f in ordering_fields)
-        lines.append(f"    ordering_fields = [{quoted}]")
+        lines.append(f"    ordering_fields = {render_list_literal(ordering_fields)}")
     if owner_field:
         # Ownership is three things, not one: the permission class checks the
         # object, perform_create stamps the owner server-side (never trusting
@@ -774,7 +818,8 @@ def render_viewset_class(
         lines.append('        """Stamp the authenticated user as owner (never from the body)."""')
         lines.append("        user = self._get_user_from_request()")
         lines.append("        if user is not None:")
-        lines.append(f'            serializer.validated_data["{owner_field}_id"] = user.id')
+        owner_key = render_py_literal(f"{owner_field}_id")
+        lines.append(f"            serializer.validated_data[{owner_key}] = user.id")
         if owner_scoped_reads:
             lines.append("")
             lines.append("    def get_queryset(self):")
@@ -786,10 +831,10 @@ def render_viewset_class(
             lines.append(f"        return queryset.filter({owner_field}_id=user.id)")
     if extra_actions:
         for action in extra_actions:
-            a_name = action["name"]
-            a_detail = action.get("detail", True)
-            a_methods = action.get("methods", ["get"])
-            methods_repr = ", ".join(f'"{m}"' for m in a_methods)
+            a_name = ensure_identifier(action["name"], "action name")
+            a_detail = bool(action.get("detail", True))
+            a_methods = validate_action_methods(action.get("methods", ["get"]))
+            methods_repr = ", ".join(render_py_literal(m) for m in a_methods)
             lines.append("")
             lines.append(f'    @action(detail={a_detail}, methods=[{methods_repr}])')
             lines.append(f"    async def {a_name}(self, request, pk=None):")
@@ -828,6 +873,28 @@ def viewset_option_imports(
     return imports
 
 
+#: HTTP methods an ``@action`` may declare.
+ACTION_METHODS = ("get", "post", "put", "patch", "delete")
+
+
+def validate_action_methods(methods: object) -> list[str]:
+    """Lower-case and validate an ``@action`` methods list."""
+    if isinstance(methods, str) or not isinstance(methods, (list, tuple)) or not methods:
+        raise AgentError(
+            f"methods must be a non-empty list drawn from {list(ACTION_METHODS)}",
+            code="invalid_input",
+        )
+    lowered = [str(m).lower() for m in methods]
+    bad = [m for m in lowered if m not in ACTION_METHODS]
+    if bad:
+        raise AgentError(
+            f"Invalid HTTP method(s) {bad}. Must be drawn from {list(ACTION_METHODS)}",
+            code="invalid_input",
+            suggestions=close_matches(bad[0], list(ACTION_METHODS)),
+        )
+    return lowered
+
+
 def render_action_method(
     action_name: str,
     detail: bool = True,
@@ -861,19 +928,24 @@ def render_action_method(
     the serializer/schema class names is the caller's job (see
     :func:`resolve_permission` and ``ensure_identifier``).
     """
-    action_methods = [m.lower() for m in (methods or ["get"])]
-    methods_repr = ", ".join(f'"{m}"' for m in action_methods)
+    ensure_identifier(action_name, "action name")
+    action_methods = validate_action_methods(methods or ["get"])
+    methods_repr = ", ".join(render_py_literal(m) for m in action_methods)
 
-    parts = [f"detail={detail}", f"methods=[{methods_repr}]"]
+    parts = [f"detail={bool(detail)}", f"methods=[{methods_repr}]"]
     if url_path:
-        parts.append(f'url_path="{url_path}"')
+        parts.append(f"url_path={render_py_literal(ensure_action_url_path(url_path))}")
     if request_serializer:
+        ensure_identifier(request_serializer, "request_serializer")
         parts.append(f"request_serializer={request_serializer}")
     if response_serializer:
+        ensure_identifier(response_serializer, "response_serializer")
         parts.append(f"response_serializer={response_serializer}")
     if request_schema:
+        ensure_identifier(request_schema, "request_schema")
         parts.append(f"request_schema={request_schema}")
     if response_schema:
+        ensure_identifier(response_schema, "response_schema")
         parts.append(f"response_schema={response_schema}")
     if permission:
         perms = [permission] if isinstance(permission, str) else list(permission)
@@ -1226,6 +1298,7 @@ def ensure_middleware(settings_path: Path, dotted_path: str) -> bool:
     untouched. When no ``MIDDLEWARE`` assignment exists at all, a new one is
     appended.
     """
+    ensure_dotted_name(dotted_path, "middleware path")
     content = settings_path.read_text(encoding="utf-8")
     lines = content.splitlines(keepends=True)
 

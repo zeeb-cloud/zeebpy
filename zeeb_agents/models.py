@@ -7,6 +7,7 @@ from pathlib import Path
 
 from zeeb_agents._utils import AgentResult, agent_function
 from zeeb_agents._utils.code_gen import (
+    KNOWN_META_KEYS,
     add_field_to_class,
     append_block,
     class_exists,
@@ -600,8 +601,20 @@ async def update_model(
           without a ``class Meta`` gets one. Values are rendered as Python
           literals (``ordering=["-created_at"]``, ``table_name="posts"``).
     """
+    ensure_identifier(model_name, "model name")
     if rename_to:
         ensure_identifier(rename_to, "model name")
+    for key in meta_changes or {}:
+        # A Meta key is written as a bare attribute name — only the keys
+        # zeeb_orm's Options understands may become code.
+        if key not in KNOWN_META_KEYS:
+            suggestions = close_matches(str(key), sorted(KNOWN_META_KEYS))
+            hint = f" Did you mean: {', '.join(suggestions)}?" if suggestions else ""
+            return fail(
+                f"Unknown Meta key {key!r}.{hint} Valid keys: {sorted(KNOWN_META_KEYS)}",
+                code="invalid_meta",
+                suggestions=suggestions,
+            )
     path = _models_file(app, project_root)
     if not path.exists():
         return fail(f"models.py not found at {path}", code="file_not_found", missing="models.py")

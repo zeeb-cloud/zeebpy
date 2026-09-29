@@ -24,8 +24,10 @@ from zeeb_agents._utils.code_gen import pluralize as _pluralize
 from zeeb_agents._utils.errors import AgentError, close_matches
 from zeeb_agents._utils.field_types import (
     FIELD_TYPE_MAP,
+    render_py_literal,
     validate_field_spec,
 )
+from zeeb_agents._utils.validation import ensure_identifier
 
 PLAN_VERSION = 2
 
@@ -1034,19 +1036,37 @@ def _render_transition_body(
     status_field: str,
     transition: dict,
 ) -> str:
-    """Render the generated action body for one workflow transition."""
+    """Render the generated action body for one workflow transition.
+
+    States are data, not code: each is emitted as a complete string literal
+    (:func:`render_py_literal`) and none is ever placed inside an f-string of
+    the generated module, where a brace would make it an expression evaluated
+    on every request. The names that *are* code — the entity, the status field
+    and the transition — must be identifiers; this is checked here as well as
+    in spec validation, because the renderer is also reached without it.
+    """
+    ensure_identifier(entity, "entity name")
+    ensure_identifier(status_field, "workflow field")
+    name = ensure_identifier(transition["name"], "transition name")
     from_states = _transition_from_states(transition)
-    allowed = ", ".join(from_states)
-    from_tuple = ", ".join(f'"{s}"' for s in from_states)
-    name = transition["name"]
     to = transition["to"]
+    for state in [*from_states, to]:
+        if not isinstance(state, str) or not state:
+            raise AgentError(
+                f"Workflow states must be non-empty strings, got {state!r}",
+                code="invalid_input",
+            )
+    allowed = ", ".join(from_states)
+    from_tuple = ", ".join(render_py_literal(state) for state in from_states)
+    prefix = render_py_literal(f"Cannot {name}: {status_field} is '")
+    suffix = render_py_literal(f"' (allowed: {allowed})")
     return (
         "obj = await self.get_object()\n"
         f"if obj.{status_field} not in ({from_tuple},):\n"
         "    raise ResourceConflictException(\n"
-        f"        message=f\"Cannot {name}: {status_field} is '{{obj.{status_field}}}' (allowed: {allowed})\"\n"
+        f"        message={prefix} + str(obj.{status_field}) + {suffix}\n"
         "    )\n"
-        f'obj.{status_field} = "{to}"\n'
+        f"obj.{status_field} = {render_py_literal(to)}\n"
         "await obj.save()\n"
         f"return {entity}Serializer(obj).data"
     )
