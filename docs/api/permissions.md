@@ -71,7 +71,10 @@ class ArticleViewSet(ModelViewSet):
 
 Object-level permission allowing only the object's owner (the model's
 `owner` attribute by default, falling back to `user`; override with
-`owner_field`).
+`owner_field`). For a foreign key the stored column (`owner_id`) is compared
+with the user's id — the relation is never loaded — so an owner is recognised
+whether or not `owner` was fetched with `select_related`. Ids are compared as
+strings, so a UUID primary key matches a token's string `sub`.
 
 ```python
 from zeeb_api.permissions import IsOwner
@@ -102,6 +105,19 @@ class ArticleViewSet(ModelViewSet):
 Maps HTTP methods to per-model permissions
 (`view_<model>` / `add_<model>` / `change_<model>` / `delete_<model>`).
 Codenames are **bare** — there is no `app_label.` prefix.
+
+| Request | Required codename |
+|---------|-------------------|
+| `GET` (list, retrieve) | `view_<model>` |
+| `POST /query` | `view_<model>` — it only reads (`action_perms_map`) |
+| `POST` (create) | `add_<model>` |
+| `PUT` / `PATCH` | `change_<model>` |
+| `DELETE` | `delete_<model>` |
+| `HEAD` / `OPTIONS` | none |
+| any other method | **denied** |
+
+A view whose model cannot be determined (no `queryset`, and `get_queryset()`
+yields none) is denied as well: a misconfigured view is not an open one.
 
 ```python
 from zeeb_api.permissions import ModelPermissions
