@@ -19,6 +19,7 @@ from zeeb_api.middleware.auth import (
     default_user_loader,
     get_current_user,
     get_current_user_optional,
+    get_user_roles,
     require_auth,
 )
 
@@ -30,5 +31,6 @@ __all__ = [
     "default_user_loader",
     "get_current_user",
     "get_current_user_optional",
+    "get_user_roles",
     "require_auth",
 ]

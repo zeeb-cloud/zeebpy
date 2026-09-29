@@ -487,6 +487,30 @@ async def stats():
     return {...}
 ```
 
+The dependencies accept exactly what `JWTAuthMiddleware` accepts. When the
+middleware has run, its verdict stands: a token whose account was deleted or
+deactivated since it was issued is anonymous, so `get_current_user` answers
+`401 AUTH_TOKEN_INVALID` (and `get_current_user_optional` returns `None`) —
+the dependency does not decode the token again behind the middleware's back.
+Without the middleware the dependencies resolve the token themselves the same
+way: with `AUTH_LOAD_USER_FROM_DB` on (the default) the account is loaded and
+must be active; a claims-only `AuthenticatedUser` is built only when that
+setting is off.
+
+`require_auth` answers `401` when nobody is authenticated and
+`403 PERM_INSUFFICIENT_ROLE` when the user is authenticated but lacks a role.
+A user's roles (`zeeb_api.auth.middleware.get_user_roles`) are the union of:
+
+| Source | Roles |
+|---|---|
+| `user.get_roles()` | whatever it returns — override it on a custom user model (groups, a column, …) |
+| `user.roles` or the token's `roles` claim | as listed (Azure AD app roles arrive in `roles`) |
+| account flags | `"staff"` for `is_staff`, `"superuser"` for `is_superuser`, `"admin"` for anyone `IsAdminUser` admits |
+
+`AbstractUser.get_roles()` returns the flag-derived roles and
+`get_claims()` emits them as the `roles` claim, so a token-only
+`AuthenticatedUser` (`AUTH_LOAD_USER_FROM_DB = False`) sees the same set.
+
 ### Refresh Token Rotation
 
 `POST /auth/refresh` **rotates**: it issues a fresh pair and records the

@@ -173,6 +173,23 @@ class AbstractUser(AbstractBaseUser):
         """Check if user has all permissions in the list."""
         return all(self.has_perm(perm, obj) for perm in perm_list)
     
+    def get_roles(self) -> list[str]:
+        """Roles for ``require_auth(roles=...)``, derived from the account flags.
+
+        ``"staff"`` for ``is_staff``, ``"superuser"`` for ``is_superuser`` and
+        ``"admin"`` for either (the users ``IsAdminUser`` admits). Override to
+        add roles from elsewhere (groups, a column, ...); the result is also
+        emitted as the ``roles`` claim.
+        """
+        roles = []
+        if self.is_staff:
+            roles.append("staff")
+        if self.is_superuser:
+            roles.append("superuser")
+        if self.is_staff or self.is_superuser:
+            roles.append("admin")
+        return roles
+
     def get_claims(self) -> dict[str, Any]:
         """
         Get JWT claims for this user.
@@ -185,6 +202,7 @@ class AbstractUser(AbstractBaseUser):
             "is_staff": self.is_staff,
             "is_superuser": self.is_superuser,
             "is_active": self.is_active,
+            "roles": self.get_roles(),
         }
 
 
