@@ -143,3 +143,110 @@ async def test_token_only_user_without_db_lookup_is_denied(db):
     assert await ModelPermissions().has_permission(
         _request("GET", _TokenOnlyUser()), _View()
     ) is False
+
+
+# --------------------------------------------------------------------------- #
+# POST /query is a read; unknown methods and model-less views are denied
+# --------------------------------------------------------------------------- #
+
+
+class _QueryView(_View):
+    action = "query"
+
+
+async def test_query_requires_view_not_add(db):
+    """POST /query only reads: view_<model> grants it, add_<model> does not."""
+    from zeeb_api.auth.backends import create_user
+
+    reader = await create_user(email="reader@example.com", password="pw-123456")
+    await _grant(reader, "view_widget")
+    adder = await create_user(email="adder@example.com", password="pw-123456")
+    await _grant(adder, "add_widget")
+
+    assert await ModelPermissions().has_permission(_request("POST", reader), _QueryView()) is True
+    assert await ModelPermissions().has_permission(_request("POST", adder), _QueryView()) is False
+    # A plain POST (create) still needs add_<model>.
+    assert await ModelPermissions().has_permission(_request("POST", adder), _View()) is True
+    assert await ModelPermissions().has_permission(_request("POST", reader), _View()) is False
+
+
+async def test_unknown_method_is_denied(db):
+    from zeeb_api.auth.backends import create_user
+
+    user = await create_user(email="odd@example.com", password="pw-123456")
+    for codename in ("view_widget", "add_widget", "change_widget", "delete_widget"):
+        await _grant(user, codename)
+
+    assert await ModelPermissions().has_permission(_request("PROPFIND", user), _View()) is False
+    assert await ModelPermissions().has_permission(_request("TRACE", user), _View()) is False
+
+
+async def test_view_without_a_model_is_denied(db):
+    from zeeb_api.auth.backends import create_user
+
+    user = await create_user(email="nomodel@example.com", password="pw-123456")
+
+    class _NoModelView:
+        queryset = None
+
+    assert await ModelPermissions().has_permission(_request("GET", user), _NoModelView()) is False
+
+
+# --------------------------------------------------------------------------- #
+# IsOwner compares the foreign-key column, not the lazily loaded relation
+# --------------------------------------------------------------------------- #
+
+
+def _owned_model():
+    from zeeb_orm import Model, fields
+
+    class OwnedGadget(Model):
+        owner = fields.ForeignKey("User", on_delete="CASCADE")
+        name = fields.CharField(max_length=50)
+
+        class Meta:
+            table_name = "owned_gadgets"
+
+    return OwnedGadget
+
+
+class _User:
+    is_authenticated = True
+
+    def __init__(self, user_id):
+        self.id = user_id
+
+
+async def test_is_owner_allows_owner_of_an_unloaded_foreign_key():
+    import uuid
+
+    from zeeb_api.permissions import IsOwner, IsOwnerOrReadOnly
+    from zeeb_orm.models.fields import ForeignKeyLazyLoader
+
+    owner_id = uuid.uuid4()
+    gadget = _owned_model()(owner_id=owner_id, name="g")
+    # The relation is not loaded: this is what the old code compared against.
+    assert isinstance(gadget.owner, ForeignKeyLazyLoader)
+
+    assert await IsOwner().has_object_permission(
+        _request("PATCH", _User(owner_id)), None, gadget
+    ) is True
+    # A token-only user carries the id as a string (the ``sub`` claim).
+    assert await IsOwner().has_object_permission(
+        _request("PATCH", _User(str(owner_id))), None, gadget
+    ) is True
+    assert await IsOwnerOrReadOnly().has_object_permission(
+        _request("DELETE", _User(owner_id)), None, gadget
+    ) is True
+
+
+async def test_is_owner_denies_someone_else():
+    import uuid
+
+    from zeeb_api.permissions import IsOwner
+
+    gadget = _owned_model()(owner_id=uuid.uuid4(), name="g")
+    assert await IsOwner().has_object_permission(
+        _request("PATCH", _User(uuid.uuid4())), None, gadget
+    ) is False
+    assert await IsOwner().has_object_permission(_request("PATCH", None), None, gadget) is False
