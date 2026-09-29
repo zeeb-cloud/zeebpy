@@ -402,6 +402,9 @@ latest = await Article.objects.filter(published=True).order_by("-created_at").fi
 ```python
 total = await Article.objects.count()
 published = await Article.objects.filter(published=True).count()
+
+# Slices, distinct() and aggregate filters are respected
+first_page = await Article.objects.order_by("id")[:20].count()
 ```
 
 ### exists()
