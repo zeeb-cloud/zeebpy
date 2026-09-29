@@ -41,13 +41,18 @@ This defines:
 
 | Rule | Description | Q Filter |
 |------|-------------|----------|
-| `Rule.public()` | Always allows access | No filter (match all) |
-| `Rule.authenticated()` | Requires logged in user | No filter (match all if authenticated) |
-| `Rule.staff()` | Requires staff user | No filter if staff, else match none |
-| `Rule.superuser()` | Requires superuser | No filter if superuser, else match none |
-| `Rule.owner("field")` | User matches field value | `Q(field_id=user.id)` |
+| `Rule.public()` | Always allows access | `Q.match_all()` |
+| `Rule.authenticated()` | Requires logged in user | `Q.match_all()` if authenticated, else `Q.match_none()` |
+| `Rule.staff()` | Requires staff user | `Q.match_all()` if staff, else `Q.match_none()` |
+| `Rule.superuser()` | Requires superuser | `Q.match_all()` if superuser, else `Q.match_none()` |
+| `Rule.owner("field")` | User matches field value | `Q(field_id=user.id)` (`Q.match_none()` for anonymous) |
 | `Rule.Q(**kwargs)` | Field condition | `Q(**kwargs)` |
-| `Rule.custom(fn)` | Custom async function | No filter (Python-only check) |
+| `Rule.custom(fn)` | Custom async function | Cannot be compiled — fail-closed (see below) |
+
+`Q.match_all()` / `Q.match_none()` are real constants, not an empty `Q()`, so
+the filter stays correct under every combinator: `~Rule.staff()` gives a staff
+user nothing, `Rule.staff() | Rule.owner("author")` gives a staff user
+everything, and `~Rule.public()` matches no row.
 
 ### Combining Rules
 
@@ -83,7 +88,26 @@ class Project(Model):
     read_permission = Rule.custom(check_team_member) | Rule.public()
 ```
 
-> **Note**: Custom rules cannot generate SQL filters and are evaluated in Python after the query.
+> **Note**: Custom rules cannot generate SQL filters. Queryset scoping
+> (`readable_by()`, `with_permission()`, viewsets with
+> `use_object_permissions`) is **fail-closed**: a row whose admission depends
+> on a custom rule is left out, whether the rule is negated or not. In the
+> example above, `Rule.public()` still grants every row; `Rule.custom(fn)` on
+> its own grants none through a queryset.
+
+Objects that only a custom rule grants are reachable through the object-level
+check, which does run the function. Narrow the candidates with
+`Rule.candidates_q()` — every row the rule *might* grant — then check each one:
+
+```python
+rule = Project._permission_rules["read_permission"]
+candidates = await Project.objects.filter(rule.candidates_q(user, Project))
+visible = [p for p in candidates if await p.check_read_permission(user)]
+```
+
+`rule.to_q(user, model)` is the fail-closed filter querysets use;
+`rule.candidates_q(user, model)` is its permissive counterpart. For rules
+without custom parts the two are identical.
 
 ## Auto-Generated Methods
 

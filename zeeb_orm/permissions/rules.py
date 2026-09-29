@@ -145,7 +145,11 @@ class Rule:
         For class-level checks (add permission), obj is None.
         
         Note: Custom rules cannot generate Q filters for database queries.
-        They will be evaluated in Python after the query.
+        Queryset scoping (``readable_by`` & co) is fail-closed: a row whose
+        admission depends on a custom rule is left out. Such objects are
+        granted only by the object-level check (``await rule.check(obj,
+        user)`` / ``obj.check_<action>_permission(user)``); see
+        :meth:`candidates_q`.
         
         Args:
             check_fn: Async function (obj, user) -> bool
@@ -366,103 +370,133 @@ class Rule:
     # =========================================================================
     # Q filter generation for database queries
     # =========================================================================
-    
+
     def to_q(self, user: Any, model_class: type[Model] | None = None) -> QFilter:
         """
-        Generate Q filter for queryset filtering.
-        
-        Some rules (staff, superuser, authenticated) cannot be expressed as
-        Q filters since they depend on user attributes, not object attributes.
-        These rules return either Q() (match all) or Q(pk=None) (match none).
-        
+        Generate the Q filter used to scope querysets (``readable_by`` & co).
+
+        The filter is *fail-closed*: it admits exactly the rows the rule
+        grants, and never a row whose admission cannot be decided in SQL.
+
+        * Rules that depend only on the user (``public``, ``authenticated``,
+          ``staff``, ``superuser``) compile to :meth:`Q.match_all` or
+          :meth:`Q.match_none`, which obey boolean algebra — so ``~staff``
+          for a staff user matches nothing, and ``staff | owner`` for a
+          staff user matches everything.
+        * ``Rule.custom`` cannot be compiled to SQL. Inside a queryset scope
+          it contributes the *most restrictive* value its position allows:
+          ``custom`` admits no row, and neither does ``~custom``. Objects it
+          would grant are only reachable through the object-level check
+          (``await obj.check_<action>_permission(user)``, i.e.
+          :meth:`check`), typically over :meth:`candidates_q`.
+
         Args:
-            user: User to generate filter for
+            user: User to generate filter for (None for anonymous)
             model_class: Model class (for resolving field references)
-        
+
         Returns:
             Q filter object
         """
+        lower, _upper = self._q_bounds(user, model_class)
+        return lower
+
+    def candidates_q(self, user: Any, model_class: type[Model] | None = None) -> QFilter:
+        """Q filter for every row this rule *might* grant.
+
+        The permissive counterpart of :meth:`to_q`: a ``Rule.custom`` is
+        assumed to pass wherever that widens the result. For a rule without
+        custom parts it equals :meth:`to_q`. Use it to narrow the candidates
+        before running the object-level :meth:`check` on each of them::
+
+            rule = Post._permission_rules["read_permission"]
+            candidates = await Post.objects.filter(rule.candidates_q(user, Post))
+            visible = [p for p in candidates if await rule.check(p, user)]
+        """
+        _lower, upper = self._q_bounds(user, model_class)
+        return upper
+
+    def _q_bounds(
+        self, user: Any, model_class: type[Model] | None
+    ) -> tuple[QFilter, QFilter]:
+        """``(lower, upper)``: rows certainly granted / possibly granted.
+
+        Both bounds are exact for SQL-expressible rules. Negation swaps them
+        (NOT of "possibly granted" is "certainly granted"), which is what
+        keeps a negated ``Rule.custom`` closed.
+        """
         from zeeb_orm.query.q import Q
-        
-        q_filter = self._to_q_internal(user, model_class)
-        
+
+        if self.rule_type == self.TYPE_CUSTOM:
+            lower, upper = Q.match_none(), Q.match_all()
+        elif self.rule_type == self.TYPE_COMBINED:
+            lower, upper = self._q_bounds_combined(user, model_class)
+        else:
+            lower = upper = self._to_q_internal(user, model_class)
+
         if self.negated:
-            return ~q_filter
-        return q_filter
-    
+            return ~upper, ~lower
+        return lower, upper
+
     def _to_q_internal(self, user: Any, model_class: type[Model] | None) -> QFilter:
-        """Internal Q generation without negation handling."""
+        """Exact Q for a leaf rule, without negation handling."""
         from zeeb_orm.query.q import Q
-        
+
         if self.rule_type == self.TYPE_PUBLIC:
-            # Match everything
-            return Q()
-        
+            return Q.match_all()
+
         if self.rule_type == self.TYPE_AUTHENTICATED:
-            if user is None:
-                # Match nothing
-                return Q(pk=None)
-            # Match everything (user is authenticated)
-            return Q()
-        
+            return Q.match_none() if user is None else Q.match_all()
+
         if self.rule_type == self.TYPE_STAFF:
             if user is None:
-                return Q(pk=None)
+                return Q.match_none()
             is_staff = (
-                getattr(user, "is_staff", False) or 
+                getattr(user, "is_staff", False) or
                 getattr(user, "is_superuser", False)
             )
-            if is_staff:
-                return Q()  # Match everything
-            return Q(pk=None)  # Match nothing
-        
+            return Q.match_all() if is_staff else Q.match_none()
+
         if self.rule_type == self.TYPE_SUPERUSER:
-            if user is None:
-                return Q(pk=None)
-            if getattr(user, "is_superuser", False):
-                return Q()
-            return Q(pk=None)
-        
+            if user is not None and getattr(user, "is_superuser", False):
+                return Q.match_all()
+            return Q.match_none()
+
         if self.rule_type == self.TYPE_OWNER:
             if user is None:
-                return Q(pk=None)
+                return Q.match_none()
             user_id = getattr(user, "id", None) or getattr(user, "pk", None)
             if user_id is None:
-                return Q(pk=None)
+                return Q.match_none()
             # Filter by owner field
             return Q(**{f"{self.owner_field}_id": user_id})
-        
+
         if self.rule_type == self.TYPE_Q:
-            return Q(**self.q_kwargs)
-        
-        if self.rule_type == self.TYPE_CUSTOM:
-            # Custom rules can't be converted to Q filters
-            # Return Q() and let Python-level filtering handle it
-            return Q()
-        
-        if self.rule_type == self.TYPE_COMBINED:
-            return self._to_q_combined(user, model_class)
-        
-        return Q()
-    
-    def _to_q_combined(self, user: Any, model_class: type[Model] | None) -> QFilter:
-        """Generate Q filter for combined rules."""
+            # An empty Rule.Q() grants everything (see _check_q_condition);
+            # an empty Q() would be a no-op that negation cannot flip.
+            return Q(**self.q_kwargs) if self.q_kwargs else Q.match_all()
+
+        # Unknown rule type: grant nothing.
+        return Q.match_none()
+
+    def _q_bounds_combined(
+        self, user: Any, model_class: type[Model] | None
+    ) -> tuple[QFilter, QFilter]:
+        """Bounds of an AND/OR combination, child by child."""
         from zeeb_orm.query.q import Q
-        
+
         if not self.children:
-            return Q()
-        
-        result = self.children[0].to_q(user, model_class)
-        
+            # Mirrors _check_combined: an empty combination grants.
+            return Q.match_all(), Q.match_all()
+
+        lower, upper = self.children[0]._q_bounds(user, model_class)
         for child in self.children[1:]:
-            child_q = child.to_q(user, model_class)
+            child_lower, child_upper = child._q_bounds(user, model_class)
             if self.connector == "AND":
-                result = result & child_q
+                lower, upper = lower & child_lower, upper & child_upper
             else:  # OR
-                result = result | child_q
-        
-        return result
-    
+                lower, upper = lower | child_lower, upper | child_upper
+        return lower, upper
+
     # =========================================================================
     # Utility methods
     # =========================================================================
