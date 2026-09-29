@@ -226,8 +226,9 @@ SECRET_KEY = "your-secret-key-change-in-production"
 
 **Important:** Always use a strong, random secret key in production.
 
-Known insecure defaults (such as the startproject template value above) are
-actively refused outside of debug mode:
+An empty key, a known insecure default (such as the startproject template
+value above) and any key shorter than 32 bytes are actively refused outside of
+debug mode:
 
 - With `DEBUG = False`, `create_app()` raises
   `zeeb_api.exceptions.ImproperlyConfigured`, and JWT token
@@ -423,8 +424,9 @@ JWT_ISSUER = None  # Optional: token issuer
 JWT_AUDIENCE = None  # Optional: token audience
 ```
 
-`JWT_SECRET_KEY` falls back to `SECRET_KEY` when unset. Insecure default
-values are refused when `DEBUG = False` (token operations raise
+`JWT_SECRET_KEY` falls back to `SECRET_KEY` when unset. Empty, too short
+(under 32 bytes) and insecure default values are refused when `DEBUG = False`
+(token operations raise
 `InsecureSecretError` and `create_app()` raises `ImproperlyConfigured`);
 with `DEBUG = True` they only trigger a one-time warning.
 
@@ -668,7 +670,7 @@ generated project sets most of them from the environment — see
 | Setting | Default | Description |
 |---------|---------|-------------|
 | `DEBUG` | `False` | Debug mode |
-| `SECRET_KEY` | (unsafe default; refused when `DEBUG=False`) | Secret key for JWT |
+| `SECRET_KEY` | (unsafe default; refused when `DEBUG=False`) | Secret key for JWT (empty, default and under-32-byte keys are refused when `DEBUG=False`) |
 | `DATABASE` | SQLite | Database configuration |
 | `ROOT_URLCONF` | `None` | URL configuration module |
 | `MIDDLEWARE` | CORS + JWT | Middleware classes |
@@ -677,7 +679,7 @@ generated project sets most of them from the environment — see
 | `ENFORCE_MIGRATIONS` | `True` | Refuse to start with unapplied migrations (outside `DEBUG`) |
 | `AUTH_USER_MODEL` | `None` | Custom user model (the scaffold sets `"accounts.User"`) |
 | `AUTH_LOAD_USER_FROM_DB` | `True` | Load user from database |
-| `JWT_SECRET_KEY` | `SECRET_KEY` | JWT signing key (insecure defaults refused when `DEBUG=False`) |
+| `JWT_SECRET_KEY` | `SECRET_KEY` | JWT signing key (empty, default and under-32-byte keys refused when `DEBUG=False`) |
 | `JWT_ALGORITHM` | `"HS256"` | JWT algorithm |
 | `JWT_ACCESS_TOKEN_EXPIRE_MINUTES` | `60` | Access token lifetime |
 | `JWT_REFRESH_TOKEN_EXPIRE_DAYS` | `7` | Refresh token lifetime |

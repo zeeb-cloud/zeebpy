@@ -26,6 +26,28 @@ INSECURE_SECRETS = frozenset({
     "your-secret-key-change-in-production",
 })
 
+# Minimum HMAC key length in bytes. RFC 7518 section 3.2 requires a key at
+# least as long as the hash output: 32 bytes for HS256.
+MIN_SECRET_KEY_LENGTH = 32
+
+
+def secret_key_problem(secret_key: str | None) -> str | None:
+    """Why *secret_key* must not sign tokens, or None when it may.
+
+    Refused: an empty or unset key (``SECRET_KEY=`` in ``.env`` loads as the
+    empty string), a known insecure default, and anything shorter than
+    :data:`MIN_SECRET_KEY_LENGTH` bytes (UTF-8) — short enough to brute-force
+    offline from a single token.
+    """
+    if not secret_key:
+        return "empty"
+    if secret_key in INSECURE_SECRETS:
+        return "an insecure default"
+    length = len(secret_key.encode("utf-8"))
+    if length < MIN_SECRET_KEY_LENGTH:
+        return f"too short ({length} bytes; at least {MIN_SECRET_KEY_LENGTH} are required)"
+    return None
+
 
 class JWTConfig(BaseModel):
     """JWT configuration settings."""
@@ -57,8 +79,8 @@ class JWTConfig(BaseModel):
 
     @property
     def is_insecure(self) -> bool:
-        """True when the secret key is a known insecure default."""
-        return self.secret_key in INSECURE_SECRETS
+        """True when the secret key is empty, a known default, or too short."""
+        return secret_key_problem(self.secret_key) is not None
 
 
 # Global config instance
@@ -70,14 +92,15 @@ _insecure_secret_warned = False
 
 def _ensure_secure_secret(config: JWTConfig) -> None:
     """
-    Refuse to operate with a known insecure default secret key.
+    Refuse to operate with an insecure secret key (see :func:`secret_key_problem`).
 
     - DEBUG falsy (or settings unavailable): raise InsecureSecretError.
     - DEBUG truthy: log a warning once per process and continue.
     """
     global _insecure_secret_warned
 
-    if not config.is_insecure:
+    problem = secret_key_problem(config.secret_key)
+    if problem is None:
         return
 
     try:
@@ -87,14 +110,18 @@ def _ensure_secure_secret(config: JWTConfig) -> None:
         debug = False
 
     if not debug:
-        raise InsecureSecretError()
+        raise InsecureSecretError(
+            f"JWT secret key is {problem}. Set SECRET_KEY (or JWT_SECRET_KEY) "
+            f"to a strong, unique secret of at least {MIN_SECRET_KEY_LENGTH} "
+            "bytes before running with DEBUG=False."
+        )
 
     if not _insecure_secret_warned:
         logger.warning(
-            "JWT secret key is an insecure default value. This is allowed "
-            "because DEBUG is enabled, but tokens signed with this key are "
-            "NOT safe for production. Set SECRET_KEY (or JWT_SECRET_KEY) to "
-            "a strong, unique secret."
+            "JWT secret key is %s. This is allowed because DEBUG is enabled, "
+            "but tokens signed with this key are NOT safe for production. Set "
+            "SECRET_KEY (or JWT_SECRET_KEY) to a strong, unique secret.",
+            problem if problem != "an insecure default" else "an insecure default value",
         )
         _insecure_secret_warned = True
 
