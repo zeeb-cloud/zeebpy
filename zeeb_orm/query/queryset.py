@@ -2068,6 +2068,13 @@ def q_to_condition(
     """Convert a Q object to a SQLAlchemy condition."""
     connector, negated, children = q.resolve()
 
+    if q._constant is not None:
+        # Q.match_all() / Q.match_none(): a literal TRUE / FALSE, never
+        # "no condition" — dropping it would turn match_none into match-all.
+        from sqlalchemy import false, true
+
+        return true() if q._constant is not negated else false()
+
     sub_conditions = []
     for child in children:
         if isinstance(child, Q):
