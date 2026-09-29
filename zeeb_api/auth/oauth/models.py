@@ -58,6 +58,51 @@ class ExternalIdentity(Model):
         )
 
 
+def _claim_is_true(value: Any) -> bool:
+    """A recorded ``email_verified`` claim that asserts verification."""
+    from zeeb_api.auth.oauth.provider import parse_email_verified
+
+    return parse_email_verified(value) is True
+
+
+async def local_email_is_verified(user: Any, email: str) -> bool:
+    """Whether ``user`` is known to own ``email`` — the gate for email linking.
+
+    A local account made through ``/register`` never proves it owns its
+    address, so linking an IdP login to it by email would hand the account to
+    whoever registered the address first (pre-registration hijack). Ownership
+    counts as established when:
+
+    - the user model carries an ``email_verified`` attribute (a column your
+      own verification flow sets) and it is ``True``; or
+    - the user already has an ``ExternalIdentity`` for this address whose
+      provider asserted ``email_verified`` when it was linked.
+
+    Anything else is unverifiable, and linking is refused.
+    """
+    flag = getattr(user, "email_verified", None)
+    if isinstance(flag, bool):
+        return flag
+    identities = await ExternalIdentity.objects.filter(user_id=user.id).all()
+    for identity in identities:
+        if (identity.email or "").lower() != email.lower():
+            continue
+        if _claim_is_true((identity.extra_data or {}).get("email_verified")):
+            return True
+    return False
+
+
+def _refuse_existing_account(provider: str) -> AuthenticationException:
+    return AuthenticationException(
+        code=ErrorCode.AUTH_OAUTH_ACCOUNT_EXISTS,
+        message=(
+            f"A local account already uses this {provider} identity's email "
+            "address and cannot be linked to it automatically; sign in to "
+            "that account first"
+        ),
+    )
+
+
 async def get_or_create_user_for_identity(
     provider: str,
     claims: ExternalClaims,
@@ -71,19 +116,27 @@ async def get_or_create_user_for_identity(
 
     Resolution order:
         1. Existing ``ExternalIdentity(provider, subject)`` -> its user
-           (updates ``last_login_at`` / ``email`` / ``extra_data``).
+           (updates ``last_login_at`` / ``email`` / ``extra_data``). A
+           deactivated user is refused (``AUTH_ACCOUNT_DISABLED``).
         2. ``link_by_email`` and the claims carry a **verified** email ->
-           existing user with that email gets a new identity attached.
+           existing user with that email gets a new identity attached, but
+           only when that local account is known to own the address
+           (:func:`local_email_is_verified`); otherwise
+           ``AUTH_OAUTH_ACCOUNT_EXISTS``.
 
            SECURITY: email linking means whoever controls that email at the
            IdP gains access to the matching local account (account takeover
-           if the IdP does not verify email ownership). When
+           if the IdP does not verify email ownership), and whoever created
+           the local account gains the IdP login (pre-registration hijack if
+           the local account never proved it owns the address). When
            ``require_verified_email`` is set (the default), the IdP must
            assert ``email_verified`` is true before an email is used to link
            to an existing account or to auto-provision a new one. Only disable
            it for providers you fully trust to have verified the address.
         3. ``auto_create`` -> create a new user (no usable password) with
-           ``date_joined`` set.
+           ``date_joined`` set. A local account already holding the email is
+           never shadowed: without a permitted link that is
+           ``AUTH_OAUTH_ACCOUNT_EXISTS``.
         4. Otherwise raise
            ``AuthenticationException(AUTH_OAUTH_USER_NOT_PROVISIONED)``.
 
@@ -101,7 +154,12 @@ async def get_or_create_user_for_identity(
     ).first()
 
     if identity is not None:
-        user = await user_model.objects.get(id=identity.user_id)
+        user = await user_model.objects.filter(id=identity.user_id).first()
+        if user is None or not getattr(user, "is_active", True):
+            raise AuthenticationException(
+                code=ErrorCode.AUTH_ACCOUNT_DISABLED,
+                message="The account linked to this identity is disabled",
+            )
         identity.last_login_at = now
         if claims.email:
             identity.email = claims.email
@@ -126,8 +184,18 @@ async def get_or_create_user_for_identity(
         )
 
     user = None
-    if link_by_email and claims.email and email_is_trusted:
-        user = await user_model.objects.filter(email=claims.email).first()
+    existing = None
+    if claims.email:
+        existing = await user_model.objects.filter(email=claims.email).first()
+    if existing is not None:
+        if not (link_by_email and await local_email_is_verified(existing, claims.email)):
+            raise _refuse_existing_account(provider)
+        if not getattr(existing, "is_active", True):
+            raise AuthenticationException(
+                code=ErrorCode.AUTH_ACCOUNT_DISABLED,
+                message="The account with this email address is disabled",
+            )
+        user = existing
 
     if user is None:
         if not auto_create:

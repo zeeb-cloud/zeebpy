@@ -61,8 +61,12 @@ OAUTH_PROVIDERS = {}
 # Auto-create a local user on first OAuth login (when the provider supplies an email)
 OAUTH_AUTO_CREATE_USERS = True
 # Link an OAuth identity to an existing local user with the same email address.
-# SECURITY: only enable when all configured providers verify email ownership.
-OAUTH_LINK_BY_EMAIL = True
+# Off by default: a local account made through /register never proves it owns
+# its address, so whoever registered it first would receive the owner's later
+# SSO login. Even when enabled, linking only happens to a local account whose
+# email is verified (a truthy `email_verified` attribute on the user model, or
+# an earlier identity whose provider verified the address).
+OAUTH_LINK_BY_EMAIL = False
 # Require the IdP to assert `email_verified` before an email is used to link to
 # an existing account or auto-provision a new one. SECURITY: leave True unless a
 # provider is fully trusted to verify ownership; otherwise an attacker can seed

@@ -66,12 +66,14 @@ i18n translations on them.
 | `AUTH_TOKEN_MISSING` | No credentials on a protected endpoint (default for `AuthenticationException` / `AuthenticationFailed`). |
 | `AUTH_SESSION_EXPIRED` | Session no longer valid. |
 | `AUTH_INSECURE_CONFIG` | Insecure default secret with `DEBUG=false` (`InsecureSecretError`, 500 — the app refuses to serve). |
+| `AUTH_ACCOUNT_DISABLED` | An OAuth login (or email link) resolved to a deactivated or deleted local account. |
 | `AUTH_OAUTH_STATE_INVALID` | OAuth `state`/PKCE check failed. |
 | `AUTH_OAUTH_EXCHANGE_FAILED` | Authorization-code exchange with the provider failed. |
 | `AUTH_OAUTH_ID_TOKEN_INVALID` | OIDC ID token failed validation. |
 | `AUTH_OAUTH_PROVIDER_NOT_FOUND` | Unknown OAuth provider name in the callback path. |
 | `AUTH_OAUTH_USER_NOT_PROVISIONED` | External identity valid but no local user exists and auto-provisioning is off. |
 | `AUTH_OAUTH_EMAIL_UNVERIFIED` | Provider reported the email as unverified while `OAUTH_REQUIRE_VERIFIED_EMAIL` is on — blocks both linking and auto-provisioning. |
+| `AUTH_OAUTH_ACCOUNT_EXISTS` | A local account already uses the identity's email and may not be linked to it (linking off, or the local account never verified its address). |
 
 ### Permissions — HTTP 403
 

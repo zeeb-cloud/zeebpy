@@ -43,6 +43,11 @@ class ExternalAuthenticatedUser:
         return f"<ExternalAuthenticatedUser provider={self.provider!r} id={self.id}>"
 
 
+def _is_active(user: Any) -> bool:
+    """A resolved local account that may authenticate (exists, not deactivated)."""
+    return user is not None and bool(getattr(user, "is_active", True))
+
+
 class ExternalTokenValidator:
     """
     Validate externally-issued bearer tokens against a provider's JWKS.
@@ -68,7 +73,16 @@ class ExternalTokenValidator:
         self.create_users = create_users
 
     async def __call__(self, token: str) -> Any | None:
-        """Return a user object for ``token`` or None on any failure."""
+        """Return a user object for ``token`` or None on any failure.
+
+        Fails closed: a token whose linked account is deleted or deactivated
+        authenticates nobody, and neither does one whose identity lookup
+        errors (e.g. the database is down, or the ``auth_external_identities``
+        table was never migrated) — an error must not turn into a lightweight
+        user built from claims nobody could check against the account. Only a
+        token with **no** linked identity (and ``create_users`` off) yields an
+        ``ExternalAuthenticatedUser``.
+        """
         try:
             claims = await self.provider.validate_external_token(token)
         except Exception:
@@ -86,7 +100,9 @@ class ExternalTokenValidator:
             ).first()
             if identity is not None:
                 from zeeb_api.auth.backends import get_user_model
-                return await get_user_model().objects.get(id=identity.user_id)
+
+                user = await get_user_model().objects.filter(id=identity.user_id).first()
+                return user if _is_active(user) else None
 
             if self.create_users:
                 user, _identity, _created = await get_or_create_user_for_identity(
@@ -96,13 +112,15 @@ class ExternalTokenValidator:
                     link_by_email=self._resolved_link_by_email(),
                     require_verified_email=self._resolved_require_verified_email(),
                 )
-                return user
+                return user if _is_active(user) else None
         except Exception as e:
-            logger.debug(
-                "External identity lookup failed for provider %s: %s",
+            logger.warning(
+                "External identity lookup failed for provider %s; treating the "
+                "token as unauthenticated: %s",
                 self.provider.name,
                 e,
             )
+            return None
 
         return ExternalAuthenticatedUser(claims, self.provider.name)
 
@@ -111,9 +129,9 @@ class ExternalTokenValidator:
             return self.provider.link_by_email
         try:
             from zeeb_api.conf import settings
-            return bool(getattr(settings, "OAUTH_LINK_BY_EMAIL", True))
+            return bool(getattr(settings, "OAUTH_LINK_BY_EMAIL", False))
         except Exception:
-            return True
+            return False
 
     def _resolved_require_verified_email(self) -> bool:
         if self.provider.require_verified_email is not None:

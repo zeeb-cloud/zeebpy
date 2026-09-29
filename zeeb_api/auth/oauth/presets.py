@@ -8,7 +8,7 @@ import re
 from typing import Any
 
 from zeeb_api.auth.oauth.client import OAuthError
-from zeeb_api.auth.oauth.provider import ExternalClaims, OAuthProvider
+from zeeb_api.auth.oauth.provider import ExternalClaims, OAuthProvider, parse_email_verified
 
 AZURE_AUTHORITY_TEMPLATE = (
     "https://login.microsoftonline.com/{tenant}/v2.0/.well-known/openid-configuration"
@@ -79,7 +79,7 @@ class AzureADProvider(OAuthProvider):
         return ExternalClaims(
             subject=str(subject),
             email=str(email) if email else None,
-            email_verified=bool(email_verified) if email_verified is not None else None,
+            email_verified=parse_email_verified(email_verified),
             name=raw.get("name"),
             raw=raw,
         )
@@ -141,7 +141,7 @@ class GitHubProvider(OAuthProvider):
         return ExternalClaims(
             subject=str(raw["id"]),
             email=raw.get("email"),
-            email_verified=bool(email_verified) if email_verified is not None else None,
+            email_verified=parse_email_verified(email_verified),
             name=raw.get("name") or raw.get("login"),
             raw=raw,
         )
@@ -202,4 +202,4 @@ class GitHubProvider(OAuthProvider):
             None,
         )
         if entry is not None:
-            raw["email_verified"] = bool(entry.get("verified"))
+            raw["email_verified"] = parse_email_verified(entry.get("verified")) is True
