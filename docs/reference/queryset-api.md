@@ -31,6 +31,11 @@ users = await User.objects.filter(is_active=True, role="admin").all()
 users = await User.objects.filter(is_active=True).filter(role="admin").all()
 ```
 
+Across a multi-valued relation (reverse ForeignKey, ManyToMany) the
+conditions of one `filter()` call refer to the same related row, while each
+chained `filter()` gets its own JOIN: `filter(tags__name="a").filter(tags__name="b")`
+returns objects tagged both `a` and `b`.
+
 ### exclude(\*\*kwargs)
 
 Returns objects NOT matching conditions.
@@ -42,6 +47,12 @@ users = await User.objects.exclude(is_active=False).all()
 # Combine with filter
 users = await User.objects.filter(role="user").exclude(is_banned=True).all()
 ```
+
+Semantics: `exclude(a, b)` removes rows matching `a AND b`; rows where
+a compared column is NULL are kept (`exclude(age=30)` keeps `age IS NULL`);
+across a reverse ForeignKey / ManyToMany, objects with *any* matching related
+row are removed and objects without related rows are kept
+(`pk NOT IN (SELECT ...)`). `filter(~Q(...))` behaves the same way.
 
 ### none()
 

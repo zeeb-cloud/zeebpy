@@ -41,6 +41,26 @@ articles = await Article.objects.exclude(status="draft")
 articles = await Article.objects.filter(published=True).exclude(author=None)
 ```
 
+`exclude()` semantics:
+
+- `exclude(a, b)` removes the rows matching `a AND b`.
+- Rows where a compared column is NULL are **kept**: `exclude(rating=5)` still
+  returns articles without a rating (it compiles to
+  `NOT (rating = 5 AND rating IS NOT NULL)`). The same holds for `~Q(...)`
+  inside `filter()`.
+- Across a multi-valued relation (reverse ForeignKey, ManyToMany) a condition
+  removes the objects that have **any** matching related row; objects without
+  related rows stay. It compiles to `pk NOT IN (SELECT ...)` rather than a
+  negated condition on a JOIN:
+
+```python
+# Authors with no published article — including authors with no articles
+authors = await Author.objects.exclude(articles__published=True)
+
+# Articles not tagged "draft" (untagged articles included)
+articles = await Article.objects.exclude(tags__name="draft")
+```
+
 ### Matching Nothing
 
 ```python
@@ -175,6 +195,12 @@ authors = await Author.objects.filter(posts__views__gt=100)
 # Reverse joins can yield one row per matching related object —
 # use .distinct() to deduplicate
 authors = await Author.objects.filter(posts__published=True).distinct()
+
+# Across a multi-valued relation (reverse FK, M2M), conditions in ONE
+# filter() call must hold for the same related row; each further filter()
+# call gets a JOIN of its own and may match a different row
+authors = await Author.objects.filter(posts__published=True, posts__views__gt=100)
+authors = await Author.objects.filter(posts__published=True).filter(posts__views__gt=100)
 
 # Compare a relation directly with an instance (no JOIN, uses the FK column)
 posts = await Post.objects.filter(author=alice)
