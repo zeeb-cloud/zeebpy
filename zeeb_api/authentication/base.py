@@ -51,10 +51,11 @@ class JWTAuthentication(BaseAuthentication):
     Authenticate locally-issued JWT Bearer tokens.
 
     Uses the same token validation and user loading as ``JWTAuthMiddleware``:
-    a valid access token loads the user from the database (falling back to a
-    claims-only ``AuthenticatedUser`` if the lookup fails). Expired/invalid
-    tokens record ``request.state.auth_error`` (so a later permission denial
-    yields a precise 401) and return None.
+    a valid access token loads the user from the database, and a deleted or
+    deactivated account is not authenticated (a database error propagates
+    rather than falling back to the token's claims). Expired/invalid tokens,
+    and valid ones whose account is gone, record ``request.state.auth_error``
+    (so a later permission denial yields a precise 401) and return None.
     """
 
     load_user_from_db: bool = True
@@ -77,7 +78,10 @@ class JWTAuthentication(BaseAuthentication):
         if self.load_user_from_db:
             from zeeb_api.auth.middleware import default_user_loader
 
-            return await default_user_loader(payload)
+            user = await default_user_loader(payload)
+            if user is None:
+                request.state.auth_error = ErrorCode.AUTH_TOKEN_INVALID
+            return user
         from zeeb_api.auth.middleware import AuthenticatedUser
 
         return AuthenticatedUser(payload)
