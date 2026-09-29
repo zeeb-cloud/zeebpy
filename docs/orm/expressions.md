@@ -131,6 +131,24 @@ if search:
 articles = await Article.objects.filter(filters)
 ```
 
+An empty `Q()` adds no condition and is the identity of `&` and `|`:
+`Q() | Q(x=1)` is `Q(x=1)`, and `~Q()` is still `Q()`. It is therefore not a
+"match everything" value. When a condition must be true (or false) for every
+row and keep that meaning under `|`, `&` and `~`, use the constants:
+
+```python
+Q.match_all()     # TRUE for every row; absorbs |, negates to match_none()
+Q.match_none()    # FALSE for every row; absorbs &, negates to match_all()
+
+Q.match_all() | Q(status="draft")    # -> Q.match_all()
+Q.match_none() & Q(status="draft")   # -> Q.match_none()
+~Q.match_all()                       # -> Q.match_none()
+```
+
+`q.deconstruct()` returns `{"connector", "negated", "children"}` with leaf
+conditions as `(lookup, value)` tuples and nested `Q` objects deconstructed
+recursively; the constants add `"match": "all" | "none"`.
+
 ## Annotations
 
 `annotate()` adds computed fields to each object in a QuerySet.

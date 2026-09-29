@@ -25,7 +25,18 @@ class Q:
         Q(status='active') | Q(status='pending')
         ~Q(deleted=True)
         Q(name__startswith='A') & (Q(age__gt=20) | Q(role='admin'))
+
+    An empty ``Q()`` is the identity of ``&`` and ``|`` (it adds no
+    condition), exactly as in Django — so it is *not* a "match everything"
+    value: ``Q() | Q(x=1)`` is ``Q(x=1)`` and ``~Q()`` is still ``Q()``.
+    Code that needs a condition which is true (or false) for every row uses
+    :meth:`match_all` / :meth:`match_none`, which obey boolean algebra under
+    every combinator.
     """
+
+    #: ``None`` for an ordinary node; ``True`` / ``False`` for the
+    #: :meth:`match_all` / :meth:`match_none` constants.
+    _constant: bool | None = None
 
     def __init__(
         self,
@@ -47,6 +58,45 @@ class Q:
         for key, value in kwargs.items():
             self.children.append((key, value))
 
+    # Constants
+
+    @classmethod
+    def match_all(cls) -> Q:
+        """A condition true for every row.
+
+        Unlike an empty ``Q()`` it is absorbing under OR
+        (``match_all() | q`` is ``match_all()``) and negates to
+        :meth:`match_none`.
+        """
+        q = cls()
+        q._constant = True
+        return q
+
+    @classmethod
+    def match_none(cls) -> Q:
+        """A condition false for every row.
+
+        Absorbing under AND (``match_none() & q`` is ``match_none()``) and
+        negates to :meth:`match_all`.
+        """
+        q = cls()
+        q._constant = False
+        return q
+
+    @property
+    def is_match_all(self) -> bool:
+        """True for the :meth:`match_all` constant."""
+        return self._constant is True
+
+    @property
+    def is_match_none(self) -> bool:
+        """True for the :meth:`match_none` constant."""
+        return self._constant is False
+
+    def _is_empty(self) -> bool:
+        """An empty ``Q()`` — no children and not a constant."""
+        return not self.children and self._constant is None
+
     def __and__(self, other: Q) -> Q:
         """Combine with AND operator."""
         if not isinstance(other, Q):
@@ -61,6 +111,8 @@ class Q:
 
     def __invert__(self) -> Q:
         """Negate with NOT operator."""
+        if self._constant is not None:
+            return Q.match_none() if self._constant else Q.match_all()
         q = Q(_connector=self.connector, _negated=not self.negated)
         q.children = self.children.copy()
         return q
@@ -75,10 +127,19 @@ class Q:
 
     def _combine(self, other: Q, connector: QOperator) -> Q:
         """Combine this Q with another using the given connector."""
-        if not self.children:
+        # An empty Q() is the identity on either side (Django parity).
+        if self._is_empty():
             return other
-        if not other.children:
+        if other._is_empty():
             return self
+
+        # Constants follow boolean algebra: match_all absorbs OR and is the
+        # identity of AND; match_none absorbs AND and is the identity of OR.
+        for constant, rest in ((self, other), (other, self)):
+            if constant._constant is None:
+                continue
+            absorbing = constant._constant is (connector is QOperator.OR)
+            return constant if absorbing else rest
 
         # Optimization: if both have same connector and aren't negated, merge children
         if (
@@ -96,6 +157,8 @@ class Q:
         return q
 
     def __repr__(self) -> str:
+        if self._constant is not None:
+            return "Q.match_all()" if self._constant else "Q.match_none()"
         prefix = "NOT " if self.negated else ""
         if len(self.children) == 1:
             child = self.children[0]
@@ -114,24 +177,32 @@ class Q:
         return f"{prefix}Q({inner})"
 
     def __bool__(self) -> bool:
-        """Q object is truthy if it has any children."""
-        return bool(self.children)
+        """Q object is truthy if it has any children (or is a constant)."""
+        return bool(self.children) or self._constant is not None
 
     def resolve(self) -> tuple[QOperator, bool, list[Q | tuple[str, Any]]]:
         """Resolve Q object into its components for query building."""
         return self.connector, self.negated, self.children
 
     def deconstruct(self) -> dict[str, Any]:
-        """Deconstruct Q object for serialization."""
-        return {
+        """Deconstruct Q object for serialization.
+
+        Leaf conditions stay ``(lookup, value)`` tuples; nested Q objects
+        are deconstructed recursively, in their original position.  The
+        :meth:`match_all` / :meth:`match_none` constants carry an extra
+        ``"match": "all" | "none"`` key.
+        """
+        data: dict[str, Any] = {
             "connector": self.connector.value,
             "negated": self.negated,
             "children": [
-                (k, v) if isinstance(c, tuple) else c.deconstruct()
-                for c in self.children
-                for k, v in ([c] if isinstance(c, tuple) else [])
+                child if isinstance(child, tuple) else child.deconstruct()
+                for child in self.children
             ],
         }
+        if self._constant is not None:
+            data["match"] = "all" if self._constant else "none"
+        return data
 
 
 # Lookup expressions supported
