@@ -174,3 +174,47 @@ def test_check_password_over_72_bytes_is_false_not_an_error():
 
     hashed = make_password("p" * 72)
     assert check_password("p" * 73, hashed) is False
+
+
+async def test_register_passes_name_fields_only_when_the_user_model_has_them(monkeypatch):
+    """A custom AUTH_USER_MODEL without first_name/last_name must not receive them."""
+    from zeeb_api.auth import backends
+
+    class MinimalUser:
+        objects = None
+
+    class _NoMatch:
+        async def first(self):
+            return None
+
+    class _Manager:
+        def filter(self, **kwargs):
+            return _NoMatch()
+
+    MinimalUser.objects = _Manager()
+    received = {}
+
+    async def fake_create_user(email, password, **extra):
+        received.update(extra)
+
+        class _Created:
+            id = "1"
+
+        created = _Created()
+        created.email = email
+        return created
+
+    monkeypatch.setattr(backends, "get_user_model", lambda: MinimalUser)
+    monkeypatch.setattr(backends, "create_user", fake_create_user)
+    async with _client() as client:
+        response = await client.post(
+            "/auth/register",
+            json={
+                "email": "min@example.com",
+                "password": "long-enough-1",
+                "first_name": "Min",
+                "last_name": "Imal",
+            },
+        )
+    assert response.status_code == 200, response.text
+    assert received == {}

@@ -288,11 +288,13 @@ def create_auth_router(
                     ],
                 )
             
-            # Create user
+            # Create user. Name fields are passed only when the user model
+            # has them: a custom AUTH_USER_MODEL need not, and the model
+            # constructor rejects unknown keyword arguments.
             extra_fields = {}
-            if body.first_name:
+            if body.first_name and hasattr(User, "first_name"):
                 extra_fields["first_name"] = body.first_name
-            if body.last_name:
+            if body.last_name and hasattr(User, "last_name"):
                 extra_fields["last_name"] = body.last_name
             
             user = await create_user(
