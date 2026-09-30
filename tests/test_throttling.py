@@ -366,3 +366,142 @@ class TestCheckThrottles:
             await ThrottledViewSet(request=request).check_throttles(request)
         assert exc_info.value.status_code == 429
         assert "Retry-After" in (exc_info.value.headers or {})
+
+
+# --------------------------------------------------------------------------- #
+# Atomic check-and-record; /auth/refresh and the OAuth routes are throttled
+# --------------------------------------------------------------------------- #
+
+
+class _YieldingCache(InMemoryThrottleCache):
+    """A cache whose reads suspend, like any networked backend's would."""
+
+    async def get_history(self, key):
+        import asyncio
+
+        history = await super().get_history(key)
+        await asyncio.sleep(0)  # the round trip back from the backend
+        return history
+
+
+async def test_concurrent_requests_cannot_burst_past_the_limit():
+    import asyncio
+
+    class FivePerMinute(TwoPerMinuteThrottle):
+        rate = "5/min"
+
+    set_throttle_cache(_YieldingCache())
+    request = make_request()
+    results = await asyncio.gather(
+        *(FivePerMinute().allow_request(request, None) for _ in range(20))
+    )
+    assert results.count(True) == 5
+
+
+async def test_default_check_and_record_serves_custom_caches():
+    """A cache implementing only get/set_history keeps working."""
+    from zeeb_api.throttling import BaseThrottleCache
+
+    class DictCache(BaseThrottleCache):
+        def __init__(self):
+            self.data = {}
+
+        async def get_history(self, key):
+            return list(self.data.get(key, []))
+
+        async def set_history(self, key, history, duration):
+            self.data[key] = list(history)
+
+    set_throttle_cache(DictCache())
+    request = make_request()
+    assert await TwoPerMinuteThrottle().allow_request(request, None) is True
+    assert await TwoPerMinuteThrottle().allow_request(request, None) is True
+    denied = TwoPerMinuteThrottle()
+    assert await denied.allow_request(request, None) is False
+    assert denied.wait() is not None
+
+
+@pytest.fixture
+def jwt_secret():
+    import zeeb_api.auth.jwt as jwt_module
+    from zeeb_api.auth.jwt import configure_jwt
+
+    saved = jwt_module._jwt_config
+    configure_jwt(secret_key="a-real-strong-secret-of-at-least-32-bytes")
+    yield
+    jwt_module._jwt_config = saved
+
+
+def _auth_app(**router_kwargs) -> FastAPI:
+    from zeeb_api.auth.router import create_auth_router
+
+    async def authenticate(request, body):
+        return None  # every login fails; the throttle is what is under test
+
+    app = FastAPI()
+    install_exception_handlers(app)
+    app.include_router(
+        create_auth_router(
+            authenticate=authenticate,
+            use_database=False,
+            enable_registration=False,
+            **router_kwargs,
+        )
+    )
+    return app
+
+
+async def _statuses(app, path, body, n):
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        return [(await client.post(path, json=body)).status_code for _ in range(n)]
+
+
+async def test_refresh_is_throttled_like_login(jwt_secret):
+    app = _auth_app(login_throttle="2/min")
+    statuses = await _statuses(app, "/auth/refresh", {"refresh_token": "junk"}, 3)
+    assert statuses == [401, 401, 429]
+    # Its own bucket: the refresh attempts did not use up the login budget.
+    login = await _statuses(app, "/auth/login", {"email": "a@b.co", "password": "x"}, 1)
+    assert login == [401]
+
+
+async def test_refresh_throttle_can_be_disabled(jwt_secret):
+    app = _auth_app(login_throttle="2/min", refresh_throttle=None)
+    statuses = await _statuses(app, "/auth/refresh", {"refresh_token": "junk"}, 3)
+    assert statuses == [401, 401, 401]
+
+
+def _oauth_app(**router_kwargs) -> FastAPI:
+    from zeeb_api.auth.oauth import OAuthProvider, create_oauth_router
+
+    provider = OAuthProvider(
+        name="test",
+        client_id="client",
+        authorization_endpoint="https://idp.example/authorize",
+        token_endpoint="https://idp.example/token",
+    )
+    app = FastAPI()
+    install_exception_handlers(app)
+    app.include_router(create_oauth_router(providers={"test": provider}, **router_kwargs))
+    return app
+
+
+async def test_oauth_routes_are_throttled(jwt_secret):
+    app = _oauth_app(throttle_rate="2/min")
+    body = {"code": "c", "redirect_uri": "https://spa.example/cb", "state": "junk"}
+    statuses = await _statuses(app, "/auth/test/token/", body, 3)
+    assert statuses == [401, 401, 429]
+
+
+async def test_oauth_throttle_defaults_to_the_login_rate_setting(jwt_secret):
+    saved = getattr(settings, "AUTH_LOGIN_THROTTLE_RATE", None)
+    settings.AUTH_LOGIN_THROTTLE_RATE = "1/min"
+    try:
+        app = _oauth_app()
+    finally:
+        settings.AUTH_LOGIN_THROTTLE_RATE = saved
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        first = await client.get("/auth/test/state/")
+        second = await client.get("/auth/test/state/")
+    assert first.status_code == 200, first.text
+    assert second.status_code == 429

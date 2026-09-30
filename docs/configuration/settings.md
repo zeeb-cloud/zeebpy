@@ -106,7 +106,7 @@ Every variable read by the generated `settings.py`:
 | `JWT_ISSUER` / `JWT_AUDIENCE` | unset | `JWT_ISSUER` / `JWT_AUDIENCE` |
 | `AUTH_URL_PREFIX` | `/auth` | where the auth router mounts |
 | `AUTH_ENABLE_REGISTRATION` | `true` | whether `/register` exists |
-| `AUTH_LOGIN_THROTTLE_RATE` | `10/min` | per-client limit on `/login` and `/register` |
+| `AUTH_LOGIN_THROTTLE_RATE` | `10/min` | per-client limit on `/login`, `/register`, `/refresh` and the OAuth login routes (each its own bucket) |
 | `AUTH_LOAD_USER_FROM_DB` | `true` | `AUTH_LOAD_USER_FROM_DB` |
 | `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | unset | adds `google` to `OAUTH_PROVIDERS` |
 | `GITHUB_CLIENT_ID` / `GITHUB_CLIENT_SECRET` | unset | adds `github` to `OAUTH_PROVIDERS` |

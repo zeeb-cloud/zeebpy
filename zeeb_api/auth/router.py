@@ -114,6 +114,16 @@ class RegisterResponse(BaseModel):
     message: str = Field(default="User registered successfully")
 
 
+class _SameAsLogin:
+    """Sentinel: ``refresh_throttle`` defaults to the ``login_throttle`` rate."""
+
+    def __repr__(self) -> str:
+        return "<same as login_throttle>"
+
+
+_SAME_AS_LOGIN = _SameAsLogin()
+
+
 def create_auth_router(
     authenticate: AuthenticateFunc | None = None,
     prefix: str = "/auth",
@@ -122,6 +132,7 @@ def create_auth_router(
     enable_registration: bool = True,
     use_database: bool = True,
     login_throttle: str | None = None,
+    refresh_throttle: str | None | _SameAsLogin = _SAME_AS_LOGIN,
 ) -> APIRouter:
     """
     Create an authentication router with login, refresh, logout, register endpoints.
@@ -135,12 +146,18 @@ def create_auth_router(
         enable_registration: Whether to include /register endpoint
         use_database: If True, uses database-backed authentication
         login_throttle: Rate limit for the credential endpoints (/login and
-                     /register), e.g. ``"10/min"``. These are the two routes an
-                     attacker can drive without a token, so they are throttled
-                     per client independently of the global throttle settings.
-                     ``/refresh``, ``/logout`` and ``/me`` are token-bound and
-                     stay unthrottled — a limit there breaks a client with
-                     several tabs open. ``None`` disables it.
+                     /register), e.g. ``"10/min"``. These are the routes an
+                     attacker can drive without an access token, so they are
+                     throttled per client independently of the global throttle
+                     settings. ``None`` disables it.
+        refresh_throttle: Rate limit for ``/refresh``, which is equally
+                     reachable without an access token (a stolen or guessed
+                     refresh token is all it takes). Defaults to the
+                     ``login_throttle`` rate, counted in its own bucket so
+                     refreshes never use up the login budget. A client
+                     refreshes once per access-token lifetime, far below any
+                     sane limit. ``None`` disables it. ``/logout`` and ``/me``
+                     need a valid access token and stay unthrottled.
 
     Returns:
         FastAPI APIRouter with auth endpoints
@@ -160,11 +177,16 @@ def create_auth_router(
     router = APIRouter(prefix=prefix, tags=tags or ["auth"])
     config = get_jwt_config()
 
+    from zeeb_api.throttling import throttle
+
     credential_deps = []
     if login_throttle:
-        from zeeb_api.throttling import throttle
-
         credential_deps = [Depends(throttle(login_throttle, scope="auth_login"))]
+    if isinstance(refresh_throttle, _SameAsLogin):
+        refresh_throttle = login_throttle
+    refresh_deps = []
+    if refresh_throttle:
+        refresh_deps = [Depends(throttle(refresh_throttle, scope="auth_refresh"))]
 
     # Determine authentication function
     auth_func = authenticate
@@ -288,8 +310,10 @@ def create_auth_router(
     @router.post(
         "/refresh",
         response_model=TokenResponse,
+        dependencies=refresh_deps,
         responses={
             401: {"model": ErrorResponse, "description": "Invalid or expired refresh token"},
+            429: {"model": ErrorResponse, "description": "Too many attempts"},
         },
         summary="Refresh Token",
         description="Get a new access token using a refresh token.",

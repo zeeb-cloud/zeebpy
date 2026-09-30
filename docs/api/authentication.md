@@ -25,24 +25,27 @@ Three pieces make that work, and all three are in the scaffold:
    known-insecure defaults. `startproject` generates one into `.env`; without
    it `create_app()` refuses to start once `DEBUG` is off.
 
-`/login` and `/register` are rate limited per client — they are the two routes
-an attacker can drive without a token. The limit comes from
+`/login`, `/register` and `/refresh` are rate limited per client — they are
+the routes an attacker can drive without an access token. The limit comes from
 `AUTH_LOGIN_THROTTLE_RATE` (default `10/min`, empty turns it off) and is passed
-through `create_auth_router(login_throttle=...)`. `/refresh`, `/logout` and
-`/me` are token-bound and stay unthrottled.
+through `create_auth_router(login_throttle=...)`; `/refresh` uses the same rate
+in its own bucket (override with `refresh_throttle=`, `None` disables), so
+refreshing never eats into the login budget. The OAuth routes are throttled at
+the same rate (`create_oauth_router(throttle_rate=...)`, defaulting to
+`AUTH_LOGIN_THROTTLE_RATE`). `/logout` and `/me` need a valid access token and
+stay unthrottled.
 
 Related env variables: `AUTH_URL_PREFIX`, `AUTH_ENABLE_REGISTRATION`,
 `AUTH_LOGIN_THROTTLE_RATE`, `JWT_*`. See
 [Settings](../configuration/settings.md).
 
-> **`/logout` does not revoke anything by itself.** JWTs are stateless: the
-> endpoint calls the optional `on_logout(jti)` hook you pass to
-> `create_auth_router()` and returns success. It receives the **access**
-> token's `jti`, and it does not touch the rotated-refresh-token store — a
-> refresh token stays redeemable after logout unless your `on_logout` hook
-> records it. Clients should discard both tokens locally. To actually
-> invalidate server-side, supply an `on_logout` that writes to a shared
-> denylist your `BaseRefreshTokenStore` consults.
+> **`/logout` revokes the refresh token you send it.** With
+> `{"refresh_token": "..."}` in the body, that token and every token rotated
+> from the same login are revoked in the refresh-token store (see
+> [Refresh Token Rotation](#refresh-token-rotation)). The access token is
+> stateless and stays valid until it expires: the endpoint hands its `jti` to
+> the optional `on_logout(jti)` hook you pass to `create_auth_router()`, which
+> is where a denylist would go. Clients should discard both tokens locally.
 
 ## User Model
 

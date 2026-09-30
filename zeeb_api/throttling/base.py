@@ -181,19 +181,14 @@ class SimpleRateThrottle(BaseThrottle):
             return True
 
         cache = get_throttle_cache()
-        self.history = await cache.get_history(key)
         self.now = self.timer()
-
-        # Drop timestamps outside the sliding window (oldest are last).
-        while self.history and self.history[-1] <= self.now - self.duration:
-            self.history.pop()
-
-        if len(self.history) >= self.num_requests:
-            return False
-
-        self.history.insert(0, self.now)
-        await cache.set_history(key, self.history, self.duration)
-        return True
+        # One atomic check-and-record: separate read and write steps let
+        # concurrent requests all see the same free slot and burst past the
+        # limit.
+        allowed, self.history = await cache.check_and_record(
+            key, self.now, self.duration, self.num_requests
+        )
+        return allowed
 
     def wait(self) -> float | None:
         """Seconds until a request slot becomes available."""

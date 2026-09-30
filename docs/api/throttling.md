@@ -24,7 +24,9 @@ Tune them from `.env` with `THROTTLE_ANON_RATE` and `THROTTLE_USER_RATE`, or
 turn throttling off entirely with an empty `DEFAULT_THROTTLE_CLASSES=`.
 
 `/login` and `/register` carry a separate per-client limit
-(`AUTH_LOGIN_THROTTLE_RATE`, default `10/min`).
+(`AUTH_LOGIN_THROTTLE_RATE`, default `10/min`). `/refresh` and the OAuth login
+routes (`authorize`, `callback`, `state`, `token`) get the same rate, each in
+its own bucket.
 
 > The default cache is in-memory **per process**. Behind several workers the
 > effective limit multiplies by the worker count — install a shared
@@ -197,9 +199,23 @@ class RedisThrottleCache(BaseThrottleCache):
     async def set_history(self, key: str, history: list[float], duration: float) -> None:
         await self.redis.set(key, json.dumps(history), ex=int(duration))
 
+    async def check_and_record(self, key, now, duration, num_requests):
+        # Must be atomic - e.g. a Lua script over a sorted set:
+        # ZREMRANGEBYSCORE key -inf now-duration; ZCARD key; ZADD key now now.
+        ...
+
 
 set_throttle_cache(RedisThrottleCache(redis))
 ```
+
+Throttles call `check_and_record(key, now, duration, num_requests)`, which
+drops timestamps older than the window, refuses the request when
+`num_requests` remain, and otherwise records `now` — returning
+`(allowed, history)`. It **must be atomic**: separate read and write steps let
+concurrent requests all see the same free slot and burst past the limit. The
+in-memory cache does it under one lock. A cache that implements only
+`get_history`/`set_history` still works — the base class composes them — but is
+only as accurate as that composition under concurrency.
 
 In tests, install a fresh `InMemoryThrottleCache()` between tests to reset
 state:

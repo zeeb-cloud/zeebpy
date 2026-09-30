@@ -111,6 +111,16 @@ def _translate_oauth_error(error: OAuthError) -> AuthenticationException:
     return AuthenticationException(code=code, message=str(error))
 
 
+class _FromSettings:
+    """Sentinel: ``throttle_rate`` defaults to ``settings.AUTH_LOGIN_THROTTLE_RATE``."""
+
+    def __repr__(self) -> str:
+        return "<settings.AUTH_LOGIN_THROTTLE_RATE>"
+
+
+_FROM_SETTINGS = _FromSettings()
+
+
 def create_oauth_router(
     providers: dict[str, OAuthProvider] | None = None,
     prefix: str = "/auth",
@@ -118,6 +128,7 @@ def create_oauth_router(
     get_or_create_user: UpsertFunc | None = None,
     on_login: OnLoginFunc | None = None,
     success_redirect: str | None = None,
+    throttle_rate: str | None | _FromSettings = _FROM_SETTINGS,
 ) -> APIRouter:
     """
     Create the OAuth router.
@@ -134,7 +145,24 @@ def create_oauth_router(
         success_redirect: Browser-flow redirect target after login (tokens are
             appended in the URL fragment). Falls back to
             ``settings.OAUTH_SUCCESS_REDIRECT``; None returns JSON.
+        throttle_rate: Per-client rate limit on the login routes (authorize,
+            callback, state and token), e.g. ``"10/min"``. They start logins
+            and make outbound calls to the IdP without any credential, like
+            ``/auth/login``. Defaults to ``settings.AUTH_LOGIN_THROTTLE_RATE``
+            (what generated projects set for ``/login``); ``None`` disables.
     """
+    if isinstance(throttle_rate, _FromSettings):
+        from zeeb_api.conf import settings
+
+        throttle_rate = getattr(settings, "AUTH_LOGIN_THROTTLE_RATE", None) or None
+    login_deps: list[Any] = []
+    if throttle_rate:
+        from fastapi import Depends
+
+        from zeeb_api.throttling import throttle
+
+        login_deps = [Depends(throttle(throttle_rate, scope="auth_oauth"))]
+
     router = APIRouter(prefix=prefix, tags=tags or ["oauth"])
 
     def _get_providers() -> dict[str, OAuthProvider]:
@@ -252,6 +280,7 @@ def create_oauth_router(
 
     @router.get(
         "/{provider}/authorize/",
+        dependencies=login_deps,
         name="oauth_authorize",
         responses={404: {"model": ErrorResponse, "description": "Unknown provider"}},
         summary="Start OAuth Login",
@@ -300,6 +329,7 @@ def create_oauth_router(
 
     @router.api_route(
         "/{provider}/callback/",
+        dependencies=login_deps,
         methods=["GET", "POST"],
         name="oauth_callback",
         responses={
@@ -381,6 +411,7 @@ def create_oauth_router(
 
     @router.get(
         "/{provider}/state/",
+        dependencies=login_deps,
         response_model=StateResponse,
         responses={404: {"model": ErrorResponse, "description": "Unknown provider"}},
         summary="Issue OAuth State (SPA)",
@@ -404,6 +435,7 @@ def create_oauth_router(
 
     @router.post(
         "/{provider}/token/",
+        dependencies=login_deps,
         response_model=TokenResponse,
         responses={
             401: {"model": ErrorResponse, "description": "OAuth login failed"},

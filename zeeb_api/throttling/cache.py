@@ -33,6 +33,34 @@ class BaseThrottleCache:
             f"{self.__class__.__name__} must implement set_history()"
         )
 
+    async def check_and_record(
+        self, key: str, now: float, duration: float, num_requests: int
+    ) -> tuple[bool, list[float]]:
+        """Admit one request under ``key`` if the window has room, and record it.
+
+        Drops timestamps at or before ``now - duration``; if ``num_requests``
+        remain the request is refused, otherwise ``now`` is recorded. Returns
+        ``(allowed, history)`` with the history as it stands afterwards.
+
+        This must be **one atomic step**: a read followed by a separate write
+        lets concurrent requests all see the same free slot and all pass.
+        The default composes :meth:`get_history` and :meth:`set_history` and
+        is only as good as that; a shared backend should override it (e.g. a
+        Redis Lua script or ``MULTI`` over a sorted set).
+        """
+        history = _slide(await self.get_history(key), now, duration)
+        if len(history) >= num_requests:
+            return False, history
+        history.insert(0, now)
+        await self.set_history(key, history, duration)
+        return True, history
+
+
+def _slide(history: list[float], now: float, duration: float) -> list[float]:
+    """``history`` (newest first) without the timestamps outside the window."""
+    window_start = now - duration
+    return [stamp for stamp in history if stamp > window_start]
+
 
 class InMemoryThrottleCache(BaseThrottleCache):
     """
@@ -72,6 +100,25 @@ class InMemoryThrottleCache(BaseThrottleCache):
             if self._writes % self._prune_every == 0:
                 self._prune()
             self._data[key] = (list(history), time.monotonic() + duration)
+
+    async def check_and_record(
+        self, key: str, now: float, duration: float, num_requests: int
+    ) -> tuple[bool, list[float]]:
+        """Atomic check-and-record: the read and the write share one lock section."""
+        async with self._lock:
+            entry = self._data.get(key)
+            history: list[float] = []
+            if entry is not None and entry[1] > time.monotonic():
+                history = list(entry[0])
+            history = _slide(history, now, duration)
+            if len(history) >= num_requests:
+                return False, history
+            history.insert(0, now)
+            self._writes += 1
+            if self._writes % self._prune_every == 0:
+                self._prune()
+            self._data[key] = (list(history), time.monotonic() + duration)
+            return True, list(history)
 
     def _prune(self) -> None:
         """Drop expired entries (caller must hold the lock)."""
