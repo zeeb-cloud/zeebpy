@@ -43,13 +43,17 @@ from zeeb_agents.feature_archive import (
 )
 from zeeb_agents.feature_manifest import (
     MANIFEST_NAME,
+    MANIFEST_VERSION,
     STATE_DIR,
     STATUS_ACTIVE,
     STATUS_ARCHIVED,
+    ensure_manifest_writable,
     forget_feature,
     infer_features,
     load_manifest,
+    manifest_version_on_disk,
     merge_changes_into_spec,
+    newer_manifest_message,
     record_feature,
     set_status,
     split_ref,
@@ -628,6 +632,10 @@ async def _apply_and_report(
     artifacts on disk.  Ownership is a union, so the re-run that completes the
     build converges rather than disowning anything.
     """
+    if feature:
+        # Before anything is written: a project whose manifest a newer tool
+        # manages must not get code from this build and then a refusal.
+        ensure_manifest_writable(project_root)
     outcome = await execute_plan(plan, project_root, migrate=migrate)
     if feature:
         await asyncio.to_thread(
@@ -1347,6 +1355,10 @@ async def list_features(
         archived_count (int): how many are archived, before the filter.
         inferred_count (int): how many were reconstructed rather than recorded.
         manifest_path (str): project-relative path of the feature manifest.
+        manifest_warning (str): present only when the manifest is a newer
+            format written by another tool (the zeeb-mcp platform); its
+            recorded features are not interpreted and only features inferred
+            from disk are listed.
 
     Notes:
         - Fails with ``invalid_input`` when ``status`` is not a known status.
@@ -1363,6 +1375,7 @@ async def list_features(
         )
 
     features = await _feature_index(root)
+    foreign_version = manifest_version_on_disk(root)
     summaries = [_feature_summary(entry) for entry in features.values()]
     summaries.sort(key=lambda f: f["name"] or "")
     active = sum(1 for f in summaries if f["status"] == STATUS_ACTIVE)
@@ -1385,6 +1398,11 @@ async def list_features(
             "archived_count": archived,
             "inferred_count": inferred,
             "manifest_path": f"{STATE_DIR}/{MANIFEST_NAME}",
+            **(
+                {"manifest_warning": newer_manifest_message(foreign_version)}
+                if foreign_version is not None and foreign_version > MANIFEST_VERSION
+                else {}
+            ),
         },
     )
 
@@ -1445,6 +1463,7 @@ async def deactivate_feature(
           everything in that app goes with it.
     """
     root = require_project_root(project_root)
+    ensure_manifest_writable(root)
     entry, problem = await _resolve_feature(root, feature)
     if problem is not None:
         return problem
@@ -1582,6 +1601,7 @@ async def activate_feature(
           re-running after a partial restore finishes the job.
     """
     root = require_project_root(project_root)
+    ensure_manifest_writable(root)
     entry, problem = await _resolve_feature(root, feature)
     if problem is not None:
         return problem
@@ -1741,6 +1761,7 @@ async def delete_feature(
           it. An app with nothing left in it can be removed with ``delete_app``.
     """
     root = require_project_root(project_root)
+    ensure_manifest_writable(root)
     entry, problem = await _resolve_feature(root, feature)
     if problem is not None:
         return problem

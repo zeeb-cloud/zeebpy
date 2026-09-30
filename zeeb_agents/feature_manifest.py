@@ -84,12 +84,77 @@ def empty_manifest() -> dict:
     return {"version": MANIFEST_VERSION, "features": {}}
 
 
+#: Who writes a manifest newer than this module understands. The zeeb-mcp
+#: platform keeps its own feature manifest (format 2 and up) in the same file.
+_NEWER_MANIFEST_OWNER = (
+    "the zeeb-mcp platform's feature tools (zeeb_build_feature, "
+    "zeeb_change_feature, …)"
+)
+
+
+def _declared_version(data: object) -> int | None:
+    """The ``version`` a parsed manifest declares, when it declares a usable one."""
+    if not isinstance(data, dict):
+        return None
+    version = data.get("version")
+    if isinstance(version, bool):
+        return None
+    if isinstance(version, int):
+        return version
+    if isinstance(version, str) and version.isdigit():
+        return int(version)
+    return None
+
+
+def manifest_version_on_disk(root: Path) -> int | None:
+    """The version of the manifest on disk, or ``None`` (absent / unreadable)."""
+    path = manifest_path(root)
+    if not path.is_file():
+        return None
+    try:
+        return _declared_version(json.loads(path.read_text(encoding="utf-8")))
+    except (json.JSONDecodeError, OSError, UnicodeDecodeError):
+        return None
+
+
+def newer_manifest_message(version: int) -> str:
+    """Why a manifest of *version* is left alone, naming who manages it."""
+    return (
+        f"{STATE_DIR}/{MANIFEST_NAME} is feature-manifest format {version}; this zeebpy "
+        f"understands format {MANIFEST_VERSION} and will not rewrite it. It is managed "
+        f"by {_NEWER_MANIFEST_OWNER} — use those to change features in this project."
+    )
+
+
+def ensure_manifest_writable(root: Path) -> None:
+    """Refuse to go on when the manifest on disk is newer than this module.
+
+    Called before a lifecycle operation touches anything — code or manifest —
+    so a project managed by a newer tool is never half-changed by an older one
+    and its manifest is never rewritten with this module's (format-1) logic.
+    Raises :class:`AgentError` ``manifest_version_unsupported``.
+    """
+    version = manifest_version_on_disk(root)
+    if version is not None and version > MANIFEST_VERSION:
+        raise AgentError(
+            newer_manifest_message(version),
+            code="manifest_version_unsupported",
+            manifest_version=version,
+            supported_version=MANIFEST_VERSION,
+        )
+
+
 def load_manifest(root: Path) -> dict:
     """Read the manifest, returning an empty one when absent or unreadable.
 
     A corrupt manifest must not brick the lifecycle tools: the worst case is
     that features look un-recorded and :func:`infer_features` takes over, which
     is exactly the pre-manifest behaviour.
+
+    A manifest *newer* than :data:`MANIFEST_VERSION` degrades the same way for
+    reading — its entries are in a shape this module does not know, so none of
+    them are interpreted — and carries ``unsupported_version``. Writers go
+    through :func:`ensure_manifest_writable` and refuse it instead.
     """
     path = manifest_path(root)
     if not path.is_file():
@@ -98,14 +163,36 @@ def load_manifest(root: Path) -> dict:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError, UnicodeDecodeError):
         return empty_manifest()
+    version = _declared_version(data)
+    if version is not None and version > MANIFEST_VERSION:
+        return {"version": version, "features": {}, "unsupported_version": version}
     if not isinstance(data, dict) or not isinstance(data.get("features"), dict):
         return empty_manifest()
     data.setdefault("version", MANIFEST_VERSION)
     return data
 
 
+def _load_for_write(root: Path) -> dict:
+    """:func:`load_manifest` for a read-modify-write, refusing a newer manifest."""
+    ensure_manifest_writable(root)
+    return load_manifest(root)
+
+
 def save_manifest(root: Path, data: dict) -> None:
-    """Write the manifest atomically, creating ``.zeeb/`` when needed."""
+    """Write the manifest atomically, creating ``.zeeb/`` when needed.
+
+    Never replaces a manifest newer than this module, and never writes one
+    claiming a newer version (``manifest_version_unsupported``).
+    """
+    ensure_manifest_writable(root)
+    declared = _declared_version(data)
+    if declared is not None and declared > MANIFEST_VERSION:
+        raise AgentError(
+            newer_manifest_message(declared),
+            code="manifest_version_unsupported",
+            manifest_version=declared,
+            supported_version=MANIFEST_VERSION,
+        )
     path = manifest_path(root)
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(".json.tmp")
@@ -219,7 +306,7 @@ def record_feature(
     replaced, so a second ``build_feature`` on an extended spec adds the new
     artifacts without disowning what the first build created.
     """
-    data = load_manifest(root)
+    data = _load_for_write(root)
     entry = data["features"].get(name) or {}
     artifacts = merge_artifacts(entry.get("artifacts"), artifacts_from_plan(plan))
     entry.update(
@@ -251,7 +338,7 @@ def feature_names(root: Path) -> list[str]:
 
 def set_feature(root: Path, name: str, entry: dict) -> dict:
     """Persist a full manifest *entry* for *name*, stamping ``updated_at``."""
-    data = load_manifest(root)
+    data = _load_for_write(root)
     entry = {**entry, "updated_at": _now()}
     data["features"][name] = entry
     save_manifest(root, data)
@@ -260,7 +347,7 @@ def set_feature(root: Path, name: str, entry: dict) -> dict:
 
 def set_status(root: Path, name: str, status: str, **extra: object) -> dict | None:
     """Set a feature's status (plus any extra keys) and return the entry."""
-    data = load_manifest(root)
+    data = _load_for_write(root)
     entry = data["features"].get(name)
     if entry is None:
         return None
@@ -271,7 +358,7 @@ def set_status(root: Path, name: str, status: str, **extra: object) -> dict | No
 
 def forget_feature(root: Path, name: str) -> bool:
     """Drop *name* from the manifest. Returns whether it was there."""
-    data = load_manifest(root)
+    data = _load_for_write(root)
     if name not in data["features"]:
         return False
     del data["features"][name]

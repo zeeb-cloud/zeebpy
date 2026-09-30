@@ -837,3 +837,81 @@ async def test_run_query_times_out(query_project):
     # The connection is usable again afterwards.
     res = await agents.run_query("SELECT count(*) AS n FROM posts", project_id=query_project)
     assert res.success and res.data["rows"][0]["n"] == 3
+
+
+# ---------------------------------------------------------------------------
+# 9. A newer feature manifest (the zeeb-mcp platform's) is never rewritten
+# ---------------------------------------------------------------------------
+
+_V2_MANIFEST = {
+    "version": 2,
+    "features": {
+        "blog": {"name": "blog", "framework": "zeebpy", "owned": {"entities": ["Post"]}},
+    },
+}
+
+_BLOG_SPEC = {
+    "name": "blog",
+    "app": "content",
+    "entities": [{"name": "Post", "fields": [{"name": "title", "type": "string"}]}],
+}
+
+
+def _write_v2_manifest(root: Path) -> str:
+    import json
+
+    path = root / ".zeeb" / "features.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    text = json.dumps(_V2_MANIFEST, indent=2) + "\n"
+    path.write_text(text)
+    return text
+
+
+def test_manifest_writers_refuse_a_newer_manifest(tmp_path):
+    from zeeb_agents._utils.errors import AgentError
+    from zeeb_agents.feature_manifest import (
+        forget_feature,
+        load_manifest,
+        record_feature,
+        save_manifest,
+        set_status,
+    )
+
+    text = _write_v2_manifest(tmp_path)
+    for write in (
+        lambda: record_feature(tmp_path, "blog", "content", None, {"operations": []}),
+        lambda: set_status(tmp_path, "blog", "archived"),
+        lambda: forget_feature(tmp_path, "blog"),
+        lambda: save_manifest(tmp_path, {"version": 1, "features": {}}),
+    ):
+        with pytest.raises(AgentError) as info:
+            write()
+        assert info.value.result.data["error_code"] == "manifest_version_unsupported"
+        assert "zeeb-mcp" in str(info.value)
+    assert (tmp_path / ".zeeb" / "features.json").read_text() == text
+    degraded = load_manifest(tmp_path)
+    assert degraded["features"] == {} and degraded["unsupported_version"] == 2
+
+
+async def test_feature_lifecycle_refuses_a_platform_managed_project(project):
+    text = _write_v2_manifest(project)
+    before = _snapshot(project)
+
+    res = await agents.build_feature(_BLOG_SPEC, migrate=False, verify=False, project_id=project)
+    assert not res.success
+    assert res.data["error_code"] == "manifest_version_unsupported"
+    for call in (
+        agents.deactivate_feature("blog", verify=False, project_id=project),
+        agents.activate_feature("blog", verify=False, project_id=project),
+        agents.delete_feature("blog", confirm=True, verify=False, project_id=project),
+    ):
+        res = await call
+        assert not res.success
+        assert res.data["error_code"] == "manifest_version_unsupported"
+    assert _snapshot(project) == before
+    assert (project / ".zeeb" / "features.json").read_text() == text
+
+    listed = await agents.list_features(project_id=project)
+    assert listed.success
+    assert "zeeb-mcp" in listed.data["manifest_warning"]
+    assert (project / ".zeeb" / "features.json").read_text() == text

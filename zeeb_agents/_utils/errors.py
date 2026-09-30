@@ -32,6 +32,7 @@ ERROR_CODES = frozenset(
         "feature_not_found",
         "feature_archived",
         "feature_active",
+        "manifest_version_unsupported",
         "archive_missing",
         "file_not_found",
         "function_not_found",
@@ -72,6 +73,8 @@ _NON_RECOVERABLE_CODES = frozenset(
         "project_not_found",
         "runtime_not_configured",
         "permission_denied",
+        # Another tool manages this project's features; retrying cannot help.
+        "manifest_version_unsupported",
     }
 )
 

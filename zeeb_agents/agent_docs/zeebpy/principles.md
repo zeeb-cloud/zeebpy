@@ -61,6 +61,7 @@ Rules you can rely on:
 
 `already_exists`, `app_not_found`, `archive_missing`, `dependency_missing`,
 `env_key_not_found`, `feature_active`, `feature_archived`, `feature_not_found`,
+`manifest_version_unsupported`,
 `field_not_found`, `file_not_found`, `function_not_found`,
 `invalid_authentication`, `invalid_field_spec`,
 `invalid_field_type`, `invalid_identifier`, `invalid_input`, `invalid_meta`,
@@ -169,7 +170,12 @@ built rather than only created:
   the models go and their tables are dropped. Requires `confirm=True`.
 
 Features may share an app; ownership is tracked per artifact, so archiving one
-feature leaves its app-mates serving. Projects built before this was recorded
+feature leaves its app-mates serving. A project whose `.zeeb/features.json` is a
+newer format — the zeeb-mcp platform writes format 2 there — is managed by that
+platform's feature tools: these tools refuse to change it
+(`manifest_version_unsupported`, before touching any file) and never rewrite
+the manifest; `list_features` still answers, from disk, with a
+`manifest_warning`. Projects built before this was recorded
 still list — their features are reconstructed from disk, one per app, and
 marked `inferred`.
 

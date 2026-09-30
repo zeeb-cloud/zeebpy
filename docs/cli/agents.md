@@ -62,6 +62,7 @@ vocabulary: `app_not_found`, `model_not_found`, `already_exists`,
 `invalid_regex`, `table_not_found`, `user_not_found`, `no_user_table`,
 `setting_not_found`, `settings_error`, `env_key_not_found`, `field_not_found`,
 `function_not_found`, `file_not_found`, `log_file_not_found`,
+`manifest_version_unsupported`,
 `outside_project_root`, `query_timeout`, `server_not_running`, `server_not_reachable`,
 `dependency_missing`, `permission_denied`, `no_project_root`,
 `no_project_id`, `project_not_found`, `runtime_not_configured`) plus
@@ -228,6 +229,13 @@ Alias of `change_feature()`, so the `edit_*` verb works alongside
 List the features a project is made of — name, app, status, entities,
 endpoints, functions. Projects built before features were recorded still list:
 theirs are reconstructed from disk, one per app, and marked `inferred`.
+
+A `.zeeb/features.json` in a newer format than this library's (format 2, written
+by the zeeb-mcp platform) is never rewritten: the lifecycle tools
+(`build_feature`, `change_feature`, `apply_plan` with a feature,
+`deactivate_feature`, `activate_feature`, `delete_feature`) fail with
+`manifest_version_unsupported` before touching any file, and `list_features`
+lists only what it can infer from disk, with a `manifest_warning`.
 
 ```python
 result = await list_features(project_id="<id>")
