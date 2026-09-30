@@ -93,7 +93,7 @@ async def world(db):
     b1 = await MvBook.objects.create(title="python", author=ann, published=True, rating=5)
     b2 = await MvBook.objects.create(title="Ann draft", author=ann, published=False)
     b3 = await MvBook.objects.create(title="Bob draft", author=bob, published=False, rating=3)
-    b4 = await MvBook.objects.create(title="Orphan", author=None, published=True, rating=1)
+    await MvBook.objects.create(title="Orphan", author=None, published=True, rating=1)
 
     await b1.tags.add(python, testing)  # python + testing
     await b2.tags.add(python)  # python only
@@ -209,11 +209,11 @@ class TestChainedFilterAcrossMultiValued:
 
     async def test_reverse_fk(self, world):
         # Ann has a published book and (another) unpublished one.
-        rows = await MvAuthor.objects.filter(books__published=True).filter(
-            books__published=False
-        )
+        rows = await MvAuthor.objects.filter(books__published=True).filter(books__published=False)
         assert _names(rows) == ["Ann"]
-        same_row = await MvAuthor.objects.filter(books__published=True, books__published__in=[False])
+        same_row = await MvAuthor.objects.filter(
+            books__published=True, books__published__in=[False]
+        )
         assert same_row == []
 
     async def test_single_valued_joins_stay_shared(self, world):

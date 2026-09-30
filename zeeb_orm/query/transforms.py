@@ -69,6 +69,7 @@ class _TransformTime(Time):
 
     def bind_processor(self, dialect: Any) -> Any:
         if dialect.name == "sqlite":
+
             def process(value: Any) -> Any:
                 if value is None or isinstance(value, str):
                     return value
@@ -161,10 +162,7 @@ def _week_sqlite(element: Any, compiler: Any, **kw: Any) -> str:
     # ISO week: shift to the Thursday of the current ISO week, then
     # day-of-year // 7 + 1 (same formula Django uses for SQLite).
     col = _arg(element, compiler, **kw)
-    return (
-        f"(CAST(STRFTIME('%j', DATE({col}, '-3 days', 'weekday 4')) AS INTEGER)"
-        " - 1) / 7 + 1"
-    )
+    return f"(CAST(STRFTIME('%j', DATE({col}, '-3 days', 'weekday 4')) AS INTEGER) - 1) / 7 + 1"
 
 
 @compiles(_Week, "mysql")

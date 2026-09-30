@@ -199,9 +199,7 @@ async def test_custom_rules_fail_closed(world, rule_name, user_name):
     assert scoped <= granted
     # ...and the permissive bound never misses an object the check grants,
     # so candidates_q + check() reaches every granted object.
-    candidates = {
-        d.title for d in await PrDoc.objects.filter(rule.candidates_q(user, PrDoc))
-    }
+    candidates = {d.title for d in await PrDoc.objects.filter(rule.candidates_q(user, PrDoc))}
     assert granted <= candidates
 
 

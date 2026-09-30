@@ -130,9 +130,7 @@ class JoinContext:
         if through is not None:
             through.scope = scope
 
-    def ensure_join(
-        self, path_parts: Sequence[str], *, scope: Hashable | None = None
-    ) -> JoinInfo:
+    def ensure_join(self, path_parts: Sequence[str], *, scope: Hashable | None = None) -> JoinInfo:
         """Register (or reuse) the JOIN chain for ``path_parts``.
 
         ``scope`` identifies the ``filter()`` call asking: multi-valued hops
@@ -161,7 +159,12 @@ class JoinContext:
             info = self._find_hop(parent_key, part, multi, scope)
             if info is None:
                 info = self._register_hop(
-                    path, part, relation, parent_key, current_model, current_table,
+                    path,
+                    part,
+                    relation,
+                    parent_key,
+                    current_model,
+                    current_table,
                     scope if multi else None,
                 )
             parent_key = info.key
@@ -244,8 +247,7 @@ class JoinContext:
             is_multi = True
         else:
             raise FieldError(
-                f"Traversal across {relation.kind!r} relations is not "
-                f"supported yet (path {path!r})"
+                f"Traversal across {relation.kind!r} relations is not supported yet (path {path!r})"
             )
 
         info = JoinInfo(

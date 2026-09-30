@@ -9,8 +9,7 @@ failed insert was not isolated in a savepoint, and lookups such as
 import pytest
 from sqlalchemy import event
 
-from zeeb_orm import IntegrityError, Model, close_all_connections, configure, fields
-from zeeb_orm import setup_database
+from zeeb_orm import IntegrityError, Model, close_all_connections, configure, fields, setup_database
 from zeeb_orm.db.connection import atomic
 from zeeb_orm.query.queryset import QuerySet
 

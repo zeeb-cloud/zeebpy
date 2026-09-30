@@ -96,9 +96,7 @@ class F(Expression):
         from zeeb_orm.query.q import parse_path
         from zeeb_orm.query.transforms import apply_transform
 
-        relation_parts, field_name, transform, _lookup = parse_path(
-            model, self.field_name
-        )
+        relation_parts, field_name, transform, _lookup = parse_path(model, self.field_name)
         if relation_parts:
             if joins is None:
                 raise FieldError(
@@ -186,9 +184,7 @@ def _filter_condition(model: Any, q: Any, joins: Any = None) -> Any:
     from zeeb_orm.query.queryset import q_to_condition
 
     if not isinstance(q, Q):
-        raise TypeError(
-            f"Aggregate filter must be a Q object, got {type(q).__name__}."
-        )
+        raise TypeError(f"Aggregate filter must be a Q object, got {type(q).__name__}.")
     cond = q_to_condition(model, q, joins=joins)
     if cond is None:
         raise ValueError("Aggregate filter=Q(...) resolved to no condition.")
@@ -332,14 +328,14 @@ class Coalesce(Expression):
 class Case(Expression):
     """
     CASE WHEN SQL expression.
-    
+
     Usage:
         Case(
             When(status='active', then=Value(1)),
             When(status='inactive', then=Value(0)),
             default=Value(-1)
         )
-        
+
         # Or with tuples (condition, result):
         Case(
             (Q(price__gte=100), Value('expensive')),
@@ -349,7 +345,7 @@ class Case(Expression):
 
     def __init__(
         self,
-        *whens: "When | tuple[Any, Any]",
+        *whens: When | tuple[Any, Any],
         default: Any = None,
     ) -> None:
         super().__init__()
@@ -375,9 +371,7 @@ class Case(Expression):
                 if isinstance(condition, Q):
                     cond = q_to_condition(model, condition)
                     if cond is None:
-                        raise ValueError(
-                            "Case(): condition Q object resolved to no condition."
-                        )
+                        raise ValueError("Case(): condition Q object resolved to no condition.")
                 elif isinstance(condition, Expression):
                     cond = condition.resolve(model, joins=joins)
                 else:
@@ -496,9 +490,7 @@ def _single_inner_column(model: Any, field_name: str) -> Any:
             field_name = field.db_column or field.name
     col = getattr(table.c, field_name, None)
     if col is None:
-        raise ValueError(
-            f"Subquery: field {field_name!r} not found on {model.__name__}."
-        )
+        raise ValueError(f"Subquery: field {field_name!r} not found on {model.__name__}.")
     return col
 
 
@@ -541,9 +533,7 @@ class Subquery(Expression):
         # Point OuterRefs at the outer model BEFORE building the statement
         _bind_outer_refs(inner_qs, model)
         inner_stmt = inner_qs._build_select()
-        inner_stmt = inner_stmt.with_only_columns(
-            _single_inner_column(inner_qs.model, fields[0])
-        )
+        inner_stmt = inner_stmt.with_only_columns(_single_inner_column(inner_qs.model, fields[0]))
 
         # Correlate: keep the outer table out of the inner FROM clause
         return inner_stmt.correlate(_outer_table(model)).scalar_subquery()
@@ -609,114 +599,113 @@ class Exists(Expression):
 
         _bind_outer_refs(self.queryset, model)
         inner_stmt = self.queryset._build_select()
-        inner_stmt = inner_stmt.with_only_columns(literal(1)).correlate(
-            _outer_table(model)
-        )
+        inner_stmt = inner_stmt.with_only_columns(literal(1)).correlate(_outer_table(model))
         return inner_stmt.exists()
-    
+
     def __repr__(self) -> str:
         return f"Exists({self.queryset!r})"
 
 
 # String functions
 
+
 class Concat(Expression):
     """
     Concatenate strings.
-    
+
     Usage:
         User.objects.annotate(full_name=Concat('first_name', Value(' '), 'last_name'))
     """
-    
+
     def __init__(self, *expressions: str | Expression) -> None:
         super().__init__()
         self.expressions = [
             e if isinstance(e, Expression) else F(e) if isinstance(e, str) else Value(e)
             for e in expressions
         ]
-    
+
     def resolve(self, model: Any, *, joins: Any = None) -> Any:
         """Resolve to a SQL string concatenation of every argument."""
         from sqlalchemy import func
-        
+
         resolved = [e.resolve(model, joins=joins) for e in self.expressions]
         return func.concat(*resolved)
 
 
 class Lower(Expression):
     """Convert to lowercase."""
-    
+
     def __init__(self, expression: str | Expression) -> None:
         super().__init__()
         self.expression = expression if isinstance(expression, Expression) else F(expression)
-    
+
     def resolve(self, model: Any, *, joins: Any = None) -> Any:
         """Resolve to ``LOWER(expr)``."""
         from sqlalchemy import func
-        
+
         return func.lower(self.expression.resolve(model, joins=joins))
 
 
 class Upper(Expression):
     """Convert to uppercase."""
-    
+
     def __init__(self, expression: str | Expression) -> None:
         super().__init__()
         self.expression = expression if isinstance(expression, Expression) else F(expression)
-    
+
     def resolve(self, model: Any, *, joins: Any = None) -> Any:
         """Resolve to ``UPPER(expr)``."""
         from sqlalchemy import func
-        
+
         return func.upper(self.expression.resolve(model, joins=joins))
 
 
 class Length(Expression):
     """Get string length."""
-    
+
     def __init__(self, expression: str | Expression) -> None:
         super().__init__()
         self.expression = expression if isinstance(expression, Expression) else F(expression)
-    
+
     def resolve(self, model: Any, *, joins: Any = None) -> Any:
         """Resolve to the dialect's string-length function."""
         from sqlalchemy import func
-        
+
         return func.length(self.expression.resolve(model, joins=joins))
 
 
 class Trim(Expression):
     """Trim whitespace from string."""
-    
+
     def __init__(self, expression: str | Expression) -> None:
         super().__init__()
         self.expression = expression if isinstance(expression, Expression) else F(expression)
-    
+
     def resolve(self, model: Any, *, joins: Any = None) -> Any:
         """Resolve to ``TRIM(expr)`` — both ends."""
         from sqlalchemy import func
-        
+
         return func.trim(self.expression.resolve(model, joins=joins))
 
 
 class Substr(Expression):
     """
     Substring extraction.
-    
+
     Usage:
         Model.objects.annotate(first_char=Substr('name', 1, 1))
     """
-    
+
     def __init__(self, expression: str | Expression, pos: int, length: int | None = None) -> None:
         super().__init__()
         self.expression = expression if isinstance(expression, Expression) else F(expression)
         self.pos = pos
         self.length = length
-    
+
     def resolve(self, model: Any, *, joins: Any = None) -> Any:
         """Resolve to ``SUBSTR(expr, pos, length)``."""
         from sqlalchemy import func
-        
+
         expr = self.expression.resolve(model, joins=joins)
         if self.length is not None:
             return func.substr(expr, self.pos, self.length)
@@ -725,13 +714,14 @@ class Substr(Expression):
 
 # Date/Time functions
 
+
 class Now(Expression):
     """Current timestamp."""
-    
+
     def resolve(self, model: Any, *, joins: Any = None) -> Any:
         """Resolve to the dialect's current-timestamp function."""
         from sqlalchemy import func
-        
+
         return func.now()
 
 
@@ -813,82 +803,83 @@ class TruncYear(TruncMonth):
 
 # Math functions
 
+
 class Abs(Expression):
     """Absolute value."""
-    
+
     def __init__(self, expression: str | Expression) -> None:
         super().__init__()
         self.expression = expression if isinstance(expression, Expression) else F(expression)
-    
+
     def resolve(self, model: Any, *, joins: Any = None) -> Any:
         """Resolve to ``ABS(expr)``."""
         from sqlalchemy import func
-        
+
         return func.abs(self.expression.resolve(model, joins=joins))
 
 
 class Ceil(Expression):
     """Ceiling (round up)."""
-    
+
     def __init__(self, expression: str | Expression) -> None:
         super().__init__()
         self.expression = expression if isinstance(expression, Expression) else F(expression)
-    
+
     def resolve(self, model: Any, *, joins: Any = None) -> Any:
         """Resolve to the dialect's ceiling function."""
         from sqlalchemy import func
-        
+
         return func.ceil(self.expression.resolve(model, joins=joins))
 
 
 class Floor(Expression):
     """Floor (round down)."""
-    
+
     def __init__(self, expression: str | Expression) -> None:
         super().__init__()
         self.expression = expression if isinstance(expression, Expression) else F(expression)
-    
+
     def resolve(self, model: Any, *, joins: Any = None) -> Any:
         """Resolve to the dialect's floor function."""
         from sqlalchemy import func
-        
+
         return func.floor(self.expression.resolve(model, joins=joins))
 
 
 class Round(Expression):
     """
     Round to specified precision.
-    
+
     Usage:
         Model.objects.annotate(rounded_price=Round('price', 2))
     """
-    
+
     def __init__(self, expression: str | Expression, precision: int = 0) -> None:
         super().__init__()
         self.expression = expression if isinstance(expression, Expression) else F(expression)
         self.precision = precision
-    
+
     def resolve(self, model: Any, *, joins: Any = None) -> Any:
         """Resolve to ``ROUND(expr[, precision])``."""
         from sqlalchemy import func
-        
+
         return func.round(self.expression.resolve(model, joins=joins), self.precision)
 
 
 class Greatest(Expression):
     """Return the greatest value among arguments."""
-    
+
     def __init__(self, *expressions: str | Expression) -> None:
         super().__init__()
         self.expressions = [
             e if isinstance(e, Expression) else F(e) if isinstance(e, str) else Value(e)
             for e in expressions
         ]
-    
+
     def resolve(self, model: Any, *, joins: Any = None) -> Any:
         """Resolve to the dialect's greatest-of function."""
         from sqlalchemy import func
-        
+
         resolved = [e.resolve(model, joins=joins) for e in self.expressions]
         return func.greatest(*resolved)
 

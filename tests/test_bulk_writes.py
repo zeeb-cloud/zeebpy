@@ -283,8 +283,13 @@ def test_bulk_update_case_statement_compiles(dialect):
     stmt = (
         update(table)
         .where(table.c.id.in_(["a"]))
-        .values({"views": case((table.c.id == "a", literal(1, type_=table.c.views.type)),
-                               else_=table.c.views)})
+        .values(
+            {
+                "views": case(
+                    (table.c.id == "a", literal(1, type_=table.c.views.type)), else_=table.c.views
+                )
+            }
+        )
     )
     sql = str(stmt.compile(dialect=dialect))
     assert "CASE WHEN" in sql and "ELSE bw_posts.views END" in sql

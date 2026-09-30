@@ -145,12 +145,24 @@ class TestRaw:
             ("SELECT /* ? */ ?", [1], "sqlite", "SELECT /* ? */ :_raw_0"),
             ("SELECT 'it''s ?', ?", [1], "sqlite", "SELECT 'it''s ?', :_raw_0"),
             ("SELECT 'it\\'s ?', ?", [1], "mysql", "SELECT 'it\\'s ?', :_raw_0"),
-            ('SELECT "col?" FROM t WHERE a = ?', [1], "postgresql",
-             'SELECT "col?" FROM t WHERE a = :_raw_0'),
-            ("SELECT x::int FROM t WHERE a = ?", [1], "postgresql",
-             "SELECT x::int FROM t WHERE a = :_raw_0"),
-            ("SELECT ' :lit' WHERE a = :a", {"a": 1}, "postgresql",
-             "SELECT ' \\:lit' WHERE a = :a"),
+            (
+                'SELECT "col?" FROM t WHERE a = ?',
+                [1],
+                "postgresql",
+                'SELECT "col?" FROM t WHERE a = :_raw_0',
+            ),
+            (
+                "SELECT x::int FROM t WHERE a = ?",
+                [1],
+                "postgresql",
+                "SELECT x::int FROM t WHERE a = :_raw_0",
+            ),
+            (
+                "SELECT ' :lit' WHERE a = :a",
+                {"a": 1},
+                "postgresql",
+                "SELECT ' \\:lit' WHERE a = :a",
+            ),
         ],
     )
     def test_placeholder_translation(self, sql, params, dialect, expected):

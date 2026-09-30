@@ -103,9 +103,7 @@ async def test_fk_name_orders_by_the_fk_column(posts):
     by_column = await OrdPost.objects.order_by("author_id", "title")
     assert [p.title for p in by_name] == [p.title for p in by_column]
     sql = str(
-        OrdPost.objects.order_by("-author")._build_select().compile(
-            dialect=postgresql.dialect()
-        )
+        OrdPost.objects.order_by("-author")._build_select().compile(dialect=postgresql.dialect())
     )
     assert "ORDER BY ord_posts.author_id DESC" in sql
 

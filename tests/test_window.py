@@ -164,9 +164,7 @@ class TestWindowExecution:
         for expr_cls in (PercentRank, CumeDist):
             sql = str(select(Window(expr_cls(), order_by="score").resolve(WinPlayer)))
             assert "OVER" in sql
-        sql = str(
-            select(Window(LastValue("name"), order_by="score").resolve(WinPlayer))
-        )
+        sql = str(select(Window(LastValue("name"), order_by="score").resolve(WinPlayer)))
         assert "last_value" in sql
 
 
@@ -191,9 +189,7 @@ class TestCast:
 class TestStringAgg:
     @pytest.mark.asyncio
     async def test_string_agg_execution(self, seeded):
-        result = await WinPlayer.objects.filter(team="red").aggregate(
-            names=StringAgg("name", "|")
-        )
+        result = await WinPlayer.objects.filter(team="red").aggregate(names=StringAgg("name", "|"))
         assert sorted(result["names"].split("|")) == ["Ann", "Ben", "Col"]
 
     @pytest.mark.asyncio
@@ -227,9 +223,7 @@ class TestStringAgg:
     @pytest.mark.asyncio
     async def test_string_agg_distinct_execution_sqlite(self, seeded):
         # SQLite uses group_concat(DISTINCT expr) with the default delimiter
-        result = await WinPlayer.objects.aggregate(
-            teams=StringAgg("team", distinct=True)
-        )
+        result = await WinPlayer.objects.aggregate(teams=StringAgg("team", distinct=True))
         assert sorted(result["teams"].split(",")) == ["blue", "red"]
 
     @pytest.mark.asyncio
@@ -254,9 +248,7 @@ class TestWindowInFilter:
 
     @pytest.mark.asyncio
     async def test_window_annotation_in_exclude_raises(self, db):
-        qs = WinPlayer.objects.annotate(
-            rn=Window(RowNumber(), order_by="-score")
-        ).exclude(rn__gt=1)
+        qs = WinPlayer.objects.annotate(rn=Window(RowNumber(), order_by="-score")).exclude(rn__gt=1)
         with pytest.raises(FieldError):
             qs._build_select()
 
@@ -264,7 +256,5 @@ class TestWindowInFilter:
     async def test_non_window_annotation_in_filter_still_works(self, seeded):
         from zeeb_orm import F
 
-        players = await WinPlayer.objects.annotate(double=F("score") * 2).filter(
-            double__gt=40
-        )
+        players = await WinPlayer.objects.annotate(double=F("score") * 2).filter(double__gt=40)
         assert {p.name for p in players} == {"Ben"}

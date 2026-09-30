@@ -88,8 +88,8 @@ async def test_f_expression_values_still_work(db):
     "dialect", [sqlite.dialect(), postgresql.dialect(), mysql.dialect()], ids=str
 )
 @pytest.mark.parametrize(
-    "lookup", ["iexact", "contains", "icontains", "startswith", "istartswith", "endswith",
-               "iendswith"]
+    "lookup",
+    ["iexact", "contains", "icontains", "startswith", "istartswith", "endswith", "iendswith"],
 )
 def test_every_dialect_gets_an_escape_clause(dialect, lookup):
     LkWord._get_table()

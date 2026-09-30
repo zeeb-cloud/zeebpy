@@ -24,7 +24,6 @@ from sqlalchemy import (
     select,
     update,
 )
-
 from sqlalchemy.ext.compiler import compiles
 
 from zeeb_orm.query.q import Q, QOperator, parse_path
@@ -145,9 +144,7 @@ class QuerySet(Generic[ModelT]):
             from zeeb_orm.exceptions import NotSupportedError
 
             op = "union" if self._combinator == "union_all" else self._combinator
-            raise NotSupportedError(
-                f"Calling QuerySet.{method}() after {op}() is not supported."
-            )
+            raise NotSupportedError(f"Calling QuerySet.{method}() after {op}() is not supported.")
 
     def _invalidate_cache(self) -> None:
         """Invalidate the result cache."""
@@ -409,13 +406,10 @@ class QuerySet(Generic[ModelT]):
         """
         clone = self._clone()
         if not fields:
-            fields = tuple(
-                f.db_column or f.name for f in self.model._meta.local_fields
-            )
+            fields = tuple(f.db_column or f.name for f in self.model._meta.local_fields)
         if flat and len(fields) > 1:
             raise TypeError(
-                "'flat' is not valid when values_list is called with more "
-                "than one field."
+                "'flat' is not valid when values_list is called with more than one field."
             )
         clone._values_list_fields = list(fields)
         clone._flat = flat
@@ -491,9 +485,7 @@ class QuerySet(Generic[ModelT]):
         # Apply filters (may register traversal JOINs)
         where_clause = self._build_where_clause(joins)
 
-        stmt = select(*select_exprs).select_from(
-            joins.apply(table) if joins.has_joins else table
-        )
+        stmt = select(*select_exprs).select_from(joins.apply(table) if joins.has_joins else table)
         if where_clause is not None:
             stmt = stmt.where(where_clause)
 
@@ -539,9 +531,7 @@ class QuerySet(Generic[ModelT]):
 
     # Combinators (UNION / INTERSECT / EXCEPT)
 
-    def _combinator_query(
-        self, combinator: str, *others: QuerySet[Any]
-    ) -> QuerySet[ModelT]:
+    def _combinator_query(self, combinator: str, *others: QuerySet[Any]) -> QuerySet[ModelT]:
         for other in others:
             if not isinstance(other, QuerySet):
                 raise TypeError(
@@ -593,9 +583,7 @@ class QuerySet(Generic[ModelT]):
         """
         table = self.model._get_table()
         joins = self._make_join_context()
-        columns = [
-            table.c[f.db_column or f.name] for f in self.model._meta.local_fields
-        ]
+        columns = [table.c[f.db_column or f.name] for f in self.model._meta.local_fields]
         where_clause = self._build_where_clause(joins)
 
         stmt = select(*columns)
@@ -618,18 +606,14 @@ class QuerySet(Generic[ModelT]):
             # string is rendered verbatim into SQL (no quoting/parameterization),
             # so an unrecognized name would be a SQL-injection sink. Mirror the
             # non-combined ORDER BY path, which rejects unknown fields.
-            raise FieldError(
-                f"Cannot order combined queryset by unknown field {field_name!r}"
-            )
+            raise FieldError(f"Cannot order combined queryset by unknown field {field_name!r}")
         return literal_column(field.db_column or field.name)
 
     def _build_combined_select(self) -> Any:
         """Build the compound (UNION/INTERSECT/EXCEPT) statement."""
         from sqlalchemy import asc, desc, except_, intersect, union, union_all
 
-        components = [
-            self._build_component_for(qs) for qs in self._combined_querysets
-        ]
+        components = [self._build_component_for(qs) for qs in self._combined_querysets]
 
         op = {
             "union": union,
@@ -691,9 +675,7 @@ class QuerySet(Generic[ModelT]):
         from zeeb_orm.exceptions import NotSupportedError, TransactionManagementError
 
         if dialect_name == "sqlite":
-            raise NotSupportedError(
-                "select_for_update is not supported on SQLite."
-            )
+            raise NotSupportedError("select_for_update is not supported on SQLite.")
         if get_active_session() is None:
             raise TransactionManagementError(
                 "select_for_update cannot be used outside of a transaction. "
@@ -736,9 +718,7 @@ class QuerySet(Generic[ModelT]):
 
         return JoinContext(self.model, self.model._get_table())
 
-    def _pk_in_join_subquery(
-        self, table: Any, joins: JoinContext, where_clause: Any
-    ) -> Any:
+    def _pk_in_join_subquery(self, table: Any, joins: JoinContext, where_clause: Any) -> Any:
         """``pk IN (SELECT pk FROM <joined tables> WHERE ...)`` condition.
 
         Used to rewrite UPDATE/DELETE statements whose filters traverse
@@ -776,9 +756,7 @@ class QuerySet(Generic[ModelT]):
             return conditions[0]
         return and_(*conditions)
 
-    def _q_to_condition(
-        self, q: Q, joins: JoinContext | None = None, *, scope: Any = None
-    ) -> Any:
+    def _q_to_condition(self, q: Q, joins: JoinContext | None = None, *, scope: Any = None) -> Any:
         """Convert a Q object to SQLAlchemy condition."""
         return q_to_condition(
             self.model, q, joins=joins, annotations=self._annotations, scope=scope
@@ -811,9 +789,7 @@ class QuerySet(Generic[ModelT]):
             self.model, lookup_string, value, joins=joins, annotations=self._annotations
         )
 
-    def _resolve_field_path(
-        self, field_path: str, joins: JoinContext | None = None
-    ) -> Any:
+    def _resolve_field_path(self, field_path: str, joins: JoinContext | None = None) -> Any:
         """Resolve a field path (potentially with __ for relations) to a column."""
         return resolve_field_path(self.model, field_path, self._annotations, joins)
 
@@ -860,25 +836,19 @@ class QuerySet(Generic[ModelT]):
 
         column = self._resolve_path_expression(field_name, joins)
         if column is None:
-            choices = sorted(
-                {f.name for f in meta.local_fields} | set(self._annotations)
-            )
+            choices = sorted({f.name for f in meta.local_fields} | set(self._annotations))
             raise FieldError(
                 f"Cannot resolve keyword {field_name!r} into field for ordering "
                 f"on {self.model.__name__}. Choices are: {', '.join(choices)}"
             )
         return column
 
-    def _resolve_path_expression(
-        self, path: str, joins: JoinContext | None
-    ) -> Any:
+    def _resolve_path_expression(self, path: str, joins: JoinContext | None) -> Any:
         """Resolve a ``__`` path (relations and/or datetime transform) to a
         SQLAlchemy expression, registering JOINs on ``joins`` as needed."""
         from zeeb_orm.query.transforms import apply_transform
 
-        relation_parts, field_name, transform, _lookup = parse_path(
-            self.model, path
-        )
+        relation_parts, field_name, transform, _lookup = parse_path(self.model, path)
         if relation_parts:
             if joins is None:
                 return None
@@ -1012,11 +982,7 @@ class QuerySet(Generic[ModelT]):
         """
         from zeeb_orm.query.expressions import Aggregate
 
-        return {
-            alias
-            for alias, expr in self._annotations.items()
-            if isinstance(expr, Aggregate)
-        }
+        return {alias for alias, expr in self._annotations.items() if isinstance(expr, Aggregate)}
 
     def _build_group_by(self, table: Any, grouping_columns: list[Any]) -> list[Any]:
         """GROUP BY columns implied by aggregate annotations.
@@ -1064,10 +1030,7 @@ class QuerySet(Generic[ModelT]):
             for child in getattr(node, "children", []):
                 if isinstance(child, tuple):
                     key = child[0]
-                    if (
-                        key not in aggregate_aliases
-                        and key.split("__")[0] not in aggregate_aliases
-                    ):
+                    if key not in aggregate_aliases and key.split("__")[0] not in aggregate_aliases:
                         return True
                 elif references_plain_field(child):
                     return True
@@ -1091,15 +1054,10 @@ class QuerySet(Generic[ModelT]):
         for child in q.children:
             if isinstance(child, tuple):
                 key = child[0]
-                is_agg = (
-                    key in aggregate_aliases
-                    or key.split("__")[0] in aggregate_aliases
-                )
+                is_agg = key in aggregate_aliases or key.split("__")[0] in aggregate_aliases
                 (having_children if is_agg else where_children).append(child)
             else:
-                child_where, child_having = self._split_aggregate_q(
-                    child, aggregate_aliases
-                )
+                child_where, child_having = self._split_aggregate_q(child, aggregate_aliases)
                 if child_where is not None:
                     where_children.append(child_where)
                 if child_having is not None:
@@ -1116,9 +1074,7 @@ class QuerySet(Generic[ModelT]):
 
         return rebuild(where_children), rebuild(having_children)
 
-    def _build_where_and_having(
-        self, joins: JoinContext | None = None
-    ) -> tuple[Any, Any]:
+    def _build_where_and_having(self, joins: JoinContext | None = None) -> tuple[Any, Any]:
         """Build the WHERE and HAVING clauses from filters and excludes."""
         aggregate_aliases = self._aggregate_aliases()
         if not aggregate_aliases:
@@ -1477,9 +1433,7 @@ class QuerySet(Generic[ModelT]):
         from zeeb_orm.exceptions import NotSupportedError
 
         if self._prefetch_related:
-            raise NotSupportedError(
-                "iterator() cannot be used with prefetch_related()."
-            )
+            raise NotSupportedError("iterator() cannot be used with prefetch_related().")
         if chunk_size <= 0:
             raise ValueError("Chunk size must be strictly positive.")
 
@@ -1520,13 +1474,11 @@ class QuerySet(Generic[ModelT]):
             field = self.model._meta.get_field(field_name)
             if field is None:
                 raise ValueError(
-                    f"in_bulk(): {self.model.__name__} has no field "
-                    f"named {field_name!r}."
+                    f"in_bulk(): {self.model.__name__} has no field named {field_name!r}."
                 )
             if not (field.unique or field.primary_key):
                 raise ValueError(
-                    f"in_bulk()'s field_name must be a unique field, "
-                    f"but {field_name!r} isn't."
+                    f"in_bulk()'s field_name must be a unique field, but {field_name!r} isn't."
                 )
             accessor = field_name
 
@@ -1570,10 +1522,7 @@ class QuerySet(Generic[ModelT]):
             result = await session.execute(_Explain(self._build_select(), prefix))
             rows = result.fetchall()
 
-        return "\n".join(
-            " ".join(str(value) for value in row if value is not None)
-            for row in rows
-        )
+        return "\n".join(" ".join(str(value) for value in row if value is not None) for row in rows)
 
     # Single object retrieval
 
@@ -1590,9 +1539,7 @@ class QuerySet(Generic[ModelT]):
         results = await clone._fetch_all()
 
         if not results:
-            raise self.model.DoesNotExist(
-                f"{self.model.__name__} matching query does not exist."
-            )
+            raise self.model.DoesNotExist(f"{self.model.__name__} matching query does not exist.")
         if len(results) > 1:
             raise self.model.MultipleObjectsReturned(
                 f"get() returned more than one {self.model.__name__}"
@@ -1627,8 +1574,7 @@ class QuerySet(Generic[ModelT]):
         """
         clone = self._clone()
         clone._order_by = [
-            f[1:] if f.startswith("-") else f"-{f}"
-            for f in self._effective_ordering()
+            f[1:] if f.startswith("-") else f"-{f}" for f in self._effective_ordering()
         ]
         clone._limit = 1
         results = await clone._fetch_all()
@@ -1643,9 +1589,7 @@ class QuerySet(Generic[ModelT]):
         Otherwise the cheap ``count(*) FROM <table> WHERE ...`` form is used.
         """
         if self._combinator is not None:
-            return select(func.count()).select_from(
-                self._build_combined_select().subquery()
-            )
+            return select(func.count()).select_from(self._build_combined_select().subquery())
 
         if (
             self._limit is not None
@@ -1661,9 +1605,7 @@ class QuerySet(Generic[ModelT]):
         table = self.model._get_table()
         joins = self._make_join_context()
         where_clause = self._build_where_clause(joins)
-        stmt = select(func.count()).select_from(
-            joins.apply(table) if joins.has_joins else table
-        )
+        stmt = select(func.count()).select_from(joins.apply(table) if joins.has_joins else table)
         if where_clause is not None:
             stmt = stmt.where(where_clause)
         return stmt
@@ -1920,9 +1862,9 @@ class QuerySet(Generic[ModelT]):
 
         self._check_combinator("delete")
 
-        has_delete_receivers = pre_delete.has_listeners(
+        has_delete_receivers = pre_delete.has_listeners(self.model) or post_delete.has_listeners(
             self.model
-        ) or post_delete.has_listeners(self.model)
+        )
 
         if model_has_inbound_refs(self.model) or has_delete_receivers:
             from zeeb_orm.db.connection import atomic, get_active_session
@@ -2132,11 +2074,7 @@ class QuerySet(Generic[ModelT]):
                         *[(pk_col == obj.pk, value_of(obj, field, column)) for obj in batch],
                         else_=column,
                     )
-                stmt = (
-                    update(table)
-                    .where(pk_col.in_([obj.pk for obj in batch]))
-                    .values(values)
-                )
+                stmt = update(table).where(pk_col.in_([obj.pk for obj in batch])).values(values)
                 result = await session.execute(stmt)
                 count += result.rowcount
 
@@ -2334,8 +2272,7 @@ def _insert_statement(table: Any, dialect_name: str, ignore_conflicts: bool) -> 
     from zeeb_orm.exceptions import NotSupportedError
 
     raise NotSupportedError(
-        f"bulk_create(ignore_conflicts=True) is not supported on the "
-        f"{dialect_name!r} backend."
+        f"bulk_create(ignore_conflicts=True) is not supported on the {dialect_name!r} backend."
     )
 
 
@@ -2477,6 +2414,7 @@ def _coerce_temporal_value(column: Any, transform: str | None, lookup: str, valu
 
     col_type = getattr(column, "type", None)
     if isinstance(col_type, _SADateTime):
+
         def _convert(v: Any) -> Any:
             if not isinstance(v, str):
                 return v
@@ -2484,10 +2422,9 @@ def _coerce_temporal_value(column: Any, transform: str | None, lookup: str, valu
                 return _dt.datetime.fromisoformat(v)
             except ValueError:
                 # Date-only string compares from midnight
-                return _dt.datetime.combine(
-                    _dt.date.fromisoformat(v), _dt.time.min
-                )
+                return _dt.datetime.combine(_dt.date.fromisoformat(v), _dt.time.min)
     elif isinstance(col_type, _SADate):
+
         def _convert(v: Any) -> Any:
             if not isinstance(v, str):
                 return v
@@ -2496,6 +2433,7 @@ def _coerce_temporal_value(column: Any, transform: str | None, lookup: str, valu
             except ValueError:
                 return _dt.datetime.fromisoformat(v).date()
     elif isinstance(col_type, _SATime):
+
         def _convert(v: Any) -> Any:
             return _dt.time.fromisoformat(v) if isinstance(v, str) else v
     else:
@@ -2529,8 +2467,10 @@ def lookup_to_condition(
 
     relation_parts, field_name, transform, lookup = parse_path(model, lookup_string)
 
-    if relation_parts and (branch_negated or negated) and is_multi_valued_path(
-        model, relation_parts
+    if (
+        relation_parts
+        and (branch_negated or negated)
+        and is_multi_valued_path(model, relation_parts)
     ):
         return _multi_valued_condition(model, lookup_string, value)
 
@@ -2554,8 +2494,7 @@ def lookup_to_condition(
     if relation_parts:
         if joins is None:
             raise FieldError(
-                f"Related-field traversal ({lookup_string!r}) is not "
-                "supported in this context."
+                f"Related-field traversal ({lookup_string!r}) is not supported in this context."
             )
         column = joins.column(relation_parts, field_name, scope=scope)
     else:
@@ -2632,11 +2571,7 @@ def _multi_valued_condition(model: type, lookup_string: str, value: Any) -> Any:
     inner = table.alias(f"_mv_{table.name}")
     inner_joins = JoinContext(model, inner, alias_prefix="_mv")
     condition = lookup_to_condition(model, lookup_string, value, inner_joins)
-    subquery = (
-        select(inner.c[pk_name])
-        .select_from(inner_joins.apply(inner))
-        .where(condition)
-    )
+    subquery = select(inner.c[pk_name]).select_from(inner_joins.apply(inner)).where(condition)
     return table.c[pk_name].in_(subquery)
 
 
