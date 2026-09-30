@@ -277,6 +277,30 @@ class Migration(Migration):
 | `RunSQL` | Execute raw SQL |
 | `RunPython` | Execute a Python callable |
 
+#### Reversibility
+
+Unapplying a migration (`migrate <earlier>`, `migrate zero`, `--rollback N`)
+runs each operation's reversal. An operation that cannot be reversed —
+`RunSQL` without `reverse_sql`, `RunPython` without `reverse_code`,
+`RemoveField` without `field`, `RemoveIndex` without `columns`,
+`RemoveConstraint`, or a `DeleteModel` that does not record the dropped
+table's columns — makes the rollback refuse **before anything runs**, with an
+`IrreversibleError` naming the migration and operation. Nothing is ever
+"reversed" by silently doing nothing. When no reverse step is needed, say so:
+
+```python
+operations.RunSQL("UPDATE posts SET slug = id", reverse_sql=operations.RunSQL.noop)
+operations.RunPython(populate, reverse_code=operations.RunPython.noop)
+```
+
+`migrate --fake` records a rollback without running anything, for the rare
+case where the schema was already put back by hand.
+
+`makemigrations` writes `DeleteModel` with the dropped table's columns,
+primary key and unique constraints (as the earlier migrations declared them)
+and `RemoveIndex` with the index's columns, so both reverse: the table or
+index is recreated. Rows a `DeleteModel` dropped are not restored.
+
 #### RenameModel
 
 ```python
@@ -357,7 +381,10 @@ Zeeb compares your current model definitions against the **state described by ex
 - You don't need to apply migrations before generating new ones
 - Changes are detected reliably regardless of the database state
 
-Zeeb auto-detects these changes (all generated operations are reversible):
+Zeeb auto-detects these changes (all generated operations are reversible).
+Models with `Meta.managed = False` are left out: no operation is generated for
+their tables, and test schemas (`temporary_database`, the generated `db`
+fixture) do not create them either.
 
 - **Tables**: Create, drop
 - **Columns**: Add, drop, alter type
@@ -369,7 +396,26 @@ Zeeb auto-detects these changes (all generated operations are reversible):
 Foreign-key constraint changes (adding/removing an FK, altering `on_delete`)
 are **not** auto-detected — write a manual migration for those. On SQLite,
 column and constraint alterations are applied via Alembic batch mode
-(`batch_alter_table`), which rebuilds the table via copy-and-swap.
+(`batch_alter_table`), which rebuilds the table via copy-and-swap; migrations
+therefore run with SQLite's foreign-key enforcement switched off, so dropping
+the old copy of a table never cascades into the rows that reference it.
+
+**Renamed fields.** A field removed while another with the same definition is
+added on the same model looks like a rename, but it is written as
+`RemoveField` + `AddField`, which drops the column and its data.
+`makemigrations` warns about every such pair (and lists it under
+`possible_renames` with `--json`); `makemigrations --accept-renames` writes a
+`RenameField` for them instead, keeping the data.
+
+**State replay.** The state the models are compared against is rebuilt by
+replaying the migration files into an in-memory SQLite database. If a schema
+operation fails to replay, `makemigrations` stops with an error instead of
+comparing against a wrong state. `RunPython` is not run during replay and
+`RunSQL` that SQLite cannot execute is skipped — both are reported.
+
+**Tracking table.** Applied migrations are recorded in `zeeb_migrations`,
+created through SQLAlchemy so its auto-increment key is right on every
+backend (SQLite, PostgreSQL, MySQL).
 
 ### ManyToMany Through Tables
 
@@ -474,7 +520,7 @@ class Migration(Migration):
                 SET slug = LOWER(REPLACE(title, ' ', '-'))
                 WHERE slug IS NULL
             """,
-            reverse_sql=None,
+            reverse_sql=operations.RunSQL.noop,  # nothing to undo on rollback
         ),
     ]
 ```

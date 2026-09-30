@@ -22,21 +22,26 @@ from zeeb_orm.migrations.migration import Migration
 # ---------------------------------------------------------------------------
 
 _TRACKING_TABLE = "zeeb_migrations"
-_CREATE_TRACKING_SQL = f"""
-CREATE TABLE IF NOT EXISTS {_TRACKING_TABLE} (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    name VARCHAR(255) NOT NULL UNIQUE,
-    applied_at TIMESTAMP NOT NULL
-)
-"""
-# Postgres variant (AUTOINCREMENT → SERIAL)
-_CREATE_TRACKING_SQL_PG = f"""
-CREATE TABLE IF NOT EXISTS {_TRACKING_TABLE} (
-    id SERIAL PRIMARY KEY,
-    name VARCHAR(255) NOT NULL UNIQUE,
-    applied_at TIMESTAMP NOT NULL
-)
-"""
+
+
+def tracking_table() -> Any:
+    """The ``zeeb_migrations`` table, defined once and rendered per dialect.
+
+    Built with SQLAlchemy rather than a DDL string so the auto-increment
+    primary key is right on every backend: ``INTEGER PRIMARY KEY`` on
+    SQLite, ``SERIAL`` on PostgreSQL, ``AUTO_INCREMENT`` on MySQL (whose
+    parser rejects SQLite's ``AUTOINCREMENT``). Existing tables created by
+    the old DDL have the same columns and are used as they are.
+    """
+    from sqlalchemy import Column, DateTime, Integer, MetaData, String, Table
+
+    return Table(
+        _TRACKING_TABLE,
+        MetaData(),
+        Column("id", Integer, primary_key=True, autoincrement=True),
+        Column("name", String(255), nullable=False, unique=True),
+        Column("applied_at", DateTime(), nullable=False),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -115,15 +120,11 @@ def load_migration(path: Path) -> Migration:
 
 def _ensure_tracking_table(connection) -> None:
     """Create the zeeb_migrations table if it doesn't exist."""
-    from sqlalchemy import text, inspect as sa_inspect
+    from sqlalchemy import inspect as sa_inspect
 
     inspector = sa_inspect(connection)
     if _TRACKING_TABLE not in inspector.get_table_names():
-        dialect = connection.engine.dialect.name
-        if dialect == "postgresql":
-            connection.execute(text(_CREATE_TRACKING_SQL_PG))
-        else:
-            connection.execute(text(_CREATE_TRACKING_SQL))
+        tracking_table().create(connection, checkfirst=True)
         connection.commit()
 
 
@@ -139,14 +140,13 @@ def get_applied_migrations(connection) -> set[str]:
 
 
 def record_migration(connection, name: str) -> None:
-    """Record a migration as applied."""
-    from sqlalchemy import text
+    """Record a migration as applied (``applied_at`` in UTC)."""
+    from sqlalchemy import insert
 
-    now = datetime.now(timezone.utc).isoformat()
-    connection.execute(
-        text(f"INSERT INTO {_TRACKING_TABLE} (name, applied_at) VALUES (:name, :applied_at)"),
-        {"name": name, "applied_at": now},
-    )
+    # Naive UTC: a TIMESTAMP/DATETIME column without a zone accepts it on
+    # every backend, where an ISO string with "+00:00" is refused by MySQL.
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    connection.execute(insert(tracking_table()).values(name=name, applied_at=now))
 
 
 def unrecord_migration(connection, name: str) -> None:
@@ -360,14 +360,11 @@ def migrate(
     Returns:
         List of migration names that were (or would be) applied/unapplied.
     """
-    from sqlalchemy import create_engine
-
     if database_url is None:
         from zeeb_orm.conf.settings import get_settings
         database_url = get_settings().database.url
 
-    sync_url = sync_database_url(database_url)
-    engine = create_engine(sync_url)
+    engine = _migration_engine(database_url)
 
     migrations_dir = get_migrations_dir(project_root)
 
@@ -383,9 +380,62 @@ def migrate(
                 # the plan output (matching the historical behavior).
                 return [item.name for item in plan_items if not item.fake_initial]
 
+            if not fake:
+                _check_reversible(plan_items)
             return _apply_plan(conn, plan_items, applied, fake)
     finally:
         engine.dispose()
+
+
+def _check_reversible(plan: list[_PlanItem]) -> None:
+    """Refuse a rollback that would reach an irreversible operation.
+
+    Checked for the whole plan up front: finding out at the third migration
+    would leave the database half rolled back.
+    """
+    from zeeb_orm.migrations.state import IrreversibleError
+
+    blocked = [
+        f"{item.name}: {op.describe()}"
+        for item in plan
+        if item.backward
+        for op in item.migration.operations
+        if not op.reversible
+    ]
+    if blocked:
+        raise IrreversibleError(
+            "Cannot unapply — these operations are irreversible: "
+            + "; ".join(blocked)
+            + ". Make them reversible (e.g. reverse_sql/reverse_code, or "
+            "RunSQL.noop/RunPython.noop), or mark the migrations unapplied "
+            "without running them with --fake."
+        )
+
+
+def _migration_engine(database_url: str) -> Any:
+    """A sync engine for running migrations.
+
+    On SQLite, foreign-key enforcement is switched off for the migration
+    connection (Alembic's recommendation for batch mode): SQLite alters a
+    column by rebuilding the table, and with enforcement on, dropping the old
+    copy of a referenced table would fire ``ON DELETE CASCADE`` on every row
+    pointing at it. The pragma cannot be changed inside a transaction, so it
+    is set as each connection opens.
+    """
+    from sqlalchemy import create_engine, event
+
+    engine = create_engine(sync_database_url(database_url))
+    if engine.dialect.name == "sqlite":
+
+        @event.listens_for(engine, "connect")
+        def _foreign_keys_off(dbapi_connection, _record) -> None:
+            cursor = dbapi_connection.cursor()
+            try:
+                cursor.execute("PRAGMA foreign_keys=OFF")
+            finally:
+                cursor.close()
+
+    return engine
 
 
 def _execute(conn, mig, backward: bool = False) -> None:
@@ -434,14 +484,11 @@ def showmigrations(
     Returns:
         List of (name, applied) tuples.
     """
-    from sqlalchemy import create_engine
-
     if database_url is None:
         from zeeb_orm.conf.settings import get_settings
         database_url = get_settings().database.url
 
-    sync_url = sync_database_url(database_url)
-    engine = create_engine(sync_url)
+    engine = _migration_engine(database_url)
 
     migrations_dir = get_migrations_dir(project_root)
     all_migrations = list_migration_files(migrations_dir)

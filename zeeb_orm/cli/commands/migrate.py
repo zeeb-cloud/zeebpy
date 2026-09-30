@@ -91,9 +91,19 @@ def run_makemigrations(
     check: bool = False,
     dry_run: bool = False,
     json_output: bool = False,
+    accept_renames: bool = False,
 ) -> int:
-    """Create new migration files by detecting model changes."""
-    from zeeb_orm.migrations.autodetector import detect_changes
+    """Create new migration files by detecting model changes.
+
+    A removed and an added field with the same definition on one model are
+    reported as a likely rename (``possible_renames`` in the JSON data and a
+    WARNING line): written as RemoveField + AddField they drop the column's
+    data. ``accept_renames`` emits ``RenameField`` for them instead.
+    """
+    from zeeb_orm.migrations.autodetector import (
+        MigrationReplayError,
+        detect_changes_with_report,
+    )
     from zeeb_orm.migrations.executor import list_migration_files
     from zeeb_orm.migrations.writer import write_migration
 
@@ -136,17 +146,36 @@ def run_makemigrations(
             apps=installed_apps,
         )
 
-    operations = detect_changes(migrations_dir=str(migrations_dir))
+    try:
+        operations, report = detect_changes_with_report(
+            migrations_dir=str(migrations_dir), accept_renames=accept_renames
+        )
+    except MigrationReplayError as exc:
+        return fail(
+            str(exc),
+            code="invalid_input",
+            next_command="python manage.py showmigrations",
+            json_output=json_output,
+            recoverable=False,
+        )
     described = [op.describe() for op in operations]
+    warning_lines = tuple(f"WARNING: {line}" for line in report.warnings())
+    findings = {
+        "possible_renames": [r.as_dict() for r in report.possible_renames],
+        "renamed": [r.as_dict() for r in report.renamed],
+        "skipped_during_replay": list(report.skipped),
+        "warnings": report.warnings(),
+    }
 
     if not operations:
         return ok(
             "No changes detected.",
             json_output=json_output,
-            lines=(*scanned, "\nNo changes detected."),
+            lines=(*scanned, *warning_lines, "\nNo changes detected."),
             changes_detected=False,
             operations=[],
             apps=installed_apps,
+            **findings,
         )
 
     # --check: the CI question "did someone change a model without migrating?"
@@ -158,6 +187,7 @@ def run_makemigrations(
             json_output=json_output,
             pending_operations=described,
             apps=installed_apps,
+            **findings,
         )
 
     if dry_run:
@@ -174,10 +204,12 @@ def run_makemigrations(
                 "\nMigrations for 'all apps' (dry run — no files written):",
                 f"  {filename}",
                 *(f"    - {line}" for line in described),
+                *warning_lines,
             ),
             would_create=filename,
             operations=described,
             apps=installed_apps,
+            **findings,
         )
 
     initial = len(list_migration_files(migrations_dir)) == 0
@@ -192,6 +224,7 @@ def run_makemigrations(
             "\nMigrations for 'all apps':",
             f"  {filepath.name}",
             *(f"    - {line}" for line in described),
+            *warning_lines,
             "\nRun 'python manage.py migrate' to apply.",
         ),
         created=filepath.name,
@@ -199,6 +232,7 @@ def run_makemigrations(
         changes_detected=True,
         apps=installed_apps,
         next_command="python manage.py migrate",
+        **findings,
     )
 
 

@@ -151,7 +151,7 @@ class Article(Model):
 | `table_name` / `db_table` | Database table name | no |
 | `abstract` | If `True`, no table is created (use as base class) | no |
 | `ordering` | Default query ordering (list of field names, prefix `-` for descending) | yes |
-| `managed` | If `False`, migrations leave the table alone | yes |
+| `managed` | If `False`, `makemigrations` generates nothing for the table and test schemas (`create_all`, `temporary_database`) do not create it | yes |
 | `indexes` | List of `Index` objects | yes |
 | `constraints` | List of `UniqueConstraint` / `CheckConstraint` objects | yes |
 | `unique_together` | List of field tuples that must be unique together | yes |

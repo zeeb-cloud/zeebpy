@@ -102,10 +102,35 @@ def _with_server_default(column, server_default):
     return copied
 
 
+def _irreversible(op: Operation, why: str):
+    from zeeb_orm.migrations.state import IrreversibleError
+
+    return IrreversibleError(f"Operation {op.describe()!r} cannot be reversed: {why}")
+
+
+def _create_table(connection, table_name: str, columns, primary_key, constraints) -> None:
+    """``CREATE TABLE`` from recorded columns (shared by CreateModel/DeleteModel)."""
+    from sqlalchemy import MetaData, PrimaryKeyConstraint, Table
+
+    tmp_meta = MetaData()
+    cols = [copy_column(col) for col in columns]
+    items = list(cols)
+    if primary_key:
+        items.append(PrimaryKeyConstraint(*primary_key))
+    for constraint in constraints or ():
+        items.append(constraint)
+    _register_fk_target_stubs(tmp_meta, table_name, cols)
+    Table(table_name, tmp_meta, *items).create(connection, checkfirst=True)
+
+
 class Operation:
     """Base class for migration operations.
 
     Subclasses must implement ``describe``, ``forward`` and ``backward``.
+    An operation whose ``reversible`` is false raises
+    :class:`~zeeb_orm.migrations.state.IrreversibleError` from ``backward``
+    rather than silently doing nothing; the executor checks the whole plan
+    first, so a rollback never stops half-way.
     """
 
     reversible = True
@@ -195,11 +220,31 @@ class CreateModel(Operation):
 
 
 class DeleteModel(Operation):
-    """Drop a database table."""
+    """Drop a database table.
 
-    def __init__(self, name: str, table: str):
+    Pass the dropped table's ``columns`` (and ``primary_key``/``constraints``)
+    to make it reversible — ``makemigrations`` records them. Without them,
+    unapplying raises :class:`~zeeb_orm.migrations.state.IrreversibleError`.
+    Reversing recreates the table's schema; its rows are gone.
+    """
+
+    def __init__(
+        self,
+        name: str,
+        table: str,
+        columns: list | None = None,
+        primary_key: list[str] | None = None,
+        constraints: list | None = None,
+    ):
         self.name = name
         self.table = table
+        self.columns = list(columns or [])
+        self.primary_key = list(primary_key or [])
+        self.constraints = list(constraints or [])
+
+    @property
+    def reversible(self):
+        return bool(self.columns)
 
     def describe(self) -> str:
         return f"Delete model {self.name}"
@@ -209,10 +254,35 @@ class DeleteModel(Operation):
         connection.execute(text(f"DROP TABLE IF EXISTS {_quote(connection, self.table)}"))
 
     def backward(self, connection) -> None:
-        pass  # Cannot recreate without column info
+        if not self.columns:
+            raise _irreversible(
+                self, "the migration does not record the dropped table's columns"
+            )
+        _create_table(
+            connection, self.table, self.columns, self.primary_key, self.constraints
+        )
 
     def __repr__(self) -> str:
-        return f"    operations.DeleteModel(name={self.name!r}, table={self.table!r})"
+        if not self.columns:
+            return f"    operations.DeleteModel(name={self.name!r}, table={self.table!r})"
+        parts = [
+            f"    operations.DeleteModel(\n"
+            f"        name={self.name!r},\n"
+            f"        table={self.table!r},\n"
+            f"        columns=[\n"
+        ]
+        for col in self.columns:
+            parts.append(f"            {_repr_column(col)},\n")
+        parts.append("        ],\n")
+        if self.primary_key:
+            parts.append(f"        primary_key={self.primary_key!r},\n")
+        if self.constraints:
+            parts.append("        constraints=[\n")
+            for c in self.constraints:
+                parts.append(f"            {_repr_constraint(c)},\n")
+            parts.append("        ],\n")
+        parts.append("    )")
+        return "".join(parts)
 
 
 class AddField(Operation):
@@ -298,12 +368,13 @@ class RemoveField(Operation):
         op.drop_column(self.table, self.name)
 
     def backward(self, connection) -> None:
-        if self.field is not None:
-            from alembic.operations import Operations
-            from alembic.runtime.migration import MigrationContext
-            ctx = MigrationContext.configure(connection)
-            op = Operations(ctx)
-            op.add_column(self.table, self.field)
+        if self.field is None:
+            raise _irreversible(self, "the migration does not record the removed column")
+        from alembic.operations import Operations
+        from alembic.runtime.migration import MigrationContext
+        ctx = MigrationContext.configure(connection)
+        op = Operations(ctx)
+        op.add_column(self.table, self.field)
 
     def __repr__(self) -> str:
         parts = [
@@ -389,6 +460,8 @@ class AlterField(Operation):
         self._apply_alter(connection, alter_kwargs)
 
     def backward(self, connection) -> None:
+        if not self.reversible:
+            raise _irreversible(self, "the migration does not record the previous definition")
         alter_kwargs: dict[str, Any] = {}
         if self.old_column_type is not None:
             alter_kwargs["type_"] = self.old_column_type
@@ -463,12 +536,29 @@ class AddIndex(Operation):
 
 
 class RemoveIndex(Operation):
-    """Drop an index."""
+    """Drop an index.
 
-    def __init__(self, model_name: str, table: str, name: str):
+    Pass the index's ``columns`` (and ``unique``) to make it reversible —
+    ``makemigrations`` records them.
+    """
+
+    def __init__(
+        self,
+        model_name: str,
+        table: str,
+        name: str,
+        columns: list[str] | None = None,
+        unique: bool = False,
+    ):
         self.model_name = model_name
         self.table = table
         self.name = name
+        self.columns = list(columns or [])
+        self.unique = unique
+
+    @property
+    def reversible(self):
+        return bool(self.columns)
 
     def describe(self) -> str:
         return f"Remove index {self.name} from {self.model_name}"
@@ -481,20 +571,38 @@ class RemoveIndex(Operation):
         op.drop_index(self.name, table_name=self.table)
 
     def backward(self, connection) -> None:
-        pass
+        if not self.columns:
+            raise _irreversible(self, "the migration does not record the index's columns")
+        from alembic.operations import Operations
+        from alembic.runtime.migration import MigrationContext
+        ctx = MigrationContext.configure(connection)
+        op = Operations(ctx)
+        op.create_index(self.name, self.table, self.columns, unique=self.unique)
 
     def __repr__(self) -> str:
-        return (
+        parts = [
             f"    operations.RemoveIndex(\n"
             f"        model_name={self.model_name!r},\n"
             f"        table={self.table!r},\n"
             f"        name={self.name!r},\n"
-            f"    )"
-        )
+        ]
+        if self.columns:
+            parts.append(f"        columns={self.columns!r},\n")
+        if self.unique:
+            parts.append("        unique=True,\n")
+        parts.append("    )")
+        return "".join(parts)
 
 
 class RunSQL(Operation):
-    """Execute raw SQL."""
+    """Execute raw SQL.
+
+    Without ``reverse_sql`` the operation is irreversible; pass
+    ``reverse_sql=RunSQL.noop`` when unapplying needs no SQL.
+    """
+
+    #: ``reverse_sql``/``sql`` value meaning "nothing to run" (Django parity).
+    noop = ""
 
     def __init__(self, sql: str, reverse_sql: str | None = None):
         self.sql = sql
@@ -508,10 +616,14 @@ class RunSQL(Operation):
         return "Run SQL"
 
     def forward(self, connection) -> None:
+        if not self.sql:
+            return
         from sqlalchemy import text
         connection.execute(text(self.sql))
 
     def backward(self, connection) -> None:
+        if self.reverse_sql is None:
+            raise _irreversible(self, "no reverse_sql was given (use RunSQL.noop for none)")
         if self.reverse_sql:
             from sqlalchemy import text
             connection.execute(text(self.reverse_sql))
@@ -525,7 +637,15 @@ class RunSQL(Operation):
 
 
 class RunPython(Operation):
-    """Execute a Python callable."""
+    """Execute a Python callable.
+
+    Without ``reverse_code`` the operation is irreversible; pass
+    ``reverse_code=RunPython.noop`` when unapplying needs no code.
+    """
+
+    @staticmethod
+    def noop(connection) -> None:
+        """A callable that does nothing (Django parity)."""
 
     def __init__(self, code: Any, reverse_code: Any = None):
         self.code = code
@@ -543,8 +663,9 @@ class RunPython(Operation):
         self.code(connection)
 
     def backward(self, connection) -> None:
-        if self.reverse_code:
-            self.reverse_code(connection)
+        if self.reverse_code is None:
+            raise _irreversible(self, "no reverse_code was given (use RunPython.noop for none)")
+        self.reverse_code(connection)
 
     def __repr__(self) -> str:
         name = getattr(self.code, '__name__', 'function')
@@ -778,7 +899,7 @@ class RemoveConstraint(Operation):
             op.drop_constraint(self.name, self.table, type_=self.constraint_type)
 
     def backward(self, connection) -> None:
-        pass  # Cannot recreate without constraint definition
+        raise _irreversible(self, "the migration does not record the constraint's definition")
 
     def __repr__(self) -> str:
         return (

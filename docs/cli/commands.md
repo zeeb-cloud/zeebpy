@@ -130,6 +130,7 @@ python manage.py makemigrations --name add_posts   # name the file
 python manage.py makemigrations --empty            # an empty file to edit by hand
 python manage.py makemigrations --dry-run          # show it without writing
 python manage.py makemigrations --check            # exit 1 if a change has no migration
+python manage.py makemigrations --accept-renames   # emit RenameField for likely renames
 ```
 
 **Options:**
@@ -140,7 +141,25 @@ python manage.py makemigrations --check            # exit 1 if a change has no m
 | `--empty` | | Create an empty migration to edit by hand |
 | `--dry-run` | | Show what would be written; write nothing |
 | `--check` | | Exit 1 when model changes have no migration. This is the CI check |
+| `--accept-renames` | | Write `RenameField` for the likely renames reported (see below) |
 | `--json` | | Print one JSON object on stdout instead of prose |
+
+**Renamed fields.** A field that disappears while another with the same
+definition (type, nullability, uniqueness, defaults, foreign key) appears on
+the same model looks like a rename, but is written as `RemoveField` +
+`AddField` — which **drops the column's data**. `makemigrations` reports every
+such pair with a `WARNING:` line and, with `--json`, in
+`data.possible_renames` (`[{"model", "table", "old", "new"}]`). If they are
+renames, re-run with `--accept-renames`: the pairs become `RenameField` and
+the data stays (`data.renamed` lists them).
+
+**Replay.** Changes are detected against the schema the existing migration
+files produce, rebuilt in an in-memory SQLite database. A schema operation
+that fails to replay stops `makemigrations` with an error — diffing against a
+wrong state writes wrong migrations. `RunPython` is never run for this, and
+`RunSQL` that SQLite cannot execute is skipped; both are listed as warnings
+and in `data.skipped_during_replay`. Models with `Meta.managed = False` are
+left out entirely.
 
 ### migrate
 
