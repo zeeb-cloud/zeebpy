@@ -801,11 +801,21 @@ result = await run_query("SELECT id, title FROM post_post LIMIT 5")
 
 ## Testing
 
-### `run_tests(path=None, verbose=False, project_id=None)`
+### `run_tests(path=None, verbose=False, project_id=None, timeout=600.0)`
 Run the project test suite via pytest and return pass/fail counts and output.
 
-- `path`: Specific test file or directory.  Runs all tests if `None`.
+- `path`: A test file, directory or node id inside the project.  Runs all
+  tests if `None`. A value starting with `-` (a pytest option such as
+  `--basetemp=…`) is refused with `invalid_input`, one outside the project with
+  `outside_project_root`; the path is passed after `--`.
 - `verbose`: Pass `-v` for detailed test names.
+- `timeout`: Seconds before the run — its whole process group — is killed
+  (`timed_out=True`, `returncode=None`, `success=False`). `None` waits.
+
+`success` means the run completed and reported a result: pytest exit codes 0
+(all passed), 1 (some failed) and 5 (nothing collected) are all
+`success=True`. Read `all_passed` (`returncode == 0`) or the `failed`/`errors`
+counts for the verdict on the tests.
 
 ```python
 result = await run_tests()
@@ -814,7 +824,8 @@ result = await run_tests()
 # result.data == {"passed": 114, "failed": 0, "errors": 0, "skipped": 0,
 #                 "output": "...", "returncode": 0,
 #                 "failed_tests": [],      # node ids of failures, for direct re-run
-#                 "no_tests": False}       # True when the run collected nothing
+#                 "no_tests": False,       # True when the run collected nothing
+#                 "all_passed": True, "timed_out": False}
 ```
 
 ### `generate_tests(app, entities, filename=None, overwrite=False, project_id=None)`
@@ -835,13 +846,16 @@ findings into a `syntax_error` / `import_error` root cause.
 
 ## Shell / Management Commands
 
-### `run_management_command(command, args=None, project_id=None)`
-Run any `manage.py` command and capture its output.
+### `run_management_command(command, args=None, project_id=None, timeout=300.0)`
+Run any `manage.py` command and capture its output. stdin is closed, so a
+prompting command fails instead of hanging, and the command's whole process
+group is killed after `timeout` seconds (`timed_out=True`; `None` waits).
 
 ```python
 result = await run_management_command("showmigrations")
 result = await run_management_command("createsuperuser", args=["--no-input", "--username=admin"])
-# result.data == {"command": "...", "args": [...], "returncode": 0, "output": "..."}
+# result.data == {"command": "...", "args": [...], "returncode": 0, "output": "...",
+#                 "timed_out": False}
 ```
 
 ---
