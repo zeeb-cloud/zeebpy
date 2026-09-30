@@ -541,3 +541,78 @@ async def test_user_tools_accept_a_uuid_id_string(user_project):
     assert res.success and res.data["deleted"] == 1
     res = await agents.get_user(dashed, project_id=user_project)
     assert not res.success and res.data["error_code"] == "user_not_found"
+
+
+# ---------------------------------------------------------------------------
+# 4. Subprocess tools: no option injection, always a deadline
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("path", "code"),
+    [
+        ("--basetemp=/tmp/zeeb-victim", "invalid_input"),
+        ("-p no:cacheprovider", "invalid_input"),
+        ("../outside_tests", "outside_project_root"),
+        ("/etc", "outside_project_root"),
+    ],
+)
+async def test_run_tests_refuses_options_and_escapes(project, path, code):
+    res = await agents.run_tests(path, project_id=project)
+    assert not res.success
+    assert res.data["error_code"] == code
+    assert "returncode" not in res.data  # pytest was never started
+
+
+async def test_run_tests_reports_the_verdict_and_honours_a_deadline(project):
+    tests_dir = project / "tests"
+    (tests_dir / "test_hardening_ok.py").write_text("def test_ok():\n    assert True\n")
+    (tests_dir / "test_hardening_slow.py").write_text(
+        "import time\n\n\ndef test_slow():\n    time.sleep(60)\n"
+    )
+    res = await agents.run_tests("tests/test_hardening_ok.py::test_ok", project_id=project)
+    assert res.success, res.data["output"]
+    assert res.data["all_passed"] is True and res.data["timed_out"] is False
+
+    import time
+
+    started = time.monotonic()
+    res = await agents.run_tests("tests/test_hardening_slow.py", timeout=3, project_id=project)
+    assert time.monotonic() - started < 30
+    assert not res.success
+    assert res.data["timed_out"] is True
+    assert res.data["returncode"] is None
+    assert res.data["all_passed"] is False
+    res = await agents.run_tests(timeout=0, project_id=project)
+    assert not res.success and res.data["error_code"] == "invalid_input"
+
+
+async def test_run_management_command_kills_the_whole_group_at_the_deadline(tmp_path):
+    root = tmp_path / "proj"
+    root.mkdir()
+    # The command starts a grandchild that holds the output pipes open: killing
+    # only the direct child would leave the tool waiting for it.
+    (root / "manage.py").write_text(
+        "import subprocess, sys, time\n"
+        "subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])\n"
+        "print('started', flush=True)\n"
+        "time.sleep(60)\n"
+    )
+    import time
+
+    started = time.monotonic()
+    res = await agents.run_management_command("anything", timeout=2, project_id=root)
+    assert time.monotonic() - started < 30
+    assert not res.success
+    assert res.data["timed_out"] is True
+    assert res.data["returncode"] is None
+    assert "started" in res.data["output"]
+
+
+async def test_run_management_command_closes_stdin(tmp_path):
+    root = tmp_path / "proj"
+    root.mkdir()
+    (root / "manage.py").write_text("import sys\nprint(repr(sys.stdin.read()))\n")
+    res = await agents.run_management_command("prompt", timeout=30, project_id=root)
+    assert res.success, res.data
+    assert "''" in res.data["output"]

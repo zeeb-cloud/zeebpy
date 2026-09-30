@@ -70,7 +70,7 @@ Start here. These are declarative and cover almost every task.
 | `{prefix}plan_feature(spec, tests=True)` | Validate a FeatureSpec and return the execution plan — writes NOTHING. |
 | `{prefix}regenerate_tests(feature)` | Rewrite a feature's generated test file from its stored spec. |
 | `{prefix}run_migrations(target=None, fake=False, fake_initial=False)` | Apply pending migrations — or move the schema to a named migration. |
-| `{prefix}run_tests(path=None, verbose=False)` | Run the project test suite via pytest. |
+| `{prefix}run_tests(path=None, verbose=False, timeout=600.0)` | Run the project test suite via pytest. |
 | `{prefix}verify_project(checks=None, port=8000)` | Run the deterministic acceptance gate — the call to make before "done". |
 
 ### Escape hatches (8)
@@ -85,7 +85,7 @@ is being solved.
 | `{prefix}delete_file(path)` | Delete one file from the project — a stray test, a bad migration, an orphaned module. |
 | `{prefix}edit_file(path, find, replace, count=1)` | Replace an exact text span in a project file — the surgical alternative to ``write_file``. |
 | `{prefix}read_file(path)` | Read a file from the project and return its contents. |
-| `{prefix}run_management_command(command, args=None)` | Run a ``manage.py`` management command and return its output. |
+| `{prefix}run_management_command(command, args=None, timeout=300.0)` | Run a ``manage.py`` management command and return its output. |
 | `{prefix}run_query(sql)` | Execute a read-only SQL query against the project database. |
 | `{prefix}search_code(pattern, glob="**/*.py")` | Search for a regex pattern across project source files. |
 | `{prefix}write_file(path, content)` | Write (or overwrite) a file in the project. |
@@ -242,7 +242,7 @@ the change. Grouped by category below.
 | `{prefix}get_user(email_or_id)` | Fetch a single user by email or primary-key ID. |
 | `{prefix}list_users(limit=50, offset=0)` | Return a list of users from the project's user table. |
 | `{prefix}set_user_password(email_or_id, new_password)` | Set a new password for an existing user (hashes it automatically). |
-| `{prefix}update_user(email_or_id, changes)` | Update fields on an existing user (a missing one fails with `user_not_found`). A string with `@` is an email; a UUID or digit string is the primary key — for every user tool. |
+| `{prefix}update_user(email_or_id, changes)` | Update fields on an existing user. |
 
 #### CORS (BaaS)
 
