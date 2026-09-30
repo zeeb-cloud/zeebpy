@@ -728,6 +728,15 @@ class ImproperlyConfigured(Exception):
     """The application is somehow improperly configured (Django-style)."""
 
 
+class RouteInventoryError(RuntimeError):
+    """The served routes of an app could not be read back.
+
+    Raised by ``zeeb_api.routers.served_routes`` when FastAPI's routing
+    internals no longer have the shape it knows, instead of reporting an app
+    with fewer (or no) routes than it serves.
+    """
+
+
 class InsecureSecretError(ZeebException):
     """Raised when an insecure default secret key is used outside DEBUG mode."""
 

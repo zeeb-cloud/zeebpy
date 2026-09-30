@@ -35,12 +35,77 @@ def served_routes(routes: Iterable[Any]) -> list[Any]:
     rest as the route is served (prefix, include-level dependencies and all),
     and ``original_route`` is the route object that was declared.
 
-    Before 0.137 the copies are already there, and *routes* come back as they
-    are. Use :func:`declared_route` for an ``isinstance`` check.
+    ``iter_route_contexts`` is not a documented API, so this does not trust it
+    blindly. If it is missing or raises, an own walker follows the
+    ``original_router``/``include_context.prefix`` of lazily included routers
+    (the pre-0.137 copies need no walking). Either way the result is checked:
+    an entry without a ``path`` that is not a ``Host`` means routes could not
+    be read, and :class:`~zeeb_api.exceptions.RouteInventoryError` is raised
+    rather than returning an inventory that silently lacks them.
+
+    Use :func:`declared_route` for an ``isinstance`` check.
     """
-    if _iter_route_contexts is None:
-        return list(routes)
-    return list(_iter_route_contexts(list(routes)))
+    routes = list(routes)
+    served: list[Any] | None = None
+    if _iter_route_contexts is not None:
+        try:
+            served = list(_iter_route_contexts(routes))
+        except Exception:
+            logger.warning(
+                "fastapi.routing.iter_route_contexts failed; reading included "
+                "routers with the fallback walker",
+                exc_info=True,
+            )
+    if served is None:
+        served = list(_walk_included(routes, ""))
+    _check_served(served)
+    return served
+
+
+class _PrefixedRoute:
+    """A route served under an include prefix (fallback walker only)."""
+
+    def __init__(self, route: Any, prefix: str) -> None:
+        self.original_route = route
+        self.path = prefix + route.path
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self.original_route, name)
+
+
+def _walk_included(routes: Iterable[Any], prefix: str) -> Iterable[Any]:
+    """Yield served routes, descending into lazily included routers."""
+    for route in routes:
+        included = getattr(route, "original_router", None)
+        if included is not None and not isinstance(getattr(route, "path", None), str):
+            context = getattr(route, "include_context", None)
+            sub_prefix = prefix + (getattr(context, "prefix", "") or "")
+            yield from _walk_included(getattr(included, "routes", []), sub_prefix)
+        elif prefix and isinstance(getattr(route, "path", None), str):
+            yield _PrefixedRoute(route, prefix)
+        else:
+            yield route
+
+
+def _check_served(served: list[Any]) -> None:
+    """Raise when an entry is not a readable route (see :func:`served_routes`)."""
+    from starlette.routing import Host
+
+    from zeeb_api.exceptions import RouteInventoryError
+
+    unreadable = [
+        entry
+        for entry in served
+        if not isinstance(getattr(entry, "path", None), str)
+        and not isinstance(declared_route(entry), Host)
+    ]
+    if unreadable:
+        kinds = sorted({type(declared_route(entry)).__name__ for entry in unreadable})
+        raise RouteInventoryError(
+            "Cannot read the routes behind " + ", ".join(kinds) + ": FastAPI's "
+            "routing internals changed shape. zeeb_api.routers.served_routes "
+            "needs updating for this FastAPI version."
+        )
 
 
 def declared_route(route: Any) -> Any:
