@@ -680,9 +680,11 @@ class SimpleRouter:
         the URL segment. It used to be the primary key's type whatever
         ``lookup_field`` said, which made a slug lookup on a UUID-keyed model
         answer 422 for every slug. A foreign key resolves to the related
-        primary key's type; a field the model does not have (or no model) is
-        ``str`` — the most permissive — except that ``id``/``pk`` without a
-        model keeps the historical UUID default.
+        primary key's type. Without a model (or for a field the model does not
+        have) the viewset's own detail methods decide: the annotation they give
+        the lookup argument (``def retrieve(self, request, project_id: UUID)``)
+        is the type. With nothing to go on, a viewset without a model keeps the
+        historical ``UUID`` default and a missing model field is ``str``.
         """
         from zeeb_orm.models.fields import ForeignKeyField
 
@@ -694,13 +696,13 @@ class SimpleRouter:
 
         meta = getattr(model, "_meta", None)
         if meta is None:
-            return uuid.UUID if lookup_field in ("id", "pk") else str
+            return self._annotated_lookup_type(viewset, lookup_field) or uuid.UUID
 
         field = meta.pk if lookup_field == "pk" else meta.get_field(lookup_field)
         if field is None:
             field = meta.get_field_by_column(lookup_field)
         if field is None:
-            return str
+            return self._annotated_lookup_type(viewset, lookup_field) or str
         if isinstance(field, ForeignKeyField):
             try:
                 field = field.get_target_model()._meta.pk
@@ -709,6 +711,25 @@ class SimpleRouter:
         python_type = getattr(field, "_python_type", None)
         return python_type if python_type is not None else str
     
+    @staticmethod
+    def _annotated_lookup_type(viewset: Type[ViewSet], lookup_field: str) -> type | None:
+        """The type a detail method annotates its lookup argument with, if any."""
+        import typing
+
+        name = getattr(viewset, "lookup_url_kwarg", None) or lookup_field
+        for method_name in ("retrieve", "update", "partial_update", "destroy"):
+            method = getattr(viewset, method_name, None)
+            if method is None:
+                continue
+            try:
+                hints = typing.get_type_hints(method)
+            except Exception:
+                continue
+            hint = hints.get(name)
+            if isinstance(hint, type):
+                return hint
+        return None
+
     def _create_endpoint(
         self,
         viewset_class: Type[ViewSet],
