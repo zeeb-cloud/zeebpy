@@ -1212,3 +1212,47 @@ async def test_wire_app_urls_prefix_cannot_inject_code(project):
     res = await agents.wire_app_urls("blog", prefix='/x")\nimport os\n#', project_id=project)
     assert not res.success and res.data["error_code"] == "invalid_input"
     assert _snapshot(project) == before
+
+
+class TestAtomicWritePermissions:
+    """Generated files are written atomically without losing sane permissions."""
+
+    def test_a_new_file_is_0644_not_mkstemps_0600(self, tmp_path):
+        import os
+        import stat
+
+        from zeeb_agents._utils.code_gen import atomic_write_text
+
+        target = tmp_path / "models.py"
+        old_umask = os.umask(0o022)
+        try:
+            atomic_write_text(target, "x = 1\n")
+        finally:
+            os.umask(old_umask)
+        assert stat.S_IMODE(target.stat().st_mode) == 0o644
+        assert target.read_text() == "x = 1\n"
+
+    def test_an_existing_file_keeps_its_bits(self, tmp_path):
+        import stat
+
+        from zeeb_agents._utils.code_gen import atomic_write_text
+
+        target = tmp_path / "run.py"
+        target.write_text("old\n")
+        target.chmod(0o755)
+        atomic_write_text(target, "new\n")
+        assert stat.S_IMODE(target.stat().st_mode) == 0o755
+        assert target.read_text() == "new\n"
+
+    def test_a_filesystem_that_refuses_chmod_still_gets_the_write(self, tmp_path, monkeypatch):
+        """A Windows drive mounted into Linux refuses chmod to a non-owner."""
+        import zeeb_agents._utils.code_gen as code_gen
+
+        def refuse(*_args, **_kwargs):
+            raise PermissionError(1, "Operation not permitted")
+
+        monkeypatch.setattr(code_gen.os, "chmod", refuse)
+        target = tmp_path / "models.py"
+        code_gen.atomic_write_text(target, "y = 2\n")
+        assert target.read_text() == "y = 2\n"
+        assert not list(tmp_path.glob(".models.py.*.tmp"))
