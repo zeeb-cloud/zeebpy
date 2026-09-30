@@ -675,7 +675,9 @@ result = await get_settings()
 ```
 
 ### `get_env(project_id=None)`
-Read the project `.env` file and return it as a key-value dict.
+Read the project `.env` file and return it as a key-value dict — parsed exactly
+as the project reads it (`zeeb_api.conf.env.parse_env`: quotes removed,
+`export` prefixes and inline comments understood).
 
 ```python
 result = await get_env()
@@ -683,14 +685,18 @@ result = await get_env()
 ```
 
 ### `set_env(key, value, project_id=None)`
-Set (or create) an environment variable in `.env`.  Creates the file if it does not exist.
+Set (or create) an environment variable in `.env`.  Creates the file (mode
+`0600`) if it does not exist. Only the key's own line changes — comments, blank
+lines and other variables are preserved. A value with a line break or NUL is
+refused (`invalid_input`): it would inject further assignments. A value that
+would not read back unchanged bare (surrounding spaces, ` #`) is quoted.
 
 ```python
 await set_env("SECRET_KEY", "my-secret")
 ```
 
 ### `delete_env(key, project_id=None)`
-Remove a key from `.env`.
+Remove a key from `.env`, leaving comments and every other line as they were.
 
 ---
 

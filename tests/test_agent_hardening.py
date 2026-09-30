@@ -639,3 +639,48 @@ async def test_generate_requirements_ignores_the_pip_on_path(project, tmp_path, 
     written = (project / "requirements.txt").read_text()
     assert "not-this-environment" not in written
     assert "sqlalchemy" in written.lower()
+
+
+# ---------------------------------------------------------------------------
+# 6. set_env cannot inject keys and keeps the file as written
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("value", ["x\nDEBUG=True", "x\rDEBUG=True", "x\x00y"])
+async def test_set_env_refuses_line_breaks(project, value):
+    before = (project / ".env").read_text()
+    res = await agents.set_env("API_KEY", value, project_id=project)
+    assert not res.success
+    assert res.data["error_code"] == "invalid_input"
+    assert (project / ".env").read_text() == before
+
+
+async def test_set_env_preserves_comments_and_other_lines(project):
+    env = project / ".env"
+    env.write_text("# Database settings\nDEBUG=true\n\n# secret, keep me\nexport SECRET_KEY=abc\n")
+    res = await agents.set_env("DEBUG", "false", project_id=project)
+    assert res.success and res.data["action"] == "updated"
+    res = await agents.set_env("NEW_KEY", "value", project_id=project)
+    assert res.success and res.data["action"] == "added"
+    res = await agents.set_env("SECRET_KEY", "xyz", project_id=project)
+    assert res.success
+    assert env.read_text() == (
+        "# Database settings\nDEBUG=false\n\n# secret, keep me\n"
+        "export SECRET_KEY=xyz\nNEW_KEY=value\n"
+    )
+    res = await agents.delete_env("NEW_KEY", project_id=project)
+    assert res.success
+    assert env.read_text() == (
+        "# Database settings\nDEBUG=false\n\n# secret, keep me\nexport SECRET_KEY=xyz\n"
+    )
+
+
+@pytest.mark.parametrize("value", ["  padded  ", "a #not-a-comment", "it's #1", 'say "hi" #x', ""])
+async def test_set_env_values_read_back_unchanged(project, value):
+    from zeeb_api.conf.env import parse_env
+
+    res = await agents.set_env("TRICKY", value, project_id=project)
+    assert res.success, res.message
+    assert parse_env((project / ".env").read_text())["TRICKY"] == value
+    got = await agents.get_env(project_id=project)
+    assert got.data["env"]["TRICKY"] == value
