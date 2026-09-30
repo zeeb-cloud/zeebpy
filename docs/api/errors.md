@@ -44,7 +44,7 @@ lookups, and unhandled crashes — into this shape.
 | `error.code` | str | Primary machine-readable code (see the taxonomy below). Branch on this, not on `message`. |
 | `error.message` | str | Human-readable English text for debugging/logging — translate `code` client-side instead of displaying this. |
 | `error.details[]` | list | Zero or more field-level errors: `code`, `field` (`null` for non-field errors), `message`, optional `meta` (constraint context such as `min_length`, `pattern`, truncated `input`). |
-| `error.meta` | object | `request_id` (taken from an `X-Request-ID` / `X-Correlation-ID` / `Request-ID` header when present, else generated), ISO-8601 `timestamp`, request `path` and `method`. |
+| `error.meta` | object | `request_id` (taken from an `X-Request-ID` / `X-Correlation-ID` / `Request-ID` header when it is a plain token — at most 128 characters of letters, digits and `-_.:/+=` — else generated), ISO-8601 `timestamp`, request `path` and `method`. |
 
 The Pydantic models behind the envelope — `ErrorResponse`, `ErrorBody`,
 `ErrorDetail`, `ErrorMeta` — live in `zeeb_api.exceptions` and can be used in
@@ -262,8 +262,18 @@ code.
    Note this is `RESOURCE_CONFLICT`, **not** `RESOURCE_ALREADY_EXISTS` — a
    duplicate-key write and a state conflict share one code.
 6. **Catch-all `Exception`** → 500 `SERVER_ERROR` with the generic message
-   `"Internal server error"` — internals are never leaked; the full traceback
-   is logged to the `zeeb_api` logger.
+   `"Internal server error"`; the full traceback is logged to the `zeeb_api`
+   logger. With `DEBUG` off (neither `app.debug` nor `settings.DEBUG`) nothing
+   about the exception leaves the server and `details` is empty. With `DEBUG`
+   on, `details` holds one `SERVER_ERROR` entry whose `message` is
+   `"<ExceptionType>: <message>"` and whose `meta` carries `exception` and
+   `traceback`.
+
+   This holds for `FastAPI(debug=True)` too: Starlette's error middleware
+   normally skips the handler in debug mode and renders an HTML traceback
+   page; `install_exception_handlers` switches that page off so a client
+   always receives the envelope. The exception is still re-raised to the
+   ASGI server afterwards, so server-side logging is unchanged.
 
 ## ORM exceptions (`zeeb_orm.exceptions`)
 
