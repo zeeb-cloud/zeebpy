@@ -22,7 +22,11 @@ from zeeb_agents._utils.project import (
     list_apps as list_apps_util,
 )
 from zeeb_agents._utils.resolver import resolve_project_id
-from zeeb_agents._utils.validation import ensure_app_exists, ensure_identifier
+from zeeb_agents._utils.validation import (
+    ensure_app_exists,
+    ensure_identifier,
+    ensure_mount_prefix,
+)
 from zeeb_agents._utils.wiring import (
     ensure_app_urls_included,
     ensure_installed_app,
@@ -243,6 +247,9 @@ async def wire_app_urls(
         changed (bool): whether the project ``urls.py`` was modified (``False``
             if the router was already included)
     """
+    if prefix is not None:
+        # zeeb_orm's wiring writes the prefix between quotes into urls.py.
+        ensure_mount_prefix(prefix, "prefix")
     root = require_project_root(project_root)
     ensure_app_exists(app, root)
     changed = await asyncio.to_thread(ensure_app_urls_included, root, app, prefix)

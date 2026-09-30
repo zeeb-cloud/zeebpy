@@ -1205,3 +1205,10 @@ async def test_delete_function_reports_a_no_op_as_skipped(project):
     assert res.data["skipped"] is True and res.data["reason"] == "function_not_found"
     res = await agents.delete_function("blog", "real", kind="task", project_id=project)
     assert res.data["removed"] is True and res.data["skipped"] is False
+
+
+async def test_wire_app_urls_prefix_cannot_inject_code(project):
+    before = _snapshot(project)
+    res = await agents.wire_app_urls("blog", prefix='/x")\nimport os\n#', project_id=project)
+    assert not res.success and res.data["error_code"] == "invalid_input"
+    assert _snapshot(project) == before
