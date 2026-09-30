@@ -618,6 +618,33 @@ async def close_all_connections() -> None:
 # Transaction management
 
 
+async def _begin_sqlite_transaction(session: Any) -> None:
+    """Make sure a SQLite session is inside a real transaction before a SAVEPOINT.
+
+    The sqlite3/aiosqlite drivers send ``BEGIN`` only in front of an INSERT,
+    UPDATE or DELETE. A nested ``atomic()`` opened before the outer block
+    wrote anything would put its SAVEPOINT outside any transaction, and
+    releasing it would commit — the outer block's rollback could no longer
+    undo it. So the outer transaction is begun explicitly first. This is
+    deliberately scoped to the savepoint case: an engine-wide ``BEGIN`` on
+    every SQLAlchemy transaction breaks in-memory databases, whose sessions
+    share one connection.
+    """
+    get_bind = getattr(session, "get_bind", None)
+    if get_bind is None:
+        return
+    try:
+        if get_bind().dialect.name != "sqlite":
+            return
+    except Exception:
+        return
+    conn = await session.connection()
+    raw = await conn.get_raw_connection()
+    driver = getattr(raw, "driver_connection", None)
+    if driver is not None and not getattr(driver, "in_transaction", True):
+        await conn.exec_driver_sql("BEGIN")
+
+
 @asynccontextmanager
 async def atomic(using: str | None = None) -> AsyncGenerator[AsyncSession, None]:
     """
@@ -653,6 +680,8 @@ async def atomic(using: str | None = None) -> AsyncGenerator[AsyncSession, None]
         # Nested block on the same database -> SAVEPOINT on the same session
         callbacks = _on_commit_callbacks.get()
         cb_mark = len(callbacks) if callbacks is not None else 0
+        if isinstance(active, _SerializedSession):
+            await _begin_sqlite_transaction(active)
         nested = await active.begin_nested()
         try:
             yield active
