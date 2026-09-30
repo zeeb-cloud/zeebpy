@@ -242,20 +242,43 @@ async def authenticate(
         user = await User.objects.filter(**{lookup_field: lookup_value}).first()
         
         if user is None:
+            # Spend the same bcrypt work an existing account costs, so the
+            # response time does not reveal which emails are registered.
+            _dummy_password_check(password)
             return None
         
+        # Verify the password before looking at is_active, for the same
+        # reason: an inactive account must not answer faster.
+        password_ok = user.check_password(password)
+
         # Check if user is active
         if hasattr(user, "is_active") and not user.is_active:
             return None
         
-        # Verify password
-        if not user.check_password(password):
+        if not password_ok:
             return None
         
         return user
         
     except Exception:
         return None
+
+
+_DUMMY_HASH: str | None = None
+
+
+def _dummy_password_check(password: str) -> None:
+    """Run one bcrypt verification against a throwaway hash (timing equaliser).
+
+    The hash is made once, with the same cost factor ``make_password`` uses,
+    so the dummy check costs what a real one does.
+    """
+    global _DUMMY_HASH
+    from zeeb_api.auth.hashers import check_password, make_password
+
+    if _DUMMY_HASH is None:
+        _DUMMY_HASH = make_password("zeeb-timing-equaliser")
+    check_password(password, _DUMMY_HASH)
 
 
 async def authenticate_and_get_tokens(
