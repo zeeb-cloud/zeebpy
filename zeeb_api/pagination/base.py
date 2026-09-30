@@ -94,7 +94,8 @@ class PageNumberPagination(BasePagination):
         offset = (page - 1) * page_size
         
         # Get items
-        items = await queryset.limit(page_size).offset(offset)
+        # Slicing is the QuerySet's limit/offset API (it has no .limit()).
+        items = list(await queryset[offset:offset + page_size])
         
         # Calculate pagination info
         total_pages = (count + page_size - 1) // page_size if page_size > 0 else 1
@@ -169,7 +170,7 @@ class LimitOffsetPagination(BasePagination):
         offset = self._get_offset(request)
         
         # Get items
-        items = await queryset.limit(limit).offset(offset)
+        items = list(await queryset[offset:offset + limit])
         
         # Calculate next/previous URLs
         next_url = None
@@ -244,14 +245,46 @@ class CursorPagination(BasePagination):
     Configure:
         class MyPagination(CursorPagination):
             page_size = 20
-            ordering = "-created_at"  # Required for cursor pagination
+            ordering = "-created_at"  # a field that only grows
+
+    Without an explicit ``ordering`` the model's ``created_at`` (or
+    ``created``) field is used, else an integer primary key; a model with
+    neither (e.g. the default UUID key and no timestamp) is refused with
+    ``ImproperlyConfigured`` - ordering by a random UUID would page through
+    rows in an arbitrary order that skips and repeats them as rows are added.
     """
     
     page_size: int = 20
     cursor_query_param: str = "cursor"
     page_size_query_param: str | None = "page_size"
     max_page_size: int = 100
-    ordering: str = "-id"  # Field to order by (required)
+    ordering: str | None = None  # None: derived by get_ordering()
+
+    #: Field names tried, in order, when ``ordering`` is not set.
+    default_ordering_fields: tuple[str, ...] = ("created_at", "created")
+
+    def get_ordering(self, queryset: Any) -> str:
+        """The ordering term the cursor follows (must be monotonic)."""
+        if self.ordering:
+            return self.ordering
+        model = getattr(queryset, "model", None)
+        meta = getattr(model, "_meta", None)
+        if meta is not None:
+            for name in self.default_ordering_fields:
+                if meta.get_field(name) is not None:
+                    return f"-{name}"
+            pk = meta.pk
+            if pk is not None and getattr(pk, "_python_type", None) is int:
+                return f"-{pk.name}"
+        from zeeb_api.exceptions import ImproperlyConfigured
+
+        name = getattr(model, "__name__", "the model")
+        raise ImproperlyConfigured(
+            f"{type(self).__name__} needs an ordering for {name}: it has no "
+            f"{' / '.join(self.default_ordering_fields)} field and no integer "
+            "primary key, and a UUID key is random. Set `ordering` on the "
+            "paginator to a field that only grows, e.g. ordering = '-created_at'."
+        )
     
     async def paginate_queryset(
         self,
@@ -262,8 +295,9 @@ class CursorPagination(BasePagination):
         cursor = self._get_cursor(request)
         
         # Determine ordering
-        reverse = self.ordering.startswith("-")
-        order_field = self.ordering.lstrip("-")
+        ordering = self.get_ordering(queryset)
+        reverse = ordering.startswith("-")
+        order_field = ordering.lstrip("-")
         
         # Apply cursor filter
         if cursor:
@@ -275,10 +309,10 @@ class CursorPagination(BasePagination):
                     queryset = queryset.filter(**{f"{order_field}__gt": cursor_value})
         
         # Apply ordering
-        queryset = queryset.order_by(self.ordering)
+        queryset = queryset.order_by(ordering)
         
         # Fetch one extra to determine if there's a next page
-        items = await queryset.limit(page_size + 1)
+        items = list(await queryset[:page_size + 1])
         
         has_next = len(items) > page_size
         if has_next:
