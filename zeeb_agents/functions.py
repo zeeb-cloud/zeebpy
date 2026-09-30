@@ -74,13 +74,19 @@ async def delete_function(
         file (str): project-relative file it was removed from.
         removed (bool): ``False`` when it was already gone — a skip, not a
             failure, so re-runs stay idempotent.
+        skipped (bool): ``True`` exactly when ``removed`` is ``False`` — the
+            idempotent-removal flag the other ``delete_*`` tools carry.
+        reason (str): present when skipped — ``"file_not_found"`` (no such
+            file in the app) or ``"function_not_found"`` (the file has no such
+            function), the codes a strict caller would map to "absent".
 
     Notes:
         - Fails with ``invalid_input`` for an unknown ``kind``, or for
           ``kind="action"`` without ``entity``.
         - Fails with ``app_not_found`` when the app does not exist.
         - A missing file or missing function is reported as
-          ``removed: false`` with ``success: true``.
+          ``removed: false``, ``skipped: true`` with ``success: true`` and a
+          ``reason`` — never a failure, so removal converges.
     """
     root = project_root
     if kind not in FUNCTION_FILES:
@@ -101,9 +107,9 @@ async def delete_function(
     path = get_app_path(app, root) / filename
     rel = f"apps/{app}/{filename}"
 
-    def _remove() -> bool:
+    def _remove() -> bool | str:
         if not path.is_file():
-            return False
+            return "file_not_found"
         content = path.read_text(encoding="utf-8")
         if kind == "action":
             updated = remove_method_from_class(content, f"{entity}ViewSet", name)
@@ -112,11 +118,13 @@ async def delete_function(
         else:
             updated = remove_route_function(content, name)
         if updated is None:
-            return False
+            return "function_not_found"
         write_source(path, updated)
         return True
 
-    removed = await asyncio.to_thread(_remove)
+    outcome = await asyncio.to_thread(_remove)
+    removed = outcome is True
+    extra = {"skipped": False} if removed else {"skipped": True, "reason": outcome}
     return AgentResult(
         success=True,
         message=(
@@ -130,6 +138,7 @@ async def delete_function(
             "kind": kind,
             "file": rel,
             "removed": removed,
+            **extra,
         },
     )
 
