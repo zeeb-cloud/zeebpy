@@ -135,9 +135,7 @@ async def test_query_is_scoped_like_list(db):
 async def test_query_filter_cannot_reach_unreadable_rows(db):
     await _seed()
     async with _client() as client:
-        response = await client.post(
-            "/notes/query", json={"filter": "Q(title='private')"}
-        )
+        response = await client.post("/notes/query", json={"filter": "Q(title='private')"})
     assert response.status_code == 200, response.text
     assert response.json()["results"] == []
     assert response.json()["count"] == 0
