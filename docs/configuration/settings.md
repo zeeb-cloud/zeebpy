@@ -479,7 +479,8 @@ MAX_LIMIT = 100
 DEFAULT_PAGINATION_CLASS = None   # e.g. "zeeb_api.pagination.LimitOffsetPagination"
 ```
 
-`DEFAULT_LIMIT`/`MAX_LIMIT` bound `POST /query` and `LimitOffsetPagination`.
+`DEFAULT_LIMIT`/`MAX_LIMIT` bound `POST /query` and `LimitOffsetPagination`
+(a `MAX_LIMIT` above 100 raises the `/query` cap too).
 
 ## Viewset defaults
 

@@ -79,6 +79,23 @@ With a `pagination_class` set, `GET` returns
 array. `count` is `null` under cursor pagination, which does not compute a
 total — see [Pagination](pagination.md).
 
+### What the router puts in OpenAPI
+
+| Route | Documented success | Notes |
+|---|---|---|
+| `GET /items` | the envelope or an array of the response schema, by the paginator in force at startup | documented only, not enforced: a `list()` override may return its own shape |
+| `POST /items` | `201` + response schema | |
+| `GET`/`PUT`/`PATCH /items/{id}` | `200` + response schema | |
+| `DELETE /items/{id}` | `204`, no body | a `destroy()` override that returns a body sends it with `200` |
+| `POST /items/query` | `200` + `{count, limit, offset, results}` | `limit` bounded by `DEFAULT_LIMIT`/`MAX_LIMIT` |
+
+Every route also lists the error envelopes it can answer with: `400` when it
+takes a body, `404` on detail routes, `429` when throttles apply, and `401`/`403`
+plus the **HTTP bearer security scheme** whenever its permission classes (the
+action's, the viewset's or `DEFAULT_PERMISSION_CLASSES`) contain anything but
+`AllowAny` — so generated clients send the token and type the errors. The
+bearer declaration is documentation only; it never rejects a request itself.
+
 ## ReadOnlyModelViewSet
 
 For read-only APIs:
@@ -680,8 +697,14 @@ query_fields = ["title", "author", "author__name"]   # author__name, nothing els
 `query_allow_regex = True`: on SQLite they run Python's `re` inside the
 database, so a crafted pattern can pin a worker.
 
+`limit` defaults to `DEFAULT_LIMIT` and may not exceed `MAX_LIMIT` (a larger
+value is a 422); both are settings, so raising `MAX_LIMIT` above 100 lets
+clients ask for bigger pages.
+
 The request and response bodies are modelled by `QueryRequest` and
-`QueryResponse` (`count`, `limit`, `offset`, `results`).
+`QueryResponse` (`count`, `limit`, `offset`, `results`);
+`query_request_model()` returns the `QueryRequest` bounded by the current
+settings, which is what the router uses.
 `create_query_response_model(item_schema)` builds a concrete, correctly-typed
 `QueryResponse` for OpenAPI when you wire the endpoint yourself.
 

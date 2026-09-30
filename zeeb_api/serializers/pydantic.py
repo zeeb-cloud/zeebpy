@@ -1146,12 +1146,15 @@ def create_list_response_schema(
         (BaseModel,),
         {
             "__annotations__": {
-                "count": int,
+                "count": int | None,
                 "next": str | None,
                 "previous": str | None,
                 "results": list[item_schema],
             },
-            "count": Field(description="Total number of items"),
+            "count": Field(
+                default=None,
+                description="Total number of items (null under cursor pagination)",
+            ),
             "next": Field(default=None, description="URL to next page"),
             "previous": Field(default=None, description="URL to previous page"),
             "results": Field(description="List of items"),
