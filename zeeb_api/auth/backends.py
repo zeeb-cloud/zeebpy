@@ -44,39 +44,64 @@ def set_project_root(project_root: Path | str | None) -> None:
 
 
 def _get_project_settings() -> Any:
-    """Load and return the project settings module."""
+    """Load and return a project's settings module from disk, or None.
+
+    Only for code that operates on a project by path (``set_project_root``),
+    or when no settings module is configured in-process (see
+    :func:`_auth_user_model_setting`). Goes through the ORM's single project
+    resolver (``zeeb_orm.conf.project``), so the CLI, the migration tooling
+    and this function agree on which ``settings.py`` a project has. A
+    settings file that fails to import raises ``ImproperlyConfigured`` naming
+    it: silently falling back to the default ``User`` would bind foreign keys
+    and migrations to the wrong table.
+    """
+    from zeeb_orm.conf.project import (
+        SettingsImportError,
+        find_project_root,
+        load_settings_module,
+    )
+
+    root = _project_root_override or find_project_root()
+    if root is None:
+        return None
+
+    # AUTH_USER_MODEL names a module inside the project: keep it importable.
+    if str(root) not in sys.path:
+        sys.path.insert(0, str(root))
+
+    try:
+        return load_settings_module(root)
+    except SettingsImportError as exc:
+        from zeeb_api.exceptions import ImproperlyConfigured
+
+        raise ImproperlyConfigured(
+            f"Could not read AUTH_USER_MODEL: {exc}"
+        ) from exc
+
+
+def _auth_user_model_setting() -> str | None:
+    """``AUTH_USER_MODEL`` from the settings the process actually runs with.
+
+    1. A project targeted by path (``set_project_root``) is read from disk.
+    2. Otherwise the configured settings (``zeeb_api.conf.settings``: the
+       module ``create_app`` / ``ZEEB_SETTINGS_MODULE`` loaded, or a value set
+       at runtime) are authoritative. This used to execute *another* copy of
+       a ``settings.py`` found by walking up from the working directory,
+       independently of the configured module.
+    3. Only when no settings module is configured at all does it fall back to
+       that discovery.
+    """
     if _project_root_override is not None:
-        current = _project_root_override
-    else:
-        # Try to find project root
-        current = Path.cwd()
-        while current != current.parent:
-            if (current / "manage.py").exists():
-                break
-            current = current.parent
-        else:
-            return None
-    
-    # Add to path if needed
-    if str(current) not in sys.path:
-        sys.path.insert(0, str(current))
-    
-    # Find settings module
-    for item in current.iterdir():
-        if item.is_dir() and (item / "settings.py").exists():
-            try:
-                import importlib.util
-                spec = importlib.util.spec_from_file_location(
-                    "settings", item / "settings.py"
-                )
-                if spec and spec.loader:
-                    settings = importlib.util.module_from_spec(spec)
-                    spec.loader.exec_module(settings)
-                    return settings
-            except Exception:
-                pass
-    
-    return None
+        settings = _get_project_settings()
+        return getattr(settings, "AUTH_USER_MODEL", None) if settings else None
+
+    from zeeb_api.conf import settings as conf_settings
+
+    if conf_settings.has_settings_module() or conf_settings.is_overridden("AUTH_USER_MODEL"):
+        return getattr(conf_settings, "AUTH_USER_MODEL", None)
+
+    settings = _get_project_settings()
+    return getattr(settings, "AUTH_USER_MODEL", None) if settings else None
 
 
 def _resolve_model_string(model_string: str) -> type:
@@ -139,20 +164,18 @@ def get_user_model() -> type:
         return _user_model_cache
     
     # Check settings for AUTH_USER_MODEL
-    settings = _get_project_settings()
-    if settings and hasattr(settings, "AUTH_USER_MODEL"):
-        auth_user_model = settings.AUTH_USER_MODEL
-        if auth_user_model:
-            try:
-                _user_model_cache = _resolve_model_string(auth_user_model)
-                return _user_model_cache
-            except (ImportError, ValueError) as e:
-                # Don't cache fallback — the model may become resolvable
-                # once sys.path is fully set up (e.g. inside _register_models)
-                import warnings
-                warnings.warn(str(e), stacklevel=2)
-                from zeeb_api.auth.models import User
-                return User
+    auth_user_model = _auth_user_model_setting()
+    if auth_user_model:
+        try:
+            _user_model_cache = _resolve_model_string(auth_user_model)
+            return _user_model_cache
+        except (ImportError, ValueError) as e:
+            # Don't cache fallback — the model may become resolvable
+            # once sys.path is fully set up (e.g. inside _register_models)
+            import warnings
+            warnings.warn(str(e), stacklevel=2)
+            from zeeb_api.auth.models import User
+            return User
     
     # Fall back to default User model
     from zeeb_api.auth.models import User
