@@ -215,6 +215,22 @@ class TestVersioningMiddleware:
             assert body["error"]["code"] == "API_VERSION_INVALID"
             assert "9.9" in body["error"]["message"]
 
+    async def test_invalid_version_envelope_does_not_echo_unsafe_request_id(self):
+        settings.DEFAULT_VERSIONING_CLASS = "zeeb_api.versioning.QueryParameterVersioning"
+        settings.ALLOWED_VERSIONS = ["1.0"]
+        app = _make_app()
+
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            unsafe = await client.get(
+                "/echo", params={"version": "9.9"}, headers={"X-Request-ID": "<b>x</b>"}
+            )
+            safe = await client.get(
+                "/echo", params={"version": "9.9"}, headers={"X-Request-ID": "req-42"}
+            )
+        assert unsafe.json()["error"]["meta"]["request_id"] != "<b>x</b>"
+        assert safe.json()["error"]["meta"]["request_id"] == "req-42"
+
     async def test_no_scheme_configured_passes_through(self):
         # Default settings: DEFAULT_VERSIONING_CLASS is None
         app = _make_app()

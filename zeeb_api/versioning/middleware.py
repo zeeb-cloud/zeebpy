@@ -7,8 +7,6 @@ settings.DEFAULT_VERSIONING_CLASS and stores it on ``request.state.version``.
 
 from __future__ import annotations
 
-import uuid
-
 from fastapi import Request
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
@@ -89,6 +87,8 @@ class VersioningMiddleware(BaseHTTPMiddleware):
         exc: InvalidVersionError,
     ) -> JSONResponse:
         """Build the standardized 400 envelope for an invalid version."""
+        from zeeb_api.exception_handlers import _get_request_id
+
         error_response = ErrorResponse(
             success=False,
             error=ErrorBody(
@@ -96,7 +96,7 @@ class VersioningMiddleware(BaseHTTPMiddleware):
                 message=str(exc),
                 details=[],
                 meta=ErrorMeta(
-                    request_id=request.headers.get("X-Request-ID", str(uuid.uuid4())),
+                    request_id=_get_request_id(request),
                     path=str(request.url.path),
                     method=request.method,
                 ),
