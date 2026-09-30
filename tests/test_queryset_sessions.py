@@ -145,8 +145,17 @@ class TestFromDb:
     def from_db_calls(self, monkeypatch):
         calls = []
 
+        # The model layer's own loader, looked up before the per-model patch
+        # below shadows it; _from_row delegates to _from_db, so calling
+        # _from_row from the fake would recurse into the fake.
+        from zeeb_orm import Model
+
+        real_from_db = getattr(Model, "_from_db", None)
+
         def fake_from_db(cls, values, alias=None):
             calls.append((cls, dict(values), alias))
+            if real_from_db is not None:
+                return real_from_db.__func__(cls, values, alias)
             instance = cls._from_row(SimpleNamespace(_mapping=dict(values)))
             instance._state.persisted = True
             instance._state.db_alias = alias
