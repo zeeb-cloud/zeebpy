@@ -10,6 +10,8 @@ from zeeb_agents._utils.code_gen import (
     append_block,
     class_exists,
     ensure_import,
+    skip_result,
+    validate_if_exists,
     write_source,
 )
 from zeeb_agents._utils.errors import AgentError, close_matches
@@ -48,6 +50,7 @@ async def create_filterset(
     model_name: str,
     filter_fields: dict[str, list[str]],
     project_root: Path | None = None,
+    if_exists: str = "error",
 ) -> AgentResult:
     """Create a ``FilterSet`` class in ``apps/<app>/filters.py``.
 
@@ -67,12 +70,17 @@ async def create_filterset(
             Valid lookups: exact, iexact, contains, icontains, in, gt, gte,
             lt, lte, startswith, istartswith, endswith, iendswith, isnull.
         project_id: The host-assigned project id (required).
+        if_exists: ``"error"`` (default) or ``"skip"`` (succeed and change
+            nothing if it already exists — makes retries idempotent; the
+            result then carries ``skipped=True``).
 
     Returns data (on success):
         app (str): the app name
         model (str): the model name
         filterset (str): the generated class name (``"<ModelName>Filter"``)
         fields (list[str]): the filterable field names
+        skipped (bool): present and ``True`` when the FilterSet existed and
+            ``if_exists="skip"`` (the existing class is left as it is)
 
     Notes:
         - ``filters.py`` is created if missing.
@@ -82,6 +90,7 @@ async def create_filterset(
           ``already_exists``, …).
     """
     ensure_identifier(model_name, "model name")
+    validate_if_exists(if_exists)
     if not isinstance(filter_fields, dict) or not filter_fields:
         return AgentResult(
             success=False,
@@ -142,7 +151,18 @@ async def create_filterset(
         ensure_import(filters_path, f"from .models import {model_name}")
         append_block(filters_path, class_code)
 
-    await asyncio.to_thread(_write)
+    try:
+        await asyncio.to_thread(_write)
+    except AgentError as exc:
+        if if_exists == "skip" and (exc.result.data or {}).get("error_code") == "already_exists":
+            return skip_result(
+                f"'{class_name}' already exists in apps/{app}/filters.py; skipped",
+                app=app,
+                model=model_name,
+                filterset=class_name,
+                fields=list(filter_fields),
+            )
+        raise
     return AgentResult(
         success=True,
         message=f"'{class_name}' created in apps/{app}/filters.py",

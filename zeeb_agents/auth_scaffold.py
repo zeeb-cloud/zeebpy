@@ -18,6 +18,8 @@ from zeeb_agents._utils.code_gen import (
     render_list_literal,
     render_py_literal,
     set_or_append_setting,
+    skip_result,
+    validate_if_exists,
     write_source,
 )
 from zeeb_agents._utils.errors import AgentError, close_matches, fail
@@ -352,6 +354,7 @@ async def create_user_model(
     extra_fields: list[dict] | None = None,
     set_auth_user_model: bool = True,
     project_root: Path | None = None,
+    if_exists: str = "error",
 ) -> AgentResult:
     """Create a custom user model extending ``zeeb_api.auth.models.AbstractUser``.
 
@@ -367,12 +370,18 @@ async def create_user_model(
         set_auth_user_model: Also set ``AUTH_USER_MODEL = "<app>.<model>"`` in
             ``settings.py``.
         project_id: The host-assigned project id (required).
+        if_exists: ``"error"`` (default) or ``"skip"``: when the model already
+            exists, leave it as it is and succeed with ``skipped=True`` —
+            still (re)setting ``AUTH_USER_MODEL`` when *set_auth_user_model*,
+            so a retry completes a run that stopped after writing the model.
 
     Returns data (on success):
         app (str): the app name
         model (str): the user model class name
         auth_user_model (str | None): the ``AUTH_USER_MODEL`` value written
             (``None`` when ``set_auth_user_model=False``)
+        skipped (bool): present and ``True`` when the model existed and
+            ``if_exists="skip"``
 
     Notes:
         - Follow up with :func:`~zeeb_agents.migrations.make_migrations` /
@@ -382,6 +391,7 @@ async def create_user_model(
           ``already_exists``, ``invalid_field_spec``, …).
     """
     ensure_identifier(model_name, "model name")
+    validate_if_exists(if_exists)
     if extra_fields:
         validate_field_specs(extra_fields)
     root = require_project_root(project_root)
@@ -391,14 +401,24 @@ async def create_user_model(
             f"models.py not found at {models_path}", code="file_not_found", missing="models.py"
         )
 
+    skipped = False
+
     def _write() -> str | None:
+        nonlocal skipped
         content = models_path.read_text(encoding="utf-8")
         if class_exists(content, model_name):
-            raise AgentError(
-                f"Model '{model_name}' already exists in {models_path}",
-                code="already_exists",
-                model=model_name,
-            )
+            if if_exists != "skip":
+                raise AgentError(
+                    f"Model '{model_name}' already exists in {models_path}",
+                    code="already_exists",
+                    model=model_name,
+                )
+            skipped = True
+            return _set_auth_user_model()
+        _write_model()
+        return _set_auth_user_model()
+
+    def _write_model() -> None:
         lines = [f"class {model_name}(AbstractUser):"]
         for spec in extra_fields or []:
             lines.append(f"    {render_field_line(spec)}")
@@ -415,6 +435,7 @@ async def create_user_model(
         ensure_import(models_path, "from zeeb_api.auth.models import AbstractUser")
         append_block(models_path, "\n".join(lines))
 
+    def _set_auth_user_model() -> str | None:
         if not set_auth_user_model:
             return None
         auth_model = f"{app}.{model_name}"
@@ -433,6 +454,14 @@ async def create_user_model(
         return auth_model
 
     auth_model = await asyncio.to_thread(_write)
+    if skipped:
+        return skip_result(
+            f"User model '{model_name}' already exists in apps/{app}/models.py; skipped"
+            + (f" (AUTH_USER_MODEL = '{auth_model}')" if auth_model else ""),
+            app=app,
+            model=model_name,
+            auth_user_model=auth_model,
+        )
     return AgentResult(
         success=True,
         message=(

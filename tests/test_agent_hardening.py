@@ -1016,3 +1016,74 @@ async def test_generated_writes_are_atomic_and_keep_permissions(project):
     assert views.stat().st_mode & 0o777 == 0o640
     leftovers = [p.name for p in views.parent.iterdir() if p.name.endswith(".tmp")]
     assert leftovers == []
+
+
+# ---------------------------------------------------------------------------
+# 11. The remaining create_* tools take if_exists="skip" like create_model
+# ---------------------------------------------------------------------------
+
+
+async def _blog_models(project: Path) -> None:
+    for name in ("Post", "Comment"):
+        res = await agents.create_model(
+            "blog", name, [{"name": "title", "type": "CharField"}], project_id=project
+        )
+        assert res.success, res.message
+
+
+def _creators():
+    return {
+        "create_signal_receiver": lambda root, **kw: agents.create_signal_receiver(
+            "blog", "post_save", "Post", "on_post_saved", project_id=root, **kw
+        ),
+        "create_task": lambda root, **kw: agents.create_task(
+            "blog", "nightly", project_id=root, **kw
+        ),
+        "create_permission_class": lambda root, **kw: agents.create_permission_class(
+            "blog", "IsEditor", project_id=root, **kw
+        ),
+        "create_filterset": lambda root, **kw: agents.create_filterset(
+            "blog", "Post", {"title": ["exact"]}, project_id=root, **kw
+        ),
+        "create_user_model": lambda root, **kw: agents.create_user_model(
+            "blog", "Member", project_id=root, **kw
+        ),
+    }
+
+
+@pytest.mark.parametrize("tool", sorted(_creators()))
+async def test_creators_skip_an_existing_artifact(project, tool):
+    await _blog_models(project)
+    create = _creators()[tool]
+    first = await create(project)
+    assert first.success, first.message
+    before = _snapshot(project)
+
+    again = await create(project)
+    assert not again.success
+    assert again.data["error_code"] == "already_exists"
+
+    skipped = await create(project, if_exists="skip")
+    assert skipped.success, skipped.message
+    assert skipped.data["skipped"] is True
+    assert _snapshot(project) == before
+
+    bad = await create(project, if_exists="sometimes")
+    assert not bad.success and bad.data["error_code"] == "invalid_input"
+
+
+async def test_a_second_receiver_imports_its_own_signal_and_model(project):
+    await _blog_models(project)
+    res = await agents.create_signal_receiver(
+        "blog", "post_save", "Post", "on_post_saved", project_id=project
+    )
+    assert res.success, res.message
+    res = await agents.create_signal_receiver(
+        "blog", "pre_delete", "Comment", "on_comment_deleted", project_id=project
+    )
+    assert res.success, res.message
+    tree = ast.parse((project / "apps" / "blog" / "signals.py").read_text())
+    imported = {
+        alias.name for node in tree.body if isinstance(node, ast.ImportFrom) for alias in node.names
+    }
+    assert {"post_save", "pre_delete", "receiver", "Post", "Comment"} <= imported

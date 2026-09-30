@@ -896,8 +896,9 @@ result = await run_management_command("createsuperuser", args=["--no-input", "--
 
 Manage `@receiver` decorated functions in `{app}/signals.py` files.
 
-### `create_signal_receiver(app, signal_name, model_name, function_name, project_id=None)`
+### `create_signal_receiver(app, signal_name, model_name, function_name, project_id=None, if_exists="error")`
 Create an async receiver stub. Creates `signals.py` if it doesn't exist.
+`if_exists="skip"` makes a retry a no-op that succeeds with `skipped=True`; the default `"error"` fails with `already_exists`, as before.
 
 - `signal_name`: One of `pre_save`, `post_save`, `pre_delete`, `post_delete`.
 
@@ -1230,9 +1231,10 @@ result = await get_cors_config()
 
 ## BaaS — Background Tasks
 
-### `create_task(app, function_name, schedule=None, project_id=None)`
+### `create_task(app, function_name, schedule=None, project_id=None, if_exists="error")`
 Scaffold an async task function in `apps/{app}/tasks.py`.
 Creates the file with a header if it does not exist.
+`if_exists="skip"` makes a retry a no-op that succeeds with `skipped=True`; the default `"error"` fails with `already_exists`, as before.
 
 - `schedule`: Cron expression (e.g. `"0 9 1 * *"`) used as a comment in the stub.
 
@@ -1373,8 +1375,9 @@ for the same package (any spelling) is replaced.
 
 ## BaaS — Permission Class Scaffolding
 
-### `create_permission_class(app, class_name, logic="deny_all", project_id=None)`
+### `create_permission_class(app, class_name, logic="deny_all", project_id=None, if_exists="error")`
 Scaffold a `BasePermission` subclass in `apps/{app}/permissions.py`.
+`if_exists="skip"` makes a retry a no-op that succeeds with `skipped=True`; the default `"error"` fails with `already_exists`, as before.
 
 Available `logic` presets:
 - `"deny_all"` — reject all (safe default during development)
@@ -1428,10 +1431,11 @@ await set_env("GOOGLE_CLIENT_ID", "…")
 await set_env("GOOGLE_CLIENT_SECRET", "…")
 ```
 
-### `create_user_model(app, model_name="User", extra_fields=None, set_auth_user_model=True, project_id=None)`
+### `create_user_model(app, model_name="User", extra_fields=None, set_auth_user_model=True, project_id=None, if_exists="error")`
 Create a custom user model extending `zeeb_api.auth.models.AbstractUser` and
 set `AUTH_USER_MODEL`. Run migrations afterwards; `create_user` etc. then work
 against the new table.
+`if_exists="skip"` makes a retry a no-op that succeeds with `skipped=True`; the default `"error"` fails with `already_exists`, as before.
 
 ```python
 await create_user_model("accounts", "Member", extra_fields=[
@@ -1443,10 +1447,11 @@ await create_user_model("accounts", "Member", extra_fields=[
 
 ## FilterSet Scaffolding
 
-### `create_filterset(app, model_name, filter_fields, project_id=None)`
+### `create_filterset(app, model_name, filter_fields, project_id=None, if_exists="error")`
 Create a `FilterSet` class in `apps/{app}/filters.py` for declarative
 query-parameter filtering; attach it to a viewset via
 `create_viewset(filterset=...)`.
+`if_exists="skip"` makes a retry a no-op that succeeds with `skipped=True`; the default `"error"` fails with `already_exists`, as before.
 
 ```python
 await create_filterset("shop", "Product", {
