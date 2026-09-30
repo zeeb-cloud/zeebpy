@@ -615,6 +615,9 @@ if created:
     print("Created new user")
 ```
 
+Race-safe: the create runs in a savepoint, and an `IntegrityError` from a
+concurrent insert of the same row makes it return that row instead.
+
 ### update_or_create()
 
 ```python
