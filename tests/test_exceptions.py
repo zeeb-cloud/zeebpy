@@ -278,3 +278,93 @@ class TestDeprecatedResponseImports:
             text=True,
         )
         assert result.returncode == 0, result.stderr
+
+
+# --------------------------------------------------------------------------- #
+# 500s always use the envelope; request ids are validated before being echoed
+# --------------------------------------------------------------------------- #
+
+
+def _crashing_app(*, debug: bool) -> TestClient:
+    app = FastAPI(debug=debug)
+    install_exception_handlers(app)
+
+    @app.get("/boom")
+    async def boom():
+        raise RuntimeError("kaboom-secret-detail")
+
+    return TestClient(app, raise_server_exceptions=False)
+
+
+@pytest.mark.parametrize("debug", [False, True])
+def test_unhandled_exception_uses_envelope_even_in_debug(debug, monkeypatch):
+    from zeeb_api.conf import settings
+
+    monkeypatch.setattr(settings, "DEBUG", False, raising=False)
+    resp = _crashing_app(debug=debug).get("/boom")
+    assert resp.status_code == 500
+    assert resp.headers["content-type"].startswith("application/json")
+    body = resp.json()
+    assert body["success"] is False
+    assert body["error"]["code"] == "SERVER_ERROR"
+    assert body["error"]["message"] == "Internal server error"
+    details = body["error"]["details"]
+    if debug:
+        assert details[0]["message"] == "RuntimeError: kaboom-secret-detail"
+        assert "Traceback" in details[0]["meta"]["traceback"]
+    else:
+        assert details == []
+        assert "kaboom-secret-detail" not in resp.text
+
+
+def test_debug_setting_alone_adds_details(monkeypatch):
+    from zeeb_api.conf import settings
+
+    monkeypatch.setattr(settings, "DEBUG", True, raising=False)
+    resp = _crashing_app(debug=False).get("/boom")
+    assert resp.json()["error"]["details"][0]["meta"]["exception"] == "RuntimeError"
+
+
+def test_unhandled_exception_is_still_raised_to_the_server():
+    app = FastAPI(debug=True)
+    install_exception_handlers(app)
+
+    @app.get("/boom")
+    async def boom():
+        raise RuntimeError("kaboom")
+
+    with pytest.raises(RuntimeError):
+        TestClient(app).get("/boom")
+
+
+@pytest.mark.parametrize(
+    "request_id",
+    [
+        "abc-123",
+        "550e8400-e29b-41d4-a716-446655440000",
+        "trace:svc/1.2=+_",
+        "x" * 128,
+    ],
+)
+def test_safe_request_id_is_echoed(request_id):
+    resp = _make_app(with_handlers=True).get("/not-found", headers={"X-Request-ID": request_id})
+    assert resp.json()["error"]["meta"]["request_id"] == request_id
+
+
+@pytest.mark.parametrize(
+    "request_id",
+    [
+        "<script>alert(1)</script>",
+        "has space",
+        "x" * 129,
+        "line\tbreak",
+        "quote\"d",
+    ],
+)
+def test_unsafe_request_id_is_replaced(request_id):
+    import uuid as _uuid
+
+    resp = _make_app(with_handlers=True).get("/not-found", headers={"X-Request-ID": request_id})
+    echoed = resp.json()["error"]["meta"]["request_id"]
+    assert echoed != request_id
+    _uuid.UUID(echoed)  # a generated id instead

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import difflib
 import logging
+import re
 import traceback
 import uuid
 from typing import Any, Callable
@@ -32,11 +33,20 @@ from zeeb_api.exceptions import (
 logger = logging.getLogger(__name__)
 
 
+# A client-supplied request id is echoed into every error body (and from
+# there into logs and support tickets), so only a plain token is accepted:
+# at most 128 characters of letters, digits and ``-_.:/+=``. Anything else -
+# markup, whitespace, control characters, a megabyte of padding - is replaced
+# by a generated id.
+_REQUEST_ID_RE = re.compile(r"[A-Za-z0-9._:/+=-]{1,128}")
+
+
 def _get_request_id(request: Request) -> str:
-    """Get or generate request ID."""
+    """The client's request id when it is a safe token, otherwise a fresh uuid4."""
     # Check common headers for request ID
     for header in ("X-Request-ID", "X-Correlation-ID", "Request-ID"):
-        if request_id := request.headers.get(header):
+        request_id = request.headers.get(header)
+        if request_id and _REQUEST_ID_RE.fullmatch(request_id):
             return request_id
     return str(uuid.uuid4())
 
@@ -301,24 +311,55 @@ async def http_exception_handler(
     )
 
 
+def _debug_enabled(request: Request) -> bool:
+    """Whether a 500 may carry exception details (the app or settings DEBUG)."""
+    app = request.scope.get("app")
+    if getattr(app, "debug", False):
+        return True
+    try:
+        from zeeb_api.conf import settings
+
+        return bool(getattr(settings, "DEBUG", False))
+    except Exception:
+        return False
+
+
 async def generic_exception_handler(
     request: Request,
     exc: Exception,
 ) -> JSONResponse:
-    """Handle all unhandled exceptions."""
+    """Handle all unhandled exceptions.
+
+    Always answers with the error envelope. Under DEBUG the envelope carries
+    the exception type, message and traceback as one ``SERVER_ERROR`` detail;
+    otherwise nothing about the exception leaves the server.
+    """
+    formatted = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
     # Log the full traceback for debugging
     logger.error(
         f"Unhandled exception: {type(exc).__name__}: {exc}\n"
         f"Path: {request.url.path}\n"
         f"Method: {request.method}\n"
-        f"Traceback:\n{traceback.format_exc()}"
+        f"Traceback:\n{formatted}"
     )
-    
+
+    details = None
+    if _debug_enabled(request):
+        details = [
+            ErrorDetail(
+                code=ErrorCode.SERVER_ERROR.value,
+                field=None,
+                message=f"{type(exc).__name__}: {exc}",
+                meta={"exception": type(exc).__name__, "traceback": formatted},
+            )
+        ]
+
     return _create_error_response(
         code=ErrorCode.SERVER_ERROR.value,
         message="Internal server error",
         status_code=500,
         request=request,
+        details=details,
     )
 
 
@@ -471,6 +512,36 @@ def install_exception_handlers(app: FastAPI) -> None:
     
     # Catch-all (must be last)
     app.add_exception_handler(Exception, generic_exception_handler)
+    _envelope_errors_in_debug(app)
+
+
+def _envelope_errors_in_debug(app: FastAPI) -> None:
+    """Make the catch-all handler answer even when the app runs with ``debug=True``.
+
+    Starlette hands an unhandled exception to ``ServerErrorMiddleware``, which
+    calls the ``Exception`` handler only when *not* in debug mode; in debug it
+    renders its own traceback page, so a ``create_app()`` app under ``DEBUG``
+    returned HTML tracebacks instead of the error envelope clients branch on.
+    The outermost middleware is rebuilt with ``debug`` off, so the handler
+    always runs — and puts the details into the envelope when DEBUG is on (see
+    :func:`generic_exception_handler`). The exception is still re-raised to the
+    server afterwards, as before.
+    """
+    from starlette.middleware.errors import ServerErrorMiddleware
+
+    if getattr(app, "_zeeb_error_envelope_installed", False):
+        return
+    original_build = app.build_middleware_stack
+
+    def build_middleware_stack() -> Any:
+        stack = original_build()
+        if isinstance(stack, ServerErrorMiddleware):
+            stack.debug = False
+        return stack
+
+    app.build_middleware_stack = build_middleware_stack  # type: ignore[method-assign]
+    app._zeeb_error_envelope_installed = True  # type: ignore[attr-defined]
+    app.middleware_stack = None
 
 
 # HTTP status codes that return the standardized ErrorResponse envelope.
