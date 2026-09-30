@@ -31,12 +31,32 @@ moves between SQLAlchemy versions (2.1 made psycopg v3 the default for a bare
 | Configured URL | Synchronous connection |
 |----------------|------------------------|
 | `postgresql+asyncpg://`, `postgresql://`, `postgres://` | `postgresql+psycopg2://` (psycopg2, `postgresql` extra) |
-| `mysql+aiomysql://`, `mysql://` | `mysql+pymysql://` (pymysql, `mysql` extra) |
+| `mysql+aiomysql://`, `mysql+asyncmy://`, `mysql://` | `mysql+pymysql://` (pymysql, `mysql` extra) |
 | `sqlite+aiosqlite://` | `sqlite://` (standard library) |
+
+When an async driver is swapped out, the query parameters only it understands
+are translated too — libpq refuses a connection string with an option it does
+not know:
+
+| asyncpg parameter | Synchronous (psycopg2 / libpq) |
+|-------------------|--------------------------------|
+| `ssl=require` (`true`, `verify-full`, …) | `sslmode=require` (`require`, `verify-full`, …) |
+| `timeout=5` | `connect_timeout=5` |
+| `prepared_statement_cache_size`, `statement_cache_size`, `command_timeout`, … | dropped |
+
+aiomysql/asyncmy-only parameters (`echo`, `loop`, `auth_plugin`) are dropped
+for pymysql. Every other parameter, and the credentials, pass through byte for
+byte.
 
 A URL that already names a driver (`postgresql+psycopg://…`) is used as given.
 `zeeb_orm.db.sync_database_url(url)` does the mapping, for your own sync
 engines too.
+
+A `Database` given a synchronous URL works — `QuerySet.iterator()` included —
+but every query then runs on the event loop thread and blocks it, so
+`connect()` emits a `RuntimeWarning`. Use an async driver for a server.
+Whether a URL is async is decided from its parsed dialect, not by searching
+the URL text.
 
 ## SQLite
 
@@ -63,6 +83,12 @@ Install driver:
 ```bash
 pip install aiosqlite
 ```
+
+SQLite leaves foreign-key enforcement off unless each connection asks for it;
+zeeb_orm does (`PRAGMA foreign_keys=ON` on every connection it opens), so
+SQLite rejects a row pointing at nothing and applies `ON DELETE` actions just
+like PostgreSQL and MySQL. Migrations run with enforcement off, because SQLite
+alters a column by rebuilding its table and the rebuild must not cascade.
 
 ## PostgreSQL
 
@@ -261,6 +287,16 @@ Once registered, route a queryset at it with `using()`:
 ```python
 articles = await Article.objects.using("replica").all()
 ```
+
+Registering an alias again replaces its connection and disposes the old
+engine; `setup_database()` does the same for `default`. Calling
+`zeeb_orm.configure()` with a different `database` drops a default that was
+created lazily from the old settings, so the next query uses the new one.
+
+Relations stay on the instance's database: `await post.author`, reverse
+managers (`author.posts`) and many-to-many managers all query the alias the
+instance was loaded from. An `atomic()` block is per database — a write to
+another alias inside it runs in its own transaction.
 
 An alias that was never registered raises `ConnectionDoesNotExist` rather than
 silently falling back to the default database:

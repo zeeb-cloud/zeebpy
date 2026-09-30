@@ -94,7 +94,11 @@ class ManyRelatedManager(Manager[Any]):
 
     @staticmethod
     def _coerce_pk(obj: Any) -> Any:
-        """Accept model instances or raw primary-key values."""
+        """Accept model instances, unloaded FK relations or raw primary-key values."""
+        from zeeb_orm.models.fields import ForeignKeyLazyLoader
+
+        if isinstance(obj, ForeignKeyLazyLoader):
+            return obj._fk_id
         if hasattr(obj, "_state") and hasattr(obj, "pk"):
             return obj.pk
         return obj

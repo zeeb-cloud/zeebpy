@@ -186,6 +186,14 @@ class TestStaleRelationCache:
         post.author_id = author.pk
         assert post.author is author
 
+    async def test_an_unloaded_relation_can_be_linked_by_its_id(self, db):
+        author = await SmAuthor.objects.create(name="a")
+        await SmPost.objects.create(title="p", author=author)
+        lazy = await SmPost.objects.get(title="p")
+        # Assigning another object's unloaded relation copies the id.
+        other = SmPost(title="q", author=lazy.author)
+        assert other.author_id == author.pk
+
     async def test_refresh_from_db_reloads_the_relation(self, db):
         first = await SmAuthor.objects.create(name="first")
         second = await SmAuthor.objects.create(name="second")
@@ -448,9 +456,7 @@ class TestRelationsFollowTheAlias:
         other = Database("sqlite+aiosqlite:///:memory:")
         await other.connect()
         engine = other._async_engine
-        tables = [m._get_table() for m in MODELS] + [
-            SmTag._m2m_fields[0].get_through_table()
-        ]
+        tables = [m._get_table() for m in MODELS] + [SmTag._m2m_fields[0].get_through_table()]
         async with engine.begin() as conn:
             from zeeb_orm.models.base import metadata
 

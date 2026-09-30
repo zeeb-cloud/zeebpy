@@ -1,8 +1,9 @@
 """Tests for ForeignKey on_delete variants.
 
-NOTE: SQLite's foreign_keys PRAGMA is OFF by default (verified in
-TestAssumptions), so the database itself never cascades/restricts here —
-these tests exercise the Python-side Collector logic exclusively.
+NOTE: zeeb_orm turns SQLite's foreign_keys PRAGMA on for every connection
+(verified in TestAssumptions), as every other backend enforces foreign keys.
+The Collector still does the cascading in Python — it deletes leaf-first, so
+the database never has to — which is what these tests exercise.
 """
 
 import pytest
@@ -214,10 +215,15 @@ def clear_signals():
 
 class TestAssumptions:
     @pytest.mark.asyncio
-    async def test_sqlite_fk_pragma_is_off(self, db):
-        """The DB does NOT enforce FKs — Python logic is what's exercised."""
+    async def test_sqlite_fk_pragma_is_on(self, db):
+        """SQLite enforces foreign keys like every other backend.
+
+        This used to assert the opposite: with the PRAGMA off, SQLite (the
+        default database) accepted rows pointing at nothing and ignored every
+        ON DELETE clause, including the join tables' CASCADE.
+        """
         result = await db.execute("PRAGMA foreign_keys")
-        assert result.fetchone()[0] == 0
+        assert result.fetchone()[0] == 1
 
 
 class TestOnDeleteValidation:
@@ -455,16 +461,36 @@ class TestSetDefault:
 class TestDoNothing:
     @pytest.mark.asyncio
     async def test_do_nothing_leaves_rows_untouched(self, db):
+        """DO_NOTHING leaves referencing rows to the database (Django parity).
+
+        The collector does not touch DnPost. With foreign keys enforced — and
+        no ON DELETE clause in the DDL — the database refuses to orphan the
+        post, exactly as PostgreSQL does; this used to assert the dangling row
+        SQLite accepted while enforcement was off.
+        """
+        from zeeb_orm.exceptions import IntegrityError
+
         author = await DnAuthor.objects.create(name="a")
         post = await DnPost.objects.create(title="p", author=author)
 
+        with pytest.raises(IntegrityError):
+            await author.delete()
+
+        # Nothing was deleted: the whole delete ran in one transaction.
+        assert await DnAuthor.objects.filter(pk=author.pk).exists()
+        survivor = await DnPost.objects.get(pk=post.pk)
+        assert survivor.author_id == author.pk
+
+    @pytest.mark.asyncio
+    async def test_do_nothing_deletes_once_the_referencing_rows_are_gone(self, db):
+        author = await DnAuthor.objects.create(name="a")
+        post = await DnPost.objects.create(title="p", author=author)
+
+        await post.delete()
         total, per_model = await author.delete()
 
         assert total == 1
         assert per_model == {"DnAuthor": 1}
-        # Row survives with a (now dangling) FK — SQLite doesn't enforce it
-        survivor = await DnPost.objects.get(pk=post.pk)
-        assert survivor.author_id == author.pk
 
 
 class TestSelfReferential:

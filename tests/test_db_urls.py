@@ -48,6 +48,53 @@ def test_only_the_scheme_changes():
     assert sync_database_url(url) == "postgresql+psycopg2://role:p%40ss%2Fw0rd@db.internal:6543/app?sslmode=require"
 
 
+@pytest.mark.parametrize(
+    ("url", "expected"),
+    [
+        # asyncpg spells TLS "ssl"; libpq (psycopg2) has no such option and
+        # refuses the connection, so it becomes sslmode.
+        (
+            "postgresql+asyncpg://u:p@h/db?ssl=require",
+            "postgresql+psycopg2://u:p@h/db?sslmode=require",
+        ),
+        ("postgresql+asyncpg://u:p@h/db?ssl=true", "postgresql+psycopg2://u:p@h/db?sslmode=require"),
+        (
+            "postgresql+asyncpg://u:p@h/db?ssl=verify-full",
+            "postgresql+psycopg2://u:p@h/db?sslmode=verify-full",
+        ),
+        # asyncpg-only tuning is dropped; libpq options survive as written.
+        (
+            "postgresql+asyncpg://u:p@h/db?prepared_statement_cache_size=0"
+            "&application_name=a%20b&statement_cache_size=0",
+            "postgresql+psycopg2://u:p@h/db?application_name=a%20b",
+        ),
+        ("postgresql+asyncpg://u:p@h/db?timeout=5", "postgresql+psycopg2://u:p@h/db?connect_timeout=5"),
+        ("postgresql+asyncpg://u:p@h/db?prepared_statement_cache_size=0", "postgresql+psycopg2://u:p@h/db"),
+        # aiomysql-only arguments pymysql.connect() would reject.
+        (
+            "mysql+aiomysql://u:p@h/db?charset=utf8mb4&echo=true",
+            "mysql+pymysql://u:p@h/db?charset=utf8mb4",
+        ),
+        # A URL whose driver is kept keeps its query untouched.
+        ("postgresql+psycopg2://u:p@h/db?ssl=weird", "postgresql+psycopg2://u:p@h/db?ssl=weird"),
+    ],
+)
+def test_async_only_query_parameters_are_translated(url, expected):
+    assert sync_database_url(url) == expected
+
+
+def test_translated_parameters_are_accepted_by_the_sync_dialect():
+    """psycopg2's dialect turns the query into connect() kwargs libpq knows."""
+    url = make_url(
+        sync_database_url(
+            "postgresql+asyncpg://u:p@h/db?ssl=require&prepared_statement_cache_size=0"
+        )
+    )
+    _args, kwargs = url.get_dialect()().create_connect_args(url)
+    assert kwargs["sslmode"] == "require"
+    assert "ssl" not in kwargs and "prepared_statement_cache_size" not in kwargs
+
+
 def test_a_bare_postgres_url_resolves_to_psycopg2_whatever_the_default():
     assert make_url(sync_database_url("postgresql://u:p@h/db")).get_dialect().driver == "psycopg2"
 

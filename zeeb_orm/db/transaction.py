@@ -9,8 +9,8 @@ from typing import TYPE_CHECKING, Any, AsyncGenerator, Callable
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
-# Context variable for on_commit callback registry
-_on_commit_callbacks: ContextVar[list[Callable[[], Any]] | None] = ContextVar(
+# Context variable for on_commit callback registry: (callback, robust) pairs
+_on_commit_callbacks: ContextVar[list[tuple[Callable[[], Any], bool]] | None] = ContextVar(
     "_on_commit_callbacks", default=None
 )
 
@@ -109,9 +109,23 @@ class Atomic:
 atomic = Atomic
 
 
-def on_commit(func: Any, using: str | None = None) -> None:
+def on_commit(func: Any, using: str | None = None, robust: bool = False) -> None:
     """
     Register a callback to be called after the current transaction commits.
+
+    Django semantics: callbacks run in registration order, once, after the
+    outermost ``atomic()`` block has committed and released its session
+    (so a callback that queries or writes runs outside the transaction).
+    A callback may be a coroutine function (or return an awaitable); it is
+    awaited before ``atomic()`` returns — never scheduled and forgotten.
+
+    The transaction is already committed when callbacks run, so a failing
+    callback cannot roll anything back:
+
+    - ``robust=False`` (default): the exception propagates out of the
+      ``atomic()`` block and the remaining callbacks are skipped.
+    - ``robust=True``: the exception is logged (logger
+      ``"zeeb_orm.db.transaction"``) and the next callback runs.
 
     Usage:
         def send_email():
@@ -127,19 +141,29 @@ def on_commit(func: Any, using: str | None = None) -> None:
         raise RuntimeError(
             "on_commit() can only be called inside an atomic() block."
         )
-    callbacks.append(func)
+    callbacks.append((func, robust))
 
 
-def _run_on_commit_callbacks() -> None:
-    """Execute all registered on_commit callbacks."""
-    import asyncio
+async def _run_on_commit_callbacks(callbacks: list[Any] | None = None) -> None:
+    """Run registered on_commit callbacks after a commit (see :func:`on_commit`)."""
+    import inspect
+    import logging
 
-    callbacks = _on_commit_callbacks.get()
+    if callbacks is None:
+        callbacks = _on_commit_callbacks.get()
     if not callbacks:
         return
 
-    for callback in callbacks:
-        result = callback()
-        # Support async callbacks
-        if asyncio.iscoroutine(result):
-            asyncio.ensure_future(result)
+    logger = logging.getLogger("zeeb_orm.db.transaction")
+    pending = list(callbacks)
+    callbacks.clear()
+    for entry in pending:
+        callback, robust = entry if isinstance(entry, tuple) else (entry, False)
+        try:
+            result = callback()
+            if inspect.isawaitable(result):
+                await result
+        except Exception:
+            if not robust:
+                raise
+            logger.exception("on_commit callback %r failed", callback)

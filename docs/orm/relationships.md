@@ -60,7 +60,7 @@ from zeeb_orm import CASCADE, PROTECT, RESTRICT, SET_NULL, SET_DEFAULT, DO_NOTHI
 | `RESTRICT` | Raise `RestrictedError`, unless the referencing objects are themselves deleted by the same operation (via another cascade path) |
 | `SET_NULL` | Set the FK column to NULL — requires `null=True` |
 | `SET_DEFAULT` | Set the FK column to the field default — requires a `default` |
-| `DO_NOTHING` | Leave referencing rows untouched (may leave dangling FKs) |
+| `DO_NOTHING` | Leave referencing rows to the database (which refuses to orphan them unless the schema says otherwise) |
 
 ```python
 class Comment(Model):
@@ -75,9 +75,10 @@ without a `default`.
 
 #### How deletion works
 
-`on_delete` is enforced **in Python** by a collector, so it
-works regardless of database FK enforcement (e.g. SQLite's `foreign_keys`
-PRAGMA, which is off by default):
+`on_delete` is enforced **in Python** by a collector, so it behaves the
+same on every backend. The database enforces the foreign keys as well —
+zeeb_orm turns SQLite's `foreign_keys` PRAGMA (off by SQLite's default) on
+for every connection, so a row can never point at nothing:
 
 ```python
 total, per_model = await author.delete()
@@ -89,8 +90,17 @@ total, per_model = await author.delete()
   contain the referencing instances.
 - All updates and deletes run in a single transaction (`atomic()` is opened
   automatically unless one is already active).
+- Collecting happens inside that same transaction, so a row that starts
+  referencing the object meanwhile cannot escape the cascade or the
+  `PROTECT`/`RESTRICT` check.
 - Cascaded rows are deleted leaf-first, and `pre_delete`/`post_delete`
-  signals fire for **every** affected instance.
+  signals fire for **every** affected instance (inside the transaction).
+- Rows of auto-created many-to-many join tables that point at a deleted
+  object are removed with it.
+- `DO_NOTHING` leaves referencing rows to the database: with enforcement on
+  (every backend, SQLite included) deleting a still-referenced row raises
+  `IntegrityError` and the whole delete rolls back, unless the schema adds its
+  own `ON DELETE` action.
 - `QuerySet.delete()` routes through the collector whenever another model
   references the queryset's model with a non-`DO_NOTHING` FK (its count then
   includes cascaded rows, and per-instance delete signals fire). It also

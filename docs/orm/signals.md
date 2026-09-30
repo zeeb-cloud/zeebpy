@@ -157,22 +157,28 @@ save():
     pre_save.send(...)               ← fires BEFORE session opens
     async with db.session() as s:
         ...INSERT/UPDATE...
-        await s.commit()
-    post_save.send(...)              ← fires AFTER commit
+        await s.commit()             (skipped inside atomic(): the block commits)
+    post_save.send(...)              ← fires AFTER the write
 
 delete():
-    pre_delete.send(...)             ← fires BEFORE session opens
-    async with db.session() as s:
+    async with atomic():             ← joins an active atomic() block instead
+        collect related rows
+        pre_delete.send(...)         ← per instance, just before its row goes
         ...DELETE...
-        await s.commit()
-    post_delete.send(...)            ← fires AFTER commit
+        post_delete.send(...)        ← per instance, once the rows are gone
+    commit
 ```
 
-**`pre_*` signals:** If a receiver raises, the exception propagates and the DB operation
-is never attempted — nothing is written.
+**`pre_save`:** If a receiver raises, the exception propagates and the DB
+operation is never attempted — nothing is written.
 
-**`post_*` signals:** Fire after the commit. The data is already in the DB.
-A receiver exception propagates to the caller but **cannot roll back** the committed data.
+**`post_save`:** Fires after the write — after the commit when `save()` opened
+its own session. A receiver exception propagates to the caller but **cannot
+roll back** the committed data.
+
+**`pre_delete` / `post_delete`:** Fire inside the delete's transaction. A
+receiver that raises rolls the whole delete back (cascades
+included).
 
 ### Using `on_commit` for post-transaction safety
 
@@ -190,6 +196,11 @@ async def on_order_saved(sender, instance, created, **kwargs):
 
 `post_save` fires per-operation, not per-transaction.
 `on_commit` defers the callback until the outermost `atomic()` block commits.
+Callbacks run after the commit, in registration order; an `async` callback is
+awaited before `atomic()` returns. A callback that raises cannot undo the
+commit: by default the exception propagates out of the `atomic()` block (and
+the remaining callbacks are skipped); register it with
+`on_commit(func, robust=True)` to have the error logged instead.
 
 ---
 
