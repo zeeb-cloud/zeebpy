@@ -72,6 +72,10 @@ summary = serializer.validated_data.get("summary")   # None when omitted
 serializer.validated_data["summary"]                 # KeyError when omitted
 ```
 
+`errors` is keyed by the **full path** of the offending value — `"address.zip"`
+for a nested field, `"items.1"` for a list element — not just the top-level
+field.
+
 ### Partial Updates
 
 `partial=True` (what `PATCH` uses) validates against an all-optional variant of
@@ -371,6 +375,18 @@ class ArticleSerializer(Serializer):
 
 ## Validation
 
+`is_valid()` runs the schema first, then the hooks below: every
+`validate_<field>(self, value)` whose field is present in the input (its return
+value replaces the value), then `validate(self, attrs)` on the whole dict (its
+return value becomes `validated_data`). A hook rejects input by raising
+`zeeb_api.exceptions.ValidationError` (or `ValueError`): a plain message lands on
+that hook's field (`non_field_errors` for `validate()`), a dict names its fields
+itself. Any other exception is a bug in the hook and propagates.
+
+Hooks may be `async def` (e.g. a uniqueness query). Those need
+`await serializer.ais_valid()`, which the viewsets call; plain `is_valid()`
+raises `TypeError` rather than skip an async hook.
+
 ### Field-Level Validation
 
 ```python
@@ -548,6 +564,35 @@ class ArticleSerializer(Serializer):
             "title": {"max_length": 100},
         }
 ```
+
+`extra_kwargs` (on a `ModelSerializer`) adjusts the fields generated from the
+model:
+
+| Key | Effect |
+|---|---|
+| `read_only` | Not accepted in input (like `read_only_fields`) |
+| `write_only` | Not included in output |
+| `required` | `True`: must be sent even if the model has a default; `False`: may be omitted |
+| `allow_null` | Accept `null` |
+| `default` | Default when omitted |
+| `max_length` / `min_length` | Enforced on input |
+| `help_text` | The field's description in OpenAPI |
+
+Any other key is ignored with a `UserWarning` naming it.
+
+### Declared fields on a ModelSerializer
+
+A DRF-style field declared on a `ModelSerializer` (`CharField(write_only=True)`,
+`CharField(source="username", read_only=True)`, …) replaces the model field of
+the same name or adds a new one, with all its options applied. It must appear
+in `Meta.fields` — a declared field missing from an explicit list raises
+`ImproperlyConfigured` instead of being dropped — and `fields = "__all__"`
+includes every declared field. A writable field with a `source` is validated
+under its own name and saved under the source (`nick = CharField(source=
+"nickname")` sets `nickname`).
+
+Declared fields are inherited: a subclass keeps every field its parents declare
+and may override one by redeclaring it.
 
 ## Serializer Fields Reference
 
