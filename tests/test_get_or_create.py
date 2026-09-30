@@ -164,3 +164,30 @@ class TestUpdateOrCreate:
             defaults={"name": "upd"}, create_defaults={"name": "made"}, email="m@x.io"
         )
         assert created and obj.name == "made"
+
+
+class TestEnclosingTransaction:
+    """A rolled-back enclosing atomic() undoes what these methods wrote.
+
+    On SQLite a savepoint opened as the first statement of the enclosing
+    transaction commits on RELEASE (pysqlite's transaction handling), so the
+    methods join the enclosing transaction there instead.
+    """
+
+    async def test_get_or_create_is_rolled_back_with_the_enclosing_block(self, db):
+        with pytest.raises(RuntimeError):
+            async with atomic():
+                _obj, created = await GcAccount.objects.get_or_create(email="t@x.io")
+                assert created
+                raise RuntimeError("roll back")
+        assert await GcAccount.objects.count() == 0
+
+    async def test_update_or_create_is_rolled_back_with_the_enclosing_block(self, db):
+        await GcAccount.objects.create(email="u@x.io", hits=1)
+        with pytest.raises(RuntimeError):
+            async with atomic():
+                await GcAccount.objects.update_or_create(email="u@x.io", defaults={"hits": 9})
+                await GcAccount.objects.update_or_create(email="new@x.io")
+                raise RuntimeError("roll back")
+        assert await GcAccount.objects.count() == 1
+        assert (await GcAccount.objects.get(email="u@x.io")).hits == 1

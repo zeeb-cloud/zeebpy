@@ -609,9 +609,11 @@ user, created = await User.objects.get_or_create(
 The create uses the plain keyword arguments plus `defaults` (lookups such as
 `email__iexact` select but are not assigned; callable values are called). It
 runs in its own `atomic()` block — a savepoint inside an enclosing
-transaction — and if it fails with `IntegrityError` because a concurrent
-caller created the row first, the lookup is repeated and that row is returned
-with `created=False`.
+transaction (on SQLite it joins the enclosing transaction directly: SQLite
+aborts only the failing statement, and a first-statement savepoint would
+commit on release) — and if it fails with `IntegrityError` because a
+concurrent caller created the row first, the lookup is repeated and that row
+is returned with `created=False`.
 
 ### update_or_create(\*\*kwargs, defaults=None, create_defaults=None)
 
@@ -631,7 +633,8 @@ user, created = await User.objects.update_or_create(
 )
 ```
 
-Runs in one `atomic()` block: the lookup takes a row lock
+Runs in one transaction (joining an enclosing `atomic()` on the same
+database): the lookup takes a row lock
 (`SELECT ... FOR UPDATE`, except on SQLite), the create is race-safe as in
 `get_or_create()`, and the update saves only the `defaults` fields (plus
 `auto_now` fields) via `save(update_fields=...)`.
