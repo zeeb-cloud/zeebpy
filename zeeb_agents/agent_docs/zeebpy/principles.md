@@ -71,7 +71,7 @@ Rules you can rely on:
 `query_timeout`,
 `project_not_found`,
 `runtime_not_configured`, `server_not_reachable`, `setting_not_found`, `settings_error`,
-`table_not_found`,
+`syntax_error`, `table_not_found`,
 `user_not_found`.
 
 ### Two error layers — don't confuse them
@@ -225,6 +225,13 @@ Two tools are deliberately sandboxed:
   literal, never spliced between quotes or into an f-string, and docstring text
   is escaped. The deliberate exceptions are `body=`, `imports=` and a field
   spec's `"raw"` values: those *are* code, and are written verbatim.
+- **A structural edit never leaves a module that does not parse.** Every
+  generator and structural edit locates classes, methods and functions through
+  the AST (decorators included — never "up to the next `def`"), and writes the
+  file atomically only if the result parses; otherwise the file is left as it
+  was and the call fails with `syntax_error` naming the line (a bad `body=` is
+  refused before anything is written). A file that already did not parse can
+  still be edited — that is how it gets repaired.
 - **File tools are confined to the project.** `{prefix}read_file`,
   `{prefix}write_file`, and `{prefix}list_files` resolve every path (following
   symlinks) and reject anything that escapes the project root with an error —

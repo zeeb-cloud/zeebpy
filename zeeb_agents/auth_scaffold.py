@@ -18,6 +18,7 @@ from zeeb_agents._utils.code_gen import (
     render_list_literal,
     render_py_literal,
     set_or_append_setting,
+    write_source,
 )
 from zeeb_agents._utils.errors import AgentError, close_matches, fail
 from zeeb_agents._utils.project import require_project_root
@@ -165,7 +166,7 @@ async def setup_auth(
             for key, value in wanted.items():
                 settings_content = set_or_append_setting(settings_content, key, str(value))
                 updated.append(key)
-            settings_path.write_text(settings_content, encoding="utf-8")
+            write_source(settings_path, settings_content)
         return already, updated
 
     already_wired, settings_updated = await asyncio.to_thread(_wire)
@@ -315,7 +316,7 @@ async def setup_oauth(
                 content, "OAUTH_REDIRECT_URI", render_py_literal(redirect_uri)
             )
             updated.append("OAUTH_REDIRECT_URI")
-        settings_path.write_text(content, encoding="utf-8")
+        write_source(settings_path, content)
         ensure_import(settings_path, "import os")
 
         urls_path = _project_urls_file(root)
@@ -428,7 +429,7 @@ async def create_user_model(
         settings_content = set_or_append_setting(
             settings_content, "AUTH_USER_MODEL", render_py_literal(auth_model)
         )
-        settings_path.write_text(settings_content, encoding="utf-8")
+        write_source(settings_path, settings_content)
         return auth_model
 
     auth_model = await asyncio.to_thread(_write)

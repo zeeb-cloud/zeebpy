@@ -39,6 +39,7 @@ from zeeb_agents._utils.code_gen import (
     imports_referenced_by,
     remove_class_block,
     remove_route_function,
+    write_source,
 )
 from zeeb_agents._utils.project import get_app_path
 from zeeb_agents.feature_manifest import archive_path, split_ref
@@ -107,7 +108,7 @@ def _cut(
         else remove_route_function(content, name)
     )
     if updated is not None:
-        host.write_text(updated, encoding="utf-8")
+        write_source(host, updated)
 
     return {
         "kind": kind,

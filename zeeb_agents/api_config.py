@@ -13,6 +13,7 @@ from zeeb_agents._utils.code_gen import (
     render_list_literal,
     render_py_literal,
     set_or_append_setting,
+    write_source,
 )
 from zeeb_agents._utils.errors import AgentError, close_matches, fail
 
@@ -113,7 +114,7 @@ async def configure_throttling(
                 content, "DEFAULT_THROTTLE_RATES", "{" + entries + "}"
             )
             written.append("DEFAULT_THROTTLE_RATES")
-        settings_path.write_text(content, encoding="utf-8")
+        write_source(settings_path, content)
         return written
 
     written = await asyncio.to_thread(_write)
@@ -194,7 +195,7 @@ async def configure_versioning(
             versions = render_list_literal([str(v) for v in allowed_versions])
             content = set_or_append_setting(content, "ALLOWED_VERSIONS", versions)
             written.append("ALLOWED_VERSIONS")
-        settings_path.write_text(content, encoding="utf-8")
+        write_source(settings_path, content)
         return written
 
     written = await asyncio.to_thread(_write)

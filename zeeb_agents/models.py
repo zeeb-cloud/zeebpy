@@ -22,6 +22,7 @@ from zeeb_agents._utils.code_gen import (
     set_class_attribute_in_block,
     skip_result,
     validate_if_exists,
+    write_source,
 )
 from zeeb_agents._utils.errors import AgentError, close_matches, did_you_mean, fail
 from zeeb_agents._utils.field_types import field_extra_imports, render_field_line
@@ -171,7 +172,7 @@ async def delete_model(
             re.MULTILINE | re.DOTALL,
         )
         new_content = pattern.sub("", content).rstrip("\n") + "\n"
-        path.write_text(new_content, encoding="utf-8")
+        write_source(path, new_content)
 
     await asyncio.to_thread(_remove)
     return AgentResult(
@@ -268,7 +269,7 @@ async def add_field(
                 code="model_not_found",
                 model=model_name,
             )
-        path.write_text(new_content, encoding="utf-8")
+        write_source(path, new_content)
         for import_line in field_extra_imports(field):
             ensure_import(path, import_line)
 
@@ -317,7 +318,7 @@ async def remove_field(
                 suggestions=close_matches(field_name, existing),
                 fields=existing,
             )
-        path.write_text(new_content, encoding="utf-8")
+        write_source(path, new_content)
 
     await asyncio.to_thread(_delete)
     return AgentResult(
@@ -405,7 +406,7 @@ async def alter_field(
                 suggestions=close_matches(field_name, existing),
                 fields=existing,
             )
-        path.write_text(new_content, encoding="utf-8")
+        write_source(path, new_content)
         for import_line in field_extra_imports(field):
             ensure_import(path, import_line)
 
@@ -562,7 +563,7 @@ async def replace_model_fields(
         for fi, fl in enumerate(field_lines):
             new_lines.insert(new_insert + fi, fl)
 
-        path.write_text("".join(new_lines), encoding="utf-8")
+        write_source(path, "".join(new_lines))
         return [f["name"] for f in fields]
 
     new_field_names = await asyncio.to_thread(_replace)
@@ -653,7 +654,7 @@ async def update_model(
                 changes.append(f"meta.{key} {'updated' if action == 'replaced' else 'added'}")
 
         if changes:
-            path.write_text(content, encoding="utf-8")
+            write_source(path, content)
         return changes
 
     applied = await asyncio.to_thread(_update)

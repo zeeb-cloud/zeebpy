@@ -7,7 +7,7 @@ import re
 from pathlib import Path
 
 from zeeb_agents._utils import AgentResult, agent_function
-from zeeb_agents._utils.code_gen import escape_docstring
+from zeeb_agents._utils.code_gen import escape_docstring, remove_route_function, write_source
 from zeeb_agents._utils.errors import AgentError, close_matches, did_you_mean, fail
 from zeeb_agents._utils.project import get_app_path
 from zeeb_agents._utils.validation import ensure_identifier
@@ -98,7 +98,7 @@ async def create_task(
         created = False
         if not tasks_path.exists():
             header = _TASKS_HEADER.format(app=app, example_task=function_name)
-            tasks_path.write_text(header, encoding="utf-8")
+            write_source(tasks_path, header)
             created = True
 
         content = tasks_path.read_text(encoding="utf-8")
@@ -115,7 +115,7 @@ async def create_task(
             function_name=function_name,
             schedule_comment=schedule_comment,
         )
-        tasks_path.write_text(content.rstrip("\n") + "\n" + block, encoding="utf-8")
+        write_source(tasks_path, content.rstrip("\n") + "\n" + block)
         return created
 
     created = await asyncio.to_thread(_write)
@@ -184,8 +184,8 @@ async def delete_task(
 ) -> AgentResult:
     """Remove an async task function from ``apps/{app}/tasks.py``.
 
-    Removes the entire ``async def <function_name>`` block (up to the next
-    function definition or end of file).
+    Removes the entire ``async def <function_name>`` block — located through
+    the AST, decorators included — and nothing after it.
 
     Args:
         app: App directory name.
@@ -209,12 +209,10 @@ async def delete_task(
 
     def _remove() -> None:
         source = tasks_path.read_text(encoding="utf-8")
-        pattern = re.compile(
-            rf"(\n*^async def {re.escape(function_name)}\s*\(.*?)(?=\n^async def |\Z)",
-            re.MULTILINE | re.DOTALL,
-        )
-        new_source, n = pattern.subn("", source)
-        if n == 0:
+        # AST-located: the old "up to the next top-level async def" span ran on
+        # over any sync function, class or statement in between, deleting it.
+        new_source = remove_route_function(source, function_name)
+        if new_source is None:
             names = re.findall(r"async def (\w+)", source)
             hint = did_you_mean(function_name, names)
             if not hint:
@@ -225,7 +223,7 @@ async def delete_task(
                 suggestions=close_matches(function_name, names),
                 tasks=names,
             )
-        tasks_path.write_text(new_source, encoding="utf-8")
+        write_source(tasks_path, new_source)
 
     await asyncio.to_thread(_remove)
     return AgentResult(

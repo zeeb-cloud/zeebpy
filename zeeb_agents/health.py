@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from zeeb_agents._utils import AgentResult, agent_function
+from zeeb_agents._utils.code_gen import write_source
 from zeeb_agents._utils.errors import fail
 from zeeb_agents._utils.project import (
     ensure_settings_loaded,
@@ -119,7 +120,7 @@ async def create_health_endpoint(
     # NOTE: .replace() instead of .format() — the template contains literal
     # braces (dicts/JSON) that .format() would choke on with a KeyError.
     content = _HEALTH_MODULE.replace("{project_slug}", slug)
-    await asyncio.to_thread(health_file.write_text, content, "utf-8")
+    await asyncio.to_thread(write_source, health_file, content)
 
     return AgentResult(
         success=True,

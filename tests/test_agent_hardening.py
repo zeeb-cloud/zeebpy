@@ -915,3 +915,104 @@ async def test_feature_lifecycle_refuses_a_platform_managed_project(project):
     assert listed.success
     assert "zeeb-mcp" in listed.data["manifest_warning"]
     assert (project / ".zeeb" / "features.json").read_text() == text
+
+
+# ---------------------------------------------------------------------------
+# 10. Structural edits are AST-located, parse-checked and atomic
+# ---------------------------------------------------------------------------
+
+_VIEWSET_WITH_NESTED_DEFS = """
+
+class PostViewSet(viewsets.ModelViewSet):
+    queryset = Post.objects
+
+    @action(detail=True, methods=["post"])
+    async def publish(self, request, pk=None):
+        def helper():
+            return 1
+
+        @staticmethod
+        def other():
+            return 2
+
+        return {"ok": helper() + other()}
+
+    async def keep_me(self, request, pk=None):
+        return {"kept": True}
+"""
+
+
+def test_remove_method_uses_the_ast_not_the_next_decorator():
+    from zeeb_agents._utils.code_gen import remove_method_from_class
+
+    updated = remove_method_from_class(_VIEWSET_WITH_NESTED_DEFS, "PostViewSet", "publish")
+    tree = ast.parse(updated)  # the regex span stopped at the nested "@" and broke the file
+    cls = tree.body[0]
+    assert [n.name for n in cls.body if isinstance(n, ast.AsyncFunctionDef)] == ["keep_me"]
+    assert "helper" not in updated and "other" not in updated
+
+
+def test_class_exists_ignores_docstring_examples():
+    from zeeb_agents._utils.code_gen import class_exists, remove_class_block
+
+    source = '"""Example:\n\nclass Post(Model):\n    pass\n"""\n\nx = 1\n'
+    assert not class_exists(source, "Post")
+    assert remove_class_block(source, "Post") is None
+
+
+async def test_delete_function_leaves_a_parseable_views_module(project):
+    views = project / "apps" / "blog" / "views.py"
+    views.write_text(views.read_text() + _VIEWSET_WITH_NESTED_DEFS)
+    res = await agents.delete_function(
+        "blog", "publish", kind="action", entity="Post", project_id=project
+    )
+    assert res.success and res.data["removed"] is True
+    ast.parse(views.read_text())
+    assert "keep_me" in views.read_text()
+
+
+async def test_delete_task_removes_only_that_task(project):
+    tasks = project / "apps" / "blog" / "tasks.py"
+    tasks.write_text(
+        "async def first():\n    pass\n\n\ndef helper():\n    return 1\n\n\n"
+        "SETTING = 3\n\n\nasync def second():\n    pass\n"
+    )
+    res = await agents.delete_task("blog", "first", project_id=project)
+    assert res.success, res.message
+    text = tasks.read_text()
+    assert "def helper" in text and "SETTING = 3" in text and "async def second" in text
+    assert "async def first" not in text
+
+
+async def test_a_generated_edit_that_would_not_parse_is_refused(project):
+    views = project / "apps" / "blog" / "views.py"
+    before = views.read_text()
+    res = await agents.create_route(
+        "blog", "/broken", "get", "broken", body="return (1,", project_id=project
+    )
+    assert not res.success
+    assert res.data["error_code"] == "syntax_error"
+    assert views.read_text() == before
+
+
+async def test_edit_function_with_a_broken_body_leaves_the_file(project):
+    res = await agents.create_task("blog", "nightly", project_id=project)
+    assert res.success, res.message
+    tasks = project / "apps" / "blog" / "tasks.py"
+    before = tasks.read_text()
+    res = await agents.edit_function(
+        "blog", "nightly", "if True\n    pass", kind="task", project_id=project
+    )
+    assert not res.success
+    assert res.data["error_code"] == "syntax_error"
+    assert tasks.read_text() == before
+
+
+async def test_generated_writes_are_atomic_and_keep_permissions(project):
+    views = project / "apps" / "blog" / "views.py"
+    views.chmod(0o640)
+    res = await agents.create_route("blog", "/ok", "get", "ok", project_id=project)
+    assert res.success, res.message
+    assert views.stat().st_mode & 0o777 == 0o640
+    leftovers = [p.name for p in views.parent.iterdir() if p.name.endswith(".tmp")]
+    assert leftovers == []

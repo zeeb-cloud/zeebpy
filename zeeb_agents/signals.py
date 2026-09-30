@@ -7,7 +7,7 @@ import re
 from pathlib import Path
 
 from zeeb_agents._utils import AgentResult, agent_function
-from zeeb_agents._utils.code_gen import replace_function_body
+from zeeb_agents._utils.code_gen import replace_function_body, write_source
 from zeeb_agents._utils.errors import AgentError, close_matches, did_you_mean, fail
 from zeeb_agents._utils.project import load_project_settings, require_project_root
 from zeeb_agents._utils.validation import ensure_app_exists, ensure_identifier
@@ -194,14 +194,14 @@ async def create_signal_receiver(
             block = _ADDITIONAL_TEMPLATE.format(
                 signal=signal_name, model=model_name, func=function_name
             )
-            path.write_text(source.rstrip() + "\n" + block)
+            write_source(path, source.rstrip() + "\n" + block)
         else:
             content = _SIGNALS_HEADER.format(
                 app=app, signal=signal_name, model=model_name
             ) + _RECEIVER_TEMPLATE.format(
                 signal=signal_name, model=model_name, func=function_name
             )
-            path.write_text(content)
+            write_source(path, content)
         return str(path.relative_to(root)), existed
 
     rel_path, existed = await asyncio.to_thread(_write)
@@ -374,7 +374,7 @@ async def edit_signal_receiver(
                 f"{app}/signals.py does not parse — repair it with edit_file first.",
                 code="invalid_input",
             )
-        path.write_text(updated)
+        write_source(path, updated)
         return str(path.relative_to(root))
 
     rel_path = await asyncio.to_thread(_edit)
@@ -439,7 +439,7 @@ async def delete_signal_receiver(
             if r["func_name"] != function_name:
                 continue
             new_lines = lines[: r["decorator_line"]] + lines[r["func_end"]:]
-            path.write_text("".join(new_lines))
+            write_source(path, "".join(new_lines))
             return str(path.relative_to(root))
         raise _receiver_not_found(app, function_name, receivers)
 

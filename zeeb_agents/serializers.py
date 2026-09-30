@@ -9,6 +9,7 @@ from pathlib import Path
 from zeeb_agents._utils import AgentResult, agent_function
 from zeeb_agents._utils.code_gen import (
     append_block,
+    class_block_bounds,
     class_exists,
     ensure_import,
     remove_class_block,
@@ -17,6 +18,7 @@ from zeeb_agents._utils.code_gen import (
     render_serializer_class,
     skip_result,
     validate_if_exists,
+    write_source,
 )
 from zeeb_agents._utils.errors import AgentError, fail
 from zeeb_agents._utils.validation import (
@@ -187,18 +189,14 @@ async def update_serializer(
         changes: list[str] = []
         # Scope every substitution to the target class block — a file-wide
         # re.sub would rewrite the Meta of *every* serializer in the file.
-        block_pattern = re.compile(
-            rf"(^class {re.escape(class_name)}\b.*?)(?=^\S|\Z)",
-            re.DOTALL | re.MULTILINE,
-        )
-        match = block_pattern.search(content)
-        if match is None:
+        bounds = class_block_bounds(content, class_name)
+        if bounds is None:
             raise AgentError(
                 f"'{class_name}' not found in {path}",
                 code="model_not_found",
                 serializer=class_name,
             )
-        block = match.group(1)
+        block = content[bounds[0] : bounds[1]]
         if fields is not None:
             fields_repr = render_list_literal(fields)
             block = re.sub(
@@ -229,8 +227,8 @@ async def update_serializer(
                     flags=re.MULTILINE,
                 )
             changes.append("read_only_fields updated")
-        content = content[: match.start(1)] + block + content[match.end(1) :]
-        path.write_text(content, encoding="utf-8")
+        content = content[: bounds[0]] + block + content[bounds[1] :]
+        write_source(path, content)
         return changes
 
     applied = await asyncio.to_thread(_update)
@@ -286,7 +284,7 @@ async def delete_serializer(
         stripped = remove_class_block(content, class_name)
         if stripped is None:
             return False
-        path.write_text(remove_import_name(stripped, model_name), encoding="utf-8")
+        write_source(path, remove_import_name(stripped, model_name))
         return True
 
     if not await asyncio.to_thread(_delete):
@@ -356,14 +354,10 @@ async def sync_serializer_field(
         content = path.read_text(encoding="utf-8")
         if not class_exists(content, class_name):
             return None
-        block_pattern = re.compile(
-            rf"(^class {re.escape(class_name)}\b.*?)(?=^\S|\Z)",
-            re.DOTALL | re.MULTILINE,
-        )
-        match = block_pattern.search(content)
-        if match is None:
+        bounds = class_block_bounds(content, class_name)
+        if bounds is None:
             return None
-        block = match.group(1)
+        block = content[bounds[0] : bounds[1]]
         fields_match = re.search(r"^\s+fields\s*=\s*\[(.*?)\]", block, re.MULTILINE | re.DOTALL)
         if fields_match is None:
             return None
@@ -397,9 +391,7 @@ async def sync_serializer_field(
             )
             + block[fields_match.end() :]
         )
-        path.write_text(
-            content[: match.start(1)] + block + content[match.end(1) :], encoding="utf-8"
-        )
+        write_source(path, content[: bounds[0]] + block + content[bounds[1] :])
         return updated
 
     result = await asyncio.to_thread(_sync)

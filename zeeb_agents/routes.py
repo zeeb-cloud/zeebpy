@@ -9,11 +9,13 @@ from pathlib import Path
 
 from zeeb_agents._utils import AgentResult, agent_function
 from zeeb_agents._utils.code_gen import (
+    check_parses,
     ensure_import,
     escape_docstring,
     render_py_literal,
     skip_result,
     validate_if_exists,
+    write_source,
 )
 from zeeb_agents._utils.errors import AgentError, fail
 from zeeb_agents._utils.project import get_app_path, require_project_root
@@ -177,24 +179,6 @@ async def create_route(
                 function=function_name,
             )
 
-        # Ensure the FastAPI router type is importable, plus any body imports.
-        ensure_import(views, _ROUTER_IMPORT)
-        for imp in imports or []:
-            ensure_import(views, imp)
-
-        # Ensure a router instance exists in the file
-        content = views.read_text(encoding="utf-8")
-        if "router = APIRouter()" not in content and "router=APIRouter()" not in content:
-            # Insert after imports (after the last import line)
-            lines = content.splitlines(keepends=True)
-            insert_at = 0
-            for idx, line in enumerate(lines):
-                if line.startswith(("import ", "from ")):
-                    insert_at = idx + 1
-            lines.insert(insert_at, "\n" + _ROUTER_INIT)
-            content = "".join(lines)
-            views.write_text(content, encoding="utf-8")
-
         # Build route params (path params extracted from path string)
         path_params = re.findall(r"\{(\w+)\}", path)
         params = ["request: Request"] + [f"{p}: str" for p in path_params]
@@ -215,8 +199,33 @@ async def create_route(
             body=_indent_body(body, function_name),
         )
 
+        # Everything this call will write is checked before the first write, so
+        # a body or import that does not parse leaves views.py untouched rather
+        # than half-edited (router import added, handler refused).
+        check_parses(block, what="the generated handler (check body=)")
+        for imp in imports or []:
+            check_parses(imp, what=f"import line {imp!r}")
+
+        # Ensure the FastAPI router type is importable, plus any body imports.
+        ensure_import(views, _ROUTER_IMPORT)
+        for imp in imports or []:
+            ensure_import(views, imp)
+
+        # Ensure a router instance exists in the file
         content = views.read_text(encoding="utf-8")
-        views.write_text(content.rstrip("\n") + "\n" + block, encoding="utf-8")
+        if "router = APIRouter()" not in content and "router=APIRouter()" not in content:
+            # Insert after imports (after the last import line)
+            lines = content.splitlines(keepends=True)
+            insert_at = 0
+            for idx, line in enumerate(lines):
+                if line.startswith(("import ", "from ")):
+                    insert_at = idx + 1
+            lines.insert(insert_at, "\n" + _ROUTER_INIT)
+            content = "".join(lines)
+            write_source(views, content)
+
+        content = views.read_text(encoding="utf-8")
+        write_source(views, content.rstrip("\n") + "\n" + block)
 
         # Auto-wire the views router into the app's urls.py so it is served.
         return _wire_urls()
@@ -241,7 +250,7 @@ async def create_route(
             ensure_import(urls, f"from .views import router as {alias}")
             content = urls.read_text(encoding="utf-8")
             content = content.rstrip("\n") + f"\n{include_line}\n"
-            urls.write_text(content, encoding="utf-8")
+            write_source(urls, content)
         # App-layer inclusion alone is not enough: the app must be installed
         # and its router included by the project urls.py, or the route 404s.
         ensure_installed_app(root, app)

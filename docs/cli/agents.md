@@ -60,7 +60,7 @@ vocabulary: `app_not_found`, `model_not_found`, `already_exists`,
 `invalid_field_spec`, `invalid_field_type`, `invalid_identifier`,
 `invalid_input`, `invalid_permission`, `invalid_meta`, `invalid_sql`,
 `invalid_regex`, `table_not_found`, `user_not_found`, `no_user_table`,
-`setting_not_found`, `settings_error`, `env_key_not_found`, `field_not_found`,
+`setting_not_found`, `settings_error`, `syntax_error`, `env_key_not_found`, `field_not_found`,
 `function_not_found`, `file_not_found`, `log_file_not_found`,
 `manifest_version_unsupported`,
 `outside_project_root`, `query_timeout`, `server_not_running`, `server_not_reachable`,
@@ -119,6 +119,7 @@ see `create_project`.)
 | `export_openapi(...)` | Writes a static snapshot of the spec. For the live contract use `get_openapi_url()` / `get_project_reference()` (platform-managed runtime). |
 | Relation field specs | `to` is **required**; `on_delete="SET_NULL"` needs `null=True`; M2M rejects `on_delete`/`null`. Invalid specs are rejected before anything is written. |
 | Field spec `"raw"` key | Escape hatch for non-literal kwargs (validators, callables): a dict of kwarg → verbatim Python source. The *values* are the one place (with `body=`/`imports=`) where caller text becomes code verbatim, by design; the *keys* must still be kwargs the field accepts. |
+| Structural edits | Classes, methods and functions are located through the AST (decorators included), never by text; each generated edit is written atomically and only if the module still parses — otherwise nothing changes and the call fails with `syntax_error`. |
 | Generated-code inputs | Names (apps, models, fields, kwarg keys, actions, handlers, workflow fields/transitions) must be Python identifiers; route paths and router prefixes must match a strict URL shape; every other string is emitted as a complete escaped literal (never spliced between quotes or into an f-string) and docstring text is escaped. A bad value fails with `invalid_identifier` / `invalid_input` / `invalid_field_spec` before anything is written. |
 | `setup_auth` / `setup_oauth` | Idempotent — re-running reports `already_wired` instead of duplicating includes. |
 

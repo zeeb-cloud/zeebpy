@@ -60,6 +60,7 @@ ERROR_CODES = frozenset(
         "runtime_not_configured",
         "partial_failure",
         "query_timeout",
+        "syntax_error",
     }
 )
 

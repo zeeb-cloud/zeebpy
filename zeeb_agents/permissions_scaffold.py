@@ -7,6 +7,7 @@ import re
 from pathlib import Path
 
 from zeeb_agents._utils import AgentResult, agent_function
+from zeeb_agents._utils.code_gen import write_source
 from zeeb_agents._utils.errors import AgentError
 from zeeb_agents._utils.project import get_app_path
 from zeeb_agents._utils.validation import ensure_identifier
@@ -152,7 +153,7 @@ async def create_permission_class(
         created = False
         if not perms_file.exists():
             header = _PERMISSIONS_HEADER.format(app=app, example_class=class_name)
-            perms_file.write_text(header, encoding="utf-8")
+            write_source(perms_file, header)
             created = True
 
         content = perms_file.read_text(encoding="utf-8")
@@ -172,7 +173,7 @@ async def create_permission_class(
             message=message,
             body=body,
         )
-        perms_file.write_text(content.rstrip("\n") + block, encoding="utf-8")
+        write_source(perms_file, content.rstrip("\n") + block)
         return created
 
     created = await asyncio.to_thread(_write)
