@@ -47,12 +47,22 @@ class Settings:
 
     @classmethod
     def configure(cls, **kwargs: Any) -> Settings:
-        """Configure global settings."""
+        """Configure global settings.
+
+        A default connection that was created lazily from the previous
+        settings is discarded (and disposed) when the database configuration
+        changes, so the next query uses the new one. A connection registered
+        explicitly (``setup_database``/``register_database``) is kept.
+        """
         if "database" not in kwargs:
             kwargs["database"] = DatabaseConfig.from_env()
         elif isinstance(kwargs["database"], dict):
             kwargs["database"] = DatabaseConfig(**kwargs["database"])
         cls._instance = cls(**kwargs)
+
+        from zeeb_orm.db.connection import _forget_settings_connection
+
+        _forget_settings_connection(cls._instance.database)
         return cls._instance
 
     @classmethod

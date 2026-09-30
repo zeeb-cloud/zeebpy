@@ -79,11 +79,60 @@ def get_inbound_foreign_keys(
     return result
 
 
+def auto_m2m_links(model: type[Model]) -> list[tuple[Any, str]]:
+    """``(join_table, column)`` pairs of auto-created M2M tables referencing ``model``.
+
+    Both directions: the model's own ``ManyToManyField``s (the source column)
+    and fields on other models that target it (the target column); a
+    self-referential field contributes both. Custom ``through=`` models are
+    ordinary models, reached through their ForeignKeys instead.
+    """
+    from zeeb_orm.models.base import _model_registry
+
+    links: list[tuple[Any, str]] = []
+    for m2m in getattr(model, "_m2m_fields", []):
+        if m2m.through is None:
+            try:
+                links.append((m2m.get_through_table(), m2m.get_source_column()))
+            except Exception:
+                continue
+    seen: set[int] = set()
+    for other in list(_model_registry.values()):
+        if id(other) in seen:
+            continue
+        seen.add(id(other))
+        for m2m in getattr(other, "_m2m_fields", []):
+            if m2m.through is not None:
+                continue
+            try:
+                if m2m.get_target_model() is not model:
+                    continue
+                links.append((m2m.get_through_table(), m2m.get_target_column()))
+            except Exception:
+                continue
+    return links
+
+
 def model_has_inbound_refs(model: type[Model]) -> bool:
-    """True when any registered model has a non-DO_NOTHING FK to ``model``."""
+    """True when any registered model has a non-DO_NOTHING FK to ``model``.
+
+    An auto-created many-to-many join table counts too: its rows must go
+    with the row they point at.
+    """
     return any(
         fk.on_delete != DO_NOTHING for _m, fk in get_inbound_foreign_keys(model)
-    )
+    ) or bool(auto_m2m_links(model))
+
+
+def _references_itself(model: type[Model]) -> bool:
+    """True when ``model`` has a ForeignKey to itself."""
+    for fk_field in getattr(model, "_fk_fields", []):
+        try:
+            if fk_field.get_target_model() is model:
+                return True
+        except Exception:
+            continue
+    return False
 
 
 class Collector:
@@ -213,14 +262,22 @@ class Collector:
         """Execute the queued updates and deletes (leaf-first).
 
         Fires :data:`~zeeb_orm.signals.pre_delete` for every collected
-        instance before its row is deleted and
-        :data:`~zeeb_orm.signals.post_delete` after the deletes have been
-        committed (or, inside ``atomic()``, after they have been executed).
+        instance before its row is deleted — on the delete's session, i.e.
+        inside its transaction, as Django does: a receiver that raises rolls
+        the delete back. :data:`~zeeb_orm.signals.post_delete` fires once the
+        rows are gone: after the commit when this call owns the session,
+        still inside the transaction when an ``atomic()`` block does.
+
+        Rows of auto-created many-to-many join tables that reference a
+        deleted row are removed first (the ``ON DELETE CASCADE`` of those
+        tables does the same in the database, but not on a SQLite connection
+        with foreign keys off).
 
         Returns:
             ``(total_deleted, {model_name: count})``.
         """
         from sqlalchemy import delete as sa_delete
+        from sqlalchemy import func, select
         from sqlalchemy import update as sa_update
 
         from zeeb_orm.db.connection import get_session
@@ -251,12 +308,26 @@ class Collector:
                 for instance in instances.values():
                     await pre_delete.send(sender=model, instance=instance)
 
+                pks = list(instances.keys())
+                for join_table, column in auto_m2m_links(model):
+                    await session.execute(
+                        sa_delete(join_table).where(join_table.c[column].in_(pks))
+                    )
+
                 table = model._get_table()
                 pk_col = table.c[model._meta.pk.db_column or model._meta.pk_name]
-                result = await session.execute(
-                    sa_delete(table).where(pk_col.in_(list(instances.keys())))
-                )
-                count = result.rowcount
+                existing = None
+                if _references_itself(model):
+                    # The database's ON DELETE CASCADE removes a child row
+                    # while the same statement deletes its parent, and the
+                    # driver's rowcount leaves those rows out.
+                    existing = (
+                        await session.execute(
+                            select(func.count()).select_from(table).where(pk_col.in_(pks))
+                        )
+                    ).scalar()
+                result = await session.execute(sa_delete(table).where(pk_col.in_(pks)))
+                count = existing if existing is not None else result.rowcount
                 if count is None or count < 0:
                     count = len(instances)
                 if count:
@@ -286,5 +357,6 @@ __all__ = [
     "to_db_ondelete",
     "get_inbound_foreign_keys",
     "model_has_inbound_refs",
+    "auto_m2m_links",
     "Collector",
 ]

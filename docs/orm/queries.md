@@ -873,6 +873,22 @@ async with atomic():
     # If the transaction rolls back, the email is never sent
 ```
 
+Callbacks run once, in registration order, after the outermost block has
+committed and released its session. Coroutine functions are awaited (never
+scheduled and forgotten). The data is committed by then, so a failing
+callback cannot roll it back: its exception propagates out of `atomic()`,
+or — with `on_commit(func, robust=True)` — is logged to
+`zeeb_orm.db.transaction` and the next callback runs.
+
+### Concurrency inside a transaction
+
+Everything in an `atomic()` block shares one session — including tasks
+started with `asyncio.gather()`, which inherit the block's context. A session
+can run only one statement at a time, so the ORM serialises them: gathered
+queries inside a transaction are safe, they just do not run in parallel. For
+real parallelism, run them outside the transaction (each gets its own
+session).
+
 ## QuerySet Chaining
 
 QuerySets are lazy and chainable:

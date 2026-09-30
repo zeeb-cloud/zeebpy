@@ -45,11 +45,7 @@ from contextlib import asynccontextmanager
 from typing import Any
 
 from zeeb_orm.conf.settings import Settings
-from zeeb_orm.db.connection import (
-    Database,
-    close_all_connections,
-    register_database,
-)
+from zeeb_orm.db.connection import Database, _connections, get_database
 
 #: Needs no running service and costs milliseconds, so a real-database test is
 #: cheap enough to be the default choice rather than a special occasion.
@@ -141,10 +137,12 @@ async def temporary_database(
     keys: only the tables named here are created, so a missing referent fails at
     DDL time on a backend that enforces them.
 
-    Global ORM state — the settings singleton, the connection registry and the
+    Global ORM state — the settings singleton, the default connection and the
     per-model table cache — is restored on exit, so one test cannot leave a
-    half-configured ORM behind for the next. Only the tables this context
-    created are dropped; anything already in the shared metadata is untouched.
+    half-configured ORM behind for the next. Only this context's own
+    connection is closed (other aliases a test registered are left alone) and
+    only the tables it created are dropped; anything already in the shared
+    metadata is untouched.
     """
     resolved_url = resolve_database_url(url)
 
@@ -155,9 +153,12 @@ async def temporary_database(
 
     configure(database={"url": resolved_url})
 
+    previous_default = get_database()
     db = Database(resolved_url)
     await db.connect()
-    register_database(db)
+    # Replacing, not registering: the default the caller had open must
+    # survive this context, so it is put back (not disposed) on exit.
+    _connections["default"] = db
 
     tables = _model_tables(models)
     created = False
@@ -182,7 +183,15 @@ async def temporary_database(
                 async with db._async_engine.begin() as conn:
                     await conn.run_sync(_drop, tables)
         finally:
-            await close_all_connections()
+            # Only this context's connection is closed: aliases the test
+            # registered itself are its own to close, and the default that
+            # was open before is restored untouched.
+            await db.disconnect()
+            if _connections.get("default") is db:
+                if previous_default is not None:
+                    _connections["default"] = previous_default
+                else:
+                    del _connections["default"]
             # Deliberately leaves _sa_table intact: the table definition is
             # process-global and shared, and dropping the cache here is what
             # makes a second context collide on the same table name.

@@ -19,12 +19,17 @@ Built-in signals:
 
 Transaction compliance
 ----------------------
-- ``pre_*`` signals fire **before** the database session is opened.  If a
-  receiver raises an exception the save/delete is aborted and nothing reaches
-  the database.
-- ``post_*`` signals fire **after** ``session.commit()``.  Data is in the
-  database at that point; exceptions in receivers propagate but cannot roll
-  back the already-committed write.
+- ``pre_save`` fires **before** the database session is opened.  If a
+  receiver raises, the save is aborted and nothing reaches the database.
+- ``post_save`` fires after the write — after ``session.commit()`` when the
+  save opened its own session, before the commit inside an ``atomic()``
+  block. A receiver that raises after a commit cannot undo it.
+- ``pre_delete`` and ``post_delete`` fire **inside** the delete's
+  transaction, as in Django: ``Model.delete()`` and the collector path of
+  ``QuerySet.delete()`` open an ``atomic()`` block (or join the active one),
+  collect the affected rows, send ``pre_delete`` for each just before its
+  row is deleted and ``post_delete`` once the rows are gone. A receiver that
+  raises rolls the whole delete back.
 - If you need work to happen only after the outermost ``atomic()`` block
   commits, use :func:`zeeb_orm.db.transaction.on_commit` from your receiver.
 """
@@ -260,7 +265,10 @@ Same keyword arguments as :data:`pre_save`.
 """
 
 pre_delete = Signal(providing_args=["instance"])
-"""Sent at the start of :meth:`~zeeb_orm.models.base.Model.delete`.
+"""Sent for every instance :meth:`~zeeb_orm.models.base.Model.delete` removes.
+
+Fires inside the delete's transaction, just before the instance's row is
+deleted (cascaded rows included); raising rolls the delete back.
 
 Keyword arguments:
 
@@ -269,7 +277,11 @@ Keyword arguments:
 """
 
 post_delete = Signal(providing_args=["instance"])
-"""Sent after :meth:`~zeeb_orm.models.base.Model.delete` commits.
+"""Sent for every deleted instance once the rows are gone.
+
+Still inside the delete's transaction (Django parity); use
+:func:`~zeeb_orm.db.transaction.on_commit` for work that must wait for the
+commit.
 
 The instance ``pk`` is still set so receivers can identify what was deleted.
 Same keyword arguments as :data:`pre_delete`.
