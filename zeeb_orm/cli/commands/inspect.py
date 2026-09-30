@@ -130,7 +130,9 @@ def _collect_models(installed_apps: list[str]) -> dict[str, list[dict]]:
     # usually imported everything already, so an import-delta would find
     # nothing.
     by_app: dict[str, list[dict]] = {}
-    for name, model in sorted(_model_registry.items()):
+    models = sorted(set(_model_registry.values()), key=lambda m: (m.__name__, m.__module__))
+    for model in models:
+        name = model.__name__
         module = getattr(model, "__module__", "")
         if not module.startswith("apps."):
             continue

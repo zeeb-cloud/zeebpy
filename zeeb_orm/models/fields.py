@@ -39,6 +39,29 @@ T = TypeVar("T")
 ModelT = TypeVar("ModelT", bound="Model")
 
 
+def _mark_loaded(obj: object, name: str) -> None:
+    """Assigning a deferred field makes it part of the next ``save()``."""
+    state = obj.__dict__.get("_state")
+    if state is not None and state.deferred:
+        state.deferred.discard(name)
+
+
+def _set_fk_id(obj: object, field_name: str, value: Any) -> None:
+    """Store a ForeignKey's raw id, dropping a cached object it no longer matches.
+
+    Assigning the id the cached object already has keeps the cache (Django's
+    ``ForeignKeyDeferredAttribute`` does the same); any other id — including
+    ``None`` — invalidates it, so ``obj.author`` can never serve the object
+    the previous id pointed at.
+    """
+    cache_attr = f"_cache_{field_name}"
+    cached = obj.__dict__.get(cache_attr)
+    if cached is not None and (value is None or getattr(cached, "pk", None) != value):
+        obj.__dict__[cache_attr] = None
+    setattr(obj, f"_field_{field_name}_id", value)
+    _mark_loaded(obj, field_name)
+
+
 class Field(Generic[T]):
     """Base field class with Django-style options."""
 
@@ -101,6 +124,7 @@ class Field(Generic[T]):
 
     def __set__(self, obj: object, value: T) -> None:
         setattr(obj, f"_field_{self.name}", value)
+        _mark_loaded(obj, self.name)
 
     def get_column_type(self) -> Any:
         """Return the SQLAlchemy column type."""
@@ -524,13 +548,15 @@ class ForeignKeyField(Field[ModelT]):
         if callable(self.to) and not isinstance(self.to, type):
             return self.to()
         if isinstance(self.to, str):
-            # Handle self-referential ForeignKey
+            # "self" is the model this field belongs to — for a field
+            # inherited from an abstract base, the concrete subclass.
+            owner = self.model or getattr(self, "_owner_model", None)
             if self.to == "self":
-                return self._owner_model
+                return owner
             from zeeb_orm.models.base import resolve_model_ref
-            return resolve_model_ref(self.to)
+            return resolve_model_ref(self.to, relative_to=owner)
         return self.to
-    
+
     def __set_name__(self, owner: type, name: str) -> None:
         # Store owner model for self-referential FK resolution
         self._owner_model = owner
@@ -568,23 +594,23 @@ class ForeignKeyField(Field[ModelT]):
         - post.author = user (accepts model instance)
         - post.author = 1 (accepts raw ID)
         """
-        if value is None:
-            setattr(obj, f"_field_{self.name}_id", None)
-            setattr(obj, f"_cache_{self.name}", None)
-        elif isinstance(value, int):
-            # Raw ID
-            setattr(obj, f"_field_{self.name}_id", value)
-            setattr(obj, f"_cache_{self.name}", None)
-        elif hasattr(value, "pk"):
+        if isinstance(value, ForeignKeyLazyLoader):
+            # Another object's unloaded relation: take its id, cache nothing.
+            _set_fk_id(obj, self.name, value._fk_id)
+        elif value is not None and not isinstance(value, int) and hasattr(value, "pk"):
             # Model instance - extract ID and cache instance
             setattr(obj, f"_field_{self.name}_id", value.pk)
             setattr(obj, f"_cache_{self.name}", value)
+            _mark_loaded(obj, self.name)
         else:
-            setattr(obj, f"_field_{self.name}_id", value)
+            # None or a raw id (int, UUID, str, ...)
+            _set_fk_id(obj, self.name, value)
 
     def contribute_to_class(self, model: type[Model], name: str) -> None:
         """Add FK column and relationship to model."""
         super().contribute_to_class(model, name)
+        # A copy inherited from a parent must resolve "self" to this model.
+        self._owner_model = model
 
         # Add {name}_id property for raw ID access (Django-style)
         id_attr = f"{name}_id"
@@ -594,8 +620,7 @@ class ForeignKeyField(Field[ModelT]):
             return getattr(self, f"_field_{field_name}_id", None)
 
         def id_setter(self: Any, value: Any) -> None:
-            setattr(self, f"_field_{field_name}_id", value)
-            setattr(self, f"_cache_{field_name}", None)  # Clear cache
+            _set_fk_id(self, field_name, value)
 
         # Create the property and set it on the model class
         setattr(model, id_attr, property(id_getter, id_setter))
@@ -604,7 +629,11 @@ class ForeignKeyField(Field[ModelT]):
 class ForeignKeyLazyLoader:
     """
     Lazy loader for ForeignKey that fetches the related object on await.
-    
+
+    The query runs on the database the owning instance was loaded from (or
+    saved to), so a relation of an object read with ``using("replica")`` is
+    read from the replica too.
+
     Usage:
         author = await post.author  # Fetches from DB
     """
@@ -620,12 +649,30 @@ class ForeignKeyLazyLoader:
     async def _fetch(self) -> Any:
         """Fetch the related object from the database."""
         target_model = self._field.get_target_model()
-        related_obj = await target_model.objects.get(pk=self._fk_id)
+        state = getattr(self._instance, "_state", None)
+        alias = getattr(state, "db_alias", None)
+        queryset = target_model.objects.get_queryset()
+        if alias is not None:
+            queryset = queryset.using(alias)
+        related_obj = await queryset.get(pk=self._fk_id)
+        related_obj._state.db_alias = related_obj._state.db_alias or alias
 
-        # Cache the result
-        setattr(self._instance, f"_cache_{self._field.name}", related_obj)
+        # Cache the result — unless the id changed while the query ran.
+        if getattr(self._instance, f"_field_{self._field.name}_id", None) == self._fk_id:
+            setattr(self._instance, f"_cache_{self._field.name}", related_obj)
 
         return related_obj
+
+    def __getattr__(self, name: str) -> Any:
+        # Only reached for attributes the loader does not have — i.e. code
+        # treating an unloaded relation as the related object.
+        if name.startswith("__"):
+            raise AttributeError(name)
+        raise AttributeError(
+            f"{name!r}: the {self._field.name!r} relation is not loaded. Use "
+            f"`await obj.{self._field.name}` or "
+            f"`select_related({self._field.name!r})` before reading its attributes."
+        )
 
     def __repr__(self) -> str:
         return f"<ForeignKeyLazyLoader: {self._field.name}={self._fk_id}>"
@@ -708,7 +755,7 @@ class ManyToManyField(Generic[ModelT]):
                 return self.model
             from zeeb_orm.models.base import resolve_model_ref
 
-            return resolve_model_ref(self.to)
+            return resolve_model_ref(self.to, relative_to=self.model)
         return self.to
 
     @property
@@ -723,7 +770,7 @@ class ManyToManyField(Generic[ModelT]):
         if isinstance(self.through, str):
             from zeeb_orm.models.base import resolve_model_ref
 
-            return resolve_model_ref(self.through)
+            return resolve_model_ref(self.through, relative_to=self.model)
         return self.through
 
     def get_through_table_name(self) -> str:

@@ -378,9 +378,23 @@ async def atomic(using: str | None = None) -> AsyncGenerator[AsyncSession, None]
             _active_session.reset(token)
 
 
-def get_active_session() -> AsyncSession | None:
-    """Get the active transaction session, if any."""
-    return _active_session.get()
+_ANY_ALIAS: Any = object()
+
+
+def get_active_session(using: str | None = _ANY_ALIAS) -> AsyncSession | None:
+    """Get the active ``atomic()`` session, if any.
+
+    With no argument, the session of whichever database the innermost
+    ``atomic()`` block is on. With ``using`` (``None`` meaning the default
+    alias), only a session on that database — a transaction open on another
+    database is not one a write to ``using`` may join.
+    """
+    session = _active_session.get()
+    if session is None or using is _ANY_ALIAS:
+        return session
+    return session if _active_session_alias.get() == (using or _default_alias) else None
+
+
 
 
 @asynccontextmanager

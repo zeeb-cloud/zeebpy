@@ -51,11 +51,12 @@ def _named_unique_constraint(table_name: str, constraint):
 def _table_name_to_model_name(table_name: str) -> str:
     """Guess a model name from a table name (e.g. 'blog_posts' -> 'Post')."""
     from zeeb_orm.models.base import _model_registry
-    # Try to find the model in the registry
-    for name, cls in _model_registry.items():
+    # Try to find the model in the registry (keyed "app.Name"; migration
+    # files carry the bare class name)
+    for cls in list(_model_registry.values()):
         meta = getattr(cls, '_meta', None)
         if meta and getattr(meta, 'table_name', None) == table_name:
-            return name
+            return cls.__name__
     # Fallback: title-case the table name
     parts = table_name.replace("-", "_").split("_")
     return "".join(p.capitalize() for p in parts)
