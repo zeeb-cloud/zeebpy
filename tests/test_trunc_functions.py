@@ -117,9 +117,9 @@ async def test_trunc_date(db):
 def test_compiles_per_dialect(dialect, datetime_sql, date_sql):
     TrEvent._get_table()
     sql = str(
-        select(
-            TruncMonth("at").resolve(TrEvent), TruncYear("day").resolve(TrEvent)
-        ).compile(dialect=dialect)
+        select(TruncMonth("at").resolve(TrEvent), TruncYear("day").resolve(TrEvent)).compile(
+            dialect=dialect
+        )
     )
     assert datetime_sql in sql
     assert date_sql in sql

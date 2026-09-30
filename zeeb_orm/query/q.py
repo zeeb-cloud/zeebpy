@@ -264,9 +264,7 @@ def _resolves_as_field(model: type, name: str) -> bool:
     return meta.get_field(name) is not None or meta.get_field_by_column(name) is not None
 
 
-def parse_path(
-    model: type, lookup_string: str
-) -> tuple[list[str], str, str | None, str]:
+def parse_path(model: type, lookup_string: str) -> tuple[list[str], str, str | None, str]:
     """Parse a Django-style lookup path against ``model``.
 
     Walks the ``__``-separated parts of ``lookup_string``, consuming leading
@@ -365,8 +363,7 @@ def parse_path(
 
     if len(parts) > 2:
         raise FieldError(
-            f"Unsupported lookup path {lookup_string!r}: too many parts after "
-            f"field '{field_name}'."
+            f"Unsupported lookup path {lookup_string!r}: too many parts after field '{field_name}'."
         )
     if len(parts) == 2:
         transform, lookup = parts

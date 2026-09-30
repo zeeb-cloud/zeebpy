@@ -263,9 +263,7 @@ async def _prefetch_reverse_fk(
 ) -> list[Any]:
     fk_name = relation.fk_field.name
     parent_pks = [inst.pk for inst in instances if inst.pk is not None]
-    queryset = _base_queryset(relation, custom_qs, using).filter(
-        **{f"{fk_name}__in": parent_pks}
-    )
+    queryset = _base_queryset(relation, custom_qs, using).filter(**{f"{fk_name}__in": parent_pks})
     related = await queryset._fetch_all()
 
     by_parent = {inst.pk: inst for inst in instances}
@@ -305,9 +303,7 @@ async def _prefetch_m2m(
         other_col = m2m_field.get_source_column()
 
     parent_pks = [inst.pk for inst in instances if inst.pk is not None]
-    stmt = select(through.c[my_col], through.c[other_col]).where(
-        through.c[my_col].in_(parent_pks)
-    )
+    stmt = select(through.c[my_col], through.c[other_col]).where(through.c[my_col].in_(parent_pks))
     async with get_session(using) as (session, _):
         pairs = (await session.execute(stmt)).fetchall()
 
@@ -317,9 +313,7 @@ async def _prefetch_m2m(
 
     related: list[Any] = []
     if parents_of:
-        queryset = _base_queryset(relation, custom_qs, using).filter(
-            pk__in=list(parents_of)
-        )
+        queryset = _base_queryset(relation, custom_qs, using).filter(pk__in=list(parents_of))
         related = await queryset._fetch_all()
 
     # Walk the related objects in the queryset's order (explicit order_by or
