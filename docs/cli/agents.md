@@ -186,6 +186,14 @@ the result — instead of a dozen `create_model` / `create_serializer` /
 `create_viewset` / `register_route` calls whose ordering the agent has to get
 right.
 
+> **Scope**: the zeeb-mcp platform does not use this layer (nor `tiers.py`,
+> `list_capabilities`, the `mcp://docs` resources): it has its own
+> framework-neutral intent implementation and feature-manifest format 2, and
+> drives zeebpy projects through the per-object tools below. The layer remains
+> a supported part of this library for direct callers. On a project whose
+> `.zeeb/features.json` the platform manages, the lifecycle tools refuse to act
+> (`manifest_version_unsupported`) rather than rewrite that manifest.
+
 All of them return `affected` (`{"apps", "entities", "files"}`) so the caller
 knows what was touched, and the executing ones return `verified`. A partial
 failure returns `success=False` with `error_code="partial_failure"` and enough
