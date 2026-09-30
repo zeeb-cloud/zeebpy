@@ -165,3 +165,28 @@ def test_broken_serializer_in_builtin_discovery_raises():
     router.register("broken", Broken)
     with pytest.raises(ZeroDivisionError):
         router.get_urls()
+
+
+def test_a_viewset_without_a_model_keeps_uuid_or_its_annotation():
+    """No model to read the lookup field from: the detail method's annotation
+    decides, and without one the historical UUID default holds — a model-less
+    viewset keyed by ``project_id`` must not start receiving plain strings."""
+    import uuid
+
+    from zeeb_api.viewsets import ViewSet
+
+    class Plain(ViewSet):
+        lookup_field = "project_id"
+
+        async def retrieve(self, request, project_id):
+            return {"id": str(project_id)}
+
+    class Annotated(ViewSet):
+        lookup_field = "name"
+
+        async def retrieve(self, request, name: str):
+            return {"name": name}
+
+    router = SimpleRouter()
+    assert router._get_lookup_type(Plain) is uuid.UUID
+    assert router._get_lookup_type(Annotated) is str
