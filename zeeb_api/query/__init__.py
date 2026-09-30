@@ -7,7 +7,12 @@ Provides:
 - parse_q_filter: Safe AST parser for Q filter expressions
 """
 
-from zeeb_api.query.request import QueryRequest, QueryResponse, create_query_response_model
+from zeeb_api.query.request import (
+    QueryRequest,
+    QueryResponse,
+    create_query_response_model,
+    query_request_model,
+)
 from zeeb_api.query.parser import parse_q_filter, extract_q_fields, extract_q_paths, QFilterError
 from zeeb_api.query.paths import FieldPathError, check_field_path
 
@@ -15,6 +20,7 @@ __all__ = [
     "QueryRequest",
     "QueryResponse",
     "create_query_response_model",
+    "query_request_model",
     "parse_q_filter",
     "extract_q_fields",
     "extract_q_paths",

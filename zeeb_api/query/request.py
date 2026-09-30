@@ -39,8 +39,7 @@ class QueryRequest(BaseModel):
     limit: int = Field(
         default=20,
         ge=1,
-        le=100,
-        description="Maximum number of items to return (max 100)"
+        description="Maximum number of items to return (capped at settings.MAX_LIMIT)"
     )
     offset: int = Field(
         default=0,
@@ -57,6 +56,43 @@ class QueryRequest(BaseModel):
         if isinstance(v, str):
             return [v]
         return v
+
+
+_query_request_models: dict[tuple[int, int], type[QueryRequest]] = {}
+
+
+def query_request_model() -> type[QueryRequest]:
+    """``QueryRequest`` bounded by the ``DEFAULT_LIMIT``/``MAX_LIMIT`` settings.
+
+    The router types ``POST /query`` bodies with this, so ``limit`` defaults to
+    ``DEFAULT_LIMIT`` and a value above ``MAX_LIMIT`` is a 422 that OpenAPI
+    documents. (``QueryRequest`` itself used to hard-code ``le=100``, so a
+    larger ``MAX_LIMIT`` never took effect.)
+    """
+    from pydantic import create_model
+
+    from zeeb_api.conf import settings
+
+    default_limit = int(getattr(settings, "DEFAULT_LIMIT", 20))
+    max_limit = int(getattr(settings, "MAX_LIMIT", 100))
+    key = (default_limit, max_limit)
+    model = _query_request_models.get(key)
+    if model is None:
+        model = create_model(
+            "QueryRequest",
+            __base__=QueryRequest,
+            limit=(
+                int,
+                Field(
+                    default=min(default_limit, max_limit),
+                    ge=1,
+                    le=max_limit,
+                    description=f"Maximum number of items to return (max {max_limit})",
+                ),
+            ),
+        )
+        _query_request_models[key] = model
+    return model
 
 
 class QueryResponse(BaseModel, Generic[T]):

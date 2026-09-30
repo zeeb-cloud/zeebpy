@@ -6,10 +6,12 @@ import logging
 import uuid
 from collections.abc import Iterable
 from typing import Any, Callable, Type
-from fastapi import APIRouter, Request, Response
+from fastapi import APIRouter, Depends, Request, Response
 from fastapi.responses import JSONResponse
 
 from zeeb_api.viewsets.base import GenericViewSet, ViewSet
+
+from zeeb_api.middleware.auth import bearer_scheme
 
 logger = logging.getLogger(__name__)
 
@@ -296,7 +298,7 @@ class SimpleRouter:
         basename: str,
     ) -> APIRouter:
         """Generate a FastAPI router for a ViewSet."""
-        from zeeb_api.query import QueryRequest, create_query_response_model
+        from zeeb_api.query import create_query_response_model, query_request_model
         
         router = APIRouter(prefix=f"/{prefix.strip('/')}", tags=[basename])
         lookup = self._get_lookup_regex(viewset)
@@ -359,13 +361,28 @@ class SimpleRouter:
                 # fields the client omitted are not sent as explicit None over the
                 # model's own defaults. PUT keeps the full dump (full replace).
                 endpoint_exclude_unset = False
+                # Documentation-only response models (no runtime validation).
+                doc_responses: dict[int | str, dict[str, Any]] = {}
 
                 if action_name == "query":
-                    # Query uses QueryRequest and QueryResponse
+                    # Query uses QueryRequest (bounded by DEFAULT_LIMIT /
+                    # MAX_LIMIT) and QueryResponse
                     action_response_model = query_response_schema
-                    final_request_schema = QueryRequest
+                    final_request_schema = query_request_model()
                 elif action_name in ("retrieve",) and action_response_schema:
                     action_response_model = action_response_schema
+                elif action_name == "list":
+                    # Documented, not enforced: the shape depends on the
+                    # paginator, which get_pagination_class() may choose per
+                    # request, and a list() override may return its own shape.
+                    list_model = self._list_response_model(viewset, action_response_schema)
+                    if list_model is not None:
+                        doc_responses[200] = {
+                            "model": list_model,
+                            "description": "Successful Response",
+                        }
+                elif action_name == "destroy":
+                    action_status_code = 204
                 elif action_name == "create":
                     action_response_model = action_response_schema
                     final_request_schema = action_request_schema
@@ -396,8 +413,20 @@ class SimpleRouter:
                     viewset, action_name, route.detail, lookup,
                     final_request_schema, lookup_type, action_permission_classes,
                     exclude_unset=endpoint_exclude_unset,
+                    status_code=action_status_code,
                 )
-                
+
+                secured, throttled = self._access_controls(
+                    viewset, action_name, action_permission_classes
+                )
+                responses = self._error_responses(
+                    detail=route.detail,
+                    has_body=final_request_schema is not None or action_name == "query",
+                    secured=secured,
+                    throttled=throttled,
+                )
+                responses.update(doc_responses)
+
                 # Register with FastAPI router
                 route_name = route.name.format(basename=basename)
                 
@@ -408,10 +437,79 @@ class SimpleRouter:
                     name=route_name,
                     response_model=action_response_model,
                     status_code=action_status_code,
+                    responses=responses,
+                    # Declares the HTTP bearer scheme in OpenAPI; auto_error is
+                    # off, so it never rejects a request by itself.
+                    dependencies=[Depends(bearer_scheme)] if secured else None,
                 )
 
         return router
     
+    @staticmethod
+    def _list_response_model(viewset: Type[ViewSet], item_schema: Any) -> Any:
+        """The documented body of GET on the collection: an envelope or a list."""
+        if item_schema is None:
+            return None
+        paginated = False
+        get_pagination_class = getattr(viewset, "get_pagination_class", None)
+        if get_pagination_class is not None:
+            try:
+                paginated = viewset().get_pagination_class() is not None
+            except Exception:
+                paginated = getattr(viewset, "pagination_class", None) is not None
+        if paginated:
+            from zeeb_api.serializers.pydantic import create_list_response_schema
+
+            return create_list_response_schema(item_schema)
+        return list[item_schema]
+
+    @staticmethod
+    def _access_controls(
+        viewset: Type[ViewSet], action_name: str, action_permission_classes: list | None
+    ) -> tuple[bool, bool]:
+        """Whether an action checks permissions (needs a token) and is throttled.
+
+        Read off the effective classes at route build: the action's own
+        permission classes, the viewset's, or ``DEFAULT_PERMISSION_CLASSES``;
+        only ``AllowAny`` counts as open. Anything that cannot be resolved is
+        treated as secured - the conservative answer for documentation.
+        """
+        from zeeb_api.permissions import AllowAny
+
+        instance = viewset()
+        instance.action = action_name
+        if action_permission_classes is not None:
+            instance._action_permission_classes = action_permission_classes
+        try:
+            permissions = instance.get_permissions()
+        except Exception:
+            permissions = [None]
+        secured = any(not isinstance(p, AllowAny) for p in permissions)
+        try:
+            throttled = bool(instance.get_throttles())
+        except Exception:
+            throttled = True
+        return secured, throttled
+
+    @staticmethod
+    def _error_responses(
+        *, detail: bool, has_body: bool, secured: bool, throttled: bool
+    ) -> dict[int | str, dict[str, Any]]:
+        """The error envelopes an action can answer with, for OpenAPI."""
+        from zeeb_api.exceptions import ErrorResponse
+
+        responses: dict[int | str, dict[str, Any]] = {}
+        if has_body:
+            responses[400] = {"model": ErrorResponse, "description": "Validation error"}
+        if secured:
+            responses[401] = {"model": ErrorResponse, "description": "Not authenticated"}
+            responses[403] = {"model": ErrorResponse, "description": "Permission denied"}
+        if detail:
+            responses[404] = {"model": ErrorResponse, "description": "Not found"}
+        if throttled:
+            responses[429] = {"model": ErrorResponse, "description": "Rate limit exceeded"}
+        return responses
+
     @staticmethod
     def _discover_serializer_class(viewset: Type[ViewSet], action_name: str) -> Any:
         """The serializer class ``viewset`` uses for ``action_name``, for OpenAPI.
@@ -541,11 +639,23 @@ class SimpleRouter:
         lookup_type: type = uuid.UUID,
         permission_classes: list | None = None,
         exclude_unset: bool = False,
+        status_code: int = 200,
     ) -> Callable:
         """Create a FastAPI endpoint function for a ViewSet action."""
+        from fastapi.encoders import jsonable_encoder
         from pydantic import BaseModel
 
         lookup_field = lookup.strip("{}")
+
+        def _finish(result: Any) -> Any:
+            # None is "no content". A route documented as 204 (destroy) that
+            # still returns a body - an override - gets it sent with 200
+            # rather than FastAPI blanking the body to fit the 204.
+            if result is None:
+                return Response(status_code=204)
+            if status_code == 204 and not isinstance(result, Response):
+                return JSONResponse(jsonable_encoder(result))
+            return result
 
         def _dump_body(body: BaseModel) -> dict[str, Any]:
             # PATCH dumps with exclude_unset so only client-provided keys are
@@ -607,9 +717,7 @@ class SimpleRouter:
                     action = getattr(viewset, action_name)
                     result = await action(request, **_adapt_action_kwargs(action, path_params))
                     
-                    if result is None:
-                        return Response(status_code=204)
-                    return result
+                    return _finish(result)
                 
                 # Build signature with typed body
                 from inspect import Parameter, Signature
@@ -638,9 +746,7 @@ class SimpleRouter:
                     action = getattr(viewset, action_name)
                     result = await action(request, **_adapt_action_kwargs(action, path_params))
 
-                    if result is None:
-                        return Response(status_code=204)
-                    return result
+                    return _finish(result)
 
                 from inspect import Parameter, Signature
                 params = [
@@ -675,9 +781,7 @@ class SimpleRouter:
                     action = getattr(viewset, action_name)
                     result = await action(request)
                     
-                    if result is None:
-                        return Response(status_code=204)
-                    return result
+                    return _finish(result)
                 
                 from inspect import Parameter, Signature
                 params = [
@@ -704,9 +808,7 @@ class SimpleRouter:
                     action = getattr(viewset, action_name)
                     result = await action(request)
                     
-                    if result is None:
-                        return Response(status_code=204)
-                    return result
+                    return _finish(result)
                 
                 return list_endpoint
     
