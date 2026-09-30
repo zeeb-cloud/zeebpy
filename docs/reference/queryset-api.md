@@ -128,6 +128,15 @@ Use `field__lookup=value` syntax:
 | `month` | Month part | `created_at__month=1` |
 | `day` | Day part | `created_at__day=15` |
 | `week_day` | Day of week | `created_at__week_day=1` |
+| `regex` / `iregex` | Regular expression match | `code__regex=r"^[A-Z]"` |
+
+String lookups (`iexact`, `contains`, `startswith`, `endswith` and the `i`
+variants) match their value literally — `%` and `_` are escaped on every
+backend.
+
+`regex`/`iregex` must not receive untrusted patterns: on SQLite they run
+Python's `re` inside the query, and a pathological pattern can stall the
+process (ReDoS).
 
 ### Examples
 

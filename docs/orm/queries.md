@@ -117,6 +117,20 @@ Article.objects.filter(title__regex=r"^\d{4}")
 Article.objects.filter(title__iregex=r"^[a-z]+")
 ```
 
+The value of `iexact`, `contains`, `startswith`, `endswith` and their `i`
+variants is matched literally: `%` and `_` are escaped (with an `ESCAPE '/'`
+clause on every backend), so `title__contains="100%"` finds "100%" and
+`email__iexact="%"` does not match every row. `iexact=None` is an
+`IS NULL` test.
+
+> **Security: `regex` / `iregex` with untrusted input.** SQLite has no native
+> regular expressions — the lookup runs Python's `re` inside the database
+> call, and a crafted pattern can backtrack for a very long time (ReDoS),
+> blocking the worker. PostgreSQL and MySQL have their own regex engines with
+> their own cost limits. Never pass a pattern taken from a request straight
+> into these lookups; offer `contains`/`startswith` instead, or validate and
+> bound the pattern first.
+
 ### Collection Lookups
 
 ```python
@@ -267,8 +281,8 @@ except FieldError as e:
 | `in` | In list | `status__in=["a", "b"]` |
 | `range` | Between (inclusive) | `age__range=(18, 65)` |
 | `isnull` | Is NULL | `email__isnull=True` |
-| `regex` | Regex match | `code__regex=r"^[A-Z]"` |
-| `iregex` | Case-insensitive regex | `code__iregex=r"^[a-z]"` |
+| `regex` | Regex match (not for untrusted patterns — see above) | `code__regex=r"^[A-Z]"` |
+| `iregex` | Case-insensitive regex (same caveat) | `code__iregex=r"^[a-z]"` |
 
 ## Q Objects
 
