@@ -32,16 +32,23 @@ class IrreversibleError(MigrationError):
     """
 
 
+class MigrationStateError(MigrationError):
+    """The applied-migration state could not be read (database unreachable, …).
+
+    Raised instead of reporting every migration as pending, which sent the
+    caller off to "apply" migrations against a database it could not reach.
+    """
+
+
 def find_project_root() -> Path | None:
-    """Find the project root by looking for manage.py or migrations/."""
-    current = Path.cwd()
-    while current != current.parent:
-        if (current / "manage.py").exists():
-            return current
-        if (current / "migrations").exists():
-            return current
-        current = current.parent
-    return None
+    """Find the project root: the nearest ``manage.py``, else ``migrations/``.
+
+    Delegates to :func:`zeeb_orm.conf.project.find_project_root`, so a
+    ``manage.py`` further up wins over a nested ``migrations/`` directory.
+    """
+    from zeeb_orm.conf.project import find_project_root as _find
+
+    return _find(allow_migrations_dir=True)
 
 
 def get_migration_state(project_root: Path | None = None, db_url: str | None = None) -> MigrationState:
@@ -49,6 +56,10 @@ def get_migration_state(project_root: Path | None = None, db_url: str | None = N
     Get the current migration state.
 
     Uses the ``zeeb_migrations`` table for accurate tracking.
+
+    Raises:
+        MigrationStateError: the database could not be read.
+        SettingsImportError: the project's settings.py does not import.
     """
     from zeeb_orm.migrations import executor
 
@@ -78,23 +89,25 @@ def get_migration_state(project_root: Path | None = None, db_url: str | None = N
             head_revision=None,
         )
 
-    # Get database URL from settings if not provided
+    # Get database URL from settings if not provided (raises when the
+    # project's settings.py exists but does not import)
     if db_url is None:
-        from zeeb_orm.migrations._settings import get_database_url
-        db_url = get_database_url(project_root)
+        from zeeb_orm.conf.project import resolve_database_url
+        db_url = resolve_database_url(project_root)
 
     try:
         status = executor.showmigrations(database_url=db_url, project_root=project_root)
-    except Exception:
-        all_migs = executor.list_migration_files(migrations_dir)
-        return MigrationState(
-            has_migrations_dir=has_dir,
-            total_migrations=len(all_migs),
-            applied_migrations=0,
-            pending_migrations=len(all_migs),
-            current_revision=None,
-            head_revision=all_migs[-1][0] if all_migs else None,
-        )
+    except Exception as exc:
+        from sqlalchemy.engine import make_url
+
+        try:
+            shown = make_url(db_url).render_as_string(hide_password=True)
+        except Exception:
+            shown = "<unparseable url>"
+        raise MigrationStateError(
+            f"Could not read the applied migrations from {shown}: "
+            f"{type(exc).__name__}: {exc}"
+        ) from exc
 
     total = len(status)
     applied_count = sum(1 for _, is_applied in status if is_applied)

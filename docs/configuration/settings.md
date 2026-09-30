@@ -318,6 +318,26 @@ zeebpy has three settings layers with a defined hand-off:
 3. **`zeeb_agents`** — reads a *target* project's settings off disk by path
    (`load_project_settings`); intentionally independent of the current process.
 
+### How the tooling finds `settings.py`
+
+`manage.py` commands (`migrate`, `makemigrations`, `showmigrations`,
+`createsuperuser`, `runserver`, `check`, `inspect`, `shell`), the generated
+test harness and the programmatic migration API (`zeeb_orm.migrations`) all
+resolve the project the same way, through `zeeb_orm.conf.project`:
+
+1. **Project root** — the nearest directory with `manage.py`.
+2. **Settings module** — `settings_module` under `[tool.zeeb]` in
+   `pyproject.toml` (written by `startproject`) when the file it names exists;
+   otherwise the first top-level directory, in sorted order and skipping
+   `apps/`, that contains a `settings.py`.
+3. **Database** — `DATABASE["url"]` from those settings; without one, the
+   ORM's own configuration (`DATABASE_URL`, then its SQLite default).
+
+A `settings.py` that exists but fails to import is an error, never a silent
+fallback to a default database: `migrate --json` reports it as one failure
+object with `next_command: "python manage.py check"`, and `check` names the
+exception.
+
 If you build your own lifespan, call `apply_orm_settings()` yourself:
 
 ```python

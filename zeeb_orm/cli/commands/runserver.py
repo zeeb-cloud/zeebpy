@@ -6,22 +6,29 @@ from pathlib import Path
 
 
 def find_project_root() -> Path | None:
-    """Find the project root by looking for manage.py."""
-    current = Path.cwd()
+    """Find the project root (the nearest ``manage.py``)."""
+    from zeeb_orm.conf.project import find_project_root as _find
 
-    while current != current.parent:
-        if (current / "manage.py").exists():
-            return current
-        current = current.parent
-
-    return None
+    return _find()
 
 
 def find_asgi_app(project_root: Path) -> str | None:
-    """Find the ASGI application path."""
-    # Look for asgi.py in project subdirectory
-    for item in project_root.iterdir():
-        if item.is_dir() and (item / "asgi.py").exists():
+    """Find the ASGI application path.
+
+    The ``asgi.py`` next to the project's settings module (resolved by
+    :mod:`zeeb_orm.conf.project`); failing that, the first ``asgi.py`` in a
+    top-level directory in sorted order — never whichever the filesystem
+    happens to list first.
+    """
+    from zeeb_orm.conf.project import find_settings_module
+
+    settings_module = find_settings_module(project_root)
+    if settings_module is not None:
+        package = settings_module.rsplit(".", 1)[0]
+        if (project_root.joinpath(*package.split(".")) / "asgi.py").is_file():
+            return f"{package}.asgi:app"
+    for item in sorted(project_root.iterdir()):
+        if item.is_dir() and item.name != "apps" and (item / "asgi.py").exists():
             return f"{item.name}.asgi:app"
     return None
 
@@ -113,15 +120,15 @@ def run_server(addrport: str, reload: bool) -> int:
         return 1
 
     # Check if migrations should be enforced
-    enforce_migrations = True
+    from zeeb_orm.conf.project import SettingsImportError, load_settings_module
+
     try:
-        # Try to load project settings
-        sys.path.insert(0, str(project_root))
-        project_name = asgi_app.split(".")[0]
-        settings_module = __import__(f"{project_name}.settings", fromlist=["ENFORCE_MIGRATIONS"])
-        enforce_migrations = getattr(settings_module, "ENFORCE_MIGRATIONS", True)
-    except Exception:
-        pass  # Default to enforcing migrations
+        settings_module = load_settings_module(project_root)
+    except SettingsImportError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        print("Next: python manage.py check", file=sys.stderr)
+        return 1
+    enforce_migrations = getattr(settings_module, "ENFORCE_MIGRATIONS", True)
 
     # Check migrations before starting (unless disabled)
     if enforce_migrations and not check_migrations_before_start(project_root):

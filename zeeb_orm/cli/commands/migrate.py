@@ -6,43 +6,35 @@ and reports through :mod:`zeeb_orm.cli.output`, so a caller does not have to
 parse prose to learn what happened.
 """
 
-import sys
 from pathlib import Path
 from typing import Any
 
 from zeeb_orm.cli.output import fail, no_project, ok
+from zeeb_orm.conf.project import SettingsImportError
 from zeeb_orm.scaffold.naming import find_project_root
 
 
 def load_project_settings(project_root: Path) -> dict[str, Any]:
-    """Load project settings dynamically."""
-    settings: dict[str, Any] = {
-        "DATABASE": {"url": "sqlite:///db.sqlite3"},
-        "INSTALLED_APPS": [],
+    """``DATABASE`` and ``INSTALLED_APPS`` from the project's settings module.
+
+    Resolved by :mod:`zeeb_orm.conf.project` (``[tool.zeeb] settings_module``
+    first, then a sorted scan that skips ``apps/``). Without a settings module
+    the database is the ORM's configured one (``DATABASE_URL`` / default).
+
+    Raises:
+        SettingsImportError: settings.py exists but does not import — never
+            answered with a fallback database nobody configured.
+    """
+    from zeeb_orm.conf.project import load_settings_module, resolve_database_url
+
+    module = load_settings_module(project_root)
+    database = getattr(module, "DATABASE", None) if module is not None else None
+    if not (isinstance(database, dict) and database.get("url")):
+        database = {"url": resolve_database_url(None)}
+    return {
+        "DATABASE": database,
+        "INSTALLED_APPS": list(getattr(module, "INSTALLED_APPS", []) or []),
     }
-
-    for item in project_root.iterdir():
-        if item.is_dir() and (item / "settings.py").exists():
-            settings_path = item / "settings.py"
-            sys.path.insert(0, str(project_root))
-            try:
-                import importlib.util
-                spec = importlib.util.spec_from_file_location("settings", settings_path)
-                if spec and spec.loader:
-                    settings_module = importlib.util.module_from_spec(spec)
-                    spec.loader.exec_module(settings_module)
-                    if hasattr(settings_module, "DATABASE"):
-                        settings["DATABASE"] = settings_module.DATABASE
-                    if hasattr(settings_module, "INSTALLED_APPS"):
-                        settings["INSTALLED_APPS"] = settings_module.INSTALLED_APPS
-            except Exception as e:
-                print(f"Warning: Could not load settings: {e}")
-            finally:
-                if str(project_root) in sys.path:
-                    sys.path.remove(str(project_root))
-            break
-
-    return settings
 
 
 def get_installed_apps(project_root: Path) -> list[str]:
@@ -52,6 +44,22 @@ def get_installed_apps(project_root: Path) -> list[str]:
     if "zeeb_auth" not in apps:
         apps.insert(0, "zeeb_auth")
     return apps
+
+
+def _database_url(project_root: Path) -> str:
+    return load_project_settings(project_root)["DATABASE"]["url"]
+
+
+def _settings_failure(command: str, exc: Exception, *, json_output: bool) -> int:
+    """The failure every migration command reports for a broken settings.py."""
+    return fail(
+        f"The project settings could not be imported, so the database to "
+        f"{command} is unknown: {exc}",
+        code="invalid_input",
+        next_command="python manage.py check",
+        json_output=json_output,
+        settings_path=str(getattr(exc, "path", "")) or None,
+    )
 
 
 def _register_models(project_root: Path) -> None:
@@ -116,9 +124,11 @@ def run_makemigrations(
         migrations_dir.mkdir(parents=True, exist_ok=True)
 
     # Register all models
-    _register_models(project_root)
-
-    installed_apps = [a.replace("apps.", "") for a in get_installed_apps(project_root)]
+    try:
+        _register_models(project_root)
+        installed_apps = [a.replace("apps.", "") for a in get_installed_apps(project_root)]
+    except SettingsImportError as exc:
+        return _settings_failure("makemigrations", exc, json_output=json_output)
     scanned = ["Checking for model changes in installed apps:"]
     scanned += [f"  - {app_name}" for app_name in installed_apps]
 
@@ -261,8 +271,10 @@ def run_migrate(
             searched_in=str(migrations_dir),
         )
 
-    settings = load_project_settings(project_root)
-    db_url = settings.get("DATABASE", {}).get("url", "sqlite:///db.sqlite3")
+    try:
+        db_url = _database_url(project_root)
+    except SettingsImportError as exc:
+        return _settings_failure("migrate", exc, json_output=json_output)
 
     if rollback_steps is not None:
         status = executor.showmigrations(database_url=db_url, project_root=project_root)
@@ -398,13 +410,12 @@ def run_showmigrations(json_output: bool = False) -> int:
         return no_project("showmigrations", json_output=json_output)
 
     migrations_dir = project_root / "migrations"
+    try:
+        db_url = _database_url(project_root)
+    except SettingsImportError as exc:
+        return _settings_failure("showmigrations", exc, json_output=json_output)
     if not migrations_dir.exists() or not (
-        status := executor.showmigrations(
-            database_url=load_project_settings(project_root)
-            .get("DATABASE", {})
-            .get("url", "sqlite:///db.sqlite3"),
-            project_root=project_root,
-        )
+        status := executor.showmigrations(database_url=db_url, project_root=project_root)
     ):
         return ok(
             "No migrations have been created yet.",

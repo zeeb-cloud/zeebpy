@@ -8,53 +8,36 @@ from pathlib import Path
 
 
 def find_project_root() -> Path | None:
-    """Find the project root by looking for manage.py."""
-    current = Path.cwd()
+    """Find the project root (the nearest ``manage.py``)."""
+    from zeeb_orm.conf.project import find_project_root as _find
 
-    while current != current.parent:
-        if (current / "manage.py").exists():
-            return current
-        current = current.parent
-
-    return None
+    return _find()
 
 
 def load_settings(project_root: Path) -> dict:
-    """Load project settings."""
-    settings = {"DATABASE": {"url": "sqlite+aiosqlite:///db.sqlite3"}}
+    """``DATABASE`` from the project settings, resolved like ``migrate`` does.
 
-    for item in project_root.iterdir():
-        if item.is_dir() and (item / "settings.py").exists():
-            sys.path.insert(0, str(project_root))
-            try:
-                import importlib.util
-                spec = importlib.util.spec_from_file_location(
-                    "settings", item / "settings.py"
-                )
-                if spec and spec.loader:
-                    settings_module = importlib.util.module_from_spec(spec)
-                    spec.loader.exec_module(settings_module)
-                    if hasattr(settings_module, "DATABASE"):
-                        settings["DATABASE"] = settings_module.DATABASE
-            except Exception as exc:
-                import warnings
+    Raises:
+        SettingsImportError: settings.py exists but does not import.
+    """
+    from zeeb_orm.conf.project import resolve_database_url
 
-                warnings.warn(
-                    f"Could not load settings from {item / 'settings.py'}: {exc}",
-                    stacklevel=2,
-                )
-            break
-
-    return settings
+    return {"DATABASE": {"url": resolve_database_url(project_root)}}
 
 
 async def create_superuser_async(email: str, password: str, username: str | None = None):
     """Create superuser in database."""
     from zeeb_api.auth.backends import create_superuser, get_user_model
     from zeeb_orm import Database
+    from zeeb_orm.conf.project import SettingsImportError
 
     project_root = find_project_root() or Path.cwd()
-    settings = load_settings(project_root)
+    try:
+        settings = load_settings(project_root)
+    except SettingsImportError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        print("Next: python manage.py check", file=sys.stderr)
+        return False
     db_url = settings["DATABASE"]["url"]
 
     # Initialize database

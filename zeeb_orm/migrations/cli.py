@@ -18,10 +18,19 @@ def _find_project_root() -> Path | None:
     return find_project_root()
 
 
-def _get_database_url() -> str:
-    """Get database URL from settings."""
-    from zeeb_orm.conf.settings import get_settings
-    return get_settings().database.url
+def _get_database_url(project_root: Path | None = None) -> str:
+    """The database URL, resolved exactly as ``manage.py migrate`` resolves it.
+
+    ``DATABASE["url"]`` from the project's settings.py when it declares one,
+    else the ORM configuration (``DATABASE_URL`` / default). A settings.py
+    that does not import raises
+    :class:`~zeeb_orm.conf.project.SettingsImportError`.
+    """
+    from zeeb_orm.conf.project import resolve_database_url
+
+    if project_root is None:
+        project_root = _find_project_root()
+    return resolve_database_url(project_root)
 
 
 def _get_migrations_dir(migrations_dir: str | None = None) -> Path:
@@ -347,8 +356,8 @@ def migrate(
         print("Run 'python manage.py makemigrations' to create migrations.")
         return
 
-    db_url = _get_database_url()
     project_root = _find_project_root() or Path.cwd()
+    db_url = _get_database_url(project_root)
 
     if plan:
         planned = executor.migrate(
@@ -407,8 +416,8 @@ def rollback(
         print("No migrations directory found.")
         return
 
-    db_url = _get_database_url()
     project_root = _find_project_root() or Path.cwd()
+    db_url = _get_database_url(project_root)
 
     # Get current state and determine target
     status = executor.showmigrations(database_url=db_url, project_root=project_root)
@@ -450,8 +459,8 @@ def showmigrations(migrations_dir: str | None = None) -> None:
         print("No migrations directory found.")
         return
 
-    db_url = _get_database_url()
     project_root = _find_project_root() or Path.cwd()
+    db_url = _get_database_url(project_root)
 
     status = executor.showmigrations(database_url=db_url, project_root=project_root)
 
@@ -473,8 +482,8 @@ def current(migrations_dir: str | None = None) -> str | None:
         print("No migrations directory found.")
         return None
 
-    db_url = _get_database_url()
     project_root = _find_project_root() or Path.cwd()
+    db_url = _get_database_url(project_root)
 
     status = executor.showmigrations(database_url=db_url, project_root=project_root)
     applied = [name for name, is_applied in status if is_applied]

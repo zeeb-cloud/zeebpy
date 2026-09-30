@@ -348,7 +348,8 @@ def migrate(
     Args:
         target: Target migration name, ``"zero"`` to rollback all,
                 or ``None`` to apply all pending.
-        database_url: Database URL. Reads from settings if None.
+        database_url: Database URL. Resolved like ``manage.py migrate`` when
+                      None (the project's settings.py, else DATABASE_URL).
         project_root: Project root directory.
         fake: If True, mark as applied without running.
         fake_initial: If True, skip the initial migration when the tables
@@ -361,8 +362,8 @@ def migrate(
         List of migration names that were (or would be) applied/unapplied.
     """
     if database_url is None:
-        from zeeb_orm.conf.settings import get_settings
-        database_url = get_settings().database.url
+        from zeeb_orm.conf.project import resolve_database_url
+        database_url = resolve_database_url(project_root or _find_project_root())
 
     engine = _migration_engine(database_url)
 
@@ -485,8 +486,8 @@ def showmigrations(
         List of (name, applied) tuples.
     """
     if database_url is None:
-        from zeeb_orm.conf.settings import get_settings
-        database_url = get_settings().database.url
+        from zeeb_orm.conf.project import resolve_database_url
+        database_url = resolve_database_url(project_root or _find_project_root())
 
     engine = _migration_engine(database_url)
 
