@@ -131,6 +131,15 @@ urlpatterns = router.routes
 `router.routes` is built on first access and cached; a later `register()` or
 `include()` invalidates the cache, so the next read includes it.
 
+To list what an app actually serves, use
+`zeeb_api.routers.served_routes(app.routes)`: since FastAPI 0.137 an included
+router is one lazy entry without a `path`, and `served_routes` expands it into
+each served route (with its full, prefixed path); `declared_route(entry)`
+returns the route object that was declared. It reads FastAPI's internal
+`iter_route_contexts`, falls back to its own walker when that is missing or
+fails, and raises `zeeb_api.exceptions.RouteInventoryError` if a route still
+cannot be read — an inventory never silently omits routes.
+
 ### The detail path parameter
 
 Detail routes are `/{prefix}/{lookup}`, where `{lookup}` is named after
