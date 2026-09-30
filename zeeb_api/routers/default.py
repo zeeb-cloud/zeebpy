@@ -156,6 +156,21 @@ def add_slash_alias_routes(router: APIRouter) -> None:
         )
 
 
+def _bare_viewset(viewset: Type[ViewSet]) -> Any:
+    """A request-less instance of *viewset*, for reading its configuration.
+
+    Built through ``__init__`` when that takes no required arguments (so
+    instance attributes it sets are there); a viewset whose ``__init__``
+    needs more gets the base attributes set by hand instead.
+    """
+    try:
+        return viewset()
+    except TypeError:
+        instance = object.__new__(viewset)
+        ViewSet.__init__(instance)
+        return instance
+
+
 class Route:
     """Route configuration for a ViewSet action."""
     
@@ -519,7 +534,7 @@ class SimpleRouter:
         get_pagination_class = getattr(viewset, "get_pagination_class", None)
         if get_pagination_class is not None:
             try:
-                paginated = viewset().get_pagination_class() is not None
+                paginated = _bare_viewset(viewset).get_pagination_class() is not None
             except Exception:
                 paginated = getattr(viewset, "pagination_class", None) is not None
         if paginated:
@@ -541,7 +556,7 @@ class SimpleRouter:
         """
         from zeeb_api.permissions import AllowAny
 
-        instance = viewset()
+        instance = _bare_viewset(viewset)
         instance.action = action_name
         if action_permission_classes is not None:
             instance._action_permission_classes = action_permission_classes
@@ -591,7 +606,7 @@ class SimpleRouter:
         get_serializer_class = getattr(viewset, "get_serializer_class", None)
         if get_serializer_class is None:
             return None
-        temp_viewset = viewset()
+        temp_viewset = _bare_viewset(viewset)
         temp_viewset.action = action_name
         overridden = get_serializer_class is not getattr(
             GenericViewSet, "get_serializer_class", None

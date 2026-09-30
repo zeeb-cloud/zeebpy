@@ -182,3 +182,16 @@ def test_destroy_override_with_a_body_still_sends_it():
     response = TestClient(app).delete("/posts/3fa85f64-5717-4562-b3fc-2c963f66afa6")
     assert response.status_code == 200
     assert response.json() == {"deleted": True}
+
+
+def test_viewset_with_a_required_init_argument_still_routes():
+    """Route building reads configuration off a request-less instance; a
+    viewset whose __init__ needs extra arguments must not break it."""
+
+    class NeedsArg(Open):
+        def __init__(self, service, request=None, **kwargs):
+            super().__init__(request=request, **kwargs)
+            self.service = service
+
+    spec = _openapi(NeedsArg)
+    assert "/posts/{id}" in spec["paths"]
