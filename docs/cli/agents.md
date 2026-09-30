@@ -1115,22 +1115,28 @@ result = await list_users(limit=20)
 ```
 
 ### `get_user(email_or_id, project_id=None)`
-Fetch a single user by email or integer ID.
+Fetch a single user by email or primary key. `email_or_id` is an email when it
+contains `@`; an `int`, a UUID string (dashed or 32-hex) or a digit string is
+the primary key. The same rule applies to `update_user`, `delete_user` and
+`set_user_password`. Every `password` column is removed from returned rows.
 
 ```python
 result = await get_user("alice@example.com")
 result = await get_user(1)
+result = await get_user("3f2b8c1e-0d4a-4c55-9a1e-2c7b1d9e8f00")
 ```
 
 ### `update_user(email_or_id, changes, project_id=None)`
 Update user fields.  Pass `password` through `set_user_password` instead.
+Returns the updated row keyed by its own column names; a user that does not
+exist fails with `user_not_found`.
 
 ```python
 result = await update_user("alice@example.com", {"is_staff": True, "is_active": False})
 ```
 
 ### `delete_user(email_or_id, project_id=None)`
-Delete a user by email or integer ID.
+Delete a user by email or primary key (see `get_user`).
 
 ```python
 result = await delete_user("alice@example.com")

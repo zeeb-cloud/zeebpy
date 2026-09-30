@@ -242,7 +242,7 @@ the change. Grouped by category below.
 | `{prefix}get_user(email_or_id)` | Fetch a single user by email or primary-key ID. |
 | `{prefix}list_users(limit=50, offset=0)` | Return a list of users from the project's user table. |
 | `{prefix}set_user_password(email_or_id, new_password)` | Set a new password for an existing user (hashes it automatically). |
-| `{prefix}update_user(email_or_id, changes)` | Update fields on an existing user. |
+| `{prefix}update_user(email_or_id, changes)` | Update fields on an existing user (a missing one fails with `user_not_found`). A string with `@` is an email; a UUID or digit string is the primary key — for every user tool. |
 
 #### CORS (BaaS)
 

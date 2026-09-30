@@ -458,3 +458,86 @@ def test_archive_path_refuses_non_identifier_feature(tmp_path):
     with pytest.raises(AgentError):
         archive_path(tmp_path, "../../etc")
     assert archive_path(tmp_path, "blog").name == "blog"
+
+
+# ---------------------------------------------------------------------------
+# 3. User rows come back under their own column names
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+async def user_project(project: Path) -> Path:
+    """A project whose sqlite database has a user table with many columns."""
+    import sqlite3
+
+    db_path = project / "users.sqlite3"
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        "CREATE TABLE accounts_user ("
+        "id CHAR(32) PRIMARY KEY, email TEXT UNIQUE, first_name TEXT DEFAULT '', "
+        "last_name TEXT DEFAULT '', username TEXT DEFAULT '', password TEXT NOT NULL, "
+        "is_active BOOLEAN, is_staff BOOLEAN, is_superuser BOOLEAN, date_joined TEXT)"
+    )
+    conn.commit()
+    conn.close()
+    settings_py = project / "demo" / "settings.py"
+    settings_py.write_text(
+        settings_py.read_text() + f'\nDATABASE = {{"url": "sqlite+aiosqlite:///{db_path}"}}\n'
+    )
+    return project
+
+
+def _stored_hash(project: Path, email: str) -> str:
+    import sqlite3
+
+    conn = sqlite3.connect(project / "users.sqlite3")
+    try:
+        return conn.execute(
+            "SELECT password FROM accounts_user WHERE email = ?", (email,)
+        ).fetchone()[0]
+    finally:
+        conn.close()
+
+
+async def test_update_user_returns_values_under_their_own_columns(user_project):
+    created = await agents.create_user("ada@example.com", "s3cret-pass", project_id=user_project)
+    assert created.success, created.message
+    res = await agents.update_user(
+        "ada@example.com", {"first_name": "Ada", "last_name": "Lovelace"}, project_id=user_project
+    )
+    assert res.success, res.message
+    assert res.data["email"] == "ada@example.com"
+    assert res.data["first_name"] == "Ada"
+    assert res.data["last_name"] == "Lovelace"
+    assert res.data["id"] == created.data["id"]
+    stored = _stored_hash(user_project, "ada@example.com")
+    assert "password" not in res.data
+    assert stored not in res.data.values()
+
+
+async def test_update_user_reports_a_missing_user(user_project):
+    res = await agents.update_user(
+        "ghost@example.com", {"first_name": "Nobody"}, project_id=user_project
+    )
+    assert not res.success
+    assert res.data["error_code"] == "user_not_found"
+
+
+async def test_user_tools_accept_a_uuid_id_string(user_project):
+    import uuid
+
+    created = await agents.create_user("grace@example.com", "s3cret-pass", project_id=user_project)
+    assert created.success, created.message
+    dashed = str(uuid.UUID(created.data["id"]))
+
+    got = await agents.get_user(dashed, project_id=user_project)
+    assert got.success and got.data["email"] == "grace@example.com"
+    res = await agents.update_user(dashed, {"email": "hopper@example.com"}, project_id=user_project)
+    assert res.success, res.message
+    assert res.data["email"] == "hopper@example.com"
+    res = await agents.set_user_password(created.data["id"], "n3w-pass!", project_id=user_project)
+    assert res.success, res.message
+    res = await agents.delete_user(dashed, project_id=user_project)
+    assert res.success and res.data["deleted"] == 1
+    res = await agents.get_user(dashed, project_id=user_project)
+    assert not res.success and res.data["error_code"] == "user_not_found"
