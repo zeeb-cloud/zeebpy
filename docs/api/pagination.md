@@ -35,6 +35,15 @@ Without a `pagination_class`, the endpoint returns the plain serialized list
 with no envelope at all. Clients must handle whichever shape the endpoint is
 configured for; the envelope is not added retroactively.
 
+A project-wide paginator is `DEFAULT_PAGINATION_CLASS` (a dotted path) in
+settings; it applies to every viewset that does not declare `pagination_class`,
+and `pagination_class = None` opts a viewset out:
+
+```python
+# settings.py
+DEFAULT_PAGINATION_CLASS = "zeeb_api.pagination.LimitOffsetPagination"
+```
+
 ## PageNumberPagination
 
 ```
@@ -107,7 +116,7 @@ class ArticleViewSet(ModelViewSet):
 | Attribute | Default | Meaning |
 |---|---|---|
 | `page_size` | `20` | Items per page |
-| `ordering` | `"-id"` | The column to seek on — **required**, and must be unique and stable |
+| `ordering` | derived | The column to seek on; it must only grow, and be unique and stable. Unset: `-created_at` (or `-created`) when the model has that field, else `-<pk>` for an integer primary key, else `ImproperlyConfigured` |
 | `cursor_query_param` | `"cursor"` | |
 | `page_size_query_param` | `"page_size"` | |
 | `max_page_size` | `100` | |
@@ -119,6 +128,10 @@ Trade-offs to accept before choosing it:
 - `ordering` overrides any ordering the client asks for.
 - A non-unique `ordering` column silently skips or repeats rows at page
   boundaries.
+- The default used to be `-id`. With the default UUID primary key that is a
+  random order — pages skipped and repeated rows as data changed — so a model
+  with neither a `created_at`/`created` field nor an integer key now needs an
+  explicit `ordering`, and says so in the error.
 
 Cursors are opaque, type-tagged and base64-encoded, so a value round-trips as
 the right type (`int`, `float`, `bool`, `datetime`, `date`, `str`) rather than

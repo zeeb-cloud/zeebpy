@@ -25,6 +25,15 @@ class ArticleViewSet(ModelViewSet):
 > `POST /<prefix>/query/` endpoint is a separate mechanism with its own
 > allow-list — see [ViewSets](viewsets.md).
 
+A project-wide default is `DEFAULT_FILTER_BACKENDS` in settings (dotted paths,
+default `[]`); it applies to every viewset that does not declare
+`filter_backends`:
+
+```python
+# settings.py
+DEFAULT_FILTER_BACKENDS = ["zeeb_api.filters.OrderingFilter"]
+```
+
 ## SearchFilter
 
 Reads a single query parameter (`?search=`) and ORs it across every field named

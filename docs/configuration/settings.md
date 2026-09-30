@@ -476,7 +476,26 @@ API_PREFIX = "/api"  # Prefix for all routes
 ```python
 DEFAULT_LIMIT = 20
 MAX_LIMIT = 100
+DEFAULT_PAGINATION_CLASS = None   # e.g. "zeeb_api.pagination.LimitOffsetPagination"
 ```
+
+`DEFAULT_LIMIT`/`MAX_LIMIT` bound `POST /query` and `LimitOffsetPagination`.
+
+## Viewset defaults
+
+Like `DEFAULT_THROTTLE_CLASSES`, these apply to every viewset that does not
+declare the attribute itself. Values are dotted paths (or classes).
+
+```python
+DEFAULT_PAGINATION_CLASS = None      # pagination_class
+DEFAULT_PERMISSION_CLASSES = []      # permission_classes
+DEFAULT_FILTER_BACKENDS = []         # filter_backends
+```
+
+The defaults keep the historical behaviour: no paginator (a collection `GET`
+returns every row), no permission checks, no filter backends. A viewset's own
+declaration always wins — including `pagination_class = None` or
+`permission_classes = []`, which opt that viewset out of a project default.
 
 ## Rate Limiting
 
@@ -707,6 +726,9 @@ generated project sets most of them from the environment — see
 | `API_PREFIX` | `""` | URL prefix |
 | `DEFAULT_LIMIT` | `20` | Default pagination limit (query endpoint + LimitOffsetPagination) |
 | `MAX_LIMIT` | `100` | Maximum pagination limit (query endpoint + LimitOffsetPagination) |
+| `DEFAULT_PAGINATION_CLASS` | `None` | Paginator for viewsets that declare no `pagination_class` (`None`: return the whole collection) |
+| `DEFAULT_PERMISSION_CLASSES` | `[]` | Permission classes for viewsets that declare no `permission_classes` (`[]`: allow every request) |
+| `DEFAULT_FILTER_BACKENDS` | `[]` | Filter backends for viewsets that declare no `filter_backends` |
 | `DEFAULT_THROTTLE_CLASSES` | `[]` | Throttle classes for ViewSets that set none |
 | `DEFAULT_THROTTLE_RATES` | `{"anon": None, "user": None}` | Rate per throttle scope |
 | `THROTTLE_NUM_PROXIES` | `None` | Trusted reverse proxies when reading `X-Forwarded-For` |

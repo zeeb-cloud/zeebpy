@@ -140,6 +140,20 @@ class ArticleViewSet(ModelViewSet):
 >   required permission per request. For hot endpoints, prefer a custom
 >   `BasePermission` that checks a claim already in the token.
 
+## Project-Wide Default
+
+A viewset that declares no `permission_classes` uses
+`DEFAULT_PERMISSION_CLASSES` from settings (dotted paths; default `[]`, which
+allows every request):
+
+```python
+# settings.py
+DEFAULT_PERMISSION_CLASSES = ["zeeb_api.permissions.IsAuthenticated"]
+```
+
+`permission_classes = []` on a viewset opts it out (a public endpoint), and an
+`@action(permission_classes=...)` still overrides both.
+
 ## Per-Action Permissions
 
 Different permissions for different actions:

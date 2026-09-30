@@ -17,6 +17,44 @@ if TYPE_CHECKING:
 _SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 
 
+def _declared(instance: Any, name: str, default_owner: type) -> tuple[bool, Any]:
+    """Whether *name* was set on *instance* or a class below *default_owner*.
+
+    ``default_owner`` is the class holding the framework default. Anything a
+    subclass (or the instance) declares - ``None`` and ``[]`` included - is an
+    explicit choice; only an untouched default falls through to the
+    ``DEFAULT_*`` settings.
+    """
+    if name in getattr(instance, "__dict__", {}):
+        return True, instance.__dict__[name]
+    for klass in type(instance).__mro__:
+        if klass is default_owner:
+            break
+        if name in klass.__dict__:
+            return True, klass.__dict__[name]
+    return False, None
+
+
+_setting_classes_cache: dict[tuple[str, tuple[Any, ...]], list[type]] = {}
+
+
+def _classes_from_setting(name: str) -> list[type]:
+    """``settings.<name>`` (dotted paths or classes) resolved to classes, cached."""
+    from zeeb_api.conf import settings
+
+    value = getattr(settings, name, None) or []
+    if not isinstance(value, (list, tuple)):
+        value = [value]
+    key = (name, tuple(value))
+    cached = _setting_classes_cache.get(key)
+    if cached is None:
+        from zeeb_api.middleware.loader import import_string
+
+        cached = [import_string(v) if isinstance(v, str) else v for v in value]
+        _setting_classes_cache[key] = cached
+    return list(cached)
+
+
 def _permission_type_for_method(method: str) -> str:
     """Object-permission type implied by an HTTP method (read/change/delete)."""
     method = method.upper()
@@ -86,12 +124,22 @@ class ViewSet(metaclass=ViewSetMeta):
         Get permission instances for this view.
         
         If the current action has specific permissions set via @action decorator,
-        those take precedence over the class-level permission_classes.
+        those take precedence over the class-level permission_classes. A
+        viewset that declares no ``permission_classes`` at all uses
+        ``settings.DEFAULT_PERMISSION_CLASSES`` (default: none - every request
+        is allowed, as before the setting existed).
         """
         # Use action-specific permissions if set
         if self._action_permission_classes is not None:
             return [permission() for permission in self._action_permission_classes]
-        return [permission() for permission in self.permission_classes]
+        return [permission() for permission in self.get_permission_classes()]
+
+    def get_permission_classes(self) -> list[type[BasePermission]]:
+        """The permission classes in force when no ``@action`` overrides them."""
+        explicit, value = _declared(self, "permission_classes", ViewSet)
+        if explicit:
+            return list(value or [])
+        return _classes_from_setting("DEFAULT_PERMISSION_CLASSES")
 
     def get_authenticators(self) -> list[BaseAuthentication]:
         """Instances of authentication_classes ([] when unset or empty)."""
@@ -512,8 +560,18 @@ class GenericViewSet(ViewSet):
             raise PermissionDenied("You do not have permission to create this object")
     
     def get_pagination_class(self) -> type[BasePagination] | None:
-        """Get pagination class."""
-        return self.pagination_class
+        """The paginator for list responses.
+
+        An explicit ``pagination_class`` wins - ``None`` included, which turns
+        pagination off for this viewset. Otherwise
+        ``settings.DEFAULT_PAGINATION_CLASS`` applies (default ``None``: the
+        whole queryset is returned, as before the setting existed).
+        """
+        explicit, value = _declared(self, "pagination_class", GenericViewSet)
+        if explicit:
+            return value
+        classes = _classes_from_setting("DEFAULT_PAGINATION_CLASS")
+        return classes[0] if classes else None
     
     async def paginate_queryset(self, queryset: Any) -> tuple[list[Any], dict[str, Any]]:
         """
@@ -532,9 +590,16 @@ class GenericViewSet(ViewSet):
         paginator = pagination_class()
         return await paginator.paginate_queryset(queryset, self.request)
     
+    def get_filter_backends(self) -> list[type[BaseFilter]]:
+        """``filter_backends``, or ``settings.DEFAULT_FILTER_BACKENDS`` when unset."""
+        explicit, value = _declared(self, "filter_backends", GenericViewSet)
+        if explicit:
+            return list(value or [])
+        return _classes_from_setting("DEFAULT_FILTER_BACKENDS")
+
     def filter_queryset(self, queryset: Any) -> Any:
         """Apply filters to queryset."""
-        for backend_class in self.filter_backends:
+        for backend_class in self.get_filter_backends():
             backend = backend_class()
             queryset = backend.filter_queryset(self.request, queryset, self)
         return queryset

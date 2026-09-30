@@ -112,6 +112,15 @@ API_PREFIX = ""
 # Pagination settings
 DEFAULT_LIMIT = 20
 MAX_LIMIT = 100
+# Paginator for viewsets that declare no pagination_class, as a dotted path,
+# e.g. "zeeb_api.pagination.LimitOffsetPagination". None returns the whole
+# queryset from GET on a collection.
+DEFAULT_PAGINATION_CLASS = None
+
+# Viewset defaults (dotted paths), applied where a viewset declares none.
+# [] permission classes means every request is allowed.
+DEFAULT_PERMISSION_CLASSES = []
+DEFAULT_FILTER_BACKENDS = []
 
 # Throttling settings
 # Dotted paths to throttle classes applied to all viewsets, e.g.
