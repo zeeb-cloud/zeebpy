@@ -455,14 +455,21 @@ Bulk update matching records.
 
 ```python
 # Update all
-count = await User.objects.update(is_active=True)
+count = await User.objects.all().update(is_active=True)
 
 # Update filtered
 count = await User.objects.filter(is_banned=True).update(is_active=False)
 
 # With F expressions
-count = await Product.objects.update(price=F("price") * 1.1)
+count = await Product.objects.all().update(price=F("price") * 1.1)
+
+# A ForeignKey by name (instance or primary key) or as <name>_id
+count = await Post.objects.filter(author=None).update(author=alice)
+count = await Post.objects.filter(pk=post_id).update(author_id=alice.pk)
 ```
+
+Keys must be local fields of the model; an unknown name or a many-to-many
+field raises `FieldError`.
 
 ### bulk_update(objects, fields)
 
@@ -474,7 +481,16 @@ for user in users:
     user.login_count += 1
 
 await User.objects.bulk_update(users, ["login_count"])
+
+# ForeignKeys are written from their id — "author" and "author_id" both work
+await Post.objects.bulk_update(posts, ["author", "status"], batch_size=500)
 ```
+
+Each batch is a single `UPDATE ... SET col = CASE WHEN pk = ... THEN ... END
+WHERE pk IN (...)`; `batch_size` caps the objects per statement (by default
+enough to stay under ~900 bind parameters). Returns the number of rows
+matched. Primary-key and many-to-many fields are rejected, and no signals are
+sent.
 
 ---
 
@@ -507,7 +523,7 @@ user = await User.objects.create(
 )
 ```
 
-### bulk_create(objects, ignore_conflicts=False)
+### bulk_create(objects, batch_size=None, ignore_conflicts=False)
 
 Create multiple objects efficiently.
 
@@ -516,7 +532,17 @@ users = await User.objects.bulk_create([
     User(name="John", email="john@example.com"),
     User(name="Jane", email="jane@example.com"),
 ])
+
+# At most 500 rows per INSERT statement
+await User.objects.bulk_create(many_users, batch_size=500)
 ```
+
+Each batch is one multi-row INSERT (objects whose set of non-NULL columns
+differs go in separate statements, so column defaults still apply). The
+objects get their primary keys: client-generated keys (the default UUID
+primary key) are set before the insert; database-generated keys are read back
+with `RETURNING` — batched on PostgreSQL, one row per statement on SQLite and
+MySQL, where returned rows cannot be matched to their parameters.
 
 `ignore_conflicts=True` skips rows that violate a unique constraint instead of
 aborting the whole insert:
@@ -529,9 +555,12 @@ Two things to know before relying on it:
 
 - It is **dialect-gated** — PostgreSQL, SQLite and MySQL only. Anything else
   raises `NotSupportedError`.
-- A conflicting object is **still in the returned list**, unsaved, and its
-  primary key may be `None`. The return value is not a list of what was
-  persisted. Re-query if you need the rows that actually landed.
+- A conflicting object is **still in the returned list**, unsaved
+  (`obj._state.persisted` is `False`), and its primary key may be `None`.
+  The return value is not a list of what was persisted. Re-query if you need
+  the rows that actually landed. With client-generated keys the conflict
+  check is batched on PostgreSQL and SQLite (`RETURNING` reports the inserted
+  keys); otherwise those rows are inserted one per statement.
 
 `bulk_create()` does not fire `pre_save` / `post_save` signals — it is a single
 bulk INSERT, not a loop over `save()`.
