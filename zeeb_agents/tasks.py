@@ -7,7 +7,13 @@ import re
 from pathlib import Path
 
 from zeeb_agents._utils import AgentResult, agent_function
-from zeeb_agents._utils.code_gen import escape_docstring, remove_route_function, write_source
+from zeeb_agents._utils.code_gen import (
+    escape_docstring,
+    remove_route_function,
+    skip_result,
+    validate_if_exists,
+    write_source,
+)
 from zeeb_agents._utils.errors import AgentError, close_matches, did_you_mean, fail
 from zeeb_agents._utils.project import get_app_path
 from zeeb_agents._utils.validation import ensure_identifier
@@ -59,6 +65,7 @@ async def create_task(
     function_name: str,
     schedule: str | None = None,
     project_root: Path | None = None,
+    if_exists: str = "error",
 ) -> AgentResult:
     """Scaffold an async task function in ``apps/{app}/tasks.py``.
 
@@ -70,6 +77,9 @@ async def create_task(
         schedule: Optional cron expression (e.g. ``"0 * * * *"`` for every hour)
             or human-readable description.  Used only as a comment in the stub.
         project_id: The host-assigned project id (required).
+        if_exists: ``"error"`` (default) or ``"skip"`` (succeed and change
+            nothing if it already exists — makes retries idempotent; the
+            result then carries ``skipped=True``).
 
     Example::
 
@@ -83,12 +93,15 @@ async def create_task(
         path (str): ``tasks.py`` path relative to the project root
         file_created (bool): ``True`` if ``tasks.py`` was newly created, ``False``
             if it already existed and was appended to
+        skipped (bool): present and ``True`` when the task existed and
+            ``if_exists="skip"``
 
     Notes:
-        - Raises (and the decorator converts to ``success=False``) if a task with
-          the same name already exists; in that case ``data`` is ``None``.
+        - A task with the same name fails with ``error_code="already_exists"``
+          unless ``if_exists="skip"``.
     """
     ensure_identifier(function_name, "function name")
+    validate_if_exists(if_exists)
     if schedule is not None and not isinstance(schedule, str):
         return fail(f"schedule must be a string, got {schedule!r}", code="invalid_input")
     root = project_root
@@ -118,7 +131,19 @@ async def create_task(
         write_source(tasks_path, content.rstrip("\n") + "\n" + block)
         return created
 
-    created = await asyncio.to_thread(_write)
+    try:
+        created = await asyncio.to_thread(_write)
+    except AgentError as exc:
+        if if_exists == "skip" and (exc.result.data or {}).get("error_code") == "already_exists":
+            return skip_result(
+                f"Task '{function_name}' already exists in apps/{app}/tasks.py; skipped",
+                app=app,
+                function_name=function_name,
+                schedule=schedule,
+                path=str(tasks_path.relative_to(root)),
+                file_created=False,
+            )
+        raise
     rel = str(tasks_path.relative_to(root))
     action = "created" if created else "updated"
     return AgentResult(

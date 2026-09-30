@@ -225,7 +225,7 @@ the change. Grouped by category below.
 
 | Tool | Description |
 |---|---|
-| `{prefix}create_signal_receiver(app, signal_name, model_name, function_name)` | Create an async signal receiver stub in ``{app}/signals.py``. |
+| `{prefix}create_signal_receiver(app, signal_name, model_name, function_name, if_exists="error")` | Create an async signal receiver stub in ``{app}/signals.py``. |
 | `{prefix}delete_signal_receiver(app, function_name)` | Remove a receiver function and its ``@receiver(...)`` decorator. |
 | `{prefix}edit_signal_receiver(app, function_name, new_body)` | Replace the body of an existing receiver function. |
 | `{prefix}list_model_signals(app, model_name)` | Return all receivers registered for a specific model. |
@@ -255,7 +255,7 @@ the change. Grouped by category below.
 
 | Tool | Description |
 |---|---|
-| `{prefix}create_task(app, function_name, schedule=None)` | Scaffold an async task function in ``apps/{app}/tasks.py``. |
+| `{prefix}create_task(app, function_name, schedule=None, if_exists="error")` | Scaffold an async task function in ``apps/{app}/tasks.py``. |
 | `{prefix}delete_task(app, function_name)` | Remove an async task function from ``apps/{app}/tasks.py``. |
 | `{prefix}list_tasks(app)` | Return all async task functions defined in ``apps/{app}/tasks.py``. |
 
@@ -286,14 +286,14 @@ the change. Grouped by category below.
 
 | Tool | Description |
 |---|---|
-| `{prefix}create_permission_class(app, class_name, logic="deny_all")` | Scaffold a ``BasePermission`` subclass in ``apps/{app}/permissions.py``. |
+| `{prefix}create_permission_class(app, class_name, logic="deny_all", if_exists="error")` | Scaffold a ``BasePermission`` subclass in ``apps/{app}/permissions.py``. |
 | `{prefix}list_permission_classes(app)` | Return all ``BasePermission`` subclasses in ``apps/{app}/permissions.py``. |
 
 #### Auth Scaffolding
 
 | Tool | Description |
 |---|---|
-| `{prefix}create_user_model(app, model_name="User", extra_fields=None, set_auth_user_model=True)` | Create a custom user model extending ``zeeb_api.auth.models.AbstractUser``. |
+| `{prefix}create_user_model(app, model_name="User", extra_fields=None, set_auth_user_model=True, if_exists="error")` | Create a custom user model extending ``zeeb_api.auth.models.AbstractUser``. |
 | `{prefix}setup_auth(enable_registration=True, url_prefix="/auth", access_token_minutes=None, refresh_token_days=None)` | Wire zeeb_api's JWT auth router into the project ``urls.py``. |
 | `{prefix}setup_oauth(provider, client_id_env=None, client_secret_env=None, scopes=None, redirect_uri=None)` | Configure an OAuth/OIDC provider and wire the OAuth router. |
 
@@ -301,7 +301,7 @@ the change. Grouped by category below.
 
 | Tool | Description |
 |---|---|
-| `{prefix}create_filterset(app, model_name, filter_fields)` | Create a ``FilterSet`` class in ``apps/<app>/filters.py``. |
+| `{prefix}create_filterset(app, model_name, filter_fields, if_exists="error")` | Create a ``FilterSet`` class in ``apps/<app>/filters.py``. |
 
 #### API Configuration
 

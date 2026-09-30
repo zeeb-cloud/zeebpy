@@ -7,8 +7,8 @@ import re
 from pathlib import Path
 
 from zeeb_agents._utils import AgentResult, agent_function
-from zeeb_agents._utils.code_gen import write_source
-from zeeb_agents._utils.errors import AgentError
+from zeeb_agents._utils.code_gen import skip_result, validate_if_exists, write_source
+from zeeb_agents._utils.errors import AgentError, close_matches, fail
 from zeeb_agents._utils.project import get_app_path
 from zeeb_agents._utils.validation import ensure_identifier
 
@@ -102,6 +102,7 @@ async def create_permission_class(
     class_name: str,
     logic: str = "deny_all",
     project_root: Path | None = None,
+    if_exists: str = "error",
 ) -> AgentResult:
     """Scaffold a ``BasePermission`` subclass in ``apps/{app}/permissions.py``.
 
@@ -120,6 +121,9 @@ async def create_permission_class(
 
             Defaults to ``"deny_all"``.
         project_id: The host-assigned project id (required).
+        if_exists: ``"error"`` (default) or ``"skip"`` (succeed and change
+            nothing if it already exists — makes retries idempotent; the
+            result then carries ``skipped=True``).
 
     Example::
 
@@ -132,20 +136,23 @@ async def create_permission_class(
         path (str): ``permissions.py`` path relative to the project root
         file_created (bool): ``True`` if ``permissions.py`` was newly created,
             ``False`` if an existing file was appended to
+        skipped (bool): present and ``True`` when the class existed and
+            ``if_exists="skip"``
 
     Notes:
-        - An unknown ``logic`` preset returns ``success=False`` with
-          ``data=None`` (no file is touched).
-        - If the class already exists, the underlying ``ValueError`` is wrapped
-          by the decorator into ``success=False`` with ``data=None``; when the
-          file was created in the same call it is left on disk.
+        - An unknown ``logic`` preset fails with ``error_code="invalid_input"``
+          (no file is touched).
+        - An existing class fails with ``error_code="already_exists"`` unless
+          ``if_exists="skip"``.
     """
     if logic not in _LOGIC_PRESETS:
-        return AgentResult(
-            success=False,
-            message=f"Unknown logic preset '{logic}'. Choose from: {', '.join(_LOGIC_PRESETS)}.",
+        return fail(
+            f"Unknown logic preset '{logic}'. Choose from: {', '.join(_LOGIC_PRESETS)}.",
+            code="invalid_input",
+            suggestions=close_matches(str(logic), list(_LOGIC_PRESETS)),
         )
     ensure_identifier(class_name, "class name")
+    validate_if_exists(if_exists)
     root = project_root
     perms_file = _permissions_file(app, root)
 
@@ -176,7 +183,20 @@ async def create_permission_class(
         write_source(perms_file, content.rstrip("\n") + block)
         return created
 
-    created = await asyncio.to_thread(_write)
+    try:
+        created = await asyncio.to_thread(_write)
+    except AgentError as exc:
+        if if_exists == "skip" and (exc.result.data or {}).get("error_code") == "already_exists":
+            return skip_result(
+                f"Permission class '{class_name}' already exists in "
+                f"apps/{app}/permissions.py; skipped",
+                app=app,
+                class_name=class_name,
+                logic=logic,
+                path=str(perms_file.relative_to(root)),
+                file_created=False,
+            )
+        raise
     rel = str(perms_file.relative_to(root))
     action = "created" if created else "updated"
     return AgentResult(

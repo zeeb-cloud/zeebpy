@@ -7,7 +7,13 @@ import re
 from pathlib import Path
 
 from zeeb_agents._utils import AgentResult, agent_function
-from zeeb_agents._utils.code_gen import replace_function_body, write_source
+from zeeb_agents._utils.code_gen import (
+    ensure_import,
+    replace_function_body,
+    skip_result,
+    validate_if_exists,
+    write_source,
+)
 from zeeb_agents._utils.errors import AgentError, close_matches, did_you_mean, fail
 from zeeb_agents._utils.project import load_project_settings, require_project_root
 from zeeb_agents._utils.validation import ensure_app_exists, ensure_identifier
@@ -135,6 +141,7 @@ async def create_signal_receiver(
     model_name: str,
     function_name: str,
     project_root: Path | None = None,
+    if_exists: str = "error",
 ) -> AgentResult:
     """Create an async signal receiver stub in ``{app}/signals.py``.
 
@@ -149,6 +156,9 @@ async def create_signal_receiver(
         model_name: Model class name the receiver listens on.
         function_name: Name for the new receiver function.
         project_id: The host-assigned project id (required).
+        if_exists: ``"error"`` (default) or ``"skip"`` (succeed and change
+            nothing if it already exists — makes retries idempotent; the
+            result then carries ``skipped=True``).
 
     Returns data (on success):
         path (str): signals.py path relative to the project root
@@ -156,7 +166,9 @@ async def create_signal_receiver(
         signal (str): the signal the receiver is bound to
         model (str): the sender model class name
         function (str): the new receiver function name
-        action (str): ``"created"`` (new file) or ``"updated"`` (appended)
+        action (str): ``"created"`` (new file), ``"updated"`` (appended) or
+            ``"skipped"`` (it existed and ``if_exists="skip"``)
+        skipped (bool): present and ``True`` when nothing was written
         loaded_at_startup (bool): always ``True`` — receivers connect via the
             startup autodiscovery, no manual import needed
         warnings (list[str]): present only when the app is not in
@@ -176,6 +188,7 @@ async def create_signal_receiver(
         )
     ensure_identifier(model_name, "model name")
     ensure_identifier(function_name, "function name")
+    validate_if_exists(if_exists)
     root = require_project_root(project_root)
 
     def _write() -> tuple[str, bool]:
@@ -195,6 +208,10 @@ async def create_signal_receiver(
                 signal=signal_name, model=model_name, func=function_name
             )
             write_source(path, source.rstrip() + "\n" + block)
+            # The header imported only the first receiver's signal and model;
+            # a receiver on another one would otherwise be a NameError.
+            ensure_import(path, f"from zeeb_orm.signals import {signal_name}, receiver")
+            ensure_import(path, f"from .models import {model_name}")
         else:
             content = _SIGNALS_HEADER.format(
                 app=app, signal=signal_name, model=model_name
@@ -204,7 +221,22 @@ async def create_signal_receiver(
             write_source(path, content)
         return str(path.relative_to(root)), existed
 
-    rel_path, existed = await asyncio.to_thread(_write)
+    try:
+        rel_path, existed = await asyncio.to_thread(_write)
+    except AgentError as exc:
+        if if_exists == "skip" and (exc.result.data or {}).get("error_code") == "already_exists":
+            path = _signals_path(root, app)
+            return skip_result(
+                f"Receiver '{function_name}' already exists in {app}/signals.py; skipped",
+                path=str(path.relative_to(root)),
+                app=app,
+                signal=signal_name,
+                model=model_name,
+                function=function_name,
+                action="skipped",
+                loaded_at_startup=True,
+            )
+        raise
     action = "Updated" if existed else "Created"
     data = {
         "path": rel_path,
