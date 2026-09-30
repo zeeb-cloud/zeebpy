@@ -184,6 +184,10 @@ requests by default. Without it `email_verified` stays unknown, and with
 `OAUTH_REQUIRE_VERIFIED_EMAIL` at its default `True` the first login for that
 identity is rejected with 401 `AUTH_OAUTH_EMAIL_UNVERIFIED`.
 
+The login routes (`authorize`, `callback`, `state`, `token`) are rate limited
+per client like `/auth/login`: `create_oauth_router(throttle_rate=...)`,
+defaulting to `AUTH_LOGIN_THROTTLE_RATE` (`None` disables).
+
 ## SPA Flow (POST /token/)
 
 Single-page apps drive the redirect themselves (e.g. with MSAL or a plain
