@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import AsyncIterator, Iterator
+from contextlib import asynccontextmanager
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -671,14 +672,18 @@ class QuerySet(Generic[ModelT]):
 
     def _validate_for_update(self, dialect_name: str) -> None:
         """Check that select_for_update may run (dialect + transaction)."""
-        from zeeb_orm.db.connection import get_active_session
         from zeeb_orm.exceptions import NotSupportedError, TransactionManagementError
 
         if dialect_name == "sqlite":
             raise NotSupportedError("select_for_update is not supported on SQLite.")
-        if get_active_session() is None:
+        if _active_session_on(self._db_alias) is None:
+            # A transaction open on another database does not hold locks here.
             raise TransactionManagementError(
-                "select_for_update cannot be used outside of a transaction. "
+                "select_for_update cannot be used outside of a transaction on "
+                "its database. Wrap the query in "
+                f"'async with atomic({self._db_alias!r}):'."
+                if self._db_alias
+                else "select_for_update cannot be used outside of a transaction. "
                 "Wrap the query in 'async with atomic():'."
             )
 
@@ -1218,8 +1223,7 @@ class QuerySet(Generic[ModelT]):
         # Default: convert rows to model instances
         instances = []
         for row in rows:
-            instance = self.model._from_row(row)
-            instance._state.db_alias = self._db_alias
+            instance = self._load_instance(self.model, row)
             # Attach annotation values as attributes
             if self._annotations and hasattr(row, "_mapping"):
                 for alias in self._annotations:
@@ -1236,11 +1240,7 @@ class QuerySet(Generic[ModelT]):
         if self._result_cache is not None:
             return self._result_cache
 
-        from zeeb_orm.db.connection import (
-            get_active_session,
-            get_connection,
-            get_session,
-        )
+        from zeeb_orm.db.connection import get_connection, get_session
 
         db = await get_connection(self._db_alias)
 
@@ -1255,7 +1255,7 @@ class QuerySet(Generic[ModelT]):
             self._validate_for_update(db.get_engine().dialect.name)
             stmt = self._apply_for_update(stmt)
             # Locks only make sense on the active transaction's session.
-            session = get_active_session()
+            session = _active_session_on(self._db_alias)
             assert session is not None  # guaranteed by _validate_for_update
             result = await session.execute(stmt)
             rows = result.fetchall()
@@ -1298,13 +1298,24 @@ class QuerySet(Generic[ModelT]):
             result = await session.execute(stmt, params)
             rows = result.fetchall()
 
-            instances = []
-            for row in rows:
-                instance = self.model._from_row(row)
-                instances.append(instance)
+            instances = [self._load_instance(self.model, row) for row in rows]
 
             self._result_cache = instances
             return instances
+
+    def _load_instance(self, model: Any, row: Any) -> Any:
+        """A persisted ``model`` instance from a result row.
+
+        Goes through ``Model._from_db`` when the model layer provides it
+        (loading never applies field defaults and records the columns the
+        row lacks as deferred), else through ``_from_row``.
+        """
+        from_db = getattr(model, "_from_db", None)
+        if from_db is not None and hasattr(row, "_mapping"):
+            return from_db(row._mapping, self._db_alias)
+        instance = model._from_row(row)
+        instance._state.db_alias = self._db_alias
+        return instance
 
     def _hydrate_select_related(self, instance: Any, mapping: Any) -> None:
         """Populate select_related objects from joined row data."""
@@ -1329,22 +1340,28 @@ class QuerySet(Generic[ModelT]):
                 prefix = "_".join(parts[: i + 1])
 
                 # Extract related object data from the row
-                related_kwargs = {}
-                has_data = False
+                values = {}
                 for field in target_model._meta.local_fields:
                     col_name = field.db_column or field.name
-                    key = f"_sr_{prefix}_{col_name}"
-                    value = mapping.get(key)
-                    if value is not None:
-                        has_data = True
-                    if isinstance(field, ForeignKeyField):
-                        related_kwargs[f"{field.name}_id"] = value
-                    else:
-                        related_kwargs[field.name] = value
+                    values[col_name] = mapping.get(f"_sr_{prefix}_{col_name}")
+                has_data = any(value is not None for value in values.values())
 
                 if has_data:
-                    related_obj = target_model(**related_kwargs)
-                    related_obj._state.persisted = True
+                    from_db = getattr(target_model, "_from_db", None)
+                    if from_db is not None:
+                        related_obj = from_db(values, self._db_alias)
+                    else:
+                        related_kwargs = {
+                            (
+                                f"{field.name}_id"
+                                if isinstance(field, ForeignKeyField)
+                                else field.name
+                            ): values[field.db_column or field.name]
+                            for field in target_model._meta.local_fields
+                        }
+                        related_obj = target_model(**related_kwargs)
+                        related_obj._state.persisted = True
+                        related_obj._state.db_alias = self._db_alias
                     # Cache on the instance so FK access returns it directly
                     setattr(current_instance, f"_cache_{part}", related_obj)
                     current_model = target_model
@@ -1673,14 +1690,14 @@ class QuerySet(Generic[ModelT]):
         Get an object or create it if it doesn't exist.
 
         The create runs in its own ``atomic()`` block (a savepoint inside an
-        enclosing transaction). If it hits an ``IntegrityError`` — typically
+        enclosing transaction; on SQLite it joins the enclosing transaction,
+        see ``_create_block``). If it hits an ``IntegrityError`` — typically
         a concurrent caller created the same row between the lookup and the
         insert — the lookup is repeated and that row returned; only when it
         still does not exist is the error re-raised.
 
         Returns (instance, created) tuple.
         """
-        from zeeb_orm.db.connection import atomic
         from zeeb_orm.exceptions import IntegrityError
 
         try:
@@ -1688,7 +1705,7 @@ class QuerySet(Generic[ModelT]):
         except self.model.DoesNotExist:
             params = self._create_params(defaults, kwargs)
             try:
-                async with atomic(self._db_alias):
+                async with _create_block(self._db_alias):
                     instance = await self.create(**params)
                 return instance, True
             except IntegrityError:
@@ -1707,7 +1724,8 @@ class QuerySet(Generic[ModelT]):
         """
         Update an object or create it if it doesn't exist.
 
-        Runs in one ``atomic()`` block. The lookup locks the row with
+        Runs in one transaction (joining an enclosing ``atomic()`` on the same
+        database). The lookup locks the row with
         ``SELECT ... FOR UPDATE`` (not on SQLite, which locks the whole
         database for a write anyway), the create is race-safe as in
         :meth:`get_or_create`, and the update saves only the ``defaults``
@@ -1716,14 +1734,14 @@ class QuerySet(Generic[ModelT]):
 
         Returns (instance, created) tuple.
         """
-        from zeeb_orm.db.connection import atomic, get_connection
+        from zeeb_orm.db.connection import get_connection
 
         update_defaults = defaults or {}
         if create_defaults is None:
             create_defaults = update_defaults
 
         db = await get_connection(self._db_alias)
-        async with atomic(self._db_alias):
+        async with _transaction(self._db_alias):
             queryset = self
             if db.get_engine().dialect.name != "sqlite":
                 queryset = self.select_for_update()
@@ -1867,18 +1885,17 @@ class QuerySet(Generic[ModelT]):
         )
 
         if model_has_inbound_refs(self.model) or has_delete_receivers:
-            from zeeb_orm.db.connection import atomic, get_active_session
-
-            objs = await self._clone()._fetch_all()
-            if not objs:
-                return 0
-            collector = Collector(using=self._db_alias)
-            await collector.collect(objs)
-            if get_active_session() is not None:
+            # Fetch, collect and delete in ONE transaction on this queryset's
+            # database (joining an enclosing atomic() on it): rows added or
+            # re-pointed between the collection and the DELETE could
+            # otherwise escape the cascade.
+            async with _transaction(self._db_alias):
+                objs = await self._clone()._fetch_all()
+                if not objs:
+                    return 0
+                collector = Collector(using=self._db_alias)
+                await collector.collect(objs)
                 total, _per_model = await collector.delete()
-            else:
-                async with atomic(self._db_alias):
-                    total, _per_model = await collector.delete()
             return total
 
         table = self.model._get_table()
@@ -2232,6 +2249,62 @@ def _compile_explain(element: _Explain, compiler: Any, **kw: Any) -> str:
     # result map so its type processors are not applied to them.
     compiler._result_columns = []
     return f"{element.prefix} {sql}"
+
+
+def _active_session_on(alias: str | None) -> Any:
+    """The active ``atomic()`` session if it is on ``alias``'s database.
+
+    A transaction open on another database is not one a statement against
+    ``alias`` may join (``None`` means the default alias).
+    """
+    from zeeb_orm.db import connection
+
+    session = connection.get_active_session()
+    if session is None:
+        return None
+    if connection._active_session_alias.get() != (alias or connection._default_alias):
+        return None
+    return session
+
+
+@asynccontextmanager
+async def _transaction(alias: str | None) -> AsyncIterator[None]:
+    """Join the active ``atomic()`` on ``alias``'s database, or open one.
+
+    Atomicity without a savepoint when a transaction is already open (a
+    savepoint is only needed to recover from an error, which callers of
+    this block do not do).
+    """
+    from zeeb_orm.db.connection import atomic
+
+    if _active_session_on(alias) is not None:
+        yield
+    else:
+        async with atomic(alias):
+            yield
+
+
+@asynccontextmanager
+async def _create_block(alias: str | None) -> AsyncIterator[None]:
+    """The block ``get_or_create()`` inserts in: a savepoint when joining.
+
+    The savepoint lets the enclosing transaction survive an
+    ``IntegrityError`` (PostgreSQL aborts the whole transaction otherwise).
+    SQLite is the exception: it aborts only the failing statement, and
+    under the pysqlite driver's transaction handling a SAVEPOINT that is
+    the first statement of the enclosing transaction commits on RELEASE —
+    the enclosing ``atomic()`` could no longer roll the new row back. There
+    the insert simply joins the transaction.
+    """
+    from zeeb_orm.db.connection import atomic, get_connection
+
+    if _active_session_on(alias) is not None:
+        db = await get_connection(alias)
+        if db.get_engine().dialect.name == "sqlite":
+            yield
+            return
+    async with atomic(alias):
+        yield
 
 
 def _require_expressions(method: str, values: dict[str, Any]) -> None:
