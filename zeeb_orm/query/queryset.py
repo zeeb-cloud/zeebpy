@@ -2504,16 +2504,64 @@ def _multi_valued_condition(model: type, lookup_string: str, value: Any) -> Any:
     return table.c[pk_name].in_(subquery)
 
 
+#: Lookups compiled to LIKE / ILIKE.
+_LIKE_LOOKUPS = frozenset(
+    {"iexact", "contains", "icontains", "startswith", "istartswith", "endswith", "iendswith"}
+)
+
+#: Escape character for LIKE patterns built from lookup values (the one
+#: SQLAlchemy's ``autoescape=True`` uses): it needs no escaping itself in
+#: any dialect's string literals, unlike a backslash on MySQL.
+_LIKE_ESCAPE = "/"
+
+
+def _like_literal(value: Any) -> str:
+    """``value`` as a LIKE pattern that matches itself only.
+
+    ``%`` and ``_`` (and the escape character) are escaped, so
+    ``email__iexact="%"`` matches the address ``%`` and not every row.
+    """
+    return (
+        str(value)
+        .replace(_LIKE_ESCAPE, _LIKE_ESCAPE * 2)
+        .replace("%", _LIKE_ESCAPE + "%")
+        .replace("_", _LIKE_ESCAPE + "_")
+    )
+
+
+def _like_lookup(column: Any, lookup: str, value: Any) -> Any:
+    """``contains``/``startswith``/``endswith`` and their ``i`` variants,
+    plus ``iexact``, with the value's wildcards escaped on every dialect."""
+    from sqlalchemy import func
+    from sqlalchemy.sql.elements import ClauseElement
+
+    if isinstance(value, ClauseElement):
+        # Another column (F()): no user-supplied pattern to escape.
+        if lookup == "iexact":
+            return func.lower(column) == func.lower(value)
+        method = getattr(column, lookup)
+        return method(value)
+
+    if lookup == "iexact":
+        return column.ilike(_like_literal(value), escape=_LIKE_ESCAPE)
+    method = getattr(column, lookup)
+    return method(str(value), autoescape=True)
+
+
 def _apply_lookup(column: Any, lookup: str, value: Any) -> Any:
     """The SQL condition for ``column <lookup> value``."""
+    if lookup in _LIKE_LOOKUPS:
+        if value is None:
+            # Django: a None pattern is an IS NULL test for iexact, and
+            # matches nothing for the containment lookups.
+            if lookup == "iexact":
+                return column.is_(None)
+            from sqlalchemy import false
+
+            return false()
+        return _like_lookup(column, lookup, value)
     if lookup == "exact":
         return column == value
-    elif lookup == "iexact":
-        return column.ilike(value)
-    elif lookup == "contains":
-        return column.contains(value)
-    elif lookup == "icontains":
-        return column.ilike(f"%{value}%")
     elif lookup == "in":
         return column.in_(value)
     elif lookup == "gt":
@@ -2524,14 +2572,6 @@ def _apply_lookup(column: Any, lookup: str, value: Any) -> Any:
         return column < value
     elif lookup == "lte":
         return column <= value
-    elif lookup == "startswith":
-        return column.startswith(value)
-    elif lookup == "istartswith":
-        return column.ilike(f"{value}%")
-    elif lookup == "endswith":
-        return column.endswith(value)
-    elif lookup == "iendswith":
-        return column.ilike(f"%{value}")
     elif lookup == "range":
         value = list(value)
         return column.between(value[0], value[1])
@@ -2541,6 +2581,9 @@ def _apply_lookup(column: Any, lookup: str, value: Any) -> Any:
         else:
             return column.isnot(None)
     elif lookup == "regex":
+        # SQLite has no native REGEXP: SQLAlchemy registers Python's ``re``
+        # as the function, so a crafted pattern can backtrack for a very
+        # long time (ReDoS). Never pass untrusted patterns here.
         return column.regexp_match(value)
     elif lookup == "iregex":
         return column.regexp_match(value, flags="i")
