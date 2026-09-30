@@ -72,38 +72,28 @@ def find_migrations(project_root: Path) -> list:
 
 
 def _load_settings(project_root: Path):
-    """Exec the project's settings module, or return ``None`` if there is none."""
-    import importlib.util
-    import sys
+    """Exec the project's settings module, or return ``None`` if there is none.
 
-    for item in sorted(project_root.iterdir()):
-        if not (item.is_dir() and (item / "settings.py").exists()):
-            continue
-        sys.path.insert(0, str(project_root))
-        try:
-            spec = importlib.util.spec_from_file_location("settings", item / "settings.py")
-            if spec is None or spec.loader is None:
-                return None
-            module = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(module)
-            return module
-        finally:
-            if str(project_root) in sys.path:
-                sys.path.remove(str(project_root))
-    return None
+    Raises:
+        SettingsImportError: settings.py exists but does not import.
+    """
+    from zeeb_orm.conf.project import load_settings_module
+
+    return load_settings_module(project_root)
+
+
+def _settings_package(project_root: Path) -> str | None:
+    """The settings package name (``[tool.zeeb]`` first, then a sorted scan)."""
+    from zeeb_orm.conf.project import find_settings_module
+
+    module = find_settings_module(project_root)
+    return module.rsplit(".", 1)[0] if module else None
 
 
 def check_settings(project_root: Path) -> tuple[list[dict], str | None]:
     """Verify a settings module exists and declares the settings that matter."""
     issues: list[dict] = []
-    package = next(
-        (
-            item.name
-            for item in sorted(project_root.iterdir())
-            if item.is_dir() and item.name != "apps" and (item / "settings.py").exists()
-        ),
-        None,
-    )
+    package = _settings_package(project_root)
     if package is None:
         issues.append(
             _issue(
@@ -114,7 +104,11 @@ def check_settings(project_root: Path) -> tuple[list[dict], str | None]:
         )
         return issues, None
 
-    content = (project_root / package / "settings.py").read_text(encoding="utf-8")
+    from zeeb_orm.conf.project import find_settings_path
+
+    settings_path = find_settings_path(project_root)
+    assert settings_path is not None  # a package was found above
+    content = settings_path.read_text(encoding="utf-8")
     for setting in ("DATABASE", "INSTALLED_APPS"):
         if setting not in content:
             issues.append(
@@ -322,14 +316,7 @@ def _syntax_issues(project_root: Path, files: list[Path]) -> list[dict]:
 
 def _project_modules(project_root: Path, only: set[str] | None, broken: set[str]) -> list[str]:
     """Importable project modules, filtered to *only* (when given) minus *broken*."""
-    package = next(
-        (
-            item.name
-            for item in sorted(project_root.iterdir())
-            if item.is_dir() and item.name != "apps" and (item / "settings.py").exists()
-        ),
-        None,
-    )
+    package = _settings_package(project_root)
     candidates: list[tuple[str, str]] = []
     if package:
         candidates.append((f"{package}.settings", f"{package}/settings.py"))
@@ -440,15 +427,30 @@ def run_check(deploy: bool = False, json_output: bool = False) -> int:
     code = check_code(project_root, imports=False)
     issues += code["issues"]
 
-    settings = _load_settings(project_root) if package else None
-    if package and settings is None:
-        issues.append(
-            _issue(
-                "invalid_input",
-                f"{package}/settings.py could not be imported.",
-                f"python -c 'import {package}.settings'",
+    from zeeb_orm.conf.project import SettingsImportError
+
+    settings = None
+    if package:
+        try:
+            settings = _load_settings(project_root)
+        except SettingsImportError as exc:
+            issues.append(
+                _issue(
+                    "invalid_input",
+                    f"{package}/settings.py could not be imported: "
+                    f"{type(exc.cause).__name__}: {exc.cause}",
+                    f"python -c 'import {package}.settings'",
+                )
             )
-        )
+        else:
+            if settings is None:
+                issues.append(
+                    _issue(
+                        "invalid_input",
+                        f"{package}/settings.py could not be imported.",
+                        f"python -c 'import {package}.settings'",
+                    )
+                )
     database_issues, database = check_database(settings, deploy)
     issues += database_issues
     if deploy and settings is not None:

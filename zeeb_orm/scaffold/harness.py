@@ -282,13 +282,13 @@ async def test_the_user_directory_is_staff_only(client, auth_client, api_prefix)
 def find_settings_module(project_root: Path) -> str | None:
     """Return ``"<package>.settings"`` for a project on disk, or ``None``.
 
-    The settings package is the first top-level directory that holds a
-    ``settings.py``; ``apps`` is skipped because a scaffolded app never has one.
+    Delegates to :func:`zeeb_orm.conf.project.find_settings_module`:
+    ``[tool.zeeb] settings_module`` first, then the first top-level directory
+    (sorted; ``apps`` skipped) that holds a ``settings.py``.
     """
-    for item in sorted(Path(project_root).iterdir()):
-        if item.is_dir() and item.name != "apps" and (item / "settings.py").exists():
-            return f"{item.name}.settings"
-    return None
+    from zeeb_orm.conf.project import find_settings_module as _find
+
+    return _find(project_root)
 
 
 def render_conftest(settings_module: str) -> str:

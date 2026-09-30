@@ -129,4 +129,5 @@ A generated project must stay `ruff check .` clean
 
 - Always update `/docs` when you add/change/remove features (`docs/orm/`, `docs/api/`, `docs/cli/`, `docs/configuration/`, `docs/reference/`).
 - Configuration is layered: project `settings.py` is read by `zeeb_api.conf.settings` (LazySettings, canonical in-process reader); `zeeb_api.conf.orm.apply_orm_settings()` hands it down to `zeeb_orm.conf.settings` (low-level sink, also fed by env vars `DATABASE_URL`, `DATABASE_ECHO`, …); `zeeb_agents` reads *target* projects off disk by path (`load_project_settings`) and is process-independent by design.
+- Finding a project on disk — its root, settings module (`[tool.zeeb] settings_module` first, then a sorted scan skipping `apps/`) and database URL — goes through `zeeb_orm.conf.project` (`find_project_root`, `find_settings_module`, `load_settings_module`, `resolve_database_url`). A settings.py that fails to import raises `SettingsImportError`; never fall back to a default database. Don't add another discovery loop.
 - The three packages layer strictly: zeeb_api depends on zeeb_orm; zeeb_agents depends on both. Don't introduce reverse dependencies.

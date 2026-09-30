@@ -31,12 +31,18 @@ from zeeb_orm.scaffold.errors import ScaffoldError
 def find_project_package(root: Path) -> Path:
     """Return the project package dir (the one holding ``settings.py``).
 
+    Resolved by :func:`zeeb_orm.conf.project.find_settings_path` —
+    ``[tool.zeeb] settings_module`` first, then a sorted scan skipping
+    ``apps/`` — the same file every command reads.
+
     Raises :class:`ScaffoldError` (``file_not_found``) when no such directory
     exists — the caller is not inside a scaffolded Zeeb project.
     """
-    for item in sorted(root.iterdir()):
-        if item.is_dir() and (item / "settings.py").exists():
-            return item
+    from zeeb_orm.conf.project import find_settings_path
+
+    settings_path = find_settings_path(root)
+    if settings_path is not None:
+        return settings_path.parent
     raise ScaffoldError(
         f"No project package with settings.py found under {root}.",
         code="file_not_found",

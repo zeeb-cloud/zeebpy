@@ -6,15 +6,13 @@ from pathlib import Path
 
 
 def find_project_root() -> Path | None:
-    """Find the project root by looking for manage.py."""
-    current = Path.cwd()
+    """Find the project root: the nearest directory with ``manage.py``.
 
-    while current != current.parent:
-        if (current / "manage.py").exists():
-            return current
-        current = current.parent
+    Delegates to :func:`zeeb_orm.conf.project.find_project_root`.
+    """
+    from zeeb_orm.conf.project import find_project_root as _find
 
-    return None
+    return _find()
 
 
 def to_class_name(name: str) -> str:

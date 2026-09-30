@@ -6,15 +6,10 @@ from pathlib import Path
 
 
 def find_project_root() -> Path | None:
-    """Find the project root by looking for manage.py."""
-    current = Path.cwd()
+    """Find the project root (the nearest ``manage.py``)."""
+    from zeeb_orm.conf.project import find_project_root as _find
 
-    while current != current.parent:
-        if (current / "manage.py").exists():
-            return current
-        current = current.parent
-
-    return None
+    return _find()
 
 
 def run_shell(use_ipython: bool) -> int:
@@ -70,12 +65,13 @@ Example:
         # Try to load project models
         if project_root:
             try:
-                # Find and import settings
-                for item in project_root.iterdir():
-                    if item.is_dir() and (item / "settings.py").exists():
-                        settings_module = item.name
-                        exec(f"from {settings_module} import settings", namespace)
-                        break
+                # Find and import settings (the same module every command uses)
+                from zeeb_orm.conf.project import find_settings_module
+
+                settings_module = find_settings_module(project_root)
+                if settings_module is not None:
+                    package, _, name = settings_module.rpartition(".")
+                    exec(f"from {package} import {name} as settings", namespace)
 
                 # Import models from installed apps
                 apps_dir = project_root / "apps"
