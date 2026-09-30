@@ -22,7 +22,7 @@ from __future__ import annotations
 import datetime
 from typing import Any
 
-from sqlalchemy import Date, Integer, Time, extract
+from sqlalchemy import Date, DateTime, Integer, Time, extract
 from sqlalchemy.ext.compiler import compiles
 from sqlalchemy.sql.functions import FunctionElement
 
@@ -271,6 +271,82 @@ def _time_mysql(element: Any, compiler: Any, **kw: Any) -> str:
     return f"TIME({_arg(element, compiler, **kw)})"
 
 
+# --- date truncation (TruncMonth / TruncYear) -----------------------------------
+
+#: Truncation kind -> the date part as a strftime / DATE_FORMAT pattern.
+_TRUNC_DATE_PATTERNS = {
+    "year": "%Y-01-01",
+    "month": "%Y-%m-01",
+}
+
+
+class _Trunc(FunctionElement):  # type: ignore[type-arg]
+    """Truncate a date/datetime to the start of a ``kind`` period.
+
+    Typed like its argument: a DATE stays a date, anything else is treated
+    as a DATETIME (midnight at the start of the period).
+    """
+
+    name = "zeeb_trunc"
+    # ``kind`` and the argument's type change the SQL but are not part of
+    # FunctionElement's cache key.
+    inherit_cache = False
+
+    def __init__(self, kind: str, expr: Any) -> None:
+        if kind not in _TRUNC_DATE_PATTERNS:
+            raise ValueError(
+                f"Unsupported truncation {kind!r}. Choices are: "
+                f"{', '.join(sorted(_TRUNC_DATE_PATTERNS))}"
+            )
+        self.kind = kind
+        super().__init__(expr)
+        arg_type = getattr(expr, "type", None)
+        self.type = arg_type if isinstance(arg_type, (Date, DateTime)) else DateTime()
+
+    @property
+    def truncates_date(self) -> bool:
+        return isinstance(self.type, Date) and not isinstance(self.type, DateTime)
+
+
+def _format_percents(compiler: Any, pattern: str) -> str:
+    """Double ``%`` for drivers whose paramstyle uses it (format/pyformat)."""
+    if compiler.dialect.paramstyle in ("format", "pyformat"):
+        return pattern.replace("%", "%%")
+    return pattern
+
+
+@compiles(_Trunc)
+def _trunc_default(element: Any, compiler: Any, **kw: Any) -> str:
+    sql = f"DATE_TRUNC('{element.kind}', {_arg(element, compiler, **kw)})"
+    return f"CAST({sql} AS DATE)" if element.truncates_date else sql
+
+
+@compiles(_Trunc, "sqlite")
+def _trunc_sqlite(element: Any, compiler: Any, **kw: Any) -> str:
+    pattern = _TRUNC_DATE_PATTERNS[element.kind]
+    if not element.truncates_date:
+        # The textual layout SQLAlchemy stores SQLite datetimes in, so the
+        # result compares equal to a bound datetime.
+        pattern += " 00:00:00.000000"
+    return f"STRFTIME('{pattern}', {_arg(element, compiler, **kw)})"
+
+
+@compiles(_Trunc, "mysql")
+def _trunc_mysql(element: Any, compiler: Any, **kw: Any) -> str:
+    pattern = _TRUNC_DATE_PATTERNS[element.kind]
+    target = "DATE"
+    if not element.truncates_date:
+        pattern += " 00:00:00"
+        target = "DATETIME"
+    pattern = _format_percents(compiler, pattern)
+    return f"CAST(DATE_FORMAT({_arg(element, compiler, **kw)}, '{pattern}') AS {target})"
+
+
+def truncate(kind: str, column: Any) -> Any:
+    """``column`` truncated to the start of its ``kind`` (``year``/``month``)."""
+    return _Trunc(kind, column)
+
+
 _CUSTOM_TRANSFORMS = {
     "quarter": _Quarter,
     "week": _Week,
@@ -302,4 +378,4 @@ def apply_transform(column: Any, transform: str) -> Any:
     )
 
 
-__all__ = ["DATETIME_TRANSFORMS", "apply_transform"]
+__all__ = ["DATETIME_TRANSFORMS", "apply_transform", "truncate"]

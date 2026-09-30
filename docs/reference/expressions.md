@@ -344,6 +344,11 @@ users = await User.objects.annotate(
 
 Truncate datetime to date/month/year.
 
+Each compiles to the backend's own SQL — `DATE_TRUNC` on PostgreSQL,
+`STRFTIME` on SQLite, `DATE_FORMAT` on MySQL (`DATE()` for `TruncDate`) — and
+keeps the input's type: on a `DateField` the result is a date, on a
+`DateTimeField` a datetime at midnight on the first day of the period.
+
 ```python
 from zeeb_orm import TruncDate, TruncMonth, TruncYear
 

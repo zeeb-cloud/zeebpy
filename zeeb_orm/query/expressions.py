@@ -772,46 +772,43 @@ class Extract(Expression):
 
 class TruncDate(Expression):
     """Truncate datetime to date."""
-    
+
     def __init__(self, expression: str | Expression) -> None:
         super().__init__()
         self.expression = expression if isinstance(expression, Expression) else F(expression)
-    
+
     def resolve(self, model: Any, *, joins: Any = None) -> Any:
-        """Resolve to a truncation of the expression to a whole date."""
-        from sqlalchemy import func, cast
-        from sqlalchemy.types import Date
-        
-        return cast(self.expression.resolve(model, joins=joins), Date)
+        """Resolve to the date part (``DATE(x)`` on SQLite/MySQL, a cast elsewhere)."""
+        from zeeb_orm.query.transforms import apply_transform
+
+        return apply_transform(self.expression.resolve(model, joins=joins), "date")
 
 
 class TruncMonth(Expression):
-    """Truncate date to first of month."""
-    
+    """Truncate a date/datetime to the first day of its month.
+
+    Compiled per dialect (``DATE_TRUNC`` on PostgreSQL, ``STRFTIME`` on
+    SQLite, ``DATE_FORMAT`` on MySQL); the result keeps the input's type —
+    a date for a DateField, a datetime at midnight for a DateTimeField.
+    """
+
+    kind = "month"
+
     def __init__(self, expression: str | Expression) -> None:
         super().__init__()
         self.expression = expression if isinstance(expression, Expression) else F(expression)
-    
+
     def resolve(self, model: Any, *, joins: Any = None) -> Any:
-        """Resolve to a truncation of the expression to the first of the month."""
-        from sqlalchemy import func
-        
-        # Database-specific, but most support date_trunc
-        return func.date_trunc('month', self.expression.resolve(model, joins=joins))
+        """Resolve to the dialect's truncation to the first of the month."""
+        from zeeb_orm.query.transforms import truncate
+
+        return truncate(self.kind, self.expression.resolve(model, joins=joins))
 
 
-class TruncYear(Expression):
-    """Truncate date to first of year."""
-    
-    def __init__(self, expression: str | Expression) -> None:
-        super().__init__()
-        self.expression = expression if isinstance(expression, Expression) else F(expression)
-    
-    def resolve(self, model: Any, *, joins: Any = None) -> Any:
-        """Resolve to a truncation of the expression to the first of the year."""
-        from sqlalchemy import func
-        
-        return func.date_trunc('year', self.expression.resolve(model, joins=joins))
+class TruncYear(TruncMonth):
+    """Truncate a date/datetime to January 1st of its year (see TruncMonth)."""
+
+    kind = "year"
 
 
 # Math functions
