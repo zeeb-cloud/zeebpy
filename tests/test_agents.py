@@ -2374,13 +2374,13 @@ async def test_run_tests_reports_failing_node_ids(project, monkeypatch):
         "1 failed, 1 error in 0.10s\n"
     )
 
-    def fake_run(fn):
-        return (1, output, "")
+    from zeeb_agents._utils.process import ProcessOutcome
 
-    async def fake_to_thread(fn, *args, **kwargs):
-        return fake_run(fn)
-
-    monkeypatch.setattr(testing_mod.asyncio, "to_thread", fake_to_thread)
+    # run_tests runs pytest through run_captured (deadline + process-group
+    # kill); stand in for that seam rather than for asyncio.to_thread.
+    monkeypatch.setattr(
+        testing_mod, "run_captured", lambda cmd, cwd, timeout: ProcessOutcome(1, output, "", False)
+    )
     res = await agents.run_tests(project_id=project)
     assert res.data["failed_tests"] == [
         "tests/test_blog_generated.py::test_post_orm_roundtrip",
