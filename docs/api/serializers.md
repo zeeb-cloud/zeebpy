@@ -582,7 +582,7 @@ Any other key is ignored with a `UserWarning` naming it.
 
 ### Declared fields on a ModelSerializer
 
-A DRF-style field declared on a `ModelSerializer` (`CharField(write_only=True)`,
+A field declared on a `ModelSerializer` (`CharField(write_only=True)`,
 `CharField(source="username", read_only=True)`, …) replaces the model field of
 the same name or adds a new one, with all its options applied. It must appear
 in `Meta.fields` — a declared field missing from an explicit list raises
