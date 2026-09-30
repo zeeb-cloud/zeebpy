@@ -29,6 +29,7 @@ it via :func:`configure`.
 from __future__ import annotations
 
 import os
+import re
 from collections.abc import Callable
 from pathlib import Path
 
@@ -41,12 +42,38 @@ ProjectResolver = Callable[[str], "Path | str | None"]
 _resolver: ProjectResolver | None = None
 
 
+#: What the built-in resolver accepts as a project id: one path segment of
+#: letters, digits, ``.``, ``_`` and ``-`` — never ``.``/``..``, a separator or
+#: an absolute path, any of which would address a directory outside the
+#: workspace (``Path(base) / "/etc"`` *is* ``/etc``).
+_DEFAULT_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+
+
 def _default_resolver(project_id: str) -> Path | None:
-    """Resolve *project_id* under ``$ZEEB_WORKSPACE_DIR``; ``None`` if unset."""
+    """Resolve *project_id* under ``$ZEEB_WORKSPACE_DIR``; ``None`` if unset.
+
+    Raises :class:`AgentError` ``invalid_input`` for an id that is not a single
+    safe path segment, or that resolves (through a symlink) outside the
+    workspace directory.
+    """
     base = os.environ.get("ZEEB_WORKSPACE_DIR")
     if not base:
         return None
-    return Path(base) / project_id
+    if not _DEFAULT_ID_RE.match(project_id) or project_id in (".", ".."):
+        raise AgentError(
+            f"Invalid project_id {project_id!r}: one path segment of letters, digits, "
+            "'.', '_' and '-' is expected",
+            code="invalid_input",
+            project_id=project_id,
+        )
+    path = Path(base) / project_id
+    if not path.resolve().is_relative_to(Path(base).resolve()):
+        raise AgentError(
+            f"project_id {project_id!r} resolves outside the workspace",
+            code="invalid_input",
+            project_id=project_id,
+        )
+    return path
 
 
 def set_project_resolver(resolver: ProjectResolver | None) -> None:
@@ -88,6 +115,8 @@ def resolve_project_id(project_id: object, *, must_exist: bool = True) -> Path:
     resolver = get_project_resolver()
     try:
         resolved = resolver(pid)
+    except AgentError:
+        raise  # a deliberate refusal (e.g. an unsafe id) keeps its own code
     except Exception as exc:  # a faulty vendor resolver must not crash the tool
         raise AgentError(
             f"Could not resolve project_id '{pid}': {type(exc).__name__}: {exc}",

@@ -40,6 +40,7 @@ from zeeb_agents._utils.code_gen import (
     remove_class_block,
     remove_route_function,
 )
+from zeeb_agents._utils.project import get_app_path
 from zeeb_agents.feature_manifest import archive_path, split_ref
 
 RECORD_NAME = "archive.json"
@@ -61,7 +62,7 @@ def _now() -> str:
 
 
 def _app_file(root: Path, app: str, filename: str) -> Path:
-    return root / "apps" / app / filename
+    return get_app_path(app, root) / filename
 
 
 def _fragment_file(root: Path, feature: str, kind: str, name: str) -> Path:

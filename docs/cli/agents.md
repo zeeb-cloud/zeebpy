@@ -700,7 +700,12 @@ Remove a key from `.env`.
 > **inside the project root**.  Paths that escape it (e.g. `../secret.txt` or
 > an absolute path outside the project) return
 > `AgentResult(success=False, message="...outside the project root")` without
-> touching the file.
+> touching the file. The same check (`error_code="outside_project_root"`)
+> applies to every path parameter of every tool — `log_file`, `output_path`,
+> `generate_tests(filename=)`, `set_class_method(file=)` — and app names must be
+> identifiers, so no app-scoped tool can reach outside `apps/<app>/`. The
+> built-in `project_id` resolver accepts only a single path segment
+> (`invalid_input` otherwise).
 
 ### `read_file(path, project_id=None)`
 Read any project file and return its content.

@@ -9,6 +9,7 @@ from typing import Any
 
 from zeeb_agents._utils import AgentResult, agent_function
 from zeeb_agents._utils.errors import fail
+from zeeb_agents._utils.paths import confine_path
 from zeeb_agents._utils.project import load_project_settings
 
 _DOCKERFILE_TEMPLATE = """\
@@ -160,6 +161,7 @@ async def generate_requirements(
           ``data=None``.
     """
     root = project_root
+    out = confine_path(root, output_path, kind="output_path")
 
     proc = await asyncio.create_subprocess_exec(
         "pip", "freeze",
@@ -179,7 +181,6 @@ async def generate_requirements(
     ]
     content = "\n".join(lines) + "\n"
 
-    out = root / output_path
     await asyncio.to_thread(out.write_text, content, "utf-8")
     return AgentResult(
         success=True,

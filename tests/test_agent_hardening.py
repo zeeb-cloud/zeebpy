@@ -326,3 +326,135 @@ async def test_dockerfile_values_are_validated(project):
     res = await agents.generate_dockerfile(port="8000\nRUN id", project_id=project)
     assert not res.success and res.data["error_code"] == "invalid_input"
     assert not (project / "Dockerfile").exists()
+
+
+# ---------------------------------------------------------------------------
+# 2. Paths stay inside the project
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("name", ["..", ".", "../demo", "/tmp", "blog/../..", "a b"])
+async def test_delete_app_refuses_names_that_are_not_apps(project, name):
+    before = _snapshot(project)
+    res = await agents.delete_app(name, project_id=project)
+    assert not res.success
+    assert res.data["error_code"] == "invalid_identifier"
+    assert (project / "manage.py").exists()
+    assert _snapshot(project) == before
+
+
+async def test_delete_app_refuses_a_symlinked_app(project, tmp_path):
+    outside = tmp_path / "precious"
+    outside.mkdir()
+    (outside / "keep.txt").write_text("keep")
+    (project / "apps" / "evil").symlink_to(outside, target_is_directory=True)
+    res = await agents.delete_app("evil", project_id=project)
+    assert not res.success
+    assert res.data["error_code"] == "outside_project_root"
+    assert (outside / "keep.txt").read_text() == "keep"
+
+
+async def test_app_scoped_tools_refuse_traversal(project):
+    res = await agents.create_model(
+        "../demo", "Post", [{"name": "title", "type": "CharField"}], project_id=project
+    )
+    assert not res.success and res.data["error_code"] == "invalid_identifier"
+    res = await agents.create_task("../../tmp", "job", project_id=project)
+    assert not res.success and res.data["error_code"] == "invalid_identifier"
+
+
+@pytest.mark.parametrize("output", ["/tmp/zeeb_seed_escape.py", "../escape_seed.py"])
+async def test_seed_output_path_is_confined(project, output):
+    res = await agents.create_model(
+        "blog", "Post", [{"name": "title", "type": "CharField"}], project_id=project
+    )
+    assert res.success, res.message
+    res = await agents.generate_seed_script("blog", output_path=output, project_id=project)
+    assert not res.success
+    assert res.data["error_code"] == "outside_project_root"
+    assert not (project.parent / "escape_seed.py").exists()
+
+
+async def test_export_openapi_output_path_is_confined(project):
+    res = await agents.export_openapi(output_path="/tmp/zeeb_openapi.json", project_id=project)
+    assert not res.success
+    assert res.data["error_code"] == "outside_project_root"
+
+
+async def test_generate_requirements_output_path_is_confined(project):
+    res = await agents.generate_requirements(output_path="../reqs.txt", project_id=project)
+    assert not res.success
+    assert res.data["error_code"] == "outside_project_root"
+    assert not (project.parent / "reqs.txt").exists()
+
+
+async def test_generated_test_filename_is_confined(project):
+    entity = {
+        "name": "Post",
+        "prefix": "posts",
+        "exposed": True,
+        "permission": ["AllowAny"],
+        "operations": ["list"],
+        "fields": [{"name": "title", "type": "CharField", "max_length": 20}],
+    }
+    res = await agents.generate_tests(
+        "blog", [entity], filename="../escape_test.py", project_id=project
+    )
+    assert not res.success
+    assert res.data["error_code"] == "outside_project_root"
+    assert not (project.parent / "escape_test.py").exists()
+
+
+async def test_log_tools_are_confined(project, tmp_path):
+    victim = tmp_path / "victim.log"
+    victim.write_text("do not truncate\n")
+    res = await agents.clear_logs(log_file=str(victim), project_id=project)
+    assert not res.success and res.data["error_code"] == "outside_project_root"
+    res = await agents.clear_logs(log_file="../victim.log", project_id=project)
+    assert not res.success
+    res = await agents.read_logs(log_file=str(victim), project_id=project)
+    assert not res.success and res.data["error_code"] == "outside_project_root"
+    res = await agents.search_logs("x", log_file=str(victim), project_id=project)
+    assert not res.success
+    assert victim.read_text() == "do not truncate\n"
+
+
+async def test_class_edit_file_is_confined(project):
+    res = await agents.set_class_method(
+        "blog", "Post", "go", "def go(self):\n    pass", file="../../manage.py", project_id=project
+    )
+    assert not res.success
+    assert res.data["error_code"] == "outside_project_root"
+
+
+@pytest.mark.parametrize("project_id", ["..", ".", "../other", "/etc", "a/b"])
+async def test_default_resolver_refuses_ids_outside_the_workspace(
+    tmp_path, monkeypatch, project_id
+):
+    from zeeb_agents._utils import resolver
+
+    monkeypatch.setattr(resolver, "_resolver", None)  # the built-in default
+    monkeypatch.setenv("ZEEB_WORKSPACE_DIR", str(tmp_path / "workspace"))
+    (tmp_path / "workspace").mkdir()
+    (tmp_path / "other").mkdir()
+    res = await agents.list_apps(project_id=project_id)
+    assert not res.success
+    assert res.data["error_code"] == "invalid_input"
+
+
+async def test_default_resolver_still_resolves_a_plain_id(tmp_path, monkeypatch):
+    from zeeb_agents._utils import resolver
+
+    monkeypatch.setattr(resolver, "_resolver", None)
+    monkeypatch.setenv("ZEEB_WORKSPACE_DIR", str(tmp_path))
+    (tmp_path / "proj-1.a").mkdir()
+    assert resolver.resolve_project_id("proj-1.a") == tmp_path / "proj-1.a"
+
+
+def test_archive_path_refuses_non_identifier_feature(tmp_path):
+    from zeeb_agents._utils.errors import AgentError
+    from zeeb_agents.feature_manifest import archive_path
+
+    with pytest.raises(AgentError):
+        archive_path(tmp_path, "../../etc")
+    assert archive_path(tmp_path, "blog").name == "blog"

@@ -8,6 +8,7 @@ from pathlib import Path
 from zeeb_agents._utils import AgentResult, agent_function
 from zeeb_agents._utils.code_gen import extract_model_names, find_settings_file
 from zeeb_agents._utils.errors import AgentError, close_matches, fail
+from zeeb_agents._utils.paths import confine_path
 from zeeb_agents._utils.project import get_app_path, require_project_root
 
 _SEED_FUNC_HEADER = """\
@@ -277,7 +278,7 @@ async def generate_seed_script(
 
     # Determine output path
     if output_path:
-        out = root / output_path if not Path(output_path).is_absolute() else Path(output_path)
+        out = confine_path(root, output_path, kind="output_path")
     else:
         seeds_dir = root / "seeds"
         seeds_dir.mkdir(exist_ok=True)

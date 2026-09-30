@@ -31,6 +31,7 @@ from zeeb_agents._utils.code_gen import (
     set_method_in_class,
 )
 from zeeb_agents._utils.errors import AgentError, close_matches, fail
+from zeeb_agents._utils.paths import confine_path
 from zeeb_agents._utils.validation import ensure_app_exists, ensure_identifier
 
 #: The generated files a class may live in, in lookup order.
@@ -40,7 +41,7 @@ CLASS_FILES = ("models.py", "serializers.py", "views.py", "permissions.py", "fil
 def _locate_class(app_dir: Path, app: str, class_name: str, file: str | None) -> tuple[Path, str]:
     """Return ``(path, project-relative path)`` of the file defining *class_name*."""
     if file is not None:
-        path = app_dir / file
+        path = confine_path(app_dir, file, kind="file")
         if not path.is_file():
             raise AgentError(
                 f"apps/{app}/{file} does not exist.", code="file_not_found", missing=file

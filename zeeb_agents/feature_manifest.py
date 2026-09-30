@@ -30,6 +30,8 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 
+from zeeb_agents._utils.errors import AgentError
+
 #: Bumped when the on-disk shape changes incompatibly.
 MANIFEST_VERSION = 1
 
@@ -58,7 +60,18 @@ def manifest_path(root: Path) -> Path:
 
 
 def archive_path(root: Path, feature: str) -> Path:
-    """Return the archive directory for *feature* (not created)."""
+    """Return the archive directory for *feature* (not created).
+
+    A feature name is an identifier (the spec validates it); it is checked
+    again here because this path is what ``purge_archive`` removes, and a name
+    read from a hand-edited manifest or a crafted plan must not address
+    anything outside ``.zeeb/archive/``.
+    """
+    if not isinstance(feature, str) or not feature.isidentifier():
+        raise AgentError(
+            f"Invalid feature name {feature!r}: must be an identifier",
+            code="invalid_identifier",
+        )
     return state_dir(root) / ARCHIVE_DIRNAME / feature
 
 
