@@ -590,7 +590,23 @@ from zeeb_orm import Prefetch
 authors = await Author.objects.prefetch_related(
     Prefetch("posts", queryset=Post.objects.filter(published=True))
 )
+
+# Nested: authors, their posts, the posts' comments — three queries
+authors = await Author.objects.prefetch_related("posts__comments")
+for author in authors:
+    for post in await author.posts.all():     # from the prefetch, no query
+        print(post.title, len(post.comments))
+
+# Into a plain list attribute instead of the accessor
+authors = await Author.objects.prefetch_related(
+    Prefetch("posts", queryset=Post.objects.filter(published=True), to_attr="published_posts")
+)
 ```
+
+The prefetched accessor is a list of the related objects that keeps the
+related manager API: `all()`, `count()` and `exists()` are answered from it,
+other methods query the database, and writes (`add`/`remove`/`clear`/`set`/
+`create`) invalidate it. Unknown lookups raise `FieldError`.
 
 ## CRUD Operations
 
