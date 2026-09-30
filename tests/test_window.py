@@ -202,10 +202,12 @@ class TestStringAgg:
 
     @pytest.mark.asyncio
     async def test_string_agg_compile_postgresql(self, db):
+        # The delimiter is a bound parameter, not inlined SQL text.
         expr = StringAgg("name", "; ").resolve(WinPlayer)
-        sql = str(select(expr).compile(dialect=postgresql.dialect()))
-        assert "string_agg(" in sql
-        assert "'; '" in sql
+        compiled = select(expr).compile(dialect=postgresql.dialect())
+        assert "string_agg(" in str(compiled)
+        assert "'; '" not in str(compiled)
+        assert "; " in compiled.params.values()
 
     @pytest.mark.asyncio
     async def test_string_agg_compile_mysql(self, db):
@@ -232,9 +234,13 @@ class TestStringAgg:
 
     @pytest.mark.asyncio
     async def test_delimiter_quote_escaping(self, db):
+        # Bound everywhere but MySQL, whose SEPARATOR needs a literal: there
+        # the quote is doubled inside the inlined literal.
         expr = StringAgg("name", "'").resolve(WinPlayer)
-        sql = str(select(expr).compile(dialect=postgresql.dialect()))
-        assert "''''" in sql  # escaped single quote inside quotes
+        pg = select(expr).compile(dialect=postgresql.dialect())
+        assert "'" in pg.params.values()
+        sql = str(select(expr).compile(dialect=mysql.dialect()))
+        assert "SEPARATOR ''''" in sql  # escaped single quote inside quotes
 
 
 class TestWindowInFilter:

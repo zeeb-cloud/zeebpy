@@ -738,21 +738,36 @@ class Now(Expression):
 class Extract(Expression):
     """
     Extract part of a date/datetime.
-    
+
+    ``lookup_name`` is one of the datetime transforms: ``year``,
+    ``iso_year``, ``month``, ``day``, ``week``, ``week_day``,
+    ``iso_week_day``, ``quarter``, ``hour``, ``minute``, ``second``. It
+    compiles through the same per-dialect SQL as the ``created_at__year``
+    style lookups; any other name raises ``ValueError`` (it used to be
+    rendered into ``EXTRACT(<name> FROM ...)`` verbatim).
+
     Usage:
         Model.objects.annotate(year=Extract('created_at', 'year'))
     """
-    
+
     def __init__(self, expression: str | Expression, lookup_name: str) -> None:
         super().__init__()
+        from zeeb_orm.query.transforms import DATETIME_TRANSFORMS
+
+        allowed = DATETIME_TRANSFORMS - {"date", "time"}
+        if lookup_name not in allowed:
+            raise ValueError(
+                f"Extract(): unsupported lookup_name {lookup_name!r}. "
+                f"Choices are: {', '.join(sorted(allowed))}"
+            )
         self.expression = expression if isinstance(expression, Expression) else F(expression)
         self.lookup_name = lookup_name
-    
+
     def resolve(self, model: Any, *, joins: Any = None) -> Any:
-        """Resolve to ``EXTRACT(part FROM expr)``."""
-        from sqlalchemy import extract
-        
-        return extract(self.lookup_name, self.expression.resolve(model, joins=joins))
+        """Resolve to the dialect's extraction of ``lookup_name``."""
+        from zeeb_orm.query.transforms import apply_transform
+
+        return apply_transform(self.expression.resolve(model, joins=joins), self.lookup_name)
 
 
 class TruncDate(Expression):
@@ -1126,52 +1141,69 @@ class Cast(Expression):
 
 
 class _StringAggFunction(FunctionElement):  # type: ignore[type-arg]
-    """Portable string-aggregation SQL element (see :class:`StringAgg`)."""
+    """Portable string-aggregation SQL element (see :class:`StringAgg`).
+
+    ``clauses`` are the aggregated expression and the delimiter as a bound
+    parameter. MySQL's ``SEPARATOR`` only takes a literal, so the MySQL
+    compiler inlines the (validated) delimiter instead.
+    """
 
     name = "string_agg"
     inherit_cache = False
 
     def __init__(self, expr: Any, delimiter: str, distinct: bool = False) -> None:
+        from sqlalchemy import String, literal
+
         self.delimiter = delimiter
         self.distinct_agg = distinct
-        super().__init__(expr)
+        super().__init__(expr, literal(delimiter, type_=String()))
 
 
-def _quoted_delimiter(delimiter: str) -> str:
-    """Render the delimiter as an SQL string literal.
+def _mysql_separator_literal(delimiter: str) -> str:
+    """The delimiter as a MySQL string literal, or ``ValueError``.
 
-    MySQL's ``GROUP_CONCAT ... SEPARATOR`` does not accept bind parameters,
-    so the delimiter is inlined (with single quotes escaped) on all backends.
+    Only quote doubling is safe in both of MySQL's string modes: a backslash
+    is an escape character by default but a plain character under
+    ``NO_BACKSLASH_ESCAPES``, so no escaping of it can be right for both —
+    such delimiters (and control characters) are rejected instead of
+    inlined.
     """
+    if any(ch == "\\" or ord(ch) < 32 or ord(ch) == 127 for ch in delimiter):
+        raise ValueError(
+            "StringAgg delimiter for MySQL may not contain backslashes or control "
+            f"characters: {delimiter!r}"
+        )
     return "'" + delimiter.replace("'", "''") + "'"
 
 
 @compiles(_StringAggFunction)
 def _compile_string_agg_default(element: Any, compiler: Any, **kw: Any) -> str:
-    # SQLite (and other backends): group_concat(expr, 'delimiter').
+    # SQLite (and other backends): group_concat(expr, :delimiter).
     # SQLite forbids a second argument with DISTINCT, so the delimiter
     # falls back to the default "," in that case.
-    expr = compiler.process(list(element.clauses)[0], **kw)
+    expr_clause, delimiter_clause = list(element.clauses)
+    expr = compiler.process(expr_clause, **kw)
     if element.distinct_agg:
         return f"group_concat(DISTINCT {expr})"
-    return f"group_concat({expr}, {_quoted_delimiter(element.delimiter)})"
+    return f"group_concat({expr}, {compiler.process(delimiter_clause, **kw)})"
 
 
 @compiles(_StringAggFunction, "postgresql")
 def _compile_string_agg_postgresql(element: Any, compiler: Any, **kw: Any) -> str:
-    expr = compiler.process(list(element.clauses)[0], **kw)
+    expr_clause, delimiter_clause = list(element.clauses)
+    expr = compiler.process(expr_clause, **kw)
     distinct = "DISTINCT " if element.distinct_agg else ""
-    return f"string_agg({distinct}{expr}, {_quoted_delimiter(element.delimiter)})"
+    return f"string_agg({distinct}{expr}, {compiler.process(delimiter_clause, **kw)})"
 
 
 @compiles(_StringAggFunction, "mysql")
 def _compile_string_agg_mysql(element: Any, compiler: Any, **kw: Any) -> str:
     expr = compiler.process(list(element.clauses)[0], **kw)
     distinct = "DISTINCT " if element.distinct_agg else ""
-    return (
-        f"GROUP_CONCAT({distinct}{expr} "
-        f"SEPARATOR {_quoted_delimiter(element.delimiter)})"
-    )
+    separator = _mysql_separator_literal(element.delimiter)
+    if compiler.dialect.paramstyle in ("format", "pyformat"):
+        separator = separator.replace("%", "%%")
+    return f"GROUP_CONCAT({distinct}{expr} SEPARATOR {separator})"
 
 
 class StringAgg(Aggregate):
@@ -1181,6 +1213,12 @@ class StringAgg(Aggregate):
     Compiles to ``string_agg`` on PostgreSQL, ``GROUP_CONCAT`` on MySQL and
     ``group_concat`` on SQLite/other backends.  With ``distinct=True`` on
     SQLite the delimiter falls back to ``","`` (SQLite limitation).
+
+    The delimiter is a bound parameter, except on MySQL, whose ``SEPARATOR``
+    only accepts a literal: there it is inlined with quotes doubled, and a
+    delimiter containing a backslash or a control character is rejected
+    (``ValueError``) because no escaping is correct in both of MySQL's
+    backslash modes.
 
     Usage:
         await Post.objects.aggregate(titles=StringAgg("title", delimiter=", "))

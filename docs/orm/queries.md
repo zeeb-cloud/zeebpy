@@ -855,6 +855,8 @@ print(plan)
 plan = await Article.objects.filter(slug="intro").explain(analyze=True)
 ```
 
+The query's values stay bound parameters in the `EXPLAIN` statement.
+
 ## Raw SQL
 
 ```python
@@ -863,7 +865,17 @@ articles = await Article.objects.raw(
     "SELECT * FROM articles WHERE views > ?",
     [100]
 )
+
+# Named parameters
+articles = await Article.objects.raw(
+    "SELECT * FROM articles WHERE slug = :slug", {"slug": "intro"}
+)
 ```
+
+Values are bound parameters. Placeholders inside string literals, quoted
+identifiers and comments are not placeholders (`title != 'why?'` stays as
+written), and a mismatch between `?` placeholders and values raises
+`ValueError`.
 
 ## Using Different Databases
 

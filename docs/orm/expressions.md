@@ -151,7 +151,10 @@ recursively; the constants add `"match": "all" | "none"`.
 
 ## Annotations
 
-`annotate()` adds computed fields to each object in a QuerySet.
+`annotate()` adds computed fields to each object in a QuerySet. Every value
+must be an expression (`F()`, `Value()`, an aggregate, `Case`, `Subquery`, …);
+a plain string raises `TypeError` instead of being written into the SQL. Use
+`F("field")` to reference a field and `Value("text")` for a constant.
 
 ### Basic Annotations
 
@@ -678,8 +681,11 @@ result = await Post.objects.aggregate(
 
 Notes:
 
-- The delimiter is inlined as an SQL string literal (MySQL's `SEPARATOR`
-  does not accept bind parameters); single quotes are escaped.
+- The delimiter is a bound parameter on PostgreSQL and SQLite. MySQL's
+  `SEPARATOR` does not accept bind parameters, so there it is inlined as a
+  string literal with single quotes doubled — and a delimiter containing a
+  backslash or a control character raises `ValueError`, because no escaping
+  is safe in both of MySQL's backslash modes.
 - On SQLite, `distinct=True` falls back to the default `","` delimiter
   (SQLite forbids a custom delimiter with `DISTINCT`).
 
