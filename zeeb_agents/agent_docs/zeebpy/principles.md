@@ -68,7 +68,8 @@ Rules you can rely on:
 `model_not_found`, `no_project_id`, `no_user_table`,
 `outside_project_root`, `partial_failure`, `permission_denied`, `prefix_conflict`,
 `project_not_found`,
-`runtime_not_configured`, `server_not_reachable`, `setting_not_found`, `table_not_found`,
+`runtime_not_configured`, `server_not_reachable`, `setting_not_found`, `settings_error`,
+`table_not_found`,
 `user_not_found`.
 
 ### Two error layers — don't confuse them

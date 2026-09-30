@@ -8,7 +8,12 @@ from typing import Any
 
 from zeeb_agents._utils import AgentResult, agent_function
 from zeeb_agents._utils.errors import fail
-from zeeb_agents._utils.project import load_project_settings, resolve_db_url
+from zeeb_agents._utils.project import (
+    ensure_settings_loaded,
+    load_project_settings,
+    resolve_db_url,
+    settings_error_message,
+)
 from zeeb_orm.db.urls import sync_database_url
 
 _HEALTH_MODULE = '''\
@@ -59,7 +64,9 @@ async def readiness_check():
 
 
 def _sync_db_url(root: Path) -> str:
-    return sync_database_url(resolve_db_url(load_project_settings(root), root))
+    return sync_database_url(
+        resolve_db_url(ensure_settings_loaded(load_project_settings(root)), root)
+    )
 
 
 def _project_slug(root: Path) -> str:
@@ -172,7 +179,8 @@ async def check_system_health(
         # Settings check
         try:
             settings = load_project_settings(root)
-            results["settings"] = "ok"
+            load_problem = settings_error_message(settings)
+            results["settings"] = f"error: {load_problem}" if load_problem else "ok"
             db_url = settings.get("DATABASE", {}).get("url", "")
             results["db_driver"] = db_url.split("://")[0] if "://" in db_url else "unknown"
         except Exception as exc:

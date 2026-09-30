@@ -8,7 +8,11 @@ from pathlib import Path
 
 from zeeb_agents._utils import AgentResult, agent_function
 from zeeb_agents._utils.errors import AgentError, close_matches, fail
-from zeeb_agents._utils.project import load_project_settings, resolve_db_url
+from zeeb_agents._utils.project import (
+    ensure_settings_loaded,
+    load_project_settings,
+    resolve_db_url,
+)
 from zeeb_orm.db.urls import sync_database_url
 
 _SELECT_KEYWORDS = frozenset({"select", "with", "explain"})
@@ -65,8 +69,14 @@ def _validate_read_only_sql(sql: str) -> str | None:
 
 
 def _sync_db_url(root: Path) -> str:
-    """Return a *synchronous* SQLAlchemy DB URL, its driver named."""
-    return sync_database_url(resolve_db_url(load_project_settings(root), root))
+    """Return a *synchronous* SQLAlchemy DB URL, its driver named.
+
+    Fails with ``settings_error`` when ``settings.py`` does not load, rather
+    than falling back to a default sqlite file nobody configured.
+    """
+    return sync_database_url(
+        resolve_db_url(ensure_settings_loaded(load_project_settings(root)), root)
+    )
 
 
 @agent_function

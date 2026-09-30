@@ -15,6 +15,7 @@ from zeeb_agents._utils.project import (
     get_app_path,
     load_project_settings,
     require_project_root,
+    settings_error_message,
     write_framework_marker,
 )
 from zeeb_agents._utils.project import (
@@ -352,6 +353,9 @@ async def get_project_info(project_root: Path | None = None) -> AgentResult:
         installed_apps (list): ``INSTALLED_APPS`` from settings
         database_url (str | None): the configured database url, if any
         auth_user_model (str | None): the ``AUTH_USER_MODEL`` setting, if any
+        settings_error (str): present only when ``settings.py`` failed to
+            load — the settings values above are then defaults, not the
+            project's
     """
     root = project_root
 
@@ -371,6 +375,11 @@ async def get_project_info(project_root: Path | None = None) -> AgentResult:
             "installed_apps": settings.get("INSTALLED_APPS", []),
             "database_url": settings.get("DATABASE", {}).get("url"),
             "auth_user_model": settings.get("AUTH_USER_MODEL"),
+            **(
+                {"settings_error": settings_error_message(settings)}
+                if settings.load_error
+                else {}
+            ),
         }
 
     info = await asyncio.to_thread(_load)
@@ -600,6 +609,11 @@ async def describe_project(project_root: Path | None = None) -> AgentResult:
         runtime = {"configured": False, "preview_url": None, "openapi_url": None}
 
     warnings: list[str] = []
+    load_problem = settings_error_message(settings)
+    if load_problem:
+        # Every INSTALLED_APPS-based finding below would be computed against
+        # defaults — say so first, instead of reporting phantom wiring gaps.
+        warnings.append(load_problem)
     for a in apps:
         if a["model_count"] and not a["installed"]:
             warnings.append(

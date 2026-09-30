@@ -684,3 +684,62 @@ async def test_set_env_values_read_back_unchanged(project, value):
     assert parse_env((project / ".env").read_text())["TRICKY"] == value
     got = await agents.get_env(project_id=project)
     assert got.data["env"]["TRICKY"] == value
+
+
+# ---------------------------------------------------------------------------
+# 7. A settings module that fails to load is reported, not replaced by sqlite
+# ---------------------------------------------------------------------------
+
+
+def test_load_project_settings_restores_sys_path(project):
+    import sys
+
+    from zeeb_agents._utils.project import load_project_settings
+
+    settings_py = project / "demo" / "settings.py"
+    settings_py.write_text(
+        settings_py.read_text() + "\nimport sys\nsys.path.insert(0, '/zeeb-injected')\n"
+    )
+    before = list(sys.path)
+    settings = load_project_settings(project)
+    assert settings.load_error is None
+    assert sys.path == before
+
+
+def _break_settings(project: Path) -> None:
+    settings_py = project / "demo" / "settings.py"
+    settings_py.write_text(settings_py.read_text() + "\nraise RuntimeError('boom')\n")
+
+
+async def test_broken_settings_fail_database_tools_instead_of_using_sqlite(project):
+    import sys
+
+    from zeeb_agents._utils.project import load_project_settings
+
+    _break_settings(project)
+    before = list(sys.path)
+    settings = load_project_settings(project)
+    assert sys.path == before
+    assert settings.load_error == "RuntimeError: boom"
+
+    for call in (
+        agents.run_query("SELECT 1", project_id=project),
+        agents.list_tables(project_id=project),
+        agents.list_users(project_id=project),
+        agents.get_settings(project_id=project),
+        agents.get_cors_config(project_id=project),
+    ):
+        res = await call
+        assert not res.success
+        assert res.data["error_code"] == "settings_error"
+        assert "boom" in res.message
+    assert not (project / "db.sqlite3").exists()
+
+
+async def test_broken_settings_are_reported_by_read_only_summaries(project):
+    _break_settings(project)
+    info = await agents.get_project_info(project_id=project)
+    assert info.success
+    assert "boom" in info.data["settings_error"]
+    readiness = await agents.check_production_readiness(project_id=project)
+    assert any("could not be loaded" in issue for issue in readiness.data["issues"])

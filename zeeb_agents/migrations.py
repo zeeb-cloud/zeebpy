@@ -13,8 +13,8 @@ from zeeb_agents._utils.project import (
 )
 from zeeb_agents._utils.project import (
     load_project_settings,
+    project_database_url,
     require_project_root,
-    resolve_db_url,
 )
 
 # A non-commented ``class Foo(... Model ...):`` line — a real model definition
@@ -29,7 +29,10 @@ def _unregistered_apps_with_models(root: Path) -> list[str]:
     ``INSTALLED_APPS`` only, so an unregistered app's models are never seen and
     "No changes detected" is misleadingly reported.
     """
-    installed = set(load_project_settings(root).get("INSTALLED_APPS", []) or [])
+    settings = load_project_settings(root)
+    if settings.load_error:
+        return []  # INSTALLED_APPS is unknown; guessing would flag every app
+    installed = set(settings.get("INSTALLED_APPS", []) or [])
     unregistered: list[str] = []
     for app in list_apps_util(root):
         if f"apps.{app}" in installed:
@@ -87,8 +90,7 @@ async def run_migrations(
     def _run() -> dict:
         from zeeb_orm.migrations import executor
 
-        settings = load_project_settings(root)
-        db_url = resolve_db_url(settings, root)
+        db_url = project_database_url(root)
         status = executor.showmigrations(database_url=db_url, project_root=root)
         names = [name for name, _ in status]
         if target not in (None, "zero") and target not in names:
@@ -221,8 +223,7 @@ async def get_migration_status(project_root: Path | None = None) -> AgentResult:
 
     def _run() -> list[dict]:
         from zeeb_orm.migrations import executor
-        settings = load_project_settings(root)
-        db_url = resolve_db_url(settings, root)
+        db_url = project_database_url(root)
         status = executor.showmigrations(database_url=db_url, project_root=root)
         return [{"name": name, "applied": applied} for name, applied in status]
 
@@ -264,8 +265,7 @@ async def rollback_migration(
 
     def _run() -> list[str]:
         from zeeb_orm.migrations import executor
-        settings = load_project_settings(root)
-        db_url = resolve_db_url(settings, root)
+        db_url = project_database_url(root)
         status = executor.showmigrations(database_url=db_url, project_root=root)
         applied = [name for name, is_applied in status if is_applied]
         if not applied:
@@ -347,8 +347,7 @@ async def show_migration(
         migration = load_migration(path)
         applied: bool | None
         try:
-            settings = load_project_settings(root)
-            db_url = resolve_db_url(settings, root)
+            db_url = project_database_url(root)
             status = dict(executor.showmigrations(database_url=db_url, project_root=root))
             applied = bool(status.get(resolved))
         except Exception:
