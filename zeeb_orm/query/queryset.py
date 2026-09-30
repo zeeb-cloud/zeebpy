@@ -1832,42 +1832,114 @@ class QuerySet(Generic[ModelT]):
         await instance.save(validate=validate, using=self._db_alias)
         return instance
 
+    @staticmethod
+    def _create_params(defaults: dict[str, Any] | None, lookups: dict[str, Any]) -> dict[str, Any]:
+        """Constructor arguments for the create branch of get/update_or_create.
+
+        Lookups with ``__`` (``name__iexact=...``) select, they do not
+        assign, so they are dropped; ``defaults`` win over the lookups and
+        callable values are called.
+        """
+        params = {key: value for key, value in lookups.items() if "__" not in key}
+        params.update(defaults or {})
+        return {key: value() if callable(value) else value for key, value in params.items()}
+
     async def get_or_create(
         self, defaults: dict[str, Any] | None = None, **kwargs: Any
     ) -> tuple[ModelT, bool]:
         """
         Get an object or create it if it doesn't exist.
 
+        The create runs in its own ``atomic()`` block (a savepoint inside an
+        enclosing transaction). If it hits an ``IntegrityError`` — typically
+        a concurrent caller created the same row between the lookup and the
+        insert — the lookup is repeated and that row returned; only when it
+        still does not exist is the error re-raised.
+
         Returns (instance, created) tuple.
         """
-        defaults = defaults or {}
+        from zeeb_orm.db.connection import atomic
+        from zeeb_orm.exceptions import IntegrityError
+
         try:
-            instance = await self.get(**kwargs)
-            return instance, False
+            return await self.get(**kwargs), False
         except self.model.DoesNotExist:
-            create_kwargs = {**kwargs, **defaults}
-            instance = await self.create(**create_kwargs)
-            return instance, True
+            params = self._create_params(defaults, kwargs)
+            try:
+                async with atomic(self._db_alias):
+                    instance = await self.create(**params)
+                return instance, True
+            except IntegrityError:
+                try:
+                    return await self.get(**kwargs), False
+                except self.model.DoesNotExist:
+                    pass
+                raise
 
     async def update_or_create(
-        self, defaults: dict[str, Any] | None = None, **kwargs: Any
+        self,
+        defaults: dict[str, Any] | None = None,
+        create_defaults: dict[str, Any] | None = None,
+        **kwargs: Any,
     ) -> tuple[ModelT, bool]:
         """
         Update an object or create it if it doesn't exist.
 
+        Runs in one ``atomic()`` block. The lookup locks the row with
+        ``SELECT ... FOR UPDATE`` (not on SQLite, which locks the whole
+        database for a write anyway), the create is race-safe as in
+        :meth:`get_or_create`, and the update saves only the ``defaults``
+        fields (plus ``auto_now`` fields). ``create_defaults`` replaces
+        ``defaults`` for the create branch when given.
+
         Returns (instance, created) tuple.
         """
-        defaults = defaults or {}
-        try:
-            instance = await self.get(**kwargs)
-            for key, value in defaults.items():
-                setattr(instance, key, value)
-            await instance.save()
-            return instance, False
-        except self.model.DoesNotExist:
-            create_kwargs = {**kwargs, **defaults}
-            instance = await self.create(**create_kwargs)
-            return instance, True
+        from zeeb_orm.db.connection import atomic, get_connection
+
+        update_defaults = defaults or {}
+        if create_defaults is None:
+            create_defaults = update_defaults
+
+        db = await get_connection(self._db_alias)
+        async with atomic(self._db_alias):
+            queryset = self
+            if db.get_engine().dialect.name != "sqlite":
+                queryset = self.select_for_update()
+            instance, created = await queryset.get_or_create(create_defaults, **kwargs)
+            if created:
+                return instance, True
+            for key, value in update_defaults.items():
+                setattr(instance, key, value() if callable(value) else value)
+            update_fields = self._update_fields_for(update_defaults)
+            if update_fields != []:  # nothing to write: no save, no signals
+                await instance.save(update_fields=update_fields, using=self._db_alias)
+        return instance, False
+
+    def _update_fields_for(self, values: dict[str, Any]) -> list[str] | None:
+        """``save(update_fields=...)`` for ``values``' keys, or None (all).
+
+        Keys that are not concrete fields (a property, say) mean a full save;
+        an empty list means there is nothing to write.
+        """
+        from zeeb_orm.models.fields import DateField, DateTimeField
+
+        meta = self.model._meta
+        names: list[str] = []
+        for key in values:
+            field = meta.get_field(key) or meta.get_field_by_column(key)
+            if field is None and key == "pk":
+                field = meta.pk
+            if field is None:
+                return None
+            names.append(field.name)
+        for field in meta.local_fields:
+            if (
+                isinstance(field, (DateTimeField, DateField))
+                and getattr(field, "auto_now", False)
+                and field.name not in names
+            ):
+                names.append(field.name)
+        return names
 
     def _concrete_field(self, name: str, operation: str) -> Any:
         """The local field a write addresses as ``name``.
