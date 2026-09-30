@@ -425,7 +425,24 @@ users = await User.objects.prefetch_related("posts").all()
 for user in users:
     for post in user.posts:  # No additional query
         print(post.title)
+
+# Nested lookups: one query per level
+authors = await Author.objects.prefetch_related("posts__comments")
 ```
+
+A prefetched to-many accessor is the list of related objects **and** still
+answers the related manager API from it: `await user.posts.all()`,
+`await user.posts.count()` and `await user.posts.exists()` run no query.
+`filter()`, `order_by()` and other refinements query the database, and a
+write through it (`add`, `remove`, `clear`, `set`, `create`) drops the
+prefetched list so the next access reads fresh data. A forward ForeignKey is
+cached on the instance (`post.author` returns the object).
+
+`Prefetch("posts", queryset=..., to_attr="recent")` stores a plain list under
+`recent` and leaves the accessor untouched. Levels shared by several lookups
+(`"posts"`, `"posts__comments"`, `"posts__tags"`) are fetched once, and objects
+`select_related()` already loaded are reused. An unknown name at any level
+raises `FieldError`.
 
 ---
 

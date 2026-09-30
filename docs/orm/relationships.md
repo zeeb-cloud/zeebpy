@@ -391,8 +391,9 @@ articles = await Article.objects.filter(
 ### Prefetching ManyToMany
 
 `prefetch_related()` works in both directions with one extra IN-query over
-the join table plus one query for the related rows; the result is attached
-as a plain list:
+the join table plus one query for the related rows; the accessor then holds
+the related objects as a list that keeps the manager API
+(`await article.tags.all()` needs no query):
 
 ```python
 articles = await Article.objects.prefetch_related("tags")

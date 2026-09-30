@@ -1387,158 +1387,18 @@ class QuerySet(Generic[ModelT]):
                     break
 
     async def _do_prefetch_related(self, instances: list[Any], db: Any) -> None:
-        """Execute separate queries for prefetch_related lookups."""
+        """Execute separate queries for prefetch_related lookups.
 
-        for lookup in self._prefetch_related:
-            if isinstance(lookup, Prefetch):
-                field_name = lookup.lookup
-                custom_qs = lookup.queryset
-                to_attr = lookup.to_attr
-            else:
-                field_name = str(lookup)
-                custom_qs = None
-                to_attr = None
-
-            attr_name = to_attr or field_name
-
-            # Determine if this is a FK relation (forward) or reverse relation
-            fk_field = None
-            for f in self.model._fk_fields:
-                if f.name == field_name:
-                    fk_field = f
-                    break
-
-            if fk_field is not None:
-                # Forward FK prefetch: collect FK IDs and fetch target objects
-                target_model = fk_field.get_target_model()
-                fk_ids = set()
-                for inst in instances:
-                    fk_id = getattr(inst, f"_field_{field_name}_id", None)
-                    if fk_id is not None:
-                        fk_ids.add(fk_id)
-
-                if not fk_ids:
-                    continue
-
-                if custom_qs is not None:
-                    related_qs = custom_qs.filter(pk__in=list(fk_ids))
-                else:
-                    related_qs = QuerySet(target_model).filter(pk__in=list(fk_ids))
-                related_qs._db_alias = self._db_alias
-
-                related_objects = await related_qs._fetch_all()
-                pk_name = target_model._meta.pk_name
-                related_map = {getattr(obj, pk_name): obj for obj in related_objects}
-
-                for inst in instances:
-                    fk_id = getattr(inst, f"_field_{field_name}_id", None)
-                    if fk_id is not None and fk_id in related_map:
-                        setattr(inst, f"_cache_{field_name}", related_map[fk_id])
-            else:
-                # Reverse relation prefetch: find which model has FK pointing to us
-                from zeeb_orm.models.relations import resolve_relation
-
-                relation = resolve_relation(self.model, field_name)
-                if relation is None:
-                    continue
-                if relation.kind in ("m2m", "reverse_m2m"):
-                    await self._prefetch_m2m(
-                        instances, relation, custom_qs, attr_name, db
-                    )
-                    continue
-                if relation.kind not in ("reverse_fk", "reverse_o2o"):
-                    continue
-
-                related_model = relation.target_model
-                reverse_fk_name = relation.fk_column
-
-                pk_name = self.model._meta.pk_name
-                parent_pks = [getattr(inst, pk_name) for inst in instances]
-
-                if custom_qs is not None:
-                    related_qs = custom_qs.filter(**{f"{reverse_fk_name}__in": parent_pks})
-                else:
-                    related_qs = QuerySet(related_model).filter(
-                        **{f"{reverse_fk_name}__in": parent_pks}
-                    )
-                related_qs._db_alias = self._db_alias
-
-                related_objects = await related_qs._fetch_all()
-
-                # Group by FK value
-                grouped: dict[Any, list[Any]] = {}
-                for obj in related_objects:
-                    fk_val = getattr(obj, f"_field_{reverse_fk_name}", None)
-                    if fk_val is None:
-                        # Try direct attribute
-                        fk_val = getattr(obj, reverse_fk_name, None)
-                    if fk_val is not None:
-                        grouped.setdefault(fk_val, []).append(obj)
-
-                for inst in instances:
-                    pk_val = getattr(inst, pk_name)
-                    setattr(inst, attr_name, grouped.get(pk_val, []))
-
-    async def _prefetch_m2m(
-        self,
-        instances: list[Any],
-        relation: Any,
-        custom_qs: QuerySet[Any] | None,
-        attr_name: str,
-        db: Any,
-    ) -> None:
-        """Prefetch an m2m relation: one IN-query over the through table.
-
-        The (source pk, target pk) pairs are read from the join table, the
-        related objects are fetched with a single ``pk__in`` query and each
-        instance gets the grouped list of related objects as ``attr_name``.
+        See :mod:`zeeb_orm.query.prefetch`: nested lookups
+        (``"posts__comments"``) are resolved level by level, to-many
+        accessors keep their manager API off the prefetched objects, and an
+        unknown lookup raises ``FieldError``.
         """
-        m2m_field = relation.fk_field
-        through = m2m_field.get_through_table()
-        if relation.kind == "m2m":
-            my_col = m2m_field.get_source_column()
-            other_col = m2m_field.get_target_column()
-        else:  # reverse_m2m
-            my_col = m2m_field.get_target_column()
-            other_col = m2m_field.get_source_column()
-        related_model = relation.target_model
+        from zeeb_orm.query.prefetch import prefetch_related_objects
 
-        pk_name = self.model._meta.pk_name
-        parent_pks = [getattr(inst, pk_name) for inst in instances]
-
-        stmt = select(through.c[my_col], through.c[other_col]).where(
-            through.c[my_col].in_(parent_pks)
+        await prefetch_related_objects(
+            instances, self.model, self._prefetch_related, self._db_alias
         )
-        from zeeb_orm.db.connection import get_session
-
-        async with get_session(self._db_alias) as (session, _):
-            result = await session.execute(stmt)
-            pairs = result.fetchall()
-
-        grouped: dict[Any, list[Any]] = {}
-        related_pks: list[Any] = []
-        for mine, other in pairs:
-            grouped.setdefault(mine, []).append(other)
-            if other not in related_pks:
-                related_pks.append(other)
-
-        related_map: dict[Any, Any] = {}
-        if related_pks:
-            related_qs = custom_qs if custom_qs is not None else QuerySet(related_model)
-            related_qs = related_qs.filter(pk__in=related_pks)
-            related_qs._db_alias = self._db_alias
-            related_objects = await related_qs._fetch_all()
-            target_pk = related_model._meta.pk_name
-            related_map = {getattr(obj, target_pk): obj for obj in related_objects}
-
-        for inst in instances:
-            pk_val = getattr(inst, pk_name)
-            objs = [
-                related_map[other]
-                for other in grouped.get(pk_val, [])
-                if other in related_map
-            ]
-            setattr(inst, attr_name, objs)
 
     async def __aiter__(self) -> AsyncIterator[Any]:
         """Async iteration support."""
