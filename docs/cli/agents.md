@@ -62,7 +62,7 @@ vocabulary: `app_not_found`, `model_not_found`, `already_exists`,
 `invalid_regex`, `table_not_found`, `user_not_found`, `no_user_table`,
 `setting_not_found`, `settings_error`, `env_key_not_found`, `field_not_found`,
 `function_not_found`, `file_not_found`, `log_file_not_found`,
-`outside_project_root`, `server_not_running`, `server_not_reachable`,
+`outside_project_root`, `query_timeout`, `server_not_running`, `server_not_reachable`,
 `dependency_missing`, `permission_denied`, `no_project_root`,
 `no_project_id`, `project_not_found`, `runtime_not_configured`) plus
 `data["suggestions"]` (close-match candidates) where applicable. Any
@@ -777,25 +777,42 @@ result = await describe_table("post_post")
 # result.data == {"table": "post_post", "columns": [{"name": "id", "type": "INTEGER", ...}, ...]}
 ```
 
-### `run_query(sql, project_id=None)`
-Execute a read-only SQL query (`SELECT`, `WITH`, `EXPLAIN`) and return rows as a list of dicts.
+### `run_query(sql, project_id=None, max_rows=1000, timeout=30.0)`
+Execute a read-only SQL query (`SELECT`, `WITH`, `EXPLAIN`) and return rows as a
+list of dicts — at most `max_rows` of them (`truncated` says whether there were
+more). The statement is cancelled after `timeout` seconds (`None`: no limit)
+with `error_code="query_timeout"`: PostgreSQL `statement_timeout`, MySQL
+`max_execution_time` / MariaDB `max_statement_time`, an interrupting progress
+handler on SQLite.
 
 ```python
 result = await run_query("SELECT id, title FROM post_post LIMIT 5")
-# result.data == {"rows": [{"id": 1, "title": "Hello World"}], "count": 1}
+# result.data == {"rows": [{"id": 1, "title": "Hello World"}], "count": 1,
+#                 "truncated": False, "max_rows": 1000}
 ```
 
 > **Safety**: `run_query` is gated to read-only queries:
 >
-> - SQL comments (`-- ...` and `/* ... */`) are stripped before validation, so
->   comment-prefixed statements cannot sneak past the check.
+> - The check runs on the statement's *code*: comments (`--`, `/* */`, MySQL
+>   `#`) are removed and string literals blanked, under every quoting
+>   convention of the supported databases (backslash escapes, `E''` strings,
+>   `$$` dollar quoting) — a literal that ends earlier in one dialect cannot
+>   hide a second statement. An unterminated literal and a MySQL `/*! */`
+>   (executed) comment are rejected outright. Keywords inside string literals
+>   no longer false-positive.
 > - Exactly **one** statement is allowed (a single trailing `;` is tolerated;
 >   `SELECT 1; DROP TABLE x` is rejected).
 > - The first keyword must be `SELECT`, `WITH`, or `EXPLAIN`.
 > - The mutating keywords `INSERT`, `UPDATE`, `DELETE`, `DROP`, `ALTER`,
->   `CREATE`, `TRUNCATE`, `REPLACE`, `GRANT`, `ATTACH`, `PRAGMA`, and `VACUUM`
->   are rejected **anywhere** in the statement (so `WITH ... DELETE` or
->   `EXPLAIN ANALYZE DELETE` bypasses fail too).  The check uses word
+>   `CREATE`, `TRUNCATE`, `REPLACE`, `GRANT`, `REVOKE`, `ATTACH`, `DETACH`,
+>   `PRAGMA`, `VACUUM`, `COPY`, `MERGE`, `UPSERT` and `INTO` are rejected
+>   **anywhere** in the statement (so `WITH ... DELETE`, `EXPLAIN ANALYZE
+>   DELETE`, `SELECT ... INTO OUTFILE/DUMPFILE` and `SELECT ... INTO
+>   new_table` fail too). Calls with side effects outside the query are
+>   rejected as well: `pg_sleep`, `pg_read_file`/`pg_ls_dir`, `lo_import`/
+>   `lo_export`, `dblink*`, `set_config`, `nextval`/`setval`,
+>   `query_to_xml`, advisory locks, backend/server control, MySQL `sleep`/
+>   `benchmark`/`load_file`, SQLite `load_extension`/`readfile`/`writefile`.  The check uses word
 >   boundaries, so column names like `created_at` / `updated_at` are fine —
 >   but a bare `REPLACE(...)` string function call will be rejected; rename or
 >   avoid it in ad-hoc queries.

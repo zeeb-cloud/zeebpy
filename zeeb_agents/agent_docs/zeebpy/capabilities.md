@@ -86,7 +86,7 @@ is being solved.
 | `{prefix}edit_file(path, find, replace, count=1)` | Replace an exact text span in a project file — the surgical alternative to ``write_file``. |
 | `{prefix}read_file(path)` | Read a file from the project and return its contents. |
 | `{prefix}run_management_command(command, args=None, timeout=300.0)` | Run a ``manage.py`` management command and return its output. |
-| `{prefix}run_query(sql)` | Execute a read-only SQL query against the project database. |
+| `{prefix}run_query(sql, max_rows=1000, timeout=30.0)` | Execute a read-only SQL query against the project database. |
 | `{prefix}search_code(pattern, glob="**/*.py")` | Search for a regex pattern across project source files. |
 | `{prefix}write_file(path, content)` | Write (or overwrite) a file in the project. |
 

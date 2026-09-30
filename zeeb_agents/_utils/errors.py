@@ -58,6 +58,7 @@ ERROR_CODES = frozenset(
         "project_not_found",
         "runtime_not_configured",
         "partial_failure",
+        "query_timeout",
     }
 )
 

@@ -743,3 +743,97 @@ async def test_broken_settings_are_reported_by_read_only_summaries(project):
     assert "boom" in info.data["settings_error"]
     readiness = await agents.check_production_readiness(project_id=project)
     assert any("could not be loaded" in issue for issue in readiness.data["issues"])
+
+
+# ---------------------------------------------------------------------------
+# 8. run_query: a tighter read-only gate, a row cap and a statement timeout
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+async def query_project(project: Path) -> Path:
+    import sqlite3
+
+    db_path = project / "query.sqlite3"
+    conn = sqlite3.connect(db_path)
+    conn.execute("CREATE TABLE posts (id INTEGER PRIMARY KEY, title TEXT)")
+    conn.executemany("INSERT INTO posts (title) VALUES (?)", [("a",), ("b",), ("c",)])
+    conn.commit()
+    conn.close()
+    settings_py = project / "demo" / "settings.py"
+    settings_py.write_text(
+        settings_py.read_text() + f'\nDATABASE = {{"url": "sqlite+aiosqlite:///{db_path}"}}\n'
+    )
+    return project
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "SELECT * FROM posts INTO OUTFILE '/tmp/zeeb_out.txt'",
+        "SELECT * INTO OUTFILE '/tmp/zeeb_out.txt' FROM posts",
+        "SELECT 'x' INTO DUMPFILE '/tmp/zeeb_out.txt'",
+        "SELECT * INTO copied_posts FROM posts",
+        "SELECT pg_sleep(60)",
+        'SELECT "pg_sleep"(60)',
+        "SELECT pg_catalog.pg_read_file('/etc/passwd')",
+        "SELECT lo_import('/etc/passwd')",
+        "SELECT lo_export(1234, '/tmp/zeeb_out.txt')",
+        "SELECT dblink_exec('host=x', 'DROP TABLE posts')",
+        "SELECT set_config('search_path', 'evil', false)",
+        "SELECT nextval('posts_id_seq')",
+        "SELECT load_extension('/tmp/evil.so')",
+        "SELECT sleep(60)",
+        "SELECT '/*' ; DELETE FROM posts; SELECT '*/'",
+        "SELECT E'\\'' ; DELETE FROM posts; --'",
+        "SELECT $$'$$; DELETE FROM posts; --'",
+        "SELECT 1 # '\n; DELETE FROM posts; -- '",
+        "SELECT 1 /*! ; DELETE FROM posts */",
+    ],
+)
+async def test_run_query_gate_rejects_side_effects(query_project, sql):
+    res = await agents.run_query(sql, project_id=query_project)
+    assert not res.success, sql
+    assert res.data["error_code"] == "invalid_sql"
+
+
+async def test_run_query_ignores_keywords_inside_string_literals(query_project):
+    res = await agents.run_query(
+        "SELECT title FROM posts WHERE title <> 'update; drop table posts'",
+        project_id=query_project,
+    )
+    assert res.success, res.message
+    assert res.data["count"] == 3
+
+
+_MANY_ROWS = (
+    "WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM n WHERE x < 5000) SELECT x FROM n"
+)
+
+
+async def test_run_query_caps_rows(query_project):
+    res = await agents.run_query(_MANY_ROWS, max_rows=10, project_id=query_project)
+    assert res.success, res.message
+    assert res.data["count"] == 10 and res.data["truncated"] is True
+    res = await agents.run_query(_MANY_ROWS, project_id=query_project)
+    assert res.data["count"] == 1000 and res.data["truncated"] is True
+    res = await agents.run_query("SELECT * FROM posts", project_id=query_project)
+    assert res.data["count"] == 3 and res.data["truncated"] is False
+    res = await agents.run_query("SELECT 1", max_rows=0, project_id=query_project)
+    assert not res.success and res.data["error_code"] == "invalid_input"
+
+
+async def test_run_query_times_out(query_project):
+    import time
+
+    endless = (
+        "WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM n) SELECT count(*) FROM n"
+    )
+    started = time.monotonic()
+    res = await agents.run_query(endless, timeout=1, project_id=query_project)
+    assert time.monotonic() - started < 30
+    assert not res.success
+    assert res.data["error_code"] == "query_timeout"
+    # The connection is usable again afterwards.
+    res = await agents.run_query("SELECT count(*) AS n FROM posts", project_id=query_project)
+    assert res.success and res.data["rows"][0]["n"] == 3

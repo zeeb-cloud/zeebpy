@@ -67,6 +67,7 @@ Rules you can rely on:
 `invalid_permission`, `invalid_regex`, `invalid_sql`, `log_file_not_found`,
 `model_not_found`, `no_project_id`, `no_user_table`,
 `outside_project_root`, `partial_failure`, `permission_denied`, `prefix_conflict`,
+`query_timeout`,
 `project_not_found`,
 `runtime_not_configured`, `server_not_reachable`, `setting_not_found`, `settings_error`,
 `table_not_found`,
@@ -197,14 +198,19 @@ it is the authoritative, always-current signature list.
 
 Two tools are deliberately sandboxed:
 
-- **`{prefix}run_query` is read-only.** The SQL is validated before execution:
-  comments are stripped, only a **single** statement is allowed, the first
-  keyword must be `SELECT` / `WITH` / `EXPLAIN`, and a denylist rejects
-  `INSERT/UPDATE/DELETE/DROP/ALTER/CREATE/TRUNCATE/REPLACE/GRANT/ATTACH/PRAGMA/VACUUM`
-  anywhere in the statement. As defense-in-depth the query runs inside a
-  transaction that is **always rolled back** — nothing can be committed. To
-  mutate data, use the model/ORM tools or `{prefix}run_management_command`,
-  not raw SQL.
+- **`{prefix}run_query` is read-only.** The SQL is validated before execution,
+  on its code with comments removed and string literals blanked under every
+  supported dialect's quoting rules: only a **single** statement is allowed,
+  the first keyword must be `SELECT` / `WITH` / `EXPLAIN`, a denylist rejects
+  `INSERT/UPDATE/DELETE/DROP/ALTER/CREATE/TRUNCATE/REPLACE/GRANT/REVOKE/ATTACH/
+  DETACH/PRAGMA/VACUUM/COPY/MERGE/UPSERT/INTO` anywhere in the statement, and
+  side-effecting calls (`pg_sleep`, `pg_read_file`, `lo_import`/`lo_export`,
+  `dblink`, `set_config`, `nextval`, `load_extension`, …) are refused. Results
+  are capped at `max_rows` (default 1000, `truncated` tells) and the statement
+  is cancelled after `timeout` seconds (default 30, `query_timeout`). As
+  defense-in-depth the query runs inside a transaction that is **always rolled
+  back** — nothing can be committed. To mutate data, use the model/ORM tools or
+  `{prefix}run_management_command`, not raw SQL.
 - **Generated code never executes your values.** Every name that becomes
   code — app, model, field, kwarg key, action, handler, workflow field and
   transition — must be a Python identifier; route paths and router prefixes
