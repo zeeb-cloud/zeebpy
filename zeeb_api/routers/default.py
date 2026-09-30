@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+import logging
 import uuid
 from collections.abc import Iterable
 from typing import Any, Callable, Type
 from fastapi import APIRouter, Request, Response
 from fastapi.responses import JSONResponse
 
-from zeeb_api.viewsets.base import ViewSet
+from zeeb_api.viewsets.base import GenericViewSet, ViewSet
+
+logger = logging.getLogger(__name__)
 
 try:  # FastAPI >= 0.137 includes routers lazily
     from fastapi.routing import iter_route_contexts as _iter_route_contexts
@@ -189,6 +192,8 @@ class SimpleRouter:
 
         self._check_prefix_free(prefix, viewset)
         self._registry.append((prefix, viewset, basename))
+        # A registration after ``.routes`` was read must show up in it.
+        self._routes = []
 
     def _check_prefix_free(self, prefix: str, viewset: Type[ViewSet]) -> None:
         """Raise ``ValueError`` when *prefix* is already in the registry."""
@@ -203,10 +208,15 @@ class SimpleRouter:
                 )
     
     def _get_lookup_regex(self, viewset: Type[ViewSet]) -> str:
-        """Get the lookup field pattern."""
-        lookup_field = getattr(viewset, "lookup_field", "id")
-        # For now, use a simple pattern that accepts int or string
-        return "{" + lookup_field + "}"
+        """The path parameter for detail routes: ``{lookup_url_kwarg or lookup_field}``.
+
+        ``get_object()`` reads the value back from ``self.kwargs`` under
+        ``lookup_url_kwarg`` when it is set, so the route must use that name.
+        """
+        lookup = getattr(viewset, "lookup_url_kwarg", None) or getattr(
+            viewset, "lookup_field", "id"
+        )
+        return "{" + lookup + "}"
     
     def _get_routes(self, viewset: Type[ViewSet]) -> list[Route]:
         """Get all routes for a ViewSet including custom actions.
@@ -328,24 +338,15 @@ class SimpleRouter:
                 action_partial_request_schema = None
 
                 # Try to get action-specific serializer
-                if hasattr(viewset, "get_serializer_class"):
-                    # Create temp instance to get action-specific serializer
-                    temp_viewset = object.__new__(viewset)
-                    temp_viewset.action = action_name
-                    try:
-                        serializer_class = temp_viewset.get_serializer_class()
-                        if serializer_class:
-                            # Instantiate to trigger schema generation
-                            serializer_class(data={})
-                            if hasattr(serializer_class, "ResponseSchema"):
-                                action_response_schema = serializer_class.ResponseSchema
-                            if hasattr(serializer_class, "RequestSchema"):
-                                action_request_schema = serializer_class.RequestSchema
-                            action_partial_request_schema = getattr(
-                                serializer_class, "PartialRequestSchema", None
-                            )
-                    except Exception:
-                        pass  # Fall back to default schemas
+                serializer_class = self._discover_serializer_class(viewset, action_name)
+                if serializer_class:
+                    if getattr(serializer_class, "ResponseSchema", None) is not None:
+                        action_response_schema = serializer_class.ResponseSchema
+                    if getattr(serializer_class, "RequestSchema", None) is not None:
+                        action_request_schema = serializer_class.RequestSchema
+                    action_partial_request_schema = getattr(
+                        serializer_class, "PartialRequestSchema", None
+                    )
                 
                 # Determine response model and request schema based on action
                 action_response_model = None
@@ -411,6 +412,47 @@ class SimpleRouter:
 
         return router
     
+    @staticmethod
+    def _discover_serializer_class(viewset: Type[ViewSet], action_name: str) -> Any:
+        """The serializer class ``viewset`` uses for ``action_name``, for OpenAPI.
+
+        Resolved on a request-less instance at route-build time. A viewset
+        without a serializer is fine (None). The built-in
+        ``get_serializer_class`` cannot fail otherwise, so any other error is
+        raised - it would fail every request too. An *overridden*
+        ``get_serializer_class`` may legitimately need the request (e.g. a
+        per-user serializer); its error is logged as a warning naming the
+        viewset and action - never silently dropped - and the class-level
+        schemas are used for the docs.
+        """
+        get_serializer_class = getattr(viewset, "get_serializer_class", None)
+        if get_serializer_class is None:
+            return None
+        temp_viewset = viewset()
+        temp_viewset.action = action_name
+        overridden = get_serializer_class is not getattr(
+            GenericViewSet, "get_serializer_class", None
+        )
+        try:
+            return temp_viewset.get_serializer_class()
+        except ValueError:
+            if getattr(viewset, "serializer_class", None) is None and not overridden:
+                return None  # no serializer configured: nothing to document
+            if not overridden:
+                raise
+        except Exception:
+            if not overridden:
+                raise
+        logger.warning(
+            "%s.get_serializer_class() failed for action %r while building "
+            "routes (no request exists yet); the OpenAPI schema for that "
+            "action falls back to the class-level serializer.",
+            viewset.__name__,
+            action_name,
+            exc_info=True,
+        )
+        return None
+
     def _get_action_schemas(
         self,
         action_config: dict[str, Any],
@@ -454,26 +496,40 @@ class SimpleRouter:
         return request_schema, response_schema
     
     def _get_lookup_type(self, viewset: Type[ViewSet]) -> type:
-        """Get the Python type for the lookup field (PK type)."""
-        # Try to get from model's _meta.pk
+        """The Python type of the viewset's ``lookup_field`` on its model.
+
+        The path parameter is typed with it, so FastAPI validates and converts
+        the URL segment. It used to be the primary key's type whatever
+        ``lookup_field`` said, which made a slug lookup on a UUID-keyed model
+        answer 422 for every slug. A foreign key resolves to the related
+        primary key's type; a field the model does not have (or no model) is
+        ``str`` — the most permissive — except that ``id``/``pk`` without a
+        model keeps the historical UUID default.
+        """
+        from zeeb_orm.models.fields import ForeignKeyField
+
         model = getattr(viewset, "model", None)
         if model is None:
-            # Try to infer from queryset
             queryset = getattr(viewset, "queryset", None)
-            if queryset is not None and hasattr(queryset, "_model"):
-                model = queryset._model
-            elif queryset is not None and hasattr(queryset, "_original_model"):
-                model = queryset._original_model
-        
-        if model is not None and hasattr(model, "_meta"):
-            pk_field = model._meta.pk
-            if pk_field is not None:
-                python_type = getattr(pk_field, "_python_type", None)
-                if python_type is not None:
-                    return python_type
-        
-        # Default to UUID (new default)
-        return uuid.UUID
+            model = getattr(queryset, "model", None) if queryset is not None else None
+        lookup_field = getattr(viewset, "lookup_field", "id") or "id"
+
+        meta = getattr(model, "_meta", None)
+        if meta is None:
+            return uuid.UUID if lookup_field in ("id", "pk") else str
+
+        field = meta.pk if lookup_field == "pk" else meta.get_field(lookup_field)
+        if field is None:
+            field = meta.get_field_by_column(lookup_field)
+        if field is None:
+            return str
+        if isinstance(field, ForeignKeyField):
+            try:
+                field = field.get_target_model()._meta.pk
+            except Exception:
+                return str
+        python_type = getattr(field, "_python_type", None)
+        return python_type if python_type is not None else str
     
     def _create_endpoint(
         self,

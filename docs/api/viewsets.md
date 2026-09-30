@@ -111,6 +111,35 @@ router.register("authors", AuthorViewSet)
 urlpatterns = router.routes
 ```
 
+`router.routes` is built on first access and cached; a later `register()` or
+`include()` invalidates the cache, so the next read includes it.
+
+### The detail path parameter
+
+Detail routes are `/{prefix}/{lookup}`, where `{lookup}` is named after
+`lookup_url_kwarg` when set, else `lookup_field` (default `id`). The parameter
+is typed with the **lookup field's** type on the model — a `SlugField` is a
+string, an `IntegerField` an integer, a foreign key its target's primary-key
+type — so FastAPI validates it and OpenAPI documents it correctly. A field the
+model does not declare is typed `str`.
+
+```python
+class ArticleViewSet(ModelViewSet):
+    lookup_field = "slug"             # filter(slug=...) — string parameter
+    lookup_url_kwarg = "article_slug"  # route: /articles/{article_slug}
+```
+
+`get_object()` reads the value from `self.kwargs[lookup_url_kwarg or
+lookup_field]` and filters the queryset by `lookup_field`.
+
+While building routes the router calls `get_serializer_class()` on a
+request-less instance to type each action's body and response for OpenAPI. An
+override that needs the request (e.g. a per-user serializer) cannot answer
+then: the router logs a warning naming the viewset and action and documents
+that action with the class-level `serializer_class`. The built-in
+`get_serializer_class()` never fails that way, so an error from it is raised at
+startup rather than hidden.
+
 ## Custom Actions
 
 Add custom endpoints with the `@action` decorator:
