@@ -8,6 +8,7 @@ from pathlib import Path
 
 from zeeb_agents._utils import AgentResult, agent_function
 from zeeb_agents._utils.errors import fail
+from zeeb_agents._utils.paths import confine_path
 from zeeb_agents._utils.project import require_project_root
 
 _LOG_LEVELS = {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
@@ -25,8 +26,9 @@ def _find_log_files(root: Path) -> list[Path]:
 
 def _resolve_log_file(root: Path, log_file: str | None) -> Path | None:
     if log_file:
-        p = Path(log_file)
-        return p if p.is_absolute() else root / p
+        # Confined like every other caller path: clear_logs truncates what this
+        # returns, so an absolute or ``..`` path used to empty any file.
+        return confine_path(root, log_file, kind="log_file")
     files = _find_log_files(root)
     return files[0] if files else None
 

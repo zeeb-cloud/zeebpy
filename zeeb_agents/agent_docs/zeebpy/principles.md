@@ -215,7 +215,11 @@ Two tools are deliberately sandboxed:
 - **File tools are confined to the project.** `{prefix}read_file`,
   `{prefix}write_file`, and `{prefix}list_files` resolve every path (following
   symlinks) and reject anything that escapes the project root with an error —
-  `../../etc/passwd` will fail.
+  `../../etc/passwd` will fail. The same check guards every other path a tool
+  takes (`log_file`, `output_path`, a generated test `filename`, a class-edit
+  `file`) with `outside_project_root`, and an app name must be an identifier
+  (`invalid_identifier`), so `{prefix}delete_app("..")` cannot address
+  anything outside `apps/`.
 
 ## 5. Special cases & gotchas
 

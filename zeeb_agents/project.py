@@ -267,14 +267,29 @@ async def delete_app(name: str, project_root: Path | None = None) -> AgentResult
             place because it may hold tests worth keeping
 
     Notes:
-        - If the app directory does not exist, returns ``success=False``
-          with ``data=None``.
+        - If the app directory does not exist, fails with
+          ``error_code="app_not_found"``.
+        - *name* must be an identifier (``invalid_identifier`` otherwise), and
+          ``apps/<name>`` must be a real directory inside the project — a
+          symlink is refused (``outside_project_root``) — so nothing outside
+          ``apps/`` can ever be removed.
         - ``startapp`` writes the app's test to ``tests/``, not into the app
           directory, so removing the directory alone left it behind. It is
           removed only while it is still exactly what ``startapp`` wrote.
     """
     root = require_project_root(project_root)
-    app_path = get_app_path(name, root)
+    app_path = get_app_path(name, root)  # refuses anything but an identifier
+    if app_path.is_symlink() or (
+        app_path.exists()
+        and app_path.resolve().parent != (Path(root) / "apps").resolve()
+    ):
+        # rmtree follows nothing, but the check is what guarantees the one
+        # directory removed is apps/<name> itself.
+        return fail(
+            f"apps/{name} is not a plain directory inside the project; refusing to delete it.",
+            code="outside_project_root",
+            path=f"apps/{name}",
+        )
     if not app_path.exists():
         apps = list_apps_util(root)
         suggestions = close_matches(name, apps)

@@ -28,6 +28,7 @@ from pathlib import Path
 from zeeb_agents._utils import AgentResult, agent_function
 from zeeb_agents._utils.errors import AgentError, fail
 from zeeb_agents._utils.field_types import FIELD_TYPE_MAP, render_py_literal
+from zeeb_agents._utils.paths import confine_path
 from zeeb_agents._utils.validation import (
     DOTTED_NAME_RE,
     ensure_identifier,
@@ -649,9 +650,10 @@ async def generate_tests(
     skipped: list[str] = []
     overwritten: list[str] = []
     target = filename or f"tests/test_{app}_generated.py"
+    confine_path(root, target, kind="filename")  # refuse an escape before any write
 
     def _write(relative: str, content: str) -> None:
-        path = root / relative
+        path = confine_path(root, relative, kind="filename")
         if path.exists():
             if overwrite and relative == target:
                 path.write_text(content, encoding="utf-8")

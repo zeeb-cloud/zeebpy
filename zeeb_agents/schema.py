@@ -11,6 +11,7 @@ from typing import Any
 
 from zeeb_agents._utils import AgentResult, agent_function
 from zeeb_agents._utils.errors import AgentError, fail
+from zeeb_agents._utils.paths import confine_path
 from zeeb_agents._utils.project import get_app_path, list_apps
 
 # Map zeeb_orm field types → JSON Schema types (covers every canonical field
@@ -432,14 +433,12 @@ async def export_openapi(
           (``data`` includes the ``port``).
     """
     root = project_root
+    # Checked before the fetch: a path outside the project is refused without
+    # needing a server to be up first.
+    out = confine_path(root, output_path or "openapi.json", kind="output_path")
 
     spec = await _fetch_openapi_spec(port)
 
-    out = (
-        root / output_path if output_path and not Path(output_path).is_absolute()
-        else Path(output_path) if output_path
-        else root / "openapi.json"
-    )
     await asyncio.to_thread(out.write_text, json.dumps(spec, indent=2), "utf-8")
 
     rel = str(out.relative_to(root)) if out.is_relative_to(root) else str(out)

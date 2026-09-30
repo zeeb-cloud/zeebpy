@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import keyword
 import re
 import sys
 from pathlib import Path
@@ -149,7 +150,24 @@ def list_apps(project_root: Path) -> list[str]:
 
 
 def get_app_path(app_name: str, project_root: Path) -> Path:
-    """Return the path to an app directory (apps/<app_name>)."""
+    """Return the path to an app directory (apps/<app_name>).
+
+    The name is validated here, once, for every caller: an app is a Python
+    package, so its name must be an identifier — which is also what keeps
+    ``..``, ``/`` or an absolute path from turning ``apps/<name>`` into a path
+    outside the project (``delete_app("..")`` used to remove the project).
+    Raises :class:`AgentError` ``invalid_identifier`` otherwise.
+    """
+    if (
+        not isinstance(app_name, str)
+        or not app_name.isidentifier()
+        or keyword.iskeyword(app_name)
+    ):
+        raise AgentError(
+            f"Invalid app name {app_name!r}: must be a valid Python identifier",
+            code="invalid_identifier",
+            value=app_name if isinstance(app_name, str) else repr(app_name),
+        )
     return project_root / "apps" / app_name
 
 

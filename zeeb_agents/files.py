@@ -9,20 +9,12 @@ from pathlib import Path, PurePosixPath
 
 from zeeb_agents._utils import AgentResult, agent_function
 from zeeb_agents._utils.errors import AgentError, fail
+from zeeb_agents._utils.paths import confine_path
 
 
 def _resolve_path(root: Path, path: str | Path) -> Path:
     """Resolve *path* against *root*, rejecting escapes from the project root."""
-    p = Path(path)
-    full = p if p.is_absolute() else root / p
-    resolved = full.resolve()
-    if not resolved.is_relative_to(Path(root).resolve()):
-        raise AgentError(
-            f"Path '{path}' is outside the project root",
-            code="outside_project_root",
-            path=str(path),
-        )
-    return full
+    return confine_path(root, path)
 
 
 @agent_function
