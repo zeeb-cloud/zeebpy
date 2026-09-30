@@ -137,7 +137,20 @@ class ManyRelatedManager(Manager[Any]):
             .where(through.c[my_col] == self._instance.pk)
             .scalar_subquery()
         )
-        return QuerySet(self.model).filter(pk__in=subquery)
+        queryset = QuerySet(self.model).filter(pk__in=subquery)
+        if self._alias is not None:
+            queryset = queryset.using(self._alias)
+        return queryset
+
+    @property
+    def _alias(self) -> str | None:
+        """The database alias of the instance this manager is bound to.
+
+        Reads and writes of the join table go to the database the instance
+        lives in, never silently to ``default``.
+        """
+        state = getattr(self._instance, "_state", None)
+        return getattr(state, "db_alias", None)
 
     # Writes (portable: SELECT existing pairs, then INSERT the missing ones)
 
@@ -170,7 +183,7 @@ class ManyRelatedManager(Manager[Any]):
                     [{my_col: my_pk, other_col: pk} for pk in missing],
                 )
 
-        await self._run_atomic(_do)
+        await self._run_atomic(_do, self._alias)
 
     async def remove(self, *objs: Any) -> None:
         """Unlink the given objects (or pk values)."""
@@ -185,7 +198,7 @@ class ManyRelatedManager(Manager[Any]):
 
         from zeeb_orm.db.connection import get_session
 
-        async with get_session() as (session, should_commit):
+        async with get_session(self._alias) as (session, should_commit):
             await session.execute(
                 delete(through).where(
                     and_(
@@ -207,7 +220,7 @@ class ManyRelatedManager(Manager[Any]):
 
         from zeeb_orm.db.connection import get_session
 
-        async with get_session() as (session, should_commit):
+        async with get_session(self._alias) as (session, should_commit):
             await session.execute(
                 delete(through).where(through.c[my_col] == self._instance.pk)
             )
@@ -257,7 +270,7 @@ class ManyRelatedManager(Manager[Any]):
                     [{my_col: my_pk, other_col: pk} for pk in missing],
                 )
 
-        await self._run_atomic(_do)
+        await self._run_atomic(_do, self._alias)
 
     async def create(self, *, validate: bool = True, **kwargs: Any) -> Any:
         """Create a new related object and link it in the same call."""
@@ -267,15 +280,19 @@ class ManyRelatedManager(Manager[Any]):
         return obj
 
     @staticmethod
-    async def _run_atomic(operation: Any) -> None:
-        """Run ``operation(session)`` inside the active or a new transaction."""
+    async def _run_atomic(operation: Any, alias: str | None = None) -> None:
+        """Run ``operation(session)`` in a transaction on ``alias``.
+
+        Joins the active ``atomic()`` block only when it is on the same
+        database; a transaction open on another alias is not this write's.
+        """
         from zeeb_orm.db.connection import atomic, get_active_session
 
-        session = get_active_session()
+        session = get_active_session(alias)
         if session is not None:
             await operation(session)
         else:
-            async with atomic() as session:
+            async with atomic(alias) as session:
                 await operation(session)
 
     def __repr__(self) -> str:

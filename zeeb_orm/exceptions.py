@@ -68,7 +68,17 @@ class NotSupportedError(Exception):
     pass
 
 
-class IntegrityError(Exception):
+class DatabaseError(Exception):
+    """Base class for errors a database operation reports.
+
+    Raised directly when a write that must hit an existing row matched none
+    (``save(update_fields=...)`` on a row that no longer exists).
+    """
+
+    pass
+
+
+class IntegrityError(DatabaseError):
     """Raised when a database write violates a constraint.
 
     Wraps the driver-level integrity error (unique, foreign-key, check or
@@ -146,6 +156,7 @@ __all__ = [
     "NON_FIELD_ERRORS",
     "ValidationError",
     "NotSupportedError",
+    "DatabaseError",
     "IntegrityError",
     "ConnectionDoesNotExist",
     "ProtectedError",

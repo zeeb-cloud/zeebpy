@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime
+from collections.abc import Generator, Mapping
 from typing import TYPE_CHECKING, Any, ClassVar, TypeVar, cast
 
 from sqlalchemy import Table
@@ -41,32 +42,118 @@ from zeeb_orm.models.sa_builder import (  # noqa: F401
 if TYPE_CHECKING:
     from zeeb_orm.permissions.rules import Rule
 
-# Global model registry for resolving string references
+#: Global model registry for resolving string references, keyed by the
+#: model's label ``"<app_label>.<ClassName>"`` (see :func:`model_label`), so
+#: two apps may each define a ``Post`` without one silently replacing the
+#: other. Re-registering the same label (a module re-import) replaces the
+#: entry.
 _model_registry: dict[str, type[Model]] = {}
+
+#: Packages whose models a project model of the same class name shadows in a
+#: bare-name lookup (see :func:`resolve_model_ref`).
+_FRAMEWORK_PACKAGES = ("zeeb_orm", "zeeb_api", "zeeb_agents")
 
 ModelT = TypeVar("ModelT", bound="Model")
 
+#: "Not passed" marker for ``Model.__init__`` — ``None`` is a real value.
+_MISSING: Any = object()
 
-def resolve_model_ref(ref: str) -> type[Model]:
+
+class AmbiguousModelReferenceError(LookupError):
+    """A bare model name matches models in more than one app.
+
+    Deliberately not a ``KeyError``: callers treat ``KeyError`` as "not
+    registered yet, try again later", and an ambiguity never resolves itself.
+    """
+
+
+def derive_app_label(module: str) -> str:
+    """The app label of a model defined in ``module``.
+
+    ``apps.blog.models`` and ``apps.blog.models.post`` → ``blog``;
+    ``zeeb_api.auth.models`` → ``auth``; a module with no ``models`` segment
+    (a test file, a script) → its last segment. ``Meta.app_label`` overrides
+    this.
+    """
+    parts = [p for p in module.split(".") if p]
+    if "models" in parts:
+        index = parts.index("models")
+        if index > 0:
+            return parts[index - 1]
+    if len(parts) >= 2 and parts[0] == "apps":
+        return parts[1]
+    return parts[-1] if parts else module
+
+
+def model_label(model: type) -> str:
+    """``"<app_label>.<ClassName>"`` — the model's registry key."""
+    meta = getattr(model, "_meta", None)
+    app_label = getattr(meta, "app_label", "") or derive_app_label(model.__module__)
+    return f"{app_label}.{model.__name__}"
+
+
+def _bare_name(key: str) -> str:
+    return key.rsplit(".", 1)[-1]
+
+
+def _is_framework_model(model: type) -> bool:
+    module = getattr(model, "__module__", "") or ""
+    return module.split(".", 1)[0] in _FRAMEWORK_PACKAGES
+
+
+def resolve_model_ref(ref: str, relative_to: type | None = None) -> type[Model]:
     """Resolve a string model reference to the registered class.
 
-    Accepts a bare class name (``"User"``) or a Django-style dotted label
-    (``"accounts.User"``, ``"apps.accounts.User"``) — the registry is keyed
-    by class name, so dotted references fall back to their last segment.
+    Accepts a Django-style label (``"accounts.User"``, also
+    ``"apps.accounts.User"``) or a bare class name (``"User"``). Resolution
+    order:
 
-    Raises ``KeyError`` (kept for callers that defer on unresolved
-    references) with the known model names when nothing matches.
+    1. the exact registry key;
+    2. for a dotted reference, ``<last label segment>.<Name>``;
+    3. for a bare name with ``relative_to`` (the model declaring the
+       relation), the model of that name in the same app — Django's rule for
+       ``ForeignKey("Author")``;
+    4. the only registered model of that class name. Several candidates are
+       ambiguous — except that a project model shadows a framework model of
+       the same name (a project's ``accounts.User`` wins a bare ``"User"``
+       over ``zeeb_api``'s own), which is how bare names have always resolved
+       in a generated project.
+
+    Raises:
+        KeyError: nothing of that name is registered (kept for callers that
+            defer on unresolved references), listing the known models.
+        AmbiguousModelReferenceError: the name matches models in several apps.
     """
-    try:
-        return _model_registry[ref]
-    except KeyError:
-        pass
+    model = _model_registry.get(ref)
+    if model is not None:
+        return model
+
+    name = _bare_name(ref)
     if "." in ref:
-        bare = ref.rsplit(".", 1)[1]
-        try:
-            return _model_registry[bare]
-        except KeyError:
-            pass
+        label = ref.rsplit(".", 1)[0].rsplit(".", 1)[-1]
+        model = _model_registry.get(f"{label}.{name}")
+        if model is not None:
+            return model
+    elif relative_to is not None:
+        model = _model_registry.get(f"{model_label(relative_to).rsplit('.', 1)[0]}.{name}")
+        if model is not None:
+            return model
+
+    candidates: dict[str, type[Model]] = {}
+    for key, candidate in list(_model_registry.items()):
+        if _bare_name(key) == name and candidate not in candidates.values():
+            candidates[key] = candidate
+    if len(candidates) == 1:
+        return next(iter(candidates.values()))
+    if len(candidates) > 1:
+        project = {k: m for k, m in candidates.items() if not _is_framework_model(m)}
+        if len(project) == 1:
+            return next(iter(project.values()))
+        raise AmbiguousModelReferenceError(
+            f"Model reference {ref!r} is ambiguous: it matches "
+            f"{', '.join(sorted(candidates))}. Use the app-qualified label "
+            f"(e.g. {sorted(candidates)[0]!r})."
+        )
     raise KeyError(
         f"Model {ref!r} is not registered. Known models: "
         f"{', '.join(sorted(_model_registry)) or '(none)'}"
@@ -107,6 +194,9 @@ class ModelBase(type):
             parent_meta = getattr(parent, "_meta", None)
             if parent_meta is not None:
                 new_class._meta.inherit_from(parent_meta)
+        if not new_class._meta.app_label:
+            # Derived, not declared: a child of this class derives its own.
+            new_class._meta.app_label = derive_app_label(new_class.__module__)
 
         # Collect fields from class and parents
         fields: list[Field[Any]] = []
@@ -122,9 +212,21 @@ class ModelBase(type):
             for value in namespace.values()
         )
 
-        # Inherit fields from parents (including abstract parents)
+        # Inherit fields from parents (including abstract parents). Each copy
+        # is installed on the child as its own descriptor: the parent's field
+        # still belongs to the parent, so a relation reached through it would
+        # resolve ``"self"`` — and every other per-model lookup — against the
+        # parent (for an abstract parent, a class with no table or manager).
         for parent in reversed(parents):
             if hasattr(parent, "_meta"):
+                for m2m in getattr(parent, "_m2m_fields", ()):
+                    if m2m.name in namespace or any(f.name == m2m.name for f in m2m_fields):
+                        continue
+                    m2m_copy = m2m.__class__.__new__(m2m.__class__)
+                    m2m_copy.__dict__.update(m2m.__dict__)
+                    m2m_copy.contribute_to_class(new_class, m2m.name)
+                    setattr(new_class, m2m.name, m2m_copy)
+                    m2m_fields.append(m2m_copy)
                 for field in parent._meta.local_fields:
                     if field.primary_key and declares_own_pk:
                         continue
@@ -133,6 +235,7 @@ class ModelBase(type):
                         field_copy = field.__class__.__new__(field.__class__)
                         field_copy.__dict__.update(field.__dict__)
                         field_copy.contribute_to_class(new_class, field.name)
+                        setattr(new_class, field.name, field_copy)
                         fields.append(field_copy)
                         if field_copy.primary_key:
                             has_pk = True
@@ -191,8 +294,8 @@ class ModelBase(type):
             manager = Manager()
             manager.contribute_to_class(new_class, "objects")
 
-        # Register model
-        _model_registry[name] = new_class
+        # Register model under its app-qualified label
+        _model_registry[model_label(new_class)] = new_class
 
         # Set up reverse relations for ForeignKey fields
         for fk_field in fk_fields:
@@ -256,36 +359,54 @@ class Model(metaclass=ModelBase):
         abstract = True
 
     def __init__(self, **kwargs: Any) -> None:
-        # Initialize field values
+        """Build an unsaved instance from field values.
+
+        Mirrors Django: a field that is not passed gets its (non-callable)
+        default; a field passed explicitly keeps the value given, ``None``
+        included. Callable defaults and auto timestamps are filled in at
+        INSERT time. A ForeignKey accepts the related instance under its name
+        or the raw id under ``<name>_id``; a settable property (``pk``) may be
+        passed too. Anything else raises ``TypeError`` — a misspelt field
+        must not silently become a plain attribute that is never saved.
+        """
+        self._state = ModelState()
         for field in self._meta.local_fields:
-            # Check for value by field name or db_column (for FK _id suffix)
-            value = kwargs.pop(field.name, None)
-
-            # For FK fields, also check for {name}_id
-            if value is None and isinstance(field, ForeignKeyField):
-                value = kwargs.pop(f"{field.name}_id", None)
-                if value is not None:
-                    # Store as the ID
-                    setattr(self, f"_field_{field.name}_id", value)
+            if isinstance(field, ForeignKeyField):
+                value = kwargs.pop(field.name, _MISSING)
+                raw_id = kwargs.pop(f"{field.name}_id", _MISSING)
+                if (value is _MISSING or value is None) and raw_id is not _MISSING:
+                    setattr(self, f"_field_{field.name}_id", raw_id)
                     continue
+            else:
+                value = kwargs.pop(field.name, _MISSING)
 
-            # Handle defaults - don't apply callable defaults here (defer to create/save)
-            # Only apply non-callable defaults
-            if value is None and field.default is not None and not callable(field.default):
-                value = field.default
+            if value is _MISSING:
+                # Callable defaults are deferred to the INSERT.
+                default = field.default
+                value = default if default is not None and not callable(default) else None
 
             # Use the field's __set__ for proper handling (especially FK)
             if value is not None:
                 setattr(self, field.name, value)
-            elif not isinstance(field, ForeignKeyField):
-                setattr(self, f"_field_{field.name}", value)
+            elif isinstance(field, ForeignKeyField):
+                setattr(self, f"_field_{field.name}_id", None)
+            else:
+                setattr(self, f"_field_{field.name}", None)
 
-        # Store any extra kwargs (for related objects)
-        for key, value in kwargs.items():
-            setattr(self, key, value)
-
-        # Track if instance is persisted
-        self._state = ModelState()
+        if kwargs:
+            unexpected = []
+            for key, value in kwargs.items():
+                attr = getattr(type(self), key, None)
+                if isinstance(attr, property) and attr.fset is not None:
+                    setattr(self, key, value)
+                else:
+                    unexpected.append(key)
+            if unexpected:
+                raise TypeError(
+                    f"{type(self).__name__}() got unexpected keyword argument(s): "
+                    f"{', '.join(repr(k) for k in unexpected)}. Valid fields: "
+                    f"{', '.join(f.name for f in self._meta.local_fields)}."
+                )
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
         super().__init_subclass__(**kwargs)
@@ -300,14 +421,43 @@ class Model(metaclass=ModelBase):
         return f"<{self.__class__.__name__}: {pk_value}>"
 
     def __eq__(self, other: Any) -> bool:
-        if not isinstance(other, self.__class__):
+        """Django semantics: same model and same primary key.
+
+        An unsaved instance (no pk yet) is equal only to itself — two new
+        objects are not "the same row" just because neither has an id.
+        """
+        if not isinstance(other, Model):
+            return NotImplemented
+        if type(self) is not type(other):
             return False
-        pk_name = self._meta.pk_name
-        return getattr(self, pk_name) == getattr(other, pk_name)
+        pk_value = self.pk
+        if pk_value is None:
+            return self is other
+        return bool(pk_value == other.pk)
 
     def __hash__(self) -> int:
-        pk_value = getattr(self, self._meta.pk_name, None)
-        return hash((self.__class__.__name__, pk_value))
+        """Hash of the primary key; an unsaved instance is unhashable.
+
+        Its pk would change on save, and an object whose hash changes is lost
+        in every set and dict it was put into (Django raises the same way).
+        """
+        pk_value = self.pk
+        if pk_value is None:
+            raise TypeError("Model instances without primary key value are unhashable")
+        return hash(pk_value)
+
+    def __await__(self) -> Generator[Any, None, Any]:
+        """``await instance`` is the instance itself.
+
+        A ForeignKey attribute is the related instance when it is cached
+        (``select_related``, ``prefetch_related``, assignment, ``create``)
+        and an awaitable loader otherwise. Making instances awaitable lets
+        ``await post.author`` work in both cases, without a query when the
+        object is cached, while ``post.author.name`` keeps working on a
+        cached relation.
+        """
+        return self
+        yield  # pragma: no cover - makes this a generator function
 
     @property
     def pk(self) -> Any:
@@ -350,6 +500,8 @@ class Model(metaclass=ModelBase):
         - Auto timestamps (``auto_now_add`` / ``auto_now``): generated here and
           stored on the instance.
         - Auto-increment PKs with no value yet: omitted so the DB generates them.
+        - ``None`` on a nullable field is written as NULL; on a non-null field
+          it is omitted, so the column default (if any) applies.
         """
         values: dict[str, Any] = {}
 
@@ -384,55 +536,69 @@ class Model(metaclass=ModelBase):
             if field.primary_key and value is None:
                 continue
 
+            # A nullable field set to None is written as NULL — omitting it
+            # would let the column default overwrite the None the caller
+            # chose. A non-null one is omitted so its column default applies.
             col_name = field.db_column or field.name
-            if value is not None:
+            if value is not None or field.null:
                 values[col_name] = value
 
         return values
 
     @classmethod
-    def _from_row(cls: type[ModelT], row: Any) -> ModelT:
-        """Create model instance from a database row (tuple or Row object)."""
-        kwargs = {}
+    def _from_db(
+        cls: type[ModelT], values: Mapping[str, Any], alias: str | None = None
+    ) -> ModelT:
+        """Build a persisted instance from ``{column_name: value}``.
 
-        # Handle both named rows and mapping
-        if hasattr(row, "_mapping"):
-            # SQLAlchemy Row object
-            mapping = row._mapping
-            for field in cls._meta.local_fields:
-                col_name = field.db_column or field.name
-                value = mapping.get(col_name)
-                # For FK fields, use the _id suffix key
-                if isinstance(field, ForeignKeyField):
-                    kwargs[f"{field.name}_id"] = value
-                else:
-                    kwargs[field.name] = value
-        else:
-            # Tuple - match by position
-            for i, field in enumerate(cls._meta.local_fields):
-                if i < len(row):
-                    if isinstance(field, ForeignKeyField):
-                        kwargs[f"{field.name}_id"] = row[i]
-                    else:
-                        kwargs[field.name] = row[i]
+        Loading never applies field defaults: a NULL column is ``None`` on the
+        instance, whatever the field's default — otherwise the next
+        ``save()`` would write the default over the stored NULL. A column
+        absent from ``values`` (``only()`` / ``defer()``) is recorded as
+        deferred; ``save()`` leaves deferred columns untouched.
+        """
+        kwargs: dict[str, Any] = {}
+        deferred: set[str] = set()
+        for field in cls._meta.local_fields:
+            col_name = field.db_column or field.name
+            if col_name in values:
+                value = values[col_name]
+            else:
+                deferred.add(field.name)
+                value = None
+            if isinstance(field, ForeignKeyField):
+                kwargs[f"{field.name}_id"] = value
+            else:
+                kwargs[field.name] = value
 
         instance = cls(**kwargs)
         instance._state.persisted = True
+        instance._state.db_alias = alias
+        instance._state.deferred = deferred
         return instance
+
+    @classmethod
+    def _from_row(cls: type[ModelT], row: Any) -> ModelT:
+        """Create model instance from a database row (tuple or Row object)."""
+        if hasattr(row, "_mapping"):
+            # SQLAlchemy Row object
+            return cls._from_db(row._mapping)
+        # Tuple - match by position
+        values = {
+            field.db_column or field.name: row[i]
+            for i, field in enumerate(cls._meta.local_fields)
+            if i < len(row)
+        }
+        return cls._from_db(values)
 
     @classmethod
     def _from_sa_instance(cls: type[ModelT], sa_instance: Any) -> ModelT:
         """Create model instance from SQLAlchemy instance."""
-        kwargs = {}
-
+        values = {}
         for field in cls._meta.local_fields:
             col_name = field.db_column or field.name
-            value = getattr(sa_instance, col_name, None)
-            kwargs[field.name] = value
-
-        instance = cls(**kwargs)
-        instance._state.persisted = True
-        return instance
+            values[col_name] = getattr(sa_instance, col_name, None)
+        return cls._from_db(values)
 
     # Validation (Django-style full_clean / clean_fields / clean)
 
@@ -495,6 +661,60 @@ class Model(metaclass=ModelBase):
         if errors:
             raise ValidationError(errors)
 
+    def _normalize_update_fields(self, update_fields: Any) -> list[str]:
+        """Map ``update_fields`` entries to field names, rejecting unknown ones.
+
+        Accepts field names and a ForeignKey's ``<name>_id``. Unknown names,
+        many-to-many fields and reverse relations raise ``ValueError`` —
+        silently skipping them would report a save that never wrote the value.
+        """
+        if isinstance(update_fields, str):
+            update_fields = [update_fields]
+        by_name: dict[str, str] = {}
+        for field in self._meta.local_fields:
+            by_name[field.name] = field.name
+            if isinstance(field, ForeignKeyField):
+                by_name[f"{field.name}_id"] = field.name
+        names: list[str] = []
+        unknown: list[str] = []
+        for entry in update_fields:
+            name = by_name.get(entry)
+            if name is None:
+                unknown.append(str(entry))
+            elif name not in names:
+                names.append(name)
+        if unknown:
+            raise ValueError(
+                "The following fields do not exist in this model, are m2m "
+                f"fields, or are non-concrete fields: {', '.join(unknown)}"
+            )
+        return names
+
+    def _update_values(self, field_names: list[str]) -> dict[str, Any]:
+        """``{column: value}`` for an UPDATE of ``field_names`` (pk excluded)."""
+        values: dict[str, Any] = {}
+        for field in self._meta.local_fields:
+            if field.name not in field_names or field.primary_key:
+                continue
+
+            # For FK fields, get the _id value
+            if isinstance(field, ForeignKeyField):
+                value = getattr(self, f"{field.name}_id", None)
+            else:
+                value = getattr(self, field.name, None)
+
+            # Handle auto timestamps
+            if isinstance(field, DateTimeField) and field.auto_now:
+                value = datetime.datetime.now(datetime.timezone.utc)
+                setattr(self, field.name, value)
+            elif isinstance(field, DateField) and field.auto_now:
+                value = datetime.date.today()
+                setattr(self, field.name, value)
+
+            if value is not None or field.null:
+                values[field.db_column or field.name] = value
+        return values
+
     async def save(
         self,
         update_fields: list[str] | None = None,
@@ -505,7 +725,17 @@ class Model(metaclass=ModelBase):
         """
         Save the model instance to the database.
 
-        If update_fields is provided, only those fields will be updated.
+        Django semantics:
+
+        - A new instance is INSERTed. A persisted one is UPDATEd; when that
+          UPDATE matches no row (the row was deleted meanwhile) it is
+          INSERTed again.
+        - ``update_fields`` restricts the UPDATE to those fields (names, or a
+          ForeignKey's ``<name>_id``). An unknown name raises ``ValueError``;
+          an empty list saves nothing; an UPDATE that matches no row raises
+          :class:`~zeeb_orm.exceptions.DatabaseError` instead of inserting.
+        - An instance loaded with ``only()``/``defer()`` updates only the
+          fields that were loaded (or assigned since).
 
         Unless ``validate=False``, :meth:`full_clean` runs first (when
         ``update_fields`` is given, fields not being updated are excluded
@@ -520,8 +750,27 @@ class Model(metaclass=ModelBase):
         :data:`~zeeb_orm.signals.post_save` after it executes (after the
         commit when this save opened its own session).
         """
+        from sqlalchemy import insert as _sa_insert
+        from sqlalchemy import select, update
+
         from zeeb_orm.db.connection import get_session
+        from zeeb_orm.exceptions import DatabaseError
         from zeeb_orm.signals import post_save, pre_save
+
+        force_update = False
+        if update_fields is not None:
+            update_fields = self._normalize_update_fields(update_fields)
+            if not update_fields:
+                return
+            if self.pk is None:
+                raise ValueError("Cannot force an update in save() with no primary key.")
+            force_update = True
+        elif self._state.persisted and self._state.deferred:
+            # Django: a deferred instance writes back only what was loaded.
+            update_fields = [
+                f.name for f in self._meta.local_fields if f.name not in self._state.deferred
+            ]
+            force_update = True
 
         if validate:
             exclude = None
@@ -534,7 +783,7 @@ class Model(metaclass=ModelBase):
             await self.full_clean(exclude=exclude)
 
         alias = using or self._state.db_alias
-        created = not self._state.persisted
+        created = not self._state.persisted and not force_update
 
         # pre_save fires BEFORE the session opens — exceptions abort the save
         await pre_save.send(
@@ -544,64 +793,52 @@ class Model(metaclass=ModelBase):
             update_fields=update_fields,
         )
 
+        table = self._get_table()
         async with get_session(alias) as (session, should_commit):
-            if self._state.persisted:
-                # Update existing
-                from sqlalchemy import update
-
-                table = self._get_table()
-                pk_col = getattr(table.c, self._meta.pk_name)
-                pk_value = getattr(self, self._meta.pk_name)
-
-                values = {}
-                fields_to_update = update_fields or [f.name for f in self._meta.local_fields]
-
-                for field in self._meta.local_fields:
-                    if field.name not in fields_to_update:
-                        continue
-                    if field.primary_key:
-                        continue
-
-                    # For FK fields, get the _id value
-                    if isinstance(field, ForeignKeyField):
-                        value = getattr(self, f"{field.name}_id", None)
-                    else:
-                        value = getattr(self, field.name, None)
-
-                    # Handle auto timestamps
-                    if isinstance(field, DateTimeField) and field.auto_now:
-                        value = datetime.datetime.now(datetime.timezone.utc)
-                        setattr(self, field.name, value)
-                    elif isinstance(field, DateField) and field.auto_now:
-                        value = datetime.date.today()
-                        setattr(self, field.name, value)
-
-                    if value is not None or field.null:
-                        values[field.db_column or field.name] = value
-
-                stmt = update(table).where(pk_col == pk_value).values(**values)
-                await session.execute(stmt)
-                if should_commit:
-                    await session.commit()
+            inserted = False
+            if self._state.persisted or force_update:
+                pk_col = getattr(table.c, self._meta.pk.db_column or self._meta.pk_name)
+                pk_value = self.pk
+                values = self._update_values(
+                    update_fields or [f.name for f in self._meta.local_fields]
+                )
+                if values:
+                    result = await session.execute(
+                        update(table).where(pk_col == pk_value).values(**values)
+                    )
+                    matched = bool(result.rowcount)
+                else:
+                    # Nothing to write but the pk: the row just has to exist.
+                    result = await session.execute(select(pk_col).where(pk_col == pk_value))
+                    matched = result.first() is not None
+                if not matched:
+                    if force_update:
+                        raise DatabaseError(
+                            "Save with update_fields did not affect any rows."
+                            if update_fields is not None
+                            else "Save of a deferred instance did not affect any rows."
+                        )
+                    inserted = True
             else:
-                # Insert new via Core SQL (avoids DeclarativeBase FK resolution issues)
-                from sqlalchemy import insert as _sa_insert
+                inserted = True
 
-                table = self._get_table()
+            if inserted:
+                # Insert via Core SQL (avoids DeclarativeBase FK resolution issues)
                 insert_values = self._to_insert_values()
-                stmt = _sa_insert(table).values(**insert_values)
-                result = await session.execute(stmt)
+                result = await session.execute(_sa_insert(table).values(**insert_values))
 
                 # Read back DB-generated PK (auto-increment integers)
                 if getattr(self, self._meta.pk_name) is None:
                     pk_value = result.inserted_primary_key[0]
                     setattr(self, self._meta.pk_name, pk_value)
+                created = True
 
-                if should_commit:
-                    await session.commit()
+            if should_commit:
+                await session.commit()
 
-                self._state.persisted = True
-                self._state.db_alias = alias
+            self._state.persisted = True
+            self._state.db_alias = alias
+            self._state.deferred.difference_update(update_fields or ())
 
         # post_save fires AFTER the write — committed unless a surrounding
         # atomic() block owns the commit
@@ -617,12 +854,15 @@ class Model(metaclass=ModelBase):
 
         Related rows are collected via :class:`~zeeb_orm.models.deletion.Collector`
         (CASCADE recursion, PROTECT/RESTRICT checks, SET_NULL/SET_DEFAULT
-        updates) and all writes run in a single transaction (``atomic()``,
-        unless one is already active).
+        updates). Collecting and all writes run in a single transaction
+        (``atomic()``, unless one is already active on this database).
 
         Fires :data:`~zeeb_orm.signals.pre_delete` for every affected
         instance before its row is deleted and
-        :data:`~zeeb_orm.signals.post_delete` after the commit.
+        :data:`~zeeb_orm.signals.post_delete` once the rows are gone. Both run
+        inside the delete's transaction, as in Django: a receiver that raises
+        rolls the whole delete back. Work that must wait for the commit
+        belongs in :func:`~zeeb_orm.db.transaction.on_commit`.
 
         Returns:
             ``(total_deleted, {model_name: count})``.
@@ -639,15 +879,21 @@ class Model(metaclass=ModelBase):
             return 0, {}
 
         alias = self._state.db_alias
-        collector = Collector(using=alias)
-        # PROTECT / RESTRICT are checked here, BEFORE any delete runs.
-        await collector.collect([self])
 
-        if get_active_session() is not None:
-            result = await collector.delete()
+        async def _collect_and_delete() -> tuple[int, dict[str, int]]:
+            # Collected inside the transaction that deletes: a row that
+            # starts referencing this one between the two would otherwise
+            # escape the cascade (or the PROTECT/RESTRICT check).
+            collector = Collector(using=alias)
+            # PROTECT / RESTRICT are checked here, BEFORE any delete runs.
+            await collector.collect([self])
+            return await collector.delete()
+
+        if get_active_session(alias) is not None:
+            result = await _collect_and_delete()
         else:
             async with atomic(alias):
-                result = await collector.delete()
+                result = await _collect_and_delete()
 
         self._state.persisted = False
         return result
@@ -660,30 +906,44 @@ class Model(metaclass=ModelBase):
         Reads through the active ``atomic()`` session when one is open, so
         in-transaction writes are visible. ``using=`` targets a registered
         database alias (defaults to the alias the instance was loaded from).
+        ``fields`` limits the reload (field names or a ForeignKey's
+        ``<name>_id``); deferred fields that are reloaded stop being deferred.
+
+        A reloaded ForeignKey drops its cached related object (as in Django),
+        so ``obj.author`` never keeps serving the object the old id pointed
+        at.
         """
         from sqlalchemy import select
 
         from zeeb_orm.db.connection import get_session
 
         alias = using or self._state.db_alias
+        wanted = set(self._normalize_update_fields(fields)) if fields else None
         table = self._get_table()
-        pk_col = getattr(table.c, self._meta.pk_name)
-        pk_value = getattr(self, self._meta.pk_name)
+        pk_col = getattr(table.c, self._meta.pk.db_column or self._meta.pk_name)
+        pk_value = self.pk
 
         async with get_session(alias) as (session, _):
             stmt = select(table).where(pk_col == pk_value)
             result = await session.execute(stmt)
             row = result.fetchone()
 
-            if row is None:
-                raise self.DoesNotExist(f"{self.__class__.__name__} instance was deleted")
+        if row is None:
+            raise self.DoesNotExist(f"{self.__class__.__name__} instance was deleted")
 
-            for field in self._meta.local_fields:
-                if fields and field.name not in fields:
-                    continue
-                col_name = field.db_column or field.name
-                value = getattr(row, col_name, None)
-                setattr(self, field.name, value)
+        mapping = row._mapping
+        for field in self._meta.local_fields:
+            if wanted is not None and field.name not in wanted:
+                continue
+            value = mapping.get(field.db_column or field.name)
+            if isinstance(field, ForeignKeyField):
+                setattr(self, f"_field_{field.name}_id", value)
+                self.__dict__.pop(f"_cache_{field.name}", None)
+            else:
+                setattr(self, f"_field_{field.name}", value)
+            self._state.deferred.discard(field.name)
+        self._state.persisted = True
+        self._state.db_alias = alias
 
 
 class ModelState:
@@ -692,3 +952,5 @@ class ModelState:
     def __init__(self) -> None:
         self.persisted: bool = False
         self.db_alias: str | None = None
+        #: Field names not loaded from the database (``only()``/``defer()``).
+        self.deferred: set[str] = set()

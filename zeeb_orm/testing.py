@@ -101,17 +101,31 @@ def _model_tables(models: Sequence[type]) -> list[Any]:
     still registered under the same name.
 
     Adopting the registered table covers both: the schema lives in the metadata
-    for the life of the process, while this context owns only the DDL.
+    for the life of the process, while this context owns only the DDL. The
+    opposite case — a cached table that has since been removed from the
+    metadata — is rebuilt, because foreign keys to it resolve through the
+    metadata.
+
+    Auto-created many-to-many join tables are included when both ends are in
+    ``models`` (they are not models, so a caller could not pass them).
     """
     from zeeb_orm.models.base import metadata
 
     tables = []
     for model in models:
-        if model._sa_table is None:
-            existing = metadata.tables.get(model._meta.db_table)
-            if existing is not None:
-                model._sa_table = existing
+        registered = metadata.tables.get(model._meta.db_table)
+        if model._sa_table is None or registered is None:
+            model._sa_table = registered
         tables.append(model._get_table())
+
+    for model in models:
+        for m2m in getattr(model, "_m2m_fields", ()):
+            if m2m.through is not None or m2m.get_target_model() not in models:
+                continue
+            through = m2m.get_through_table()
+            if through not in tables:
+                tables.append(through)
+
     return tables
 
 

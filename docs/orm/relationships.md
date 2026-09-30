@@ -39,7 +39,7 @@ class Post(Model):
 |--------|-------------|
 | `to` | Related model (class or string) |
 | `on_delete` | Deletion behavior (required) |
-| `related_name` | Name for reverse relation |
+| `related_name` | Name for reverse relation (`%(class)s`/`%(app_label)s` placeholders; a trailing `+` hides it) |
 | `null` | Allow NULL (default: False) |
 | `blank` | Allow empty in forms |
 | `db_column` | Custom column name |
@@ -109,7 +109,7 @@ clause.
 ```python
 # Forward access (post -> author)
 post = await Post.objects.get(pk=1)
-author = post.author  # Lazy load
+author = await post.author  # Loads the author (one query), then caches it
 print(author.name)
 
 # Access foreign key ID directly
@@ -124,6 +124,32 @@ posts = await Post.objects.filter(author__name="John")
 posts = await Post.objects.filter(author=author)
 posts = await Post.objects.filter(author_id=author.id)
 ```
+
+`await post.author` works whether or not the author is already loaded: a
+cached relation (from `select_related`, `prefetch_related`, assignment or
+`create(author=...)`) is returned without a query — model instances are
+awaitable and resolve to themselves — and an unloaded one is fetched and
+cached. Plain attribute access (`post.author.name`) works on a cached
+relation; on an unloaded one it raises an `AttributeError` that says to
+`await` it or use `select_related()`.
+
+Assigning a different id (`post.author_id = other_id`, or
+`post.author = other_id`) drops the cached object, as does
+`refresh_from_db()`, so the relation never serves the object an old id
+pointed at.
+
+The lazy load, reverse managers (`author.posts`) and many-to-many managers
+all use the database the instance came from (`using("replica")`), never
+silently `default`.
+
+#### Reverse accessor names
+
+Without `related_name` the reverse accessor is `<model>_set`. Two relations
+installing the same accessor on one model — two ForeignKeys to `User`
+without `related_name`, or a `related_name` equal to one of the target's
+fields or methods — raise `FieldError` when the second model is defined,
+naming both sides. Give one of them a distinct `related_name` (or end it
+with `+` to install no reverse accessor).
 
 ### Eager Loading
 

@@ -360,22 +360,32 @@ class RelatedManager(Manager[ModelT]):
         if self.model is None:
             raise RuntimeError("RelatedManager is not bound to a model")
 
-        # Filter by the FK pointing to our instance
+        # Filter by the FK pointing to our instance, on the database the
+        # instance lives in (``using()``/multi-database setups).
         pk_value = self._instance.pk
-        return QuerySet(self.model).filter(**{self._fk_field_name: pk_value})
+        queryset = QuerySet(self.model).filter(**{self._fk_field_name: pk_value})
+        alias = self._alias()
+        if alias is not None:
+            queryset = queryset.using(alias)
+        return queryset
+
+    def _alias(self) -> str | None:
+        """The database alias of the instance this manager is bound to."""
+        state = getattr(self._instance, "_state", None)
+        return getattr(state, "db_alias", None)
 
     async def add(self, *objs: ModelT) -> None:
         """Add objects to the relation by setting their FK."""
         pk_value = self._instance.pk
         for obj in objs:
             setattr(obj, self._fk_field_name, pk_value)
-            await obj.save()
+            await obj.save(using=obj._state.db_alias or self._alias())
 
     async def remove(self, *objs: ModelT) -> None:
         """Remove objects from the relation by clearing their FK."""
         for obj in objs:
             setattr(obj, self._fk_field_name, None)
-            await obj.save()
+            await obj.save(using=obj._state.db_alias or self._alias())
 
     async def clear(self) -> None:
         """Remove all objects from the relation."""
@@ -408,10 +418,13 @@ class RelatedManagerDescriptor:
         related_model: type[ModelT],
         field_name: str,
         fk_field_name: str,
+        field: Any = None,
     ) -> None:
         self.related_model = related_model
         self.field_name = field_name
         self.fk_field_name = fk_field_name
+        #: The ForeignKeyField this accessor reverses.
+        self.field = field
 
     def __get__(self, obj: Any | None, objtype: type | None = None) -> Any:
         if obj is None:

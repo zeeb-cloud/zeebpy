@@ -156,9 +156,30 @@ class Article(Model):
 | `constraints` | List of `UniqueConstraint` / `CheckConstraint` objects | yes |
 | `unique_together` | List of field tuples that must be unique together | yes |
 | `index_together` | List of field tuples to index together | yes |
-| `app_label` | Application label | yes |
+| `app_label` | Application label (default: derived from the module, see below) | yes |
 
 Any other attribute on `class Meta` is ignored; there is no `verbose_name`.
+
+### App labels and the model registry
+
+Every concrete model is registered under its label, `"<app_label>.<ClassName>"`.
+Without `Meta.app_label` the label comes from the defining module:
+`apps/blog/models.py` (and `apps/blog/models/post.py`) → `blog`,
+`zeeb_api/auth/models.py` → `auth`, any other module → its last segment. Two
+apps may therefore each define a `Post`; neither replaces the other. The
+default **table name is unchanged** — it still derives from the class name
+alone, so set `table_name` when two same-named models share a database.
+
+String references (`ForeignKey("accounts.User")`, `ForeignKey("Author")`)
+resolve in this order:
+
+1. the exact label (`"accounts.User"`, also `"apps.accounts.User"`);
+2. a bare name from inside an app — the model of that name **in the same app**
+   (so `ForeignKey("Author")` in `blog` means `blog.Author`);
+3. the only registered model with that class name. A project model shadows a
+   framework model of the same name (a project's `accounts.User` wins a bare
+   `"User"` over zeeb_api's own). Two project models with the name raise
+   `AmbiguousModelReferenceError` asking for the app-qualified label.
 
 ## Model Inheritance
 
@@ -210,6 +231,28 @@ Child._meta.pk_name          # "id"          — the inherited BigAutoField
 
 `abstract` and `table_name`/`db_table` are deliberately excluded: inheriting
 them would make every subclass abstract and give siblings the same table.
+
+Relations are inherited per subclass: a `ForeignKey("self")` or
+`ManyToMany("self")` on an abstract base points at each concrete subclass,
+and an inherited `ManyToManyField` gets a join table per subclass. Give an
+inherited relation a `related_name` with `%(class)s` (and optionally
+`%(app_label)s`) so every subclass installs its own reverse accessor:
+
+```python
+class Owned(Model):
+    owner = fields.ForeignKey("accounts.User", related_name="%(class)s_items")
+
+    class Meta:
+        abstract = True
+
+
+class Pen(Owned):
+    pass            # user.pen_items
+
+
+class Cup(Owned):
+    pass            # user.cup_items
+```
 
 An option declared in the subclass's own `Meta` wins, and with multiple
 bases the first one in the MRO that supplies an option wins. An inherited
@@ -296,18 +339,44 @@ await article.delete()
 await Article.objects.filter(views=0).delete()
 ```
 
+### Creating instances
+
+`Model(**fields)` works like this:
+
+- A field that is **not passed** gets its default; a field passed explicitly
+  keeps the value given — `None` included (`Article(views=None)` is `None`,
+  not `0`). Callable defaults and `auto_now_add` are filled in on INSERT.
+- A ForeignKey takes the related instance under its name or the raw id under
+  `<name>_id`. A settable property (such as `pk`) may be passed too.
+- **Anything else raises `TypeError`** — a misspelt field in
+  `Article.objects.create(titel=...)` is an error, not a silently dropped
+  value.
+
+Loading from the database never applies defaults: a `NULL` column is `None`
+on the instance, so a `BooleanField(null=True)` or
+`IntegerField(null=True, default=0)` round-trips its `NULL`.
+
 ### save() Options
 
 ```python
 # Save all fields
 await article.save()
 
-# Save only specific fields
+# Save only specific fields (names, or a ForeignKey's "<name>_id")
 await article.save(update_fields=["title", "updated_at"])
-
-# Force insert (don't try to update)
-await article.save(force_insert=True)
 ```
+
+`save()` behaves like this:
+
+- A new instance is INSERTed; a persisted one is UPDATEd. If that UPDATE
+  matches no row (the row was deleted meanwhile), the instance is INSERTed
+  again and `post_save` reports `created=True`.
+- `update_fields` restricts the UPDATE. An unknown name raises `ValueError`,
+  an empty list saves nothing, and an UPDATE that matches no row raises
+  `zeeb_orm.exceptions.DatabaseError` instead of inserting. On an unsaved
+  instance without a primary key it raises `ValueError`.
+- An instance loaded with `only()`/`defer()` writes back only the fields
+  that were loaded or assigned since — the unloaded columns are left alone.
 
 ### refresh_from_db()
 
@@ -317,6 +386,21 @@ await article.refresh_from_db()
 
 # Reload specific fields
 await article.refresh_from_db(fields=["views"])
+```
+
+A reloaded ForeignKey drops its cached related object, so after the reload
+`await article.author` fetches the author the row now points at.
+
+### Equality and hashing
+
+Two instances are equal when they are the same model with the same primary
+key. An unsaved instance (no pk yet) is equal only to itself, and hashing it
+raises `TypeError` — its pk, and so its hash, would change on save:
+
+```python
+Article(title="a") == Article(title="a")   # False
+hash(Article(title="a"))                   # TypeError
+{await Article.objects.get(pk=pk)}         # fine: saved instances hash by pk
 ```
 
 ## Model State
@@ -330,7 +414,8 @@ article._state.persisted  # False - not saved yet
 await article.save()
 article._state.persisted  # True - saved to database
 
-article._state.db  # Database alias used
+article._state.db_alias  # Database alias used (None = "default")
+article._state.deferred  # Fields not loaded (only()/defer())
 ```
 
 ## Managers
