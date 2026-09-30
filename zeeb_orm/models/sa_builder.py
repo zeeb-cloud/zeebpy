@@ -14,6 +14,17 @@ if TYPE_CHECKING:
 metadata = MetaData()
 
 
+def managed_tables(tables: Any = None) -> list[Table]:
+    """The tables of ``metadata`` (or ``tables``) this project's schema owns.
+
+    ``Meta.managed = False`` tags a model's table ``info["managed"] = False``;
+    such tables are skipped by ``makemigrations`` and by schema creation for
+    tests. Tables not built from a model carry no tag and count as managed.
+    """
+    source = metadata.sorted_tables if tables is None else tables
+    return [table for table in source if table.info.get("managed", True)]
+
+
 def build_table(model: type[Model]) -> Table:
     """Get or create the SQLAlchemy Table for ``model`` (cached on the class)."""
     if model._sa_table is None:
@@ -63,7 +74,15 @@ def build_table(model: type[Model]) -> Table:
                 columns.append(Column(field.db_column or field.name, col_type, **col_kwargs))
 
         table_args = _build_table_args(model)
-        model._sa_table = Table(model._meta.db_table, metadata, *columns, *table_args)
+        model._sa_table = Table(
+            model._meta.db_table,
+            metadata,
+            *columns,
+            *table_args,
+            # Read by makemigrations and create_all(): an unmanaged model's
+            # table exists (or not) outside this project's schema.
+            info={"managed": bool(model._meta.managed)},
+        )
 
     # Ensure auto-created M2M join tables exist in the shared metadata.
     # Done lazily (not at class definition) so importing model modules does
@@ -197,6 +216,8 @@ def build_m2m_through_table(m2m_field: Any) -> Table:
         UniqueConstraint(
             source_col, target_col, name=f"uq_{name}_{source_col}_{target_col}"
         ),
+        # Django: the join table is created unless *both* ends are unmanaged.
+        info={"managed": bool(source._meta.managed or target._meta.managed)},
     )
 
 
@@ -294,6 +315,7 @@ def to_sa_instance(instance: Model) -> Any:
 
 __all__ = [
     "metadata",
+    "managed_tables",
     "build_table",
     "build_m2m_through_table",
     "build_sa_model",

@@ -150,6 +150,16 @@ def build_parser(prog_name: str = "zeeb-manage") -> argparse.ArgumentParser:
         dest="dry_run",
         help="Show what migration would be created without writing any files.",
     )
+    sp_makemig.add_argument(
+        "--accept-renames",
+        action="store_true",
+        dest="accept_renames",
+        help=(
+            "Emit RenameField for the likely renames makemigrations reports "
+            "(a removed and an added field with the same definition), instead "
+            "of RemoveField + AddField, which drops the column's data."
+        ),
+    )
 
     # migrate
     sp_migrate = subparsers.add_parser(
@@ -284,7 +294,8 @@ def main() -> int:
     elif args.command == "makemigrations":
         from zeeb_orm.cli.commands.migrate import run_makemigrations
         return run_makemigrations(
-            args.name, args.empty, args.check, args.dry_run, json_output=as_json
+            args.name, args.empty, args.check, args.dry_run, json_output=as_json,
+            accept_renames=args.accept_renames,
         )
 
     elif args.command == "migrate":

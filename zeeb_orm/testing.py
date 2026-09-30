@@ -103,7 +103,9 @@ def _model_tables(models: Sequence[type]) -> list[Any]:
     metadata.
 
     Auto-created many-to-many join tables are included when both ends are in
-    ``models`` (they are not models, so a caller could not pass them).
+    ``models`` (they are not models, so a caller could not pass them), and
+    models with ``Meta.managed = False`` are left out: their tables are not
+    this schema's to create.
     """
     from zeeb_orm.models.base import metadata
 
@@ -122,7 +124,7 @@ def _model_tables(models: Sequence[type]) -> list[Any]:
             if through not in tables:
                 tables.append(through)
 
-    return tables
+    return [table for table in tables if table.info.get("managed", True)]
 
 
 @asynccontextmanager

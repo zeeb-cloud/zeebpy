@@ -24,6 +24,14 @@ class MigrationError(Exception):
     pass
 
 
+class IrreversibleError(MigrationError):
+    """Raised when unapplying a migration needs an operation that cannot run backwards.
+
+    Checked for the whole plan before anything is unapplied, so a rollback
+    either can run completely or does not start.
+    """
+
+
 def find_project_root() -> Path | None:
     """Find the project root by looking for manage.py or migrations/."""
     current = Path.cwd()

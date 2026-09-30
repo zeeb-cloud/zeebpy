@@ -116,6 +116,8 @@ def _auto_name(operations: list[Operation]) -> str:
             descriptions.append(f"remove_{op.name}_from_{op.table}")
         elif isinstance(op, ops_module.AlterField):
             descriptions.append(f"alter_{op.name}_on_{op.table}")
+        elif isinstance(op, ops_module.RenameField):
+            descriptions.append(f"rename_{op.old_name}_to_{op.new_name}_on_{op.table}")
         else:
             descriptions.append("auto")
 

@@ -216,6 +216,7 @@ def makemigrations(
     migrations_dir: str | None = None,
     check: bool = False,
     dry_run: bool = False,
+    accept_renames: bool = False,
 ) -> str | None:
     """
     Create a new migration by auto-detecting model changes.
@@ -232,12 +233,16 @@ def makemigrations(
                have been committed.
         dry_run: If True, print what would be generated without writing any
                  files.
+        accept_renames: Emit ``RenameField`` for likely renames (a removed
+                 and an added field with the same definition) instead of
+                 ``RemoveField`` + ``AddField``. Without it they are only
+                 reported, on stderr.
 
     Returns:
         The migration name (e.g. ``"0001_initial"``) or None.
     """
     from zeeb_orm.migrations.writer import write_migration
-    from zeeb_orm.migrations.autodetector import detect_changes
+    from zeeb_orm.migrations.autodetector import detect_changes_with_report
 
     project_root = _find_project_root() or Path.cwd()
     mig_dir = _get_migrations_dir(migrations_dir)
@@ -261,7 +266,11 @@ def makemigrations(
         return migration_name
 
     # Detect changes against existing migration state
-    operations = detect_changes(migrations_dir=str(mig_dir))
+    operations, report = detect_changes_with_report(
+        migrations_dir=str(mig_dir), accept_renames=accept_renames
+    )
+    for warning in report.warnings():
+        print(f"WARNING: {warning}", file=sys.stderr)
 
     if not operations:
         print("No changes detected.")

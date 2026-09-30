@@ -12,6 +12,7 @@ from zeeb_orm.migrations.cli import (
     squashmigrations,
 )
 from zeeb_orm.migrations.state import (
+    IrreversibleError,
     MigrationError,
     MigrationState,
     check_migrations_applied,
@@ -32,6 +33,7 @@ __all__ = [
     "squashmigrations",
     "current",
     # State management
+    "IrreversibleError",
     "MigrationError",
     "MigrationState",
     "check_migrations_applied",

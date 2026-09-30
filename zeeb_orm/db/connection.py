@@ -249,30 +249,43 @@ class Database:
             return result
 
     async def create_all(self) -> None:
-        """Create all tables defined in metadata."""
-        from zeeb_orm.models.base import metadata
+        """Create the tables defined in metadata.
+
+        Tables of ``Meta.managed = False`` models are skipped: they belong to
+        some other schema, and creating them here would hide a missing table
+        in tests that production would hit.
+        """
+        from zeeb_orm.models.sa_builder import managed_tables, metadata
 
         if not self._connected:
             await self.connect()
 
+        def _create(conn: Any) -> None:
+            metadata.create_all(conn, tables=managed_tables())
+
         if self._async_engine:
             async with self._async_engine.begin() as conn:
-                await conn.run_sync(metadata.create_all)
+                await conn.run_sync(_create)
         elif self._sync_engine:
-            metadata.create_all(self._sync_engine)
+            with self._sync_engine.begin() as conn:
+                _create(conn)
 
     async def drop_all(self) -> None:
-        """Drop all tables defined in metadata."""
-        from zeeb_orm.models.base import metadata
+        """Drop the tables defined in metadata (unmanaged ones are left alone)."""
+        from zeeb_orm.models.sa_builder import managed_tables, metadata
 
         if not self._connected:
             await self.connect()
 
+        def _drop(conn: Any) -> None:
+            metadata.drop_all(conn, tables=managed_tables())
+
         if self._async_engine:
             async with self._async_engine.begin() as conn:
-                await conn.run_sync(metadata.drop_all)
+                await conn.run_sync(_drop)
         elif self._sync_engine:
-            metadata.drop_all(self._sync_engine)
+            with self._sync_engine.begin() as conn:
+                _drop(conn)
 
 
 class _SyncSessionTransactionWrapper:

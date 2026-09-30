@@ -48,8 +48,11 @@ async def test_the_last_unit_is_granted_once(db):
 ```
 
 Pass every model whose table is involved, including the targets of foreign
-keys: only the tables you name are created, so a missing referent fails at DDL
-time on a backend that enforces them.
+keys: only the tables you name are created, so a missing referent fails on a
+backend that enforces foreign keys — SQLite included, since zeeb_orm turns its
+enforcement on. The auto-created join table of a `ManyToManyField` is created
+when both of its models are passed; models with `Meta.managed = False` are
+skipped.
 
 The default database is in-memory SQLite. It needs no running service and costs
 milliseconds, so a real-database test belongs in the ordinary suite rather than
@@ -58,9 +61,10 @@ a separate slow lane.
 ## Isolation
 
 Each `temporary_database` block starts with empty tables and restores the global
-ORM state on exit — the settings singleton, the connection registry, and the
-tables it created. Two blocks in the same process do not see each other's rows,
-so tests cannot become order-dependent.
+ORM state on exit — the settings singleton, the default connection it replaced,
+and the tables it created. It closes only its own connection: other aliases a
+test registered stay open. Two blocks in the same process do not see each
+other's rows, so tests cannot become order-dependent.
 
 Table *definitions* are deliberately left in the process-global metadata. They
 are built once and reused: clearing them is what produces
