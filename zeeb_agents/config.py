@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from pathlib import Path
 
 from zeeb_agents._utils import AgentResult, agent_function
-from zeeb_agents._utils.errors import close_matches, fail
+from zeeb_agents._utils.errors import AgentError, close_matches, fail
 from zeeb_agents._utils.field_types import render_py_literal
 from zeeb_agents._utils.project import load_project_settings, require_project_root
 from zeeb_agents._utils.validation import ENV_KEY_RE
+from zeeb_api.conf.env import parse_env
 
 _SCALAR_TYPES = (str, int, float, bool, type(None))
 
@@ -33,25 +35,87 @@ def _find_env_file(root: Path) -> Path:
 
 
 def _parse_env_file(path: Path) -> dict[str, str]:
-    """Parse a .env file into a dict, ignoring comments and blank lines."""
-    result: dict[str, str] = {}
+    """Parse a .env file into a dict — exactly as the running project reads it.
+
+    Delegates to :func:`zeeb_api.conf.env.parse_env` (quotes removed, ``export``
+    prefixes and inline comments understood), so what ``get_env`` reports is
+    the value the app sees, not the raw text of the line.
+    """
     if not path.exists():
-        return result
-    for line in path.read_text().splitlines():
-        line = line.strip()
-        if not line or line.startswith("#"):
-            continue
-        if "=" in line:
-            key, _, value = line.partition("=")
-            result[key.strip()] = value.strip()
-    return result
+        return {}
+    return parse_env(path.read_text(encoding="utf-8"))
 
 
-def _write_env_file(path: Path, data: dict[str, str]) -> None:
-    """Write a dict back to a .env file, preserving order."""
-    path.write_text(
-        "\n".join(f"{k}={v}" for k, v in data.items()) + "\n"
+def _env_line_key(line: str) -> str | None:
+    """The key a ``.env`` line assigns, or ``None`` for comments/blank/other lines."""
+    stripped = line.strip()
+    if not stripped or stripped.startswith("#"):
+        return None
+    if stripped.startswith("export "):
+        stripped = stripped[len("export ") :].lstrip()
+    key, sep, _ = stripped.partition("=")
+    key = key.strip()
+    return key if sep and ENV_KEY_RE.match(key) else None
+
+
+def _render_env_value(key: str, value: str) -> str:
+    """Render *value* so the project's ``.env`` parser reads back exactly *value*.
+
+    A line break would end the assignment and start another (``"x\nDEBUG=True"``
+    injected a second key), so multi-line values are refused. Otherwise the
+    value is written bare when that round-trips, else single-quoted (taken
+    verbatim by the parser), else double-quoted with escapes — each candidate
+    is checked against :func:`zeeb_api.conf.env.parse_env` itself.
+    """
+    if any(ch in value for ch in "\n\r\x00"):
+        raise AgentError(
+            f"The value for {key} contains a line break or NUL; .env values are single "
+            "lines. Encode it (e.g. base64), or write \\n escapes inside double quotes "
+            "yourself if the consumer decodes them.",
+            code="invalid_input",
+            key=key,
+        )
+    escaped = value.replace("\\", "\\\\").replace('"', '\\"')
+    for candidate in (value, f"'{value}'", f'"{escaped}"'):
+        if parse_env(f"{key}={candidate}").get(key) == value:
+            return candidate
+    raise AgentError(
+        f"The value for {key} cannot be written to .env so that it reads back unchanged.",
+        code="invalid_input",
+        key=key,
     )
+
+
+def _edit_env_file(path: Path, key: str, rendered: str | None) -> bool:
+    """Set (*rendered*) or remove (``None``) *key* in the ``.env`` at *path*.
+
+    Line-preserving: comments, blank lines, ordering and every other line stay
+    exactly as they were; only the key's own line changes (a later duplicate of
+    it is dropped, since it would win over the edit). A new file is created
+    owner-readable only, like the one ``startproject`` writes. Returns whether
+    the key was present before.
+    """
+    text = path.read_text(encoding="utf-8") if path.exists() else ""
+    out: list[str] = []
+    existed = False
+    for line in text.splitlines():
+        if _env_line_key(line) != key:
+            out.append(line)
+            continue
+        if rendered is not None and not existed:
+            prefix = "export " if line.strip().startswith("export ") else ""
+            out.append(f"{prefix}{key}={rendered}")
+        existed = True
+    if rendered is not None and not existed:
+        out.append(f"{key}={rendered}")
+    content = "\n".join(out) + ("\n" if out else "")
+    if not path.exists():
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(content)
+    else:
+        path.write_text(content, encoding="utf-8")
+    return existed
 
 
 @agent_function
@@ -135,21 +199,26 @@ async def set_env(
     Notes:
         - An invalid key (not ``[A-Za-z_][A-Za-z0-9_]*``) is rejected with
           ``error_code="invalid_input"`` — it would corrupt the ``.env`` file.
+        - A value containing a line break (or NUL) is rejected with
+          ``error_code="invalid_input"``: it would end the assignment and
+          start another one. A value that would not read back unchanged bare
+          (surrounding spaces, `` #``) is quoted so it does.
+        - Only the key's own line changes: comments, blank lines and every
+          other variable stay exactly as they were.
     """
-    if not ENV_KEY_RE.match(key):
+    if not isinstance(key, str) or not ENV_KEY_RE.match(key):
         return fail(
             f"Invalid env key '{key}': must match [A-Za-z_][A-Za-z0-9_]*",
             code="invalid_input",
             key=key,
         )
+    if not isinstance(value, str):
+        value = "" if value is None else str(value)
+    rendered = _render_env_value(key, value)
     env_path = _find_env_file(project_root)
 
     def _write() -> bool:
-        data = _parse_env_file(env_path)
-        existed = key in data
-        data[key] = value
-        _write_env_file(env_path, data)
-        return existed
+        return _edit_env_file(env_path, key, rendered)
 
     existed = await asyncio.to_thread(_write)
     action = "Updated" if existed else "Added"
@@ -177,16 +246,18 @@ async def delete_env(
     Notes:
         - A key that is not present in ``.env`` is reported as
           ``success=False`` (still with ``data={"key": key}``).
+        - Only the key's line(s) go: comments, blank lines and every other
+          variable stay exactly as they were.
     """
     env_path = _find_env_file(project_root)
 
     def _remove() -> bool:
-        data = _parse_env_file(env_path)
-        if key not in data:
+        if not env_path.exists() or not isinstance(key, str):
             return False
-        del data[key]
-        _write_env_file(env_path, data)
-        return True
+        text = env_path.read_text(encoding="utf-8")
+        if not any(_env_line_key(line) == key for line in text.splitlines()):
+            return False
+        return _edit_env_file(env_path, key, None)
 
     removed = await asyncio.to_thread(_remove)
     if not removed:
