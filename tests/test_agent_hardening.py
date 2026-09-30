@@ -616,3 +616,26 @@ async def test_run_management_command_closes_stdin(tmp_path):
     res = await agents.run_management_command("prompt", timeout=30, project_id=root)
     assert res.success, res.data
     assert "''" in res.data["output"]
+
+
+# ---------------------------------------------------------------------------
+# 5. generate_requirements freezes the running interpreter, not PATH's pip
+# ---------------------------------------------------------------------------
+
+
+async def test_generate_requirements_ignores_the_pip_on_path(project, tmp_path, monkeypatch):
+    import os
+    import stat
+
+    fake_bin = tmp_path / "fake_bin"
+    fake_bin.mkdir()
+    fake_pip = fake_bin / "pip"
+    fake_pip.write_text("#!/bin/sh\necho 'not-this-environment==6.6.6'\n")
+    fake_pip.chmod(fake_pip.stat().st_mode | stat.S_IEXEC)
+    monkeypatch.setenv("PATH", f"{fake_bin}{os.pathsep}{os.environ.get('PATH', '')}")
+
+    res = await agents.generate_requirements(project_id=project)
+    assert res.success, res.message
+    written = (project / "requirements.txt").read_text()
+    assert "not-this-environment" not in written
+    assert "sqlalchemy" in written.lower()

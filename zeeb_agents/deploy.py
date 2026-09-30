@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import re
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -143,9 +144,15 @@ async def generate_requirements(
 ) -> AgentResult:
     """Generate a ``requirements.txt`` from ``pip freeze`` output.
 
-    Runs ``pip freeze`` in a subprocess and writes the result to *output_path*.
-    The file is filtered to remove editable installs (``-e .``) and local
-    ``file://`` references.
+    Runs ``<sys.executable> -m pip freeze`` in a subprocess and writes the
+    result to *output_path*. The file is filtered to remove editable installs
+    (``-e .``) and local ``file://`` references.
+
+    The environment frozen is the interpreter running this tool — the same one
+    ``run_tests`` and ``run_management_command`` run the project with (in the
+    platform's preview runtime, the project's own environment). It is never
+    whatever ``pip`` happens to be first on ``PATH``, which could belong to a
+    different Python entirely.
 
     Args:
         output_path: Output file name/path, relative to project root.
@@ -159,12 +166,13 @@ async def generate_requirements(
     Notes:
         - If ``pip freeze`` exits non-zero, returns ``success=False`` with
           ``data=None``.
+        - *output_path* must stay inside the project (``outside_project_root``).
     """
     root = project_root
     out = confine_path(root, output_path, kind="output_path")
 
     proc = await asyncio.create_subprocess_exec(
-        "pip", "freeze",
+        sys.executable, "-m", "pip", "freeze",
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )

@@ -1302,7 +1302,9 @@ result = await generate_dockerfile(python_version="3.12", port=8080)
 ```
 
 ### `generate_requirements(output_path="requirements.txt", project_id=None)`
-Run `pip freeze` and write `requirements.txt` (filters out editable installs).
+Run `<sys.executable> -m pip freeze` — the interpreter running the tools, which
+is the project's environment in the preview runtime, never whatever `pip` is
+first on `PATH` — and write `requirements.txt` (filters out editable installs).
 
 ```python
 result = await generate_requirements()
