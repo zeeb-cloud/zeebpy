@@ -630,6 +630,22 @@ Override the settings module via environment variable:
 export ZEEB_SETTINGS_MODULE=myproject.settings_production
 ```
 
+Resolution order for `zeeb_api.conf.settings`: the module passed to
+`create_app()` / `configure_settings()`, else `ZEEB_SETTINGS_MODULE`, else
+auto-detection through the ORM's project resolver (`zeeb_orm.conf.project`,
+the same one the CLI and the migration tooling use): the nearest directory at
+or above the working directory that holds `manage.py`, and in it the
+`[tool.zeeb] settings_module` from `pyproject.toml` (which `startproject`
+writes), else the first top-level package with a `settings.py` (`apps/` and
+tooling directories skipped). Outside a project nothing is auto-detected. The
+project root is put on `sys.path`, as `manage.py` does.
+
+`get_user_model()` reads `AUTH_USER_MODEL` from those same settings. Only when
+no settings module is configured at all does it fall back to finding the
+project's `settings.py` from the working directory, and a `settings.py` that
+fails to execute raises `ImproperlyConfigured` naming the file instead of
+silently selecting the framework's default `User`.
+
 ## Complete Example
 
 ```python

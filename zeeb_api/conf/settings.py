@@ -51,28 +51,35 @@ class Settings:
     
     def _auto_detect_settings(self) -> Optional[str]:
         """
-        Auto-detect the settings module based on project structure.
-        
-        Looks for {project_name}.settings where project_name is determined
-        from the current working directory or sys.path.
+        Find the settings module of the project the process runs in.
+
+        Uses the ORM's single project resolver (``zeeb_orm.conf.project``):
+        the nearest directory at or above the working directory that holds
+        ``manage.py``, and in it the ``[tool.zeeb] settings_module`` that
+        ``startproject`` writes to ``pyproject.toml`` (else the first
+        top-level package, skipping ``apps/`` and tooling directories, with a
+        ``settings.py``). The project root is put on ``sys.path``, as
+        ``manage.py`` does. Outside a project nothing is detected.
+
+        This used to import the first ``settings.py`` in any subdirectory of
+        the working directory whose text merely mentioned ``DEBUG``.
         """
-        cwd = Path.cwd()
-        
-        # Look for a settings.py in subdirectories that match common patterns
-        for subdir in cwd.iterdir():
-            if subdir.is_dir() and not subdir.name.startswith(('.', '_')):
-                settings_file = subdir / "settings.py"
-                if settings_file.exists():
-                    # Check if this looks like a project settings file
-                    # (has typical settings like DEBUG, SECRET_KEY, etc.)
-                    try:
-                        content = settings_file.read_text()
-                        if any(key in content for key in ['DEBUG', 'SECRET_KEY', 'DATABASE']):
-                            return f"{subdir.name}.settings"
-                    except Exception:
-                        pass
-        
-        return None
+        from zeeb_orm.conf.project import find_project_root, find_settings_module
+
+        root = find_project_root(Path.cwd())
+        if root is None:
+            return None
+        module = find_settings_module(root)
+        if module and str(root) not in sys.path:
+            sys.path.insert(0, str(root))
+        return module
+
+    def has_settings_module(self) -> bool:
+        """Whether a settings module was loaded (not just runtime overrides)."""
+        if not self._configured:
+            self._setup()
+        wrapped = self._wrapped
+        return wrapped is not None and wrapped.__name__ != "runtime_settings"
     
     def __getattr__(self, name: str) -> Any:
         """
