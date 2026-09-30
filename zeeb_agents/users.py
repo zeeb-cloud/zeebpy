@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -45,10 +46,80 @@ def _hash_password(raw_password: str) -> str:
     return make_password(raw_password)
 
 
-def _row_to_dict(row: Any, cols: list[str]) -> dict[str, Any]:
-    data = dict(zip(cols, row))
-    data.pop("password", None)
-    return data
+def _is_secret_column(name: str) -> bool:
+    """Whether a column holds a credential that must never leave the tool."""
+    return "password" in name.lower()
+
+
+def _row_to_dict(row: Any, cols: list[str] | None = None) -> dict[str, Any]:
+    """The row keyed by its own column names, credentials removed.
+
+    Read off the row's mapping — never zipped against a separately obtained
+    column list, whose order need not be the ``SELECT *`` order (``update_user``
+    zipped against a *set*, so values landed under the wrong keys and the
+    password hash could surface under another column's name). *cols* is
+    accepted for the old call shape and ignored.
+    """
+    return {
+        str(key): value
+        for key, value in row._mapping.items()
+        if not _is_secret_column(str(key))
+    }
+
+
+def _lookup_candidates(email_or_id: object) -> tuple[str, list[Any]]:
+    """``(column, values to try)`` identifying a user.
+
+    An ``int`` is a primary key. A string containing ``@`` is an email. Any
+    other string that parses as a UUID is a primary key — tried as the 32-hex
+    form SQLAlchemy's ``Uuid`` stores on SQLite/MySQL (and PostgreSQL accepts),
+    then as the canonical dashed form — and an all-digit string is an integer
+    key. Anything else is still looked up as an email, as before.
+    """
+    if isinstance(email_or_id, bool):
+        raise AgentError(f"Invalid user reference {email_or_id!r}", code="invalid_input")
+    if isinstance(email_or_id, int):
+        return "id", [email_or_id]
+    if isinstance(email_or_id, uuid.UUID):
+        return "id", [email_or_id.hex, str(email_or_id)]
+    text = str(email_or_id).strip()
+    if "@" in text:
+        return "email", [text]
+    try:
+        parsed = uuid.UUID(text)
+    except ValueError:
+        parsed = None
+    if parsed is not None:
+        return "id", list(dict.fromkeys([parsed.hex, str(parsed), text]))
+    if text.isdigit():
+        return "id", [int(text), text]
+    return "email", [text]
+
+
+def _find_user(conn: Any, table: str, email_or_id: object) -> tuple[Any, str, Any] | None:
+    """``(row, column, stored value)`` of the user, or ``None`` when absent.
+
+    The stored value is the one that matched, so a follow-up ``UPDATE`` /
+    ``DELETE`` addresses exactly the row that was found.
+    """
+    from sqlalchemy import text
+
+    column, candidates = _lookup_candidates(email_or_id)
+    for value in candidates:
+        try:
+            row = conn.execute(
+                text(f"SELECT * FROM {table} WHERE {column} = :v"),  # noqa: S608
+                {"v": value},
+            ).fetchone()
+        except Exception:  # noqa: BLE001 — e.g. a text value against an integer key
+            continue
+        if row is not None:
+            return row, column, value
+    return None
+
+
+def _user_not_found(email_or_id: object) -> AgentError:
+    return AgentError(f"User '{email_or_id}' not found.", code="user_not_found")
 
 
 @agent_function
@@ -167,9 +238,10 @@ async def create_user(
                         email=email,
                     ) from exc
                 raise
-            row = conn.execute(text(f"SELECT * FROM {table} WHERE email = :email"), {"email": email}).fetchone()
-            all_cols = [c["name"] for c in inspector.get_columns(table)]
-            result = _row_to_dict(row, all_cols)
+            row = conn.execute(
+                text(f"SELECT * FROM {table} WHERE email = :email"), {"email": email}
+            ).fetchone()
+            result = _row_to_dict(row)
             result["table"] = table
             return result
 
@@ -215,10 +287,12 @@ async def list_users(
         with engine.connect() as conn:
             inspector = sa_inspect(engine)
             table = _require_user_table(inspector)
-            all_cols = [c["name"] for c in inspector.get_columns(table)]
-            rows = conn.execute(text(f"SELECT * FROM {table} LIMIT :limit OFFSET :offset"), {"limit": limit, "offset": offset}).fetchall()
+            rows = conn.execute(
+                text(f"SELECT * FROM {table} LIMIT :limit OFFSET :offset"),
+                {"limit": limit, "offset": offset},
+            ).fetchall()
             total = conn.execute(text(f"SELECT COUNT(*) FROM {table}")).scalar()
-            users = [_row_to_dict(row, all_cols) for row in rows]
+            users = [_row_to_dict(row) for row in rows]
             return {"users": users, "total": total, "limit": limit, "offset": offset}
 
     data = await asyncio.to_thread(_run)
@@ -237,12 +311,14 @@ async def get_user(
     """Fetch a single user by email or primary-key ID.
 
     Args:
-        email_or_id: Email address (``str``) or integer primary key.
+        email_or_id: Email address, or primary key — an ``int``, or a string
+            holding a UUID (either spelling) or digits. A string with ``@`` is
+            always an email.
         project_id: The host-assigned project id (required).
 
     Returns data (on success):
-        <columns> (Any): the matched row keyed by column name, ``password``
-            removed
+        <columns> (Any): the matched row keyed by column name, every
+            ``password`` column removed
 
     Notes:
         - A missing user table fails with ``error_code="no_user_table"``;
@@ -251,23 +327,16 @@ async def get_user(
     root = project_root
 
     def _run() -> dict[str, Any]:
-        from sqlalchemy import create_engine, text
+        from sqlalchemy import create_engine
         from sqlalchemy import inspect as sa_inspect
         engine = create_engine(_sync_db_url(root))
         with engine.connect() as conn:
             inspector = sa_inspect(engine)
             table = _require_user_table(inspector)
-            all_cols = [c["name"] for c in inspector.get_columns(table)]
-            if isinstance(email_or_id, str):
-                row = conn.execute(text(f"SELECT * FROM {table} WHERE email = :v"), {"v": email_or_id}).fetchone()
-            else:
-                row = conn.execute(text(f"SELECT * FROM {table} WHERE id = :v"), {"v": email_or_id}).fetchone()
-            if row is None:
-                raise AgentError(
-                    f"User '{email_or_id}' not found.",
-                    code="user_not_found",
-                )
-            return _row_to_dict(row, all_cols)
+            found = _find_user(conn, table, email_or_id)
+            if found is None:
+                raise _user_not_found(email_or_id)
+            return _row_to_dict(found[0])
 
     user = await asyncio.to_thread(_run)
     return AgentResult(success=True, message="User found.", data=user)
@@ -284,26 +353,37 @@ async def update_user(
     ``password`` in *changes* is **ignored** — use :func:`set_user_password` instead.
 
     Args:
-        email_or_id: Email address (``str``) or integer primary key.
+        email_or_id: Email address, or primary key — an ``int``, or a string
+            holding a UUID (either spelling) or digits. A string with ``@`` is
+            always an email.
         changes: Dict of column → new value.  ``password`` is silently removed.
         project_id: The host-assigned project id (required).
 
     Returns data (on success):
-        <columns> (Any): the updated row keyed by column name, ``password``
-            removed
+        <columns> (Any): the updated row keyed by column name, every
+            ``password`` column removed
 
     Notes:
-        - If *changes* contains only ``password`` (or is empty), returns
-          ``success=False`` with ``data=None`` and nothing is updated.
+        - If *changes* contains only ``password`` (or is empty), fails with
+          ``error_code="invalid_input"`` and nothing is updated.
+        - A user that does not exist fails with ``error_code="user_not_found"``
+          (it used to crash with a ``TypeError``).
         - A missing user table fails with ``error_code="no_user_table"``;
           *changes* with no columns that exist on the table fails with
           ``error_code="invalid_input"`` and the available ``columns`` in
           ``data``.
+        - The row is re-read by the key it was found under (its primary key
+          when it has one), so changing ``email`` returns the updated row.
     """
     root = project_root
-    safe_changes = {k: v for k, v in changes.items() if k != "password"}
+    if not isinstance(changes, dict):
+        return fail("changes must be a dict of column -> value", code="invalid_input")
+    safe_changes = {k: v for k, v in changes.items() if not _is_secret_column(str(k))}
     if not safe_changes:
-        return AgentResult(success=False, message="No valid fields to update (password must use set_user_password).")
+        return fail(
+            "No valid fields to update (password must use set_user_password).",
+            code="invalid_input",
+        )
 
     def _run() -> dict[str, Any]:
         from sqlalchemy import create_engine, text
@@ -313,6 +393,7 @@ async def update_user(
             inspector = sa_inspect(engine)
             table = _require_user_table(inspector)
             all_cols = {c["name"] for c in inspector.get_columns(table)}
+            # Only real column names reach the SQL text; values stay bound.
             update_data = {k: v for k, v in safe_changes.items() if k in all_cols}
             if not update_data:
                 raise AgentError(
@@ -321,16 +402,26 @@ async def update_user(
                     code="invalid_input",
                     columns=sorted(all_cols),
                 )
+            found = _find_user(conn, table, email_or_id)
+            if found is None:
+                raise _user_not_found(email_or_id)
+            row, column, value = found
+            current = row._mapping
+            if "id" in current:
+                column, value = "id", current["id"]
             set_clause = ", ".join(f"{k} = :{k}" for k in update_data)
-            if isinstance(email_or_id, str):
-                where = "email = :_where_val"
-            else:
-                where = "id = :_where_val"
-            update_data["_where_val"] = email_or_id
-            conn.execute(text(f"UPDATE {table} SET {set_clause} WHERE {where}"), update_data)
-            col_list = list(all_cols)
-            row = conn.execute(text(f"SELECT * FROM {table} WHERE {'email' if isinstance(email_or_id, str) else 'id'} = :v"), {"v": email_or_id}).fetchone()
-            return _row_to_dict(row, col_list)
+            conn.execute(
+                text(f"UPDATE {table} SET {set_clause} WHERE {column} = :_where_val"),
+                {**update_data, "_where_val": value},
+            )
+            if column == "email" and "email" in update_data:
+                value = update_data["email"]
+            updated = conn.execute(
+                text(f"SELECT * FROM {table} WHERE {column} = :v"), {"v": value}
+            ).fetchone()
+            if updated is None:
+                raise _user_not_found(email_or_id)
+            return _row_to_dict(updated)
 
     user = await asyncio.to_thread(_run)
     return AgentResult(success=True, message="User updated.", data=user)
@@ -344,7 +435,8 @@ async def delete_user(
     """Delete a user by email or primary-key ID.
 
     Args:
-        email_or_id: Email address (``str``) or integer primary key.
+        email_or_id: Email address, or primary key — an ``int``, or a string
+            holding a UUID (either spelling) or digits.
         project_id: The host-assigned project id (required).
 
     Returns data (on success):
@@ -364,10 +456,11 @@ async def delete_user(
         with engine.begin() as conn:
             inspector = sa_inspect(engine)
             table = _require_user_table(inspector)
-            if isinstance(email_or_id, str):
-                result = conn.execute(text(f"DELETE FROM {table} WHERE email = :v"), {"v": email_or_id})
-            else:
-                result = conn.execute(text(f"DELETE FROM {table} WHERE id = :v"), {"v": email_or_id})
+            found = _find_user(conn, table, email_or_id)
+            if found is None:
+                return 0
+            _row, column, value = found
+            result = conn.execute(text(f"DELETE FROM {table} WHERE {column} = :v"), {"v": value})
             return result.rowcount
 
     rowcount = await asyncio.to_thread(_run)
@@ -389,7 +482,8 @@ async def set_user_password(
     """Set a new password for an existing user (hashes it automatically).
 
     Args:
-        email_or_id: Email address (``str``) or integer primary key.
+        email_or_id: Email address, or primary key — an ``int``, or a string
+            holding a UUID (either spelling) or digits.
         new_password: New plain-text password.
         project_id: The host-assigned project id (required).
 
@@ -410,16 +504,14 @@ async def set_user_password(
         with engine.begin() as conn:
             inspector = sa_inspect(engine)
             table = _require_user_table(inspector)
-            if isinstance(email_or_id, str):
-                result = conn.execute(
-                    text(f"UPDATE {table} SET password = :pw WHERE email = :v"),
-                    {"pw": hashed_pw, "v": email_or_id},
-                )
-            else:
-                result = conn.execute(
-                    text(f"UPDATE {table} SET password = :pw WHERE id = :v"),
-                    {"pw": hashed_pw, "v": email_or_id},
-                )
+            found = _find_user(conn, table, email_or_id)
+            if found is None:
+                return 0
+            _row, column, value = found
+            result = conn.execute(
+                text(f"UPDATE {table} SET password = :pw WHERE {column} = :v"),
+                {"pw": hashed_pw, "v": value},
+            )
             return result.rowcount
 
     rowcount = await asyncio.to_thread(_run)
