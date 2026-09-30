@@ -221,6 +221,10 @@ class TokenPayload(BaseModel):
     # Optional claims
     iss: str | None = Field(default=None, description="Issuer")
     aud: str | None = Field(default=None, description="Audience")
+    family: str | None = Field(
+        default=None,
+        description="Refresh-token family (``fam`` claim): one id per login, kept across rotations",
+    )
     
     # Custom claims
     claims: dict[str, Any] = Field(default_factory=dict, description="Additional claims")
@@ -268,6 +272,7 @@ def create_refresh_token(
     user_id: str | uuid.UUID,
     claims: dict[str, Any] | None = None,
     config: JWTConfig | None = None,
+    family: str | None = None,
 ) -> str:
     """
     Create a refresh token.
@@ -279,6 +284,9 @@ def create_refresh_token(
             no other claim source is available. Database-backed refresh flows
             still reload the user for the authoritative, current claims.
         config: Optional JWT config
+        family: The token family (``fam`` claim). A login starts a new family
+            (None: a fresh id); a rotation passes the presented token's family
+            on, so a detected replay can revoke every descendant at once.
 
     Returns:
         Encoded JWT refresh token
@@ -293,6 +301,7 @@ def create_refresh_token(
         "exp": now + timedelta(days=config.refresh_token_expire_days),
         "iat": now,
         "jti": str(uuid.uuid4()),
+        "fam": family or str(uuid.uuid4()),
     }
 
     if config.issuer:
@@ -309,6 +318,7 @@ def create_token_pair(
     user_id: str | uuid.UUID,
     claims: dict[str, Any] | None = None,
     config: JWTConfig | None = None,
+    family: str | None = None,
 ) -> tuple[str, str]:
     """
     Create both access and refresh tokens.
@@ -317,13 +327,14 @@ def create_token_pair(
         user_id: User identifier
         claims: Additional claims for both tokens
         config: Optional JWT config
+        family: Refresh-token family to continue (see :func:`create_refresh_token`)
 
     Returns:
         Tuple of (access_token, refresh_token)
     """
     config = config or get_jwt_config()
     access_token = create_access_token(user_id, claims, config)
-    refresh_token = create_refresh_token(user_id, claims, config)
+    refresh_token = create_refresh_token(user_id, claims, config, family=family)
     return access_token, refresh_token
 
 
@@ -408,6 +419,7 @@ def decode_token(
             jti=payload["jti"],
             iss=payload.get("iss"),
             aud=payload.get("aud"),
+            family=payload.get("fam"),
             claims=payload.get("claims", {}),
         )
         

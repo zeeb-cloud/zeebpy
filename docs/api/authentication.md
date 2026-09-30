@@ -529,6 +529,29 @@ Clients must therefore store the new refresh token from every `/refresh`
 response and discard the old one. A client that keeps reusing its original
 refresh token will work exactly once.
 
+Redeeming is one atomic step (`consume_once`), so two requests replaying the
+same token at the same moment cannot both be issued a pair. And a replay
+revokes the token's whole **family** — every refresh token rotated from the
+same login, tracked by the `fam` claim — because after a replay the owner's
+copy and the thief's are indistinguishable: both must log in again. Other
+logins (other families) are untouched. The one cost: two browser tabs racing
+to refresh the same token count as a replay, so a client should serialise its
+refreshes (one in flight at a time).
+
+`POST /auth/logout` revokes the session's refresh token (and its family) when
+it is sent in the body, so a logged-out refresh token cannot mint new access
+tokens:
+
+```http
+POST /auth/logout
+Authorization: Bearer <access token>
+
+{"refresh_token": "<refresh token>"}
+```
+
+The body is optional; a token that is invalid, expired or belongs to another
+user is ignored.
+
 Refresh tokens also carry the user's claims, so a refresh does not require a
 database round-trip. When `AUTH_LOAD_USER_FROM_DB` is on, claims are reloaded
 and a deleted or inactive user is rejected with `AUTH_TOKEN_INVALID`.
@@ -557,16 +580,32 @@ class RedisRefreshTokenStore(BaseRefreshTokenStore):
         return await self._redis.exists(f"rt:{jti}") == 1
 
     async def consume(self, jti: str, ttl_seconds: float) -> None:
-        await self._redis.set(f"rt:{jti}", "1", ex=int(ttl_seconds))
+        await self._redis.set(f"rt:{jti}", "1", ex=max(int(ttl_seconds), 1))
+
+    async def consume_once(self, jti: str, ttl_seconds: float) -> bool:
+        # SET NX is the atomic check-and-consume: only the first caller wins.
+        return bool(
+            await self._redis.set(f"rt:{jti}", "1", ex=max(int(ttl_seconds), 1), nx=True)
+        )
 
 
 set_refresh_token_store(RedisRefreshTokenStore(redis))
 ```
 
+| Method | Must implement? | Default |
+|---|---|---|
+| `is_consumed(jti)` | yes | — |
+| `consume(jti, ttl_seconds)` | yes | — |
+| `consume_once(jti, ttl_seconds)` | **override with an atomic primitive** | `is_consumed` then `consume` — two concurrent requests can both pass |
+| `revoke_family(family, ttl_seconds)` / `is_family_revoked(family)` | no | stored through `consume`/`is_consumed` under the key `family:<id>` |
+
 `consume()` receives the token's **remaining** lifetime as `ttl_seconds`, so
-entries can expire rather than accumulating forever. `get_refresh_token_store()`
-returns the active store; call `set_refresh_token_store(None)` to restore the
-default, which is also how tests reset between cases.
+entries can expire rather than accumulating forever (a family is revoked for
+the full `JWT_REFRESH_TOKEN_EXPIRE_DAYS`, the longest any descendant can live).
+`get_refresh_token_store()` returns the active store; call
+`set_refresh_token_store(None)` to restore a fresh default, which is also how
+tests reset between cases. A store written against the older two-method
+interface keeps working unchanged.
 
 These names live in `zeeb_api.auth.refresh_store` and are not re-exported from
 `zeeb_api.auth`.

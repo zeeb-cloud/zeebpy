@@ -97,10 +97,13 @@ async def test_refresh_token_is_single_use():
         assert replay.status_code == 401
         assert replay.json()["error"]["code"] == "AUTH_TOKEN_INVALID"
 
-        # The freshly issued refresh token still works.
+        # A replay means a copy of the token is loose, so the token issued by
+        # the first redemption is revoked with it (the whole family) - see
+        # test_reuse_revokes_the_whole_family. Before any replay, the rotated
+        # token works (test_rotation_keeps_the_family).
         rotated = first.json()["refresh_token"]
         again = await client.post("/auth/refresh", json={"refresh_token": rotated})
-        assert again.status_code == 200
+        assert again.status_code == 401
 
 
 # --------------------------------------------------------------------------- #
@@ -202,3 +205,178 @@ async def test_refresh_reloads_claims_from_database(db):
     access = decode_token(resp.json()["access_token"], token_type="access")
     # Authoritative claims: the user is not staff.
     assert access.claims.get("is_staff") is False
+
+
+# --------------------------------------------------------------------------- #
+# Atomic rotation, family revocation on reuse, logout revocation
+# --------------------------------------------------------------------------- #
+
+
+async def test_store_consume_once_is_atomic():
+    import asyncio
+
+    store = InMemoryRefreshTokenStore()
+    results = await asyncio.gather(*(store.consume_once("jti-1", 60) for _ in range(20)))
+    assert results.count(True) == 1
+
+
+async def test_concurrent_replays_mint_one_pair(db):
+    """Two requests redeeming the same token at once: exactly one wins.
+
+    The consumed-check and the consume used to be separate awaits with the
+    user lookup in between, so both requests passed the check.
+    """
+    import asyncio
+
+    from zeeb_api.auth.backends import create_user
+
+    configure_jwt(secret_key=TEST_SECRET)
+    user = await create_user(email="race@example.com", password="pw-123456")
+    refresh = await _issue_refresh_for(str(user.id))
+
+    app = _make_app(enable_registration=False)
+    async with _client(app) as client:
+        responses = await asyncio.gather(
+            *(client.post("/auth/refresh", json={"refresh_token": refresh}) for _ in range(5))
+        )
+    assert sorted(r.status_code for r in responses) == [200, 401, 401, 401, 401]
+
+
+async def test_reuse_revokes_the_whole_family():
+    app = _static_auth_app()
+    async with _client(app) as client:
+        login = await client.post("/auth/login", json={"email": "a@b.co", "password": "secret123"})
+        original = login.json()["refresh_token"]
+        rotated = (
+            await client.post("/auth/refresh", json={"refresh_token": original})
+        ).json()["refresh_token"]
+
+        # The original is replayed (stolen copy): rejected...
+        replay = await client.post("/auth/refresh", json={"refresh_token": original})
+        assert replay.status_code == 401
+        # ...and the legitimate descendant is revoked with it.
+        descendant = await client.post("/auth/refresh", json={"refresh_token": rotated})
+        assert descendant.status_code == 401
+        assert descendant.json()["error"]["message"] == "Refresh token has been revoked"
+
+        # Another login is a different family and is unaffected.
+        other = await client.post("/auth/login", json={"email": "a@b.co", "password": "secret123"})
+        fresh = await client.post(
+            "/auth/refresh", json={"refresh_token": other.json()["refresh_token"]}
+        )
+        assert fresh.status_code == 200
+
+
+async def test_rotation_keeps_the_family():
+    app = _static_auth_app()
+    async with _client(app) as client:
+        login = await client.post("/auth/login", json={"email": "a@b.co", "password": "secret123"})
+        first = login.json()["refresh_token"]
+        second = (
+            await client.post("/auth/refresh", json={"refresh_token": first})
+        ).json()["refresh_token"]
+        # Without a replay, each rotated token redeems once as usual.
+        third = await client.post("/auth/refresh", json={"refresh_token": second})
+        assert third.status_code == 200
+    assert decode_token(first, token_type="refresh").family is not None
+    assert (
+        decode_token(first, token_type="refresh").family
+        == decode_token(second, token_type="refresh").family
+    )
+
+
+async def test_logout_revokes_the_refresh_token(db):
+    from zeeb_api.auth.backends import create_user
+
+    configure_jwt(secret_key=TEST_SECRET)
+    await create_user(email="bye@example.com", password="pw-123456")
+    app = _make_app(enable_registration=False)
+    async with _client(app) as client:
+        login = await client.post(
+            "/auth/login", json={"email": "bye@example.com", "password": "pw-123456"}
+        )
+        tokens = login.json()
+        out = await client.post(
+            "/auth/logout",
+            json={"refresh_token": tokens["refresh_token"]},
+            headers={"Authorization": f"Bearer {tokens['access_token']}"},
+        )
+        assert out.status_code == 200, out.text
+        after = await client.post(
+            "/auth/refresh", json={"refresh_token": tokens["refresh_token"]}
+        )
+    assert after.status_code == 401
+
+
+async def test_logout_without_body_still_works(db):
+    from zeeb_api.auth.backends import create_user
+
+    configure_jwt(secret_key=TEST_SECRET)
+    await create_user(email="plain@example.com", password="pw-123456")
+    app = _make_app(enable_registration=False)
+    async with _client(app) as client:
+        login = await client.post(
+            "/auth/login", json={"email": "plain@example.com", "password": "pw-123456"}
+        )
+        out = await client.post(
+            "/auth/logout",
+            headers={"Authorization": f"Bearer {login.json()['access_token']}"},
+        )
+    assert out.status_code == 200, out.text
+
+
+async def test_logout_ignores_someone_elses_refresh_token(db):
+    from zeeb_api.auth.backends import create_user
+
+    configure_jwt(secret_key=TEST_SECRET)
+    await create_user(email="one@example.com", password="pw-123456")
+    await create_user(email="two@example.com", password="pw-123456")
+    app = _make_app(enable_registration=False)
+    async with _client(app) as client:
+        one = (
+            await client.post(
+                "/auth/login", json={"email": "one@example.com", "password": "pw-123456"}
+            )
+        ).json()
+        two = (
+            await client.post(
+                "/auth/login", json={"email": "two@example.com", "password": "pw-123456"}
+            )
+        ).json()
+        await client.post(
+            "/auth/logout",
+            json={"refresh_token": two["refresh_token"]},
+            headers={"Authorization": f"Bearer {one['access_token']}"},
+        )
+        still = await client.post("/auth/refresh", json={"refresh_token": two["refresh_token"]})
+    assert still.status_code == 200
+
+
+async def test_legacy_custom_store_keeps_working():
+    """A store implementing only is_consumed/consume (the old interface) works."""
+    from zeeb_api.auth.refresh_store import BaseRefreshTokenStore
+
+    class LegacyStore(BaseRefreshTokenStore):
+        def __init__(self):
+            self.seen = set()
+
+        async def is_consumed(self, jti):
+            return jti in self.seen
+
+        async def consume(self, jti, ttl_seconds):
+            self.seen.add(jti)
+
+    set_refresh_token_store(LegacyStore())
+    app = _static_auth_app()
+    async with _client(app) as client:
+        login = await client.post("/auth/login", json={"email": "a@b.co", "password": "secret123"})
+        body = {"refresh_token": login.json()["refresh_token"]}
+        assert (await client.post("/auth/refresh", json=body)).status_code == 200
+        assert (await client.post("/auth/refresh", json=body)).status_code == 401
+
+
+def test_setting_none_restores_a_default_store():
+    from zeeb_api.auth.refresh_store import get_refresh_token_store
+
+    set_refresh_token_store(None)
+    assert isinstance(get_refresh_token_store(), InMemoryRefreshTokenStore)

@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from typing import Any, Callable, Awaitable
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Body, Depends, Request
 from pydantic import BaseModel, Field, EmailStr
 
 from zeeb_api.auth.jwt import (
@@ -51,6 +51,34 @@ class RegisterRequest(BaseModel):
     password: str = Field(min_length=8, description="Password (min 8 characters)")
     first_name: str | None = Field(default=None, description="First name")
     last_name: str | None = Field(default=None, description="Last name")
+
+
+class LogoutRequest(BaseModel):
+    """Logout request body (optional)."""
+    refresh_token: str | None = Field(
+        default=None, description="The session's refresh token, to revoke it"
+    )
+
+
+async def _revoke_refresh_token(token: str, user: Any) -> None:
+    """Consume *token* and revoke its family, if it is *user*'s valid refresh token."""
+    from datetime import datetime, timezone
+
+    from zeeb_api.auth.jwt import TokenError
+    from zeeb_api.auth.refresh_store import get_refresh_token_store
+
+    try:
+        payload = decode_token(token, token_type="refresh")
+    except TokenError:
+        return
+    if payload.sub != str(getattr(user, "id", "")):
+        return
+    store = get_refresh_token_store()
+    ttl = (payload.exp - datetime.now(timezone.utc)).total_seconds()
+    await store.consume(payload.jti, ttl)
+    await store.revoke_family(
+        payload.family or payload.jti, get_jwt_config().refresh_token_expire_days * 86400
+    )
 
 
 class RegisterResponse(BaseModel):
@@ -269,9 +297,24 @@ def create_auth_router(
             )
 
         store = get_refresh_token_store()
+        # Tokens minted before families existed carry no ``fam``: each is its
+        # own family.
+        family = payload.family or payload.jti
+        ttl = (payload.exp - datetime.now(timezone.utc)).total_seconds()
 
-        # Reuse detection: a rotated (already redeemed) refresh token is invalid.
-        if payload.jti and await store.is_consumed(payload.jti):
+        if await store.is_family_revoked(family):
+            raise AuthenticationException(
+                code=ErrorCode.AUTH_TOKEN_INVALID,
+                message="Refresh token has been revoked",
+            )
+
+        # Rotate: consume the presented token in one atomic step (check and
+        # write together, so two concurrent replays cannot both succeed).
+        if not await store.consume_once(payload.jti, ttl):
+            # Reuse of a rotated token: someone holds a copy. The owner's and
+            # the thief's descendants are indistinguishable, so the whole
+            # family goes - for the longest lifetime a descendant can have.
+            await store.revoke_family(family, config.refresh_token_expire_days * 86400)
             raise AuthenticationException(
                 code=ErrorCode.AUTH_TOKEN_INVALID,
                 message="Refresh token has already been used",
@@ -305,13 +348,7 @@ def create_auth_router(
             if hasattr(user, "get_claims"):
                 claims = user.get_claims()
 
-        # Rotate: consume the presented token for the remainder of its lifetime
-        # so it cannot be replayed.
-        if payload.jti:
-            ttl = (payload.exp - datetime.now(timezone.utc)).total_seconds()
-            await store.consume(payload.jti, ttl)
-
-        access_token, refresh_token = create_token_pair(user_id, claims)
+        access_token, refresh_token = create_token_pair(user_id, claims, family=family)
 
         return TokenResponse(
             access_token=access_token,
@@ -324,16 +361,27 @@ def create_auth_router(
         "/logout",
         response_model=LogoutResponse,
         summary="Logout",
-        description="Logout and optionally invalidate tokens.",
+        description=(
+            "Logout. Send the session's refresh token in the body to revoke it "
+            "(and every token rotated from it); the access token is handed to "
+            "the on_logout hook."
+        ),
     )
     async def logout(
+        body: LogoutRequest | None = Body(default=None),
         user: Any = Depends(get_current_user),
     ) -> LogoutResponse:
         """
         Logout current user.
         
-        If token blacklist is configured, the current token will be invalidated.
+        A refresh token in the body is consumed and its family revoked, so it
+        cannot mint new access tokens after logout. A token that is invalid,
+        expired or belongs to another user is ignored. If a token blacklist is
+        configured (``on_logout``), the current access token is handed to it.
         """
+        if body is not None and body.refresh_token:
+            await _revoke_refresh_token(body.refresh_token, user)
+
         if on_logout:
             # Get token JTI from user
             token_payload = getattr(user, "_token_payload", None) or getattr(user, "token_payload", None)
