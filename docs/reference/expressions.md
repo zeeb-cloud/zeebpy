@@ -326,13 +326,19 @@ users = await User.objects.annotate(
 | Part | Description |
 |------|-------------|
 | `year` | Year |
+| `iso_year` | ISO-8601 week-numbering year |
+| `quarter` | Quarter (1-4) |
 | `month` | Month (1-12) |
+| `week` | ISO-8601 week of year (1-53) |
+| `week_day` | Day of week, Sunday=1 … Saturday=7 |
+| `iso_week_day` | Day of week, Monday=1 … Sunday=7 |
 | `day` | Day of month (1-31) |
 | `hour` | Hour (0-23) |
 | `minute` | Minute (0-59) |
 | `second` | Second (0-59) |
-| `week` | Week of year |
-| `dow` | Day of week (0-6) |
+
+`Extract` compiles through the same per-dialect SQL as the
+`created_at__year`-style lookups. Any other part name raises `ValueError`.
 
 ### TruncDate / TruncMonth / TruncYear
 

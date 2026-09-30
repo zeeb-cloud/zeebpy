@@ -324,6 +324,9 @@ for product in products:
     print(product.profit)
 ```
 
+Values must be expressions; `annotate(x="price * 2")` raises `TypeError`
+(a string is never interpreted as SQL). The same holds for `aggregate()`.
+
 ### aggregate(\*\*kwargs)
 
 Return aggregated values (dict, not queryset).
@@ -642,11 +645,20 @@ Runs in one `atomic()` block: the lookup takes a row lock
 Execute raw SQL.
 
 ```python
+# Named parameters
 users = await User.objects.raw(
     "SELECT * FROM users WHERE created_at > :date",
     {"date": "2024-01-01"}
 )
+
+# Positional parameters
+users = await User.objects.raw("SELECT * FROM users WHERE age > ? AND role = ?", [18, "admin"])
 ```
+
+Values are always bound, never spliced into the SQL. `?` (with a list) and
+`:name` (with a dict) inside string literals, quoted identifiers and comments
+are left alone — `WHERE note = 'why?'` has no placeholder. The number of `?`
+placeholders must match the number of values (`ValueError` otherwise).
 
 ---
 

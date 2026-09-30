@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import AsyncIterator, Iterator
 from typing import (
     TYPE_CHECKING,
@@ -11,6 +12,8 @@ from typing import (
 )
 
 from sqlalchemy import (
+    ClauseElement,
+    Executable,
     Select,
     and_,
     delete,
@@ -21,6 +24,8 @@ from sqlalchemy import (
     select,
     update,
 )
+
+from sqlalchemy.ext.compiler import compiles
 
 from zeeb_orm.query.q import Q, QOperator, parse_path
 
@@ -450,10 +455,17 @@ class QuerySet(Generic[ModelT]):
         """
         Add computed fields to each result.
 
+        Every value must be an expression (``F()``, ``Value()``, an
+        aggregate, ``Case``, ``Subquery``, …). A plain string is rejected
+        with ``TypeError`` rather than rendered into the SQL: use
+        ``F("field")`` to reference a field and ``Value("text")`` for a
+        constant.
+
         Usage:
             Author.objects.annotate(post_count=Count('posts'))
         """
         self._check_combinator("annotate")
+        _require_expressions("annotate", kwargs)
         clone = self._clone()
         clone._annotations.update(kwargs)
         return clone
@@ -468,13 +480,13 @@ class QuerySet(Generic[ModelT]):
         self._check_combinator("aggregate")
         from zeeb_orm.db.connection import get_session
 
+        _require_expressions("aggregate", kwargs)
         table = self.model._get_table()
         joins = self._make_join_context()
 
-        select_exprs = []
-        for alias, agg in kwargs.items():
-            if hasattr(agg, "resolve"):
-                select_exprs.append(agg.resolve(self.model, joins=joins).label(alias))
+        select_exprs = [
+            agg.resolve(self.model, joins=joins).label(alias) for alias, agg in kwargs.items()
+        ]
 
         # Apply filters (may register traversal JOINs)
         where_clause = self._build_where_clause(joins)
@@ -502,8 +514,23 @@ class QuerySet(Generic[ModelT]):
 
     # Raw SQL
 
-    def raw(self, sql: str, params: list[Any] | None = None) -> QuerySet[ModelT]:
-        """Execute a raw SQL query."""
+    def raw(
+        self, sql: str, params: list[Any] | tuple[Any, ...] | dict[str, Any] | None = None
+    ) -> QuerySet[ModelT]:
+        """Execute a raw SQL query and return model instances.
+
+        Values are always bound parameters, never spliced into the SQL:
+
+        * a list/tuple binds positionally to ``?`` placeholders —
+          ``raw("SELECT * FROM t WHERE a = ? AND b = ?", [1, 2])``;
+        * a dict binds by name to ``:name`` placeholders —
+          ``raw("SELECT * FROM t WHERE a = :a", {"a": 1})``.
+
+        String literals, quoted identifiers and comments are left alone: a
+        ``?`` or ``:word`` inside ``'...'`` is text, not a placeholder. The
+        number of ``?`` placeholders must match the number of values
+        (``ValueError`` otherwise).
+        """
         self._check_combinator("raw")
         clone = self._clone()
         clone._raw_sql = sql
@@ -821,10 +848,7 @@ class QuerySet(Generic[ModelT]):
         from zeeb_orm.exceptions import FieldError
 
         if field_name in self._annotations:
-            expr = self._annotations[field_name]
-            if hasattr(expr, "resolve"):
-                return expr.resolve(self.model, joins=joins)
-            return literal_column(field_name)
+            return self._annotations[field_name].resolve(self.model, joins=joins)
 
         table = self.model._get_table()
         meta = self.model._meta
@@ -1158,10 +1182,7 @@ class QuerySet(Generic[ModelT]):
 
         if self._annotations:
             for alias, expr in self._annotations.items():
-                if hasattr(expr, 'resolve'):
-                    columns.append(expr.resolve(self.model, joins=joins).label(alias))
-                else:
-                    columns.append(literal_column(str(expr)).label(alias))
+                columns.append(expr.resolve(self.model, joins=joins).label(alias))
 
         # Apply filters (registers traversal JOINs on the shared context).
         # Conditions on aggregate annotations belong in HAVING, not WHERE.
@@ -1313,22 +1334,11 @@ class QuerySet(Generic[ModelT]):
 
         from zeeb_orm.db.connection import get_session
 
+        sql, params = _prepare_raw_sql(
+            self._raw_sql or "", self._raw_params, db.get_engine().dialect.name
+        )
         async with get_session(self._db_alias) as (session, _):
-            stmt = text(self._raw_sql)
-            params = {}
-            if self._raw_params:
-                # Support both positional (list) and named (dict) params
-                if isinstance(self._raw_params, dict):
-                    params = self._raw_params
-                else:
-                    # Convert positional list to dict with :param_0, :param_1, etc.
-                    params = {f"param_{i}": v for i, v in enumerate(self._raw_params)}
-                    # Replace ? placeholders with :param_N
-                    sql = self._raw_sql
-                    for i in range(len(self._raw_params)):
-                        sql = sql.replace("?", f":param_{i}", 1)
-                    stmt = text(sql)
-
+            stmt = text(sql)
             result = await session.execute(stmt, params)
             rows = result.fetchall()
 
@@ -1540,8 +1550,6 @@ class QuerySet(Generic[ModelT]):
         ``EXPLAIN`` / ``EXPLAIN ANALYZE`` on PostgreSQL and ``EXPLAIN``
         on MySQL.
         """
-        from sqlalchemy import text
-
         from zeeb_orm.db.connection import get_connection
 
         db = await get_connection(self._db_alias)
@@ -1554,16 +1562,12 @@ class QuerySet(Generic[ModelT]):
         else:
             prefix = "EXPLAIN"
 
-        stmt = self._build_select()
-        compiled = stmt.compile(
-            dialect=dialect,
-            compile_kwargs={"render_postcompile": True, "literal_binds": True},
-        )
-
+        # The EXPLAIN prefix is compiled around the statement, so values stay
+        # bound parameters (no literal inlining re-parsed as SQL text).
         from zeeb_orm.db.connection import get_session
 
         async with get_session(self._db_alias) as (session, _):
-            result = await session.execute(text(f"{prefix} {compiled}"))
+            result = await session.execute(_Explain(self._build_select(), prefix))
             rows = result.fetchall()
 
         return "\n".join(
@@ -2175,6 +2179,141 @@ class Prefetch:
 # QuerySet.filter() instead of maintaining a divergent lookup subset.
 
 
+# SQLAlchemy's text() turns every match into a bind parameter
+# (TextClause._bind_params_regex); a backslash before the colon keeps it
+# literal.
+_TEXT_BIND = re.compile(r"(?<![:\w\x5c]):(\w+)(?!:)")
+
+
+def _escape_text_binds(segment: str) -> str:
+    """Make ``segment`` literal for ``text()``: no ``:name`` becomes a bind."""
+    return _TEXT_BIND.sub(lambda m: "\\:" + m.group(1), segment)
+
+
+def _split_raw_sql(sql: str, backslash_escapes: bool) -> list[tuple[bool, str]]:
+    """``[(is_code, text), ...]``: ``sql`` split into code and literal runs.
+
+    Literal runs are string literals (``'...'``), quoted identifiers
+    (``"..."`` and backtick-quoted) with doubled-quote escapes — plus backslash
+    escapes where the backend honours them (MySQL) — and ``-- ...`` /
+    ``/* ... */`` comments. An unterminated run extends to the end.
+    """
+    parts: list[tuple[bool, str]] = []
+    code_start = 0
+    i, n = 0, len(sql)
+    while i < n:
+        ch = sql[i]
+        end = None
+        if ch in "'\"`":
+            j = i + 1
+            while j < n:
+                c = sql[j]
+                if backslash_escapes and c == "\\" and ch != "`":
+                    j += 2
+                    continue
+                if c == ch:
+                    if j + 1 < n and sql[j + 1] == ch:
+                        j += 2
+                        continue
+                    break
+                j += 1
+            end = min(j + 1, n)
+        elif sql.startswith("--", i):
+            j = sql.find("\n", i)
+            end = n if j == -1 else j
+        elif sql.startswith("/*", i):
+            j = sql.find("*/", i + 2)
+            end = n if j == -1 else j + 2
+        if end is None:
+            i += 1
+            continue
+        if code_start < i:
+            parts.append((True, sql[code_start:i]))
+        parts.append((False, sql[i:end]))
+        i = code_start = end
+    if code_start < n:
+        parts.append((True, sql[code_start:]))
+    return parts
+
+
+def _prepare_raw_sql(sql: str, params: Any, dialect_name: str) -> tuple[str, dict[str, Any]]:
+    """``raw()`` SQL and params as ``text()`` SQL plus a bind dict.
+
+    Positional ``?`` placeholders outside literals and comments become
+    ``:_raw_N`` binds; every other ``:word`` that ``text()`` would read as
+    a bind (inside literals always, in code too unless params are named) is
+    escaped. The old implementation replaced the first N ``?`` characters
+    anywhere — including inside string literals.
+    """
+    parts = _split_raw_sql(sql, backslash_escapes=dialect_name in ("mysql", "mariadb"))
+    if isinstance(params, dict):
+        text_sql = "".join(t if code else _escape_text_binds(t) for code, t in parts)
+        return text_sql, dict(params)
+
+    values = list(params) if params is not None else []
+    out: list[str] = []
+    index = 0
+    for code, segment in parts:
+        segment = _escape_text_binds(segment)
+        if code:
+            pieces = segment.split("?")
+            rebuilt = [pieces[0]]
+            for piece in pieces[1:]:
+                rebuilt.append(f":_raw_{index}{piece}")
+                index += 1
+            segment = "".join(rebuilt)
+        out.append(segment)
+    if index != len(values):
+        raise ValueError(
+            f"raw(): the SQL has {index} '?' placeholder(s) but {len(values)} "
+            "parameter(s) were given."
+        )
+    return "".join(out), {f"_raw_{i}": value for i, value in enumerate(values)}
+
+
+class _Explain(Executable, ClauseElement):
+    """``<prefix> <statement>`` — EXPLAIN compiled around a real statement.
+
+    The statement's values stay bound parameters. ``explain()`` used to
+    compile the query with literal binds and send the string through
+    ``text()``, which re-parsed any ``:name`` inside a value as a new bind
+    parameter.
+    """
+
+    inherit_cache = False
+
+    def __init__(self, statement: Any, prefix: str) -> None:
+        self.statement = statement
+        self.prefix = prefix
+
+
+@compiles(_Explain)
+def _compile_explain(element: _Explain, compiler: Any, **kw: Any) -> str:
+    sql = compiler.process(element.statement, **kw)
+    # The rows are the plan, not the SELECT's columns: drop the SELECT's
+    # result map so its type processors are not applied to them.
+    compiler._result_columns = []
+    return f"{element.prefix} {sql}"
+
+
+def _require_expressions(method: str, values: dict[str, Any]) -> None:
+    """Reject annotate()/aggregate() values that are not expressions.
+
+    Anything else used to be rendered verbatim with ``literal_column`` — a
+    string from a request became raw SQL.
+    """
+    from zeeb_orm.query.expressions import Expression
+
+    for alias, value in values.items():
+        if not isinstance(value, Expression):
+            raise TypeError(
+                f"QuerySet.{method}() received a non-expression for {alias!r}: "
+                f"{type(value).__name__}. Use an expression such as F('field'), "
+                "Value(...) or an aggregate like Count('field'); plain strings "
+                "are never interpreted as SQL."
+            )
+
+
 def _insert_statement(table: Any, dialect_name: str, ignore_conflicts: bool) -> Any:
     """``INSERT INTO table`` — conflict-skipping when ``ignore_conflicts``."""
     from sqlalchemy import insert as _sa_insert
@@ -2224,12 +2363,9 @@ def resolve_field_path(
 
     # Check if it's an annotation first
     if annotations and field_name in annotations:
-        expr = annotations[field_name]
-        if hasattr(expr, "resolve"):
-            # An aggregate annotation may traverse relations
-            # (Count("posts")); it needs the statement's join context.
-            return expr.resolve(model, joins=joins)
-        return literal_column(field_name)
+        # An aggregate annotation may traverse relations (Count("posts"));
+        # it needs the statement's join context.
+        return annotations[field_name].resolve(model, joins=joins)
 
     column = getattr(table.c, field_name, None)
 
