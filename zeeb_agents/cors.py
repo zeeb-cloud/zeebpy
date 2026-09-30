@@ -14,7 +14,7 @@ from zeeb_agents._utils.code_gen import (
     set_or_append_setting,
 )
 from zeeb_agents._utils.errors import AgentError, fail
-from zeeb_agents._utils.project import load_project_settings
+from zeeb_agents._utils.project import require_loaded_settings
 
 _CORS_MIDDLEWARE = "zeeb_api.middleware.CORSMiddleware"
 
@@ -152,8 +152,13 @@ async def get_cors_config(
     Returns data (always):
         cors (dict): mapping of each defined ``CORS_*`` key to its value;
             an empty dict ``{}`` when no CORS settings are configured.
+
+    Notes:
+        - A ``settings.py`` that raises when executed fails the call with
+          ``error_code="settings_error"`` rather than reporting "no CORS
+          settings" read off the defaults.
     """
-    settings = await asyncio.to_thread(load_project_settings, project_root)
+    settings = await asyncio.to_thread(require_loaded_settings, project_root)
     cors = {k: settings.get(k) for k in _CORS_KEYS if k in settings}
     if not cors:
         return AgentResult(

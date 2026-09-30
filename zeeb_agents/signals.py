@@ -220,6 +220,8 @@ async def create_signal_receiver(
 
     def _installed() -> bool:
         settings = load_project_settings(root)
+        if settings.load_error:
+            return True  # unknown — do not warn about wiring we cannot read
         return f"apps.{app}" in (settings.get("INSTALLED_APPS", []) or [])
 
     if not await asyncio.to_thread(_installed):

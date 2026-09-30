@@ -9,7 +9,11 @@ from pathlib import Path
 from zeeb_agents._utils import AgentResult, agent_function
 from zeeb_agents._utils.errors import AgentError, close_matches, fail
 from zeeb_agents._utils.field_types import render_py_literal
-from zeeb_agents._utils.project import load_project_settings, require_project_root
+from zeeb_agents._utils.project import (
+    load_project_settings,
+    require_loaded_settings,
+    require_project_root,
+)
 from zeeb_agents._utils.validation import ENV_KEY_RE
 from zeeb_api.conf.env import parse_env
 
@@ -130,13 +134,18 @@ async def get_settings(project_root: Path | None = None) -> AgentResult:
 
     Returns data (on success):
         settings (dict): the parsed top-level settings as a dictionary.
+
+    Notes:
+        - A ``settings.py`` that raises when executed fails the call with
+          ``error_code="settings_error"`` (and the exception in ``data["error"]``)
+          instead of returning defaults as if they were the project's settings.
     """
     root = project_root
-    settings = await asyncio.to_thread(load_project_settings, root)
+    settings = await asyncio.to_thread(require_loaded_settings, root)
     return AgentResult(
         success=True,
         message=f"Loaded settings from {root}",
-        data={"settings": settings},
+        data={"settings": dict(settings)},
     )
 
 
@@ -336,7 +345,7 @@ async def manage_settings(
     is_read = read_only or (value is None and not read_only)
 
     if is_read:
-        settings = await asyncio.to_thread(load_project_settings, root)
+        settings = await asyncio.to_thread(require_loaded_settings, root)
         if key not in settings:
             suggestions = close_matches(key, sorted(settings))
             hint = f" Did you mean: {', '.join(suggestions)}?" if suggestions else ""

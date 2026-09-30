@@ -11,7 +11,7 @@ from typing import Any
 from zeeb_agents._utils import AgentResult, agent_function
 from zeeb_agents._utils.errors import fail
 from zeeb_agents._utils.paths import confine_path
-from zeeb_agents._utils.project import load_project_settings
+from zeeb_agents._utils.project import load_project_settings, settings_error_message
 
 _DOCKERFILE_TEMPLATE = """\
 # syntax=docker/dockerfile:1
@@ -232,6 +232,10 @@ async def check_production_readiness(
         settings = load_project_settings(root)
         issues: list[str] = []
         passed: list[str] = []
+        load_problem = settings_error_message(settings)
+        if load_problem:
+            # The checks below would otherwise grade the defaults.
+            issues.append(load_problem)
 
         # DEBUG check
         debug = settings.get("DEBUG", True)

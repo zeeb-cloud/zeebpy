@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import importlib.util
 import keyword
+import logging
 import re
 import sys
 from pathlib import Path
 from typing import Any
 
 from zeeb_agents._utils.errors import AgentError
+
+logger = logging.getLogger("zeeb_agents")
 
 
 def find_project_root(start: Path | None = None) -> Path | None:
@@ -90,16 +93,45 @@ def detect_framework(project_root: Path | None) -> str:
     return m.group(1) if m else DEFAULT_FRAMEWORK
 
 
-def load_project_settings(project_root: Path) -> dict[str, Any]:
-    """Dynamically load the project settings module and return its attributes."""
-    settings: dict[str, Any] = {
-        "DATABASE": {"url": "sqlite+aiosqlite:///db.sqlite3"},
-        "INSTALLED_APPS": [],
-    }
-    for item in project_root.iterdir():
+class ProjectSettings(dict):
+    """A project's top-level settings, plus how loading them went.
+
+    A plain ``dict`` to every existing caller. ``load_error`` is ``None`` when
+    ``settings.py`` executed cleanly (or there is none), else
+    ``"<ExceptionType>: <message>"`` — in which case the dict holds only the
+    defaults and must not be mistaken for the project's configuration.
+    ``source`` is the settings file that was executed, if any.
+    """
+
+    load_error: str | None = None
+    source: Path | None = None
+
+
+def load_project_settings(project_root: Path) -> ProjectSettings:
+    """Load the project's ``settings.py`` in-process and return its UPPERCASE names.
+
+    The module is executed with the project root prepended to ``sys.path``;
+    ``sys.path`` is restored exactly afterwards, whatever the module did to it.
+
+    A settings module that raises used to be swallowed, silently leaving the
+    defaults — a sqlite ``db.sqlite3`` among them — as if they were the
+    project's configuration, so database tools ran against the wrong
+    database. The failure is now recorded on the result (``load_error``) and
+    logged; callers that act on the configuration use
+    :func:`require_loaded_settings`, which turns it into an error.
+    """
+    settings = ProjectSettings(
+        {
+            "DATABASE": {"url": "sqlite+aiosqlite:///db.sqlite3"},
+            "INSTALLED_APPS": [],
+        }
+    )
+    for item in sorted(project_root.iterdir()):
         if item.is_dir() and (item / "settings.py").exists():
+            settings.source = item / "settings.py"
             spec = importlib.util.spec_from_file_location("_zeeb_settings", item / "settings.py")
             if spec and spec.loader:
+                saved_path = list(sys.path)
                 sys.path.insert(0, str(project_root))
                 try:
                     module = importlib.util.module_from_spec(spec)
@@ -110,13 +142,55 @@ def load_project_settings(project_root: Path) -> dict[str, Any]:
                     for attr in dir(module):
                         if attr.isupper() and not attr.startswith("_"):
                             settings[attr] = getattr(module, attr)
-                except Exception:
-                    pass
+                except BaseException as exc:  # noqa: BLE001 — incl. SystemExit from a settings module
+                    if isinstance(exc, KeyboardInterrupt):
+                        raise
+                    settings.load_error = f"{type(exc).__name__}: {exc}"
+                    logger.warning(
+                        "Could not load %s: %s", settings.source, settings.load_error
+                    )
                 finally:
-                    if str(project_root) in sys.path:
-                        sys.path.remove(str(project_root))
+                    sys.path[:] = saved_path
             break
     return settings
+
+
+def settings_error_message(settings: dict[str, Any]) -> str | None:
+    """A caller-facing sentence when *settings* failed to load, else ``None``."""
+    error = getattr(settings, "load_error", None)
+    if not error:
+        return None
+    source = getattr(settings, "source", None)
+    where = f"{source.parent.name}/settings.py" if source else "settings.py"
+    return f"{where} could not be loaded ({error}); fix it before relying on its values."
+
+
+def ensure_settings_loaded(settings: dict[str, Any]) -> dict[str, Any]:
+    """Return *settings*, or fail with ``settings_error`` when they did not load.
+
+    For callers that *act* on the configuration — above all on ``DATABASE`` —
+    where the defaults would silently point at a different database.
+    """
+    message = settings_error_message(settings)
+    if message:
+        raise AgentError(
+            message,
+            code="settings_error",
+            error=getattr(settings, "load_error", None),
+        )
+    return settings
+
+
+def require_loaded_settings(project_root: Path) -> ProjectSettings:
+    """:func:`load_project_settings`, failing with ``settings_error`` on a load error."""
+    settings = load_project_settings(project_root)
+    ensure_settings_loaded(settings)
+    return settings
+
+
+def project_database_url(project_root: Path) -> str:
+    """The project's database URL (sqlite paths anchored), or ``settings_error``."""
+    return resolve_db_url(require_loaded_settings(project_root), project_root)
 
 
 def resolve_db_url(settings: dict[str, Any], project_root: Path) -> str:

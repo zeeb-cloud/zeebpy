@@ -36,6 +36,7 @@ ERROR_CODES = frozenset(
         "file_not_found",
         "function_not_found",
         "setting_not_found",
+        "settings_error",
         "env_key_not_found",
         "already_exists",
         "prefix_conflict",
