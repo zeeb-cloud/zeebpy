@@ -636,6 +636,9 @@ print(f"Published {count} articles")
 # Update with F expressions
 from zeeb_orm import F
 await Article.objects.filter(pk=article_id).update(views=F("views") + 1)
+
+# ForeignKeys accept an instance, a primary key, or the <name>_id key
+await Article.objects.filter(author=None).update(author=user)
 ```
 
 ### delete()
@@ -658,6 +661,9 @@ articles = [
     Article(title="Article 3", content="..."),
 ]
 created = await Article.objects.bulk_create(articles)
+
+# One multi-row INSERT per batch
+created = await Article.objects.bulk_create(articles, batch_size=1000)
 ```
 
 ### bulk_update()
@@ -670,6 +676,9 @@ for article in articles:
     article.status = "review"
 
 await Article.objects.bulk_update(articles, ["status"])
+
+# One CASE-based UPDATE per batch; ForeignKeys by name or <name>_id
+await Article.objects.bulk_update(articles, ["author", "status"], batch_size=500)
 ```
 
 ### in_bulk()
