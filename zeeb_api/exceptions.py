@@ -697,6 +697,31 @@ class Throttled(RateLimitException, APIException):
         )
 
 
+class PasswordTooLongError(ValidationException, ValueError):
+    """A password over bcrypt's 72-byte input limit.
+
+    bcrypt reads at most 72 bytes; bcrypt >= 5 raises on anything longer
+    instead of silently truncating. This is a 400 field error on ``password``
+    (``FIELD_TOO_LONG``) when it reaches a client, and still a ``ValueError``
+    for code that set passwords outside a request.
+    """
+
+    def __init__(self, max_bytes: int = 72) -> None:
+        message = f"Password must be at most {max_bytes} bytes (UTF-8 encoded)"
+        ValidationException.__init__(
+            self,
+            message=message,
+            details=[
+                ErrorDetail(
+                    code=ErrorCode.FIELD_TOO_LONG.value,
+                    field="password",
+                    message=message,
+                    meta={"max_length": max_bytes},
+                )
+            ],
+        )
+
+
 # Configuration errors
 
 class ImproperlyConfigured(Exception):

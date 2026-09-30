@@ -4,10 +4,10 @@ Authentication router with login, refresh, logout, register endpoints.
 
 from __future__ import annotations
 
-from typing import Any, Callable, Awaitable
+from typing import Annotated, Any, Callable, Awaitable
 
 from fastapi import APIRouter, Body, Depends, Request
-from pydantic import BaseModel, Field, EmailStr
+from pydantic import AfterValidator, BaseModel, EmailStr, Field
 
 from zeeb_api.auth.jwt import (
     create_token_pair,
@@ -39,16 +39,42 @@ from zeeb_api.exceptions import (
 AuthenticateFunc = Callable[[Request, dict[str, Any]], Awaitable[tuple[str, dict[str, Any]] | None]]
 
 
+def _password_within_bcrypt_limit(value: str) -> str:
+    """Refuse a password bcrypt cannot hash (over 72 UTF-8 bytes) as a field error.
+
+    bcrypt >= 5 raises ValueError instead of truncating, which made /register
+    answer 500. ``string_too_long`` maps to ``FIELD_TOO_LONG`` in the envelope.
+    """
+    from pydantic_core import PydanticCustomError
+
+    from zeeb_api.auth.hashers import MAX_PASSWORD_BYTES, password_too_long
+
+    if password_too_long(value):
+        raise PydanticCustomError(
+            "string_too_long",
+            "Password must be at most {max_length} bytes (UTF-8 encoded)",
+            {"max_length": MAX_PASSWORD_BYTES},
+        )
+    return value
+
+
+_BcryptPassword = Annotated[str, AfterValidator(_password_within_bcrypt_limit)]
+
+
 class LoginRequest(BaseModel):
     """Login request body."""
     email: EmailStr = Field(description="User's email address")
-    password: str = Field(min_length=1, description="User's password")
+    password: _BcryptPassword = Field(
+        min_length=1, description="User's password (at most 72 bytes, UTF-8)"
+    )
 
 
 class RegisterRequest(BaseModel):
     """Registration request body."""
     email: EmailStr = Field(description="User's email address")
-    password: str = Field(min_length=8, description="Password (min 8 characters)")
+    password: _BcryptPassword = Field(
+        min_length=8, description="Password (min 8 characters, at most 72 bytes UTF-8)"
+    )
     first_name: str | None = Field(default=None, description="First name")
     last_name: str | None = Field(default=None, description="Last name")
 

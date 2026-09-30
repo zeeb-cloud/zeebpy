@@ -216,6 +216,14 @@ check_password("secret123", hashed)   # True
 is_password_usable(hashed)            # False for an unset/unusable password
 ```
 
+bcrypt reads at most **72 bytes** of a password (UTF-8 encoded — `"ä"` is two
+bytes), and bcrypt 5 raises instead of silently truncating. The limit is
+enforced up front: `/auth/register` and `/auth/login` answer `422` with a
+`FIELD_TOO_LONG` detail on `password`, and `make_password()`/`set_password()`
+raise `zeeb_api.exceptions.PasswordTooLongError` — a 400 field error in a
+request, and still a `ValueError` for code that sets passwords elsewhere.
+`check_password()` simply returns `False` for such input.
+
 ### Password Validation
 
 The framework ships no password-strength validators and has no
@@ -250,14 +258,17 @@ user = await authenticate(username="john", password="secret123")
 # By email
 user = await authenticate(email="john@example.com", password="secret123")
 
-# Returns None if failed
+# Returns None if failed (wrong password, unknown user or inactive account)
 if user is None:
     print("Invalid credentials")
-elif not user.is_active:
-    print("Account disabled")
 else:
     print(f"Welcome, {user.username}!")
 ```
+
+`authenticate()` performs exactly one bcrypt verification whatever the
+outcome — against a throwaway hash when the email is unknown, and before the
+`is_active` check for an inactive account — so response times do not reveal
+which addresses have accounts.
 
 ### Custom Authentication
 
