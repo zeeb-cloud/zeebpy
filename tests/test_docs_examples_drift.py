@@ -28,7 +28,7 @@ ROOT = Path(__file__).resolve().parent.parent
 DOCS = ROOT / "docs"
 
 #: Every markdown file that is part of the published documentation.
-PAGES: list[Path] = sorted(DOCS.rglob("*.md")) + [ROOT / "README.md", ROOT / "CLAUDE.md"]
+PAGES: list[Path] = sorted(DOCS.rglob("*.md")) + [ROOT / "README.md", ROOT / "AGENTS.md"]
 
 #: Names exported for internal/plumbing reasons that no user-facing page needs.
 _UNDOCUMENTED_BY_DESIGN: frozenset[str] = frozenset(

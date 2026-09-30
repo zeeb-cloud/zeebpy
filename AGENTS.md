@@ -1,6 +1,8 @@
 # AGENTS.md
 
-This file provides guidance to Codex (Codex.ai/code) when working with code in this repository.
+Guidance for every coding agent working in the **zeebpy** repository. This is the
+single agent guide: there is no vendor-specific copy to keep in sync. Repository
+skills live in `.agents/skills/`.
 
 ## Project Overview
 
@@ -71,7 +73,7 @@ Demo project: `cd demo_blog && python manage.py runserver`. Runnable examples li
 
 Every function returns `AgentResult(success, message, data)` (truthy on success) and must not raise — this is enforced by the `@agent_function` decorator (`_utils/decorators.py`: resolves `project_root`, logs failures to the `"zeeb_agents"` logger, wraps exceptions into `AgentResult`). All public functions use it; function signatures, names, and existing `data` keys are the MCP-facing contract — you may enrich docstrings additively (e.g. document the `data` shape, special cases) but must not break the contract (no renamed/removed functions or `data` keys, no signature changes; a *new optional* parameter must be appended, never inserted, so positional callers keep working). New `data` keys are fine when additive. Follow the `Returns data:`/`Notes:` docstring convention used across the modules, and document the return-shape conventions in `agent_docs/principles.md`. Functions operate on a generated Zeeb project on disk (scaffolding writes into `apps/<app>/`). `run_query` enforces a read-only SQL gate (lexed under every supported dialect's quoting/comment rules with literals blanked, single-statement, keyword + side-effecting-function denylist, `max_rows` cap, statement timeout, always-rollback transaction). Every caller-supplied path goes through `_utils/paths.confine_path` (not only `files.py`), and app names are validated as identifiers in `get_app_path`. Generated code is built from validated identifiers and `render_py_literal` — never by splicing a caller string between quotes or into an f-string (`raw` field values, `body=`, `imports=` are the deliberate verbatim exceptions) — and every generated `.py` edit goes through `code_gen.write_source` (atomic, refused with `syntax_error` if the result would not parse); locate blocks with the AST helpers in `code_gen`, never with a regex over the text. `resources.py` dispatches MCP resource docs from `agent_docs/*.md`; `capabilities.py::list_capabilities` introspects `__all__` for machine-readable tool discovery.
 
-**Tiers — which tools an agent should see.** `tiers.py` is the single source of truth for *this library's* presentation: `CORE_TOOLS` (~20 declarative tools), `ESCAPE_HATCH_TOOLS` (8), and everything else implicitly `advanced`. `list_capabilities` reports a `tier` per tool and filters on `tier=`; an MCP server registers `DEFAULT_SURFACE` and keeps the rest dispatchable. **Advanced is not deprecated** — the feature compiler executes exactly those functions, and they stay importable and supported. Re-tiering a tool is a presentation change and is allowed; removing or renaming one is not. The sibling `zeeb-mcp` does not read `tiers.py`: its tripwire is `tests/test_capabilities_surface.py::test_every_library_export_is_used_or_explicitly_not` — every `zeeb_agents` export must be called by its adapter (`libs/zeeb_codegen/adapters/zeebpy.py`) or be listed in `AGENT_METHODS_WITHOUT_MCP_TOOL` (`libs/zeeb_codegen/tools.py`), so a new export forces a decision there when zeebpy is bumped.
+**Tiers — which tools an agent should see.** `tiers.py` is the single source of truth for *this library's* presentation: `CORE_TOOLS` (~20 declarative tools), `ESCAPE_HATCH_TOOLS` (8), and everything else implicitly `advanced`. `list_capabilities` reports a `tier` per tool and filters on `tier=`; an MCP server registers `DEFAULT_SURFACE` and keeps the rest dispatchable. **Advanced is not deprecated** — the feature compiler executes exactly those functions, and they stay importable and supported. Re-tiering a tool is a presentation change and is allowed; removing or renaming one is not. The sibling `zeeb-mcp` does not read `tiers.py`: its tripwire is `tests/test_capabilities_surface.py::test_every_library_export_is_used_or_explicitly_not` — every `zeeb_agents` export must be called by its adapter (`libs/zeeb_codegen/adapters/zeebpy.py`) or be listed in `AGENT_METHODS_WITHOUT_MCP_TOOL` (`libs/zeeb_codegen/tools.py`), so a new export forces a decision there the next time zeeb-mcp runs against main.
 
 **Features.** Scope note: the zeeb-mcp platform no longer uses this intent layer — `intent.py`, the `feature_spec.py` compiler/executor, `feature_manifest.py`, `feature_archive.py`, `tiers.py`, `capabilities.py`, `resources.py` and `agent_docs/`. It has its own framework-neutral implementation (`libs/zeeb_codegen/intent`, feature manifest format 2 in the same `.zeeb/features.json`) and calls only the per-object tools through its adapter. The layer stays here, supported, because it is public contract; `feature_manifest.py` refuses to rewrite a manifest newer than its own format (`manifest_version_unsupported`) so the two never fight over that file. `intent.py` owns the lifecycle (`build_feature`/`change_feature`/`list_features`/`deactivate_feature`/`activate_feature`/`delete_feature`); `feature_spec.py` is the private compiler+executor; `feature_manifest.py` records per-artifact ownership in the project's `.zeeb/features.json`; `feature_archive.py` does the file surgery for archive/restore into `.zeeb/archive/<feature>/`. Two invariants: features may **share an app** (so archiving is surgical AST edits, never directory moves — ownership decides what moves), and **deactivate never touches `models.py`** (the schema stays, no migration is generated, no data can be lost — dropping tables is `delete_feature`'s job and needs `confirm=True`). `.zeeb/` is committed project state, not build output; keep it out of the scaffold's `.gitignore`. A FeatureSpec's `functions` block (`action`/`endpoint`/`hook`/`task`/`rule`) compiles to the same per-object tools; adding a kind means adding to `FUNCTION_KINDS`, `KNOWN_OPS`, `_OP_REQUIRED`, the executor dispatch, and `functions.py::FUNCTION_FILES`.
 
@@ -81,7 +83,7 @@ Every function returns `AgentResult(success, message, data)` (truthy on success)
 myproject/
 ├── manage.py
 ├── .env / .env.example          # env-driven config; .env holds a generated SECRET_KEY (0600)
-├── AGENTS.md                    # what a coding agent reads; AGENTS.md + .cursor/rules point here
+├── AGENTS.md                    # what a coding agent reads; CLAUDE.md + .cursor/rules point here
 ├── pyproject.toml               # [tool.zeeb] identity marker + ruff config
 ├── pytest.ini
 ├── myproject/{settings.py, urls.py, asgi.py}
@@ -114,7 +116,7 @@ Three more pieces of `zeeb_orm/scaffold/` are load-bearing:
   feature generated by the agent layer runs against the fixtures the CLI shipped.
   A freshly scaffolded project passes `pytest` **before** its first migration —
   the `db` fixture builds the schema from the model registry. Keep that true.
-- `agent_guide.py` owns `AGENTS.md`; `AGENTS.md` and `.cursor/rules/zeebpy.mdc`
+- `agent_guide.py` owns `AGENTS.md`; `CLAUDE.md` and `.cursor/rules/zeebpy.mdc`
   are rendered from the same constant. `tests/test_scaffold_agent_docs.py`
   asserts every path, command and flag it names actually exists.
 - The app templates carry their example in the **module docstring**, not as
@@ -125,8 +127,24 @@ Three more pieces of `zeeb_orm/scaffold/` are load-bearing:
 A generated project must stay `ruff check .` clean
 (`tests/test_scaffold_boilerplate.py::test_a_generated_project_passes_its_own_lint`).
 
+## zeeb-mcp consumes main
+
+The zeeb-mcp platform installs zeebpy from this repository's `main` branch in all of
+its images and its test environment — there is no pinned commit in between. A push to
+`main` therefore reaches zeeb-mcp's next install and image build. Before pushing:
+
+- run this suite, and
+- run zeeb-mcp's suite against your checkout (`PYTHONPATH=<this checkout> pytest` from
+  the zeeb-mcp root makes it shadow the installed package), at least
+  `tests/test_zeebpy_adapter.py`, `tests/test_capabilities_surface.py` and
+  `tests/test_intent_workflows.py`.
+
+The `zeeb_agents` contract rules above are what keep that safe: never rename or remove a
+function or a `data` key, and only append new optional parameters.
+
 ## Conventions
 
 - Always update `/docs` when you add/change/remove features (`docs/orm/`, `docs/api/`, `docs/cli/`, `docs/configuration/`, `docs/reference/`).
 - Configuration is layered: project `settings.py` is read by `zeeb_api.conf.settings` (LazySettings, canonical in-process reader); `zeeb_api.conf.orm.apply_orm_settings()` hands it down to `zeeb_orm.conf.settings` (low-level sink, also fed by env vars `DATABASE_URL`, `DATABASE_ECHO`, …); `zeeb_agents` reads *target* projects off disk by path (`load_project_settings`) and is process-independent by design.
+- Finding a project on disk — its root, settings module (`[tool.zeeb] settings_module` first, then a sorted scan skipping `apps/`) and database URL — goes through `zeeb_orm.conf.project` (`find_project_root`, `find_settings_module`, `load_settings_module`, `resolve_database_url`). A settings.py that fails to import raises `SettingsImportError`; never fall back to a default database. Don't add another discovery loop.
 - The three packages layer strictly: zeeb_api depends on zeeb_orm; zeeb_agents depends on both. Don't introduce reverse dependencies.
