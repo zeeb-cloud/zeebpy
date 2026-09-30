@@ -343,8 +343,10 @@ def ensure_app_urls_included(root: Path, app: str, prefix: str | None = None) ->
         urls_path.write_text(STANDARD_URLS_TEMPLATE, encoding="utf-8")
     router_alias = f"{app}_router"
 
+    # repr(), never a hand-quoted f-string: a prefix is caller input, and a
+    # quote in it would otherwise end the literal and write code into urls.py.
     include_stmt = (
-        f'router.include({router_alias}, prefix="{prefix}")'
+        f"router.include({router_alias}, prefix={prefix!r})"
         if prefix
         else f"router.include({router_alias})"
     )

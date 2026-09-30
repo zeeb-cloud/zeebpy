@@ -111,7 +111,8 @@ Every variable read by the generated `settings.py`:
 | `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | unset | adds `google` to `OAUTH_PROVIDERS` |
 | `GITHUB_CLIENT_ID` / `GITHUB_CLIENT_SECRET` | unset | adds `github` to `OAUTH_PROVIDERS` |
 | `AZURE_CLIENT_ID` / `AZURE_CLIENT_SECRET` / `AZURE_TENANT_ID` | unset / `common` | adds `azure` to `OAUTH_PROVIDERS` |
-| `OAUTH_AUTO_CREATE_USERS` / `OAUTH_LINK_BY_EMAIL` / `OAUTH_REQUIRE_VERIFIED_EMAIL` | `true` | the matching `OAUTH_*` |
+| `OAUTH_AUTO_CREATE_USERS` / `OAUTH_REQUIRE_VERIFIED_EMAIL` | `true` | the matching `OAUTH_*` |
+| `OAUTH_LINK_BY_EMAIL` | `false` | `OAUTH_LINK_BY_EMAIL` (links only to a local account that verified the address, even when `true`) |
 | `OAUTH_STATE_TTL_SECONDS` | `600` | `OAUTH_STATE_TTL_SECONDS` |
 | `OAUTH_REDIRECT_URI` / `OAUTH_SUCCESS_REDIRECT` | unset | the matching `OAUTH_*` |
 | `OAUTH_ALLOWED_REDIRECT_HOSTS` / `OAUTH_ACCEPT_EXTERNAL_TOKENS` | empty | the matching `OAUTH_*` |
