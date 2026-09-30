@@ -101,8 +101,7 @@ def check_field_path(
         ):
             return
     raise FieldPathError(
-        f"Field '{path}' follows a relation; list the full path in the "
-        "allow-list to permit it"
+        f"Field '{path}' follows a relation; list the full path in the allow-list to permit it"
     )
 
 
@@ -178,6 +177,5 @@ def _check_syntactically(
     if allowed != ALL_FIELDS and "__".join(parts) in allowed:
         return
     raise FieldPathError(
-        f"Field '{path}' follows a relation; list the full path in the "
-        "allow-list to permit it"
+        f"Field '{path}' follows a relation; list the full path in the allow-list to permit it"
     )
