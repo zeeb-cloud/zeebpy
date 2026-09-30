@@ -9,6 +9,14 @@ from zeeb_api.exceptions import ValidationError
 from zeeb_api.response import Response
 
 
+async def _is_valid(serializer: Any) -> bool:
+    """Validate with async hooks when the serializer supports them."""
+    ais_valid = getattr(serializer, "ais_valid", None)
+    if ais_valid is not None:
+        return await ais_valid()
+    return serializer.is_valid()
+
+
 class CreateModelMixin:
     """Mixin for create (POST) operation."""
     
@@ -26,7 +34,7 @@ class CreateModelMixin:
         
         serializer = self.get_serializer(data=data)
         
-        if not serializer.is_valid():
+        if not await _is_valid(serializer):
             raise ValidationError(serializer.errors)
         
         # Call perform_create hook to allow modification of validated_data
@@ -279,7 +287,7 @@ class UpdateModelMixin:
             partial=False,
         )
 
-        if not serializer.is_valid():
+        if not await _is_valid(serializer):
             raise ValidationError(serializer.errors)
 
         await self.perform_update(serializer)
@@ -302,7 +310,7 @@ class UpdateModelMixin:
             partial=True,
         )
 
-        if not serializer.is_valid():
+        if not await _is_valid(serializer):
             raise ValidationError(serializer.errors)
 
         await self.perform_update(serializer)
