@@ -26,6 +26,7 @@ import asyncio
 from pathlib import Path
 
 from zeeb_agents._utils import AgentResult, agent_function
+from zeeb_agents._utils.code_gen import write_source
 from zeeb_agents._utils.errors import AgentError, fail
 from zeeb_agents._utils.field_types import FIELD_TYPE_MAP, render_py_literal
 from zeeb_agents._utils.paths import confine_path
@@ -656,13 +657,13 @@ async def generate_tests(
         path = confine_path(root, relative, kind="filename")
         if path.exists():
             if overwrite and relative == target:
-                path.write_text(content, encoding="utf-8")
+                write_source(path, content)
                 overwritten.append(relative)
                 return
             skipped.append(relative)
             return
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(content, encoding="utf-8")
+        write_source(path, content)
         created.append(relative)
 
     def _write_all() -> None:

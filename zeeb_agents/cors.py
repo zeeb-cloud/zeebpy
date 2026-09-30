@@ -12,6 +12,7 @@ from zeeb_agents._utils.code_gen import (
     find_settings_file,
     render_py_literal,
     set_or_append_setting,
+    write_source,
 )
 from zeeb_agents._utils.errors import AgentError, fail
 from zeeb_agents._utils.project import require_loaded_settings
@@ -110,7 +111,7 @@ async def configure_cors(
         for key, value in updates.items():
             content = _set_or_append_setting(content, key, value)
 
-        settings_path.write_text(content, encoding="utf-8")
+        write_source(settings_path, content)
 
         # The CORS_* keys are read by CORSMiddleware at startup — without an
         # active MIDDLEWARE entry the configuration above is silently inert.

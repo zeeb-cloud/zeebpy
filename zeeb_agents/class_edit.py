@@ -29,6 +29,7 @@ from zeeb_agents._utils.code_gen import (
     remove_method_from_class,
     set_class_attribute_in_block,
     set_method_in_class,
+    write_source,
 )
 from zeeb_agents._utils.errors import AgentError, close_matches, fail
 from zeeb_agents._utils.paths import confine_path
@@ -180,13 +181,13 @@ async def set_class_method(
             updated = remove_method_from_class(content, class_name, method_name)
             if updated is None:
                 return rel, "skipped", []
-            path.write_text(updated, encoding="utf-8")
+            write_source(path, updated)
             return rel, "removed", []
         result = set_method_in_class(content, class_name, method_name, source or "")
         if result is None:  # pragma: no cover - the class was just located
             raise AgentError(f"'{class_name}' not found in {rel}", code="model_not_found")
         updated, action = result
-        path.write_text(updated, encoding="utf-8")
+        write_source(path, updated)
         return rel, action, _add_imports(path, imports)
 
     rel, action, imports_added = await asyncio.to_thread(_edit)
@@ -299,7 +300,7 @@ async def set_class_attribute(
         updated, action = result
         if action == "skipped":
             return rel, action, []
-        path.write_text(updated, encoding="utf-8")
+        write_source(path, updated)
         return rel, action, _add_imports(path, imports)
 
     rel, action, imports_added = await asyncio.to_thread(_edit)

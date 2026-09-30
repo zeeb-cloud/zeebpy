@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 
 from zeeb_agents._utils import AgentResult, agent_function
+from zeeb_agents._utils.code_gen import write_source
 from zeeb_agents._utils.errors import AgentError, close_matches, fail
 from zeeb_agents._utils.field_types import render_py_literal
 from zeeb_agents._utils.project import (
@@ -386,7 +387,7 @@ async def manage_settings(
         # A function replacement: the rendered literal is inserted as-is, never
         # re-read as a regex template (where its backslashes would be escapes).
         new_content = pattern.sub(lambda m: m.group(1) + rendered, content)
-        settings_file.write_text(new_content, encoding="utf-8")
+        write_source(settings_file, new_content)
         return True
 
     found = await asyncio.to_thread(_write)

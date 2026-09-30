@@ -10,6 +10,7 @@ from zeeb_agents._utils.code_gen import (
     append_block,
     class_exists,
     ensure_import,
+    write_source,
 )
 from zeeb_agents._utils.errors import AgentError, close_matches
 from zeeb_agents._utils.validation import ensure_app_exists, ensure_identifier
@@ -115,9 +116,7 @@ async def create_filterset(
 
     def _write() -> None:
         if not filters_path.exists():
-            filters_path.write_text(
-                _FILTERS_HEADER.format(app=app), encoding="utf-8"
-            )
+            write_source(filters_path, _FILTERS_HEADER.format(app=app))
         content = filters_path.read_text(encoding="utf-8")
         if class_exists(content, class_name):
             raise AgentError(

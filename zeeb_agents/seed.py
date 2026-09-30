@@ -6,7 +6,7 @@ import asyncio
 from pathlib import Path
 
 from zeeb_agents._utils import AgentResult, agent_function
-from zeeb_agents._utils.code_gen import extract_model_names, find_settings_file
+from zeeb_agents._utils.code_gen import extract_model_names, find_settings_file, write_source
 from zeeb_agents._utils.errors import AgentError, close_matches, fail
 from zeeb_agents._utils.paths import confine_path
 from zeeb_agents._utils.project import get_app_path, require_project_root
@@ -285,7 +285,7 @@ async def generate_seed_script(
         out = seeds_dir / f"{app}_seed.py"
 
     out.parent.mkdir(parents=True, exist_ok=True)
-    await asyncio.to_thread(out.write_text, script, "utf-8")
+    await asyncio.to_thread(write_source, out, script)
 
     rel = str(out.relative_to(root))
     return AgentResult(

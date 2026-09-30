@@ -10,8 +10,11 @@ from zeeb_agents._utils import AgentResult, agent_function
 from zeeb_agents._utils.code_gen import (
     VIEWSET_OPERATIONS,
     append_block,
+    append_to_class,
+    class_block_bounds,
     class_exists,
     ensure_import,
+    extract_class_block,
     pluralize,
     remove_class_block,
     remove_import_name,
@@ -29,6 +32,7 @@ from zeeb_agents._utils.code_gen import (
     validate_if_exists,
     validate_throttles,
     viewset_option_imports,
+    write_source,
 )
 from zeeb_agents._utils.errors import AgentError, fail
 from zeeb_agents._utils.project import require_project_root
@@ -481,12 +485,7 @@ async def add_viewset_action(
                 viewset=class_name,
             )
 
-        class_pattern = re.compile(
-            rf"(^class {re.escape(class_name)}\b.*?)(?=^\S|\Z)",
-            re.DOTALL | re.MULTILINE,
-        )
-        class_match = class_pattern.search(content)
-        block = class_match.group(1) if class_match else ""
+        block = extract_class_block(content, class_name) or ""
         if re.search(rf"^\s+(?:async\s+)?def {re.escape(action_name)}\(", block, re.MULTILINE):
             if if_exists == "skip":
                 return "skipped"
@@ -500,8 +499,6 @@ async def add_viewset_action(
                     action=action_name,
                 )
             content = remove_method_from_class(content, class_name, action_name) or content
-            class_match = class_pattern.search(content)
-            block = class_match.group(1) if class_match else ""
             outcome = "replaced"
 
         action_code = render_action_method(
@@ -517,18 +514,18 @@ async def add_viewset_action(
             permission=perm_refs or None,
         )
 
-        # Insert before the end of the class body (before the next top-level
-        # statement or EOF). The ``^`` anchors are essential: without them the
-        # pattern also matches the commented example ViewSet in the scaffolded
-        # views.py and splices the action into a comment block.
-        def _replace(m: re.Match) -> str:
-            block = m.group(1)
-            if not block.endswith("\n"):
-                block += "\n"
-            return block + "\n" + action_code
-
-        new_content = class_pattern.sub(_replace, content, count=1)
-        path.write_text(new_content, encoding="utf-8")
+        # Append at the end of the class body, located through the AST: the
+        # scaffolded views.py carries an example ViewSet in its docstring, and
+        # a text match would splice the action into it.
+        new_content = append_to_class(content, class_name, action_code)
+        if new_content is None:
+            raise AgentError(
+                f"{path.name} does not parse — repair it with edit_file before adding "
+                f"an action to '{class_name}'.",
+                code="invalid_input",
+                viewset=class_name,
+            )
+        write_source(path, new_content)
         # After writing the new content — ensure_import edits the file on disk,
         # so imports must run last or the write above clobbers them.
         ensure_import(path, "from zeeb_api.viewsets import action")
@@ -682,18 +679,17 @@ async def update_viewset(
 
     def _update() -> list[str]:
         content = path.read_text(encoding="utf-8")
-        block_pattern = re.compile(
-            rf"^(class {re.escape(class_name)}\b.*?)(?=\nclass |\Z)",
-            re.MULTILINE | re.DOTALL,
-        )
-        block_match = block_pattern.search(content)
-        if block_match is None:
+        # The class's own span (AST-located): the old "up to the next class"
+        # span also covered any function defined after it, whose lines the
+        # attribute substitutions below could then rewrite.
+        bounds = class_block_bounds(content, class_name)
+        if bounds is None:
             raise AgentError(
                 f"'{class_name}' not found in {path}",
                 code="model_not_found",
                 viewset=class_name,
             )
-        block = block_match.group(1)
+        block = content[bounds[0] : bounds[1]]
         changes: list[str] = []
 
         quoted_list = render_list_literal
@@ -760,10 +756,8 @@ async def update_viewset(
             changes.append("filter_backends updated")
 
         if changes:
-            content = (
-                content[: block_match.start(1)] + block + content[block_match.end(1):]
-            )
-            path.write_text(content, encoding="utf-8")
+            content = content[: bounds[0]] + block + content[bounds[1] :]
+            write_source(path, content)
             for import_line in (*perm_imports, *auth_imports):
                 ensure_import(path, import_line)
             for import_line in viewset_option_imports(
@@ -872,7 +866,7 @@ async def register_route(
         # or just append to the file
         content = path.read_text(encoding="utf-8")
         content = content.rstrip("\n") + f"\n{register_line}\n"
-        path.write_text(content, encoding="utf-8")
+        write_source(path, content)
 
     def _ensure_serve_chain() -> None:
         # A registered route is only reachable when the app is installed and
@@ -960,7 +954,7 @@ async def delete_viewset(
             return False
         stripped = remove_import_name(stripped, model_name)
         stripped = remove_import_name(stripped, f"{model_name}Serializer")
-        path.write_text(stripped, encoding="utf-8")
+        write_source(path, stripped)
         return True
 
     if not await asyncio.to_thread(_delete):
@@ -1030,7 +1024,7 @@ async def unregister_route(
             for number, line in enumerate(content.splitlines(keepends=True), start=1)
             if number not in targets
         ]
-        path.write_text(remove_import_name("".join(kept), viewset_name), encoding="utf-8")
+        write_source(path, remove_import_name("".join(kept), viewset_name))
         return prefix
 
     prefix = await asyncio.to_thread(_delete)

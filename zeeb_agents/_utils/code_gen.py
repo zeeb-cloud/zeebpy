@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import ast
+import os
 import re
+import tempfile
 import textwrap
 from pathlib import Path
 
@@ -1149,13 +1151,98 @@ def set_or_append_setting(content: str, key: str, rendered: str) -> str:
     return "".join(lines[:start]) + new_line + "\n" + "".join(lines[end + 1 :])
 
 
+# ---------------------------------------------------------------------------
+# Writing generated source: atomic, and never leaving a module that no longer
+# parses.
+# ---------------------------------------------------------------------------
+
+
+def atomic_write_text(path: Path, content: str) -> None:
+    """Write *content* to *path* atomically (temp file in the same dir + replace).
+
+    A reader — the running app's reloader, a concurrent tool — sees either the
+    old file or the new one, never a truncated half. An existing file keeps its
+    permission bits.
+    """
+    path = Path(path)
+    mode = path.stat().st_mode & 0o7777 if path.exists() else None
+    fd, tmp = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="") as handle:
+            handle.write(content)
+        if mode is not None:
+            os.chmod(tmp, mode)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def _parses(source: str) -> bool:
+    try:
+        ast.parse(source)
+    except SyntaxError:
+        return False
+    return True
+
+
+def check_parses(source: str, *, what: str) -> None:
+    """Fail with ``syntax_error`` unless *source* parses on its own.
+
+    For validating a caller's code (a handler body, an import line) before any
+    file is touched, so a multi-step edit is refused up front instead of being
+    stopped half-way by :func:`write_source`.
+    """
+    try:
+        ast.parse(textwrap.dedent(source))
+    except SyntaxError as exc:
+        raise AgentError(
+            f"{what[:1].upper()}{what[1:]} does not parse (line {exc.lineno}: {exc.msg}); "
+            "nothing was written.",
+            code="syntax_error",
+            line=exc.lineno,
+        ) from exc
+
+
+def write_source(path: Path, content: str) -> None:
+    """Write generated/edited *content* to *path* — atomically, and only if it parses.
+
+    Every generator and structural edit writes through here. For a ``.py``
+    file the new content must parse; if it does not, the file is left exactly
+    as it was and ``AgentError(syntax_error)`` names the line, so a bad
+    ``body=`` or an edit that went wrong can never leave a module that takes
+    the app down at import. The one exception is a file that already did not
+    parse: it cannot be made worse, and refusing would block the edit that
+    repairs it.
+    """
+    path = Path(path)
+    if path.suffix == ".py":
+        try:
+            ast.parse(content)
+        except SyntaxError as exc:
+            original = path.read_text(encoding="utf-8") if path.exists() else None
+            if original is None or _parses(original):
+                raise AgentError(
+                    f"The generated edit would leave {path.name} unparseable "
+                    f"(line {exc.lineno}: {exc.msg}); the file was left unchanged. "
+                    "Check the code you passed (body=, source=, imports=).",
+                    code="syntax_error",
+                    file=str(path),
+                    line=exc.lineno,
+                ) from exc
+    atomic_write_text(path, content)
+
+
 def append_block(path: Path, code: str) -> None:
     """Append *code* to *path*, ensuring two blank lines of separation."""
     content = path.read_text(encoding="utf-8")
     if content and not content.endswith("\n\n"):
         content = content.rstrip("\n") + "\n\n"
     content += code + "\n"
-    path.write_text(content, encoding="utf-8")
+    write_source(path, content)
 
 
 def last_import_line(text: str) -> int:
@@ -1244,7 +1331,7 @@ def ensure_import(path: Path, import_line: str) -> None:
         return
     lines = content.splitlines(keepends=True)
     lines.insert(last_import_line(content), import_line + "\n")
-    path.write_text("".join(lines), encoding="utf-8")
+    write_source(path, "".join(lines))
 
 
 def imports_referenced_by(content: str, block: str) -> list[str]:
@@ -1308,7 +1395,7 @@ def ensure_middleware(settings_path: Path, dotted_path: str) -> bool:
     )
     if start is None:
         new = content.rstrip("\n") + f'\n\nMIDDLEWARE = [\n    "{dotted_path}",\n]\n'
-        settings_path.write_text(new, encoding="utf-8")
+        write_source(settings_path, new)
         return True
 
     # Extend the span until the opened bracket is balanced again.
@@ -1339,7 +1426,7 @@ def ensure_middleware(settings_path: Path, dotted_path: str) -> bool:
         else:
             joined = head.rstrip(",") + f', "{dotted_path}"'
         lines[end] = joined + after
-    settings_path.write_text("".join(lines), encoding="utf-8")
+    write_source(settings_path, "".join(lines))
     return True
 
 
@@ -1391,33 +1478,113 @@ def ensure_asgi_middleware(asgi_path: Path) -> bool | None:
         "\n",
     ]
     lines[anchor:anchor] = block
-    asgi_path.write_text("".join(lines), encoding="utf-8")
+    write_source(asgi_path, "".join(lines))
     return True
 
 
+def _top_level(tree: ast.Module | None, name: str, kinds: tuple[type, ...]) -> ast.stmt | None:
+    """The top-level statement of one of *kinds* named *name* (the last one wins,
+    as it does at import time), or ``None``."""
+    if tree is None:
+        return None
+    found = None
+    for node in tree.body:
+        if isinstance(node, kinds) and node.name == name:
+            found = node
+    return found
+
+
+_FUNCTION_KINDS = (ast.FunctionDef, ast.AsyncFunctionDef)
+
+
+def _block_lines(lines: list[str], node: ast.stmt) -> tuple[int, int]:
+    """0-based ``[start, end)`` line range of *node*, decorators included.
+
+    The end runs on over the blank and indented lines that follow the node's
+    last statement — trailing comments inside the body belong to it textually
+    — but never over a line at the node's own indentation or less.
+    """
+    first = min([node.lineno, *(d.lineno for d in getattr(node, "decorator_list", []))])
+    end = node.end_lineno or node.lineno
+    indent = node.col_offset
+    while end < len(lines):
+        line = lines[end]
+        if line.strip() and len(line) - len(line.lstrip()) <= indent:
+            break
+        end += 1
+    # Trailing blank lines are separation, not part of the block.
+    while end > first and not lines[end - 1].strip():
+        end -= 1
+    return first - 1, end
+
+
+def _cut_block(content: str, start: int, end: int) -> str:
+    """Remove lines ``[start, end)`` plus the blank lines right after them."""
+    lines = content.splitlines(keepends=True)
+    while end < len(lines) and not lines[end].strip():
+        end += 1
+    return ("".join(lines[:start]) + "".join(lines[end:])).rstrip("\n") + "\n"
+
+
 def class_exists(content: str, class_name: str) -> bool:
-    """Return True if a class named *class_name* is defined in *content*."""
+    """Return True if a top-level class named *class_name* is defined in *content*.
+
+    Read from the AST, not the text: the scaffolded modules carry example
+    classes in their docstrings, which a line match would count. Falls back
+    to a line match only for a file that does not parse.
+    """
+    tree = _parse(content)
+    if tree is not None:
+        return _top_level(tree, class_name, (ast.ClassDef,)) is not None
     return bool(re.search(rf"^class {re.escape(class_name)}\b", content, re.MULTILINE))
 
 
 def _class_block_pattern(class_name: str) -> re.Pattern[str]:
-    """The span of a top-level class: its header through the next top-level line."""
+    """Fallback span of a top-level class in a file that does not parse."""
     return re.compile(
         rf"^class {re.escape(class_name)}\b.*?(?=^\S|\Z)",
         re.DOTALL | re.MULTILINE,
     )
 
 
-def remove_class_block(content: str, class_name: str) -> str | None:
-    """Remove the whole ``class <class_name>`` block from *content*.
+def class_block_bounds(content: str, class_name: str) -> tuple[int, int] | None:
+    """Character offsets ``(start, end)`` of the ``class <class_name>`` block.
 
-    The block runs to the next top-level statement, so decorators or module-level
-    code following the class survive. Returns updated content, or ``None`` when
-    the class is not defined (so callers can report a skip rather than a write).
+    The block starts at its first decorator (or ``class`` line) and ends after
+    its last body line, trailing blank lines excluded. AST-located; a regex
+    over the text is the fallback for a file that does not parse. ``None``
+    when the class is not defined.
     """
-    if not class_exists(content, class_name):
+    tree = _parse(content)
+    lines = content.splitlines(keepends=True)
+    if tree is not None:
+        node = _top_level(tree, class_name, (ast.ClassDef,))
+        if node is None:
+            return None
+        start, end = _block_lines(content.splitlines(), node)
+        offset = sum(len(line) for line in lines[:start])
+        length = sum(len(line) for line in lines[start:end])
+        return offset, offset + length
+    match = _class_block_pattern(class_name).search(content)
+    return (match.start(), match.end()) if match else None
+
+
+def remove_class_block(content: str, class_name: str) -> str | None:
+    """Remove the whole ``class <class_name>`` block (decorators included).
+
+    Returns updated content, or ``None`` when the class is not defined (so
+    callers can report a skip rather than a write).
+    """
+    tree = _parse(content)
+    if tree is None:
+        if not class_exists(content, class_name):
+            return None
+        return _class_block_pattern(class_name).sub("", content, count=1).rstrip("\n") + "\n"
+    node = _top_level(tree, class_name, (ast.ClassDef,))
+    if node is None:
         return None
-    return _class_block_pattern(class_name).sub("", content, count=1).rstrip("\n") + "\n"
+    start, end = _block_lines(content.splitlines(), node)
+    return _cut_block(content, start, end)
 
 
 def extract_class_block(content: str, class_name: str) -> str | None:
@@ -1429,10 +1596,10 @@ def extract_class_block(content: str, class_name: str) -> str | None:
     and restored verbatim, hand edits and all, instead of being regenerated from
     a spec that never knew about them.
     """
-    if not class_exists(content, class_name):
+    bounds = class_block_bounds(content, class_name)
+    if bounds is None:
         return None
-    match = _class_block_pattern(class_name).search(content)
-    return match.group(0).rstrip("\n") + "\n" if match else None
+    return content[bounds[0] : bounds[1]].rstrip("\n") + "\n"
 
 
 def remove_method_from_class(content: str, class_name: str, method_name: str) -> str | None:
@@ -1440,26 +1607,31 @@ def remove_method_from_class(content: str, class_name: str, method_name: str) ->
 
     Scoped to the target class so a same-named method on another class in the
     file survives — which matters because a feature's endpoint methods sit
-    alongside other features' in the same ``views.py``.
+    alongside other features' in the same ``views.py``. Located by the AST,
+    so a nested function, a decorator inside the body or a multi-line
+    signature never cuts the method short. A class left with no statements
+    gets ``pass``.
 
-    Returns updated content, or ``None`` when the class or the method is absent.
+    Returns updated content, or ``None`` when the class or the method is absent
+    (or the file does not parse).
     """
-    block = extract_class_block(content, class_name)
-    if block is None:
+    cls = _class_node(_parse(content), class_name)
+    node = _def_node(cls.body, method_name) if cls else None
+    if cls is None or node is None:
         return None
-    pattern = re.compile(
-        rf"\n(?:[ \t]+@[^\n]*\n)*[ \t]+(?:async\s+)?def {re.escape(method_name)}\b"
-        r".*?(?=\n[ \t]*(?:@|(?:async\s+)?def )|\Z)",
-        re.DOTALL,
-    )
-    if not pattern.search(block):
-        return None
-    trimmed = pattern.sub("", block, count=1).rstrip("\n") + "\n"
-    return content.replace(block, trimmed, 1)
+    plain = content.splitlines()
+    start, end = _block_lines(plain, node)
+    # Take the blank lines that separated it from the previous member too.
+    while start > 0 and not plain[start - 1].strip():
+        start -= 1
+    lines = content.splitlines(keepends=True)
+    remaining = [stmt for stmt in cls.body if stmt is not node]
+    filler = [" " * node.col_offset + "pass\n"] if not remaining else []
+    return ("".join(lines[:start]) + "".join(filler) + "".join(lines[end:])).rstrip("\n") + "\n"
 
 
 def _function_block_pattern(function_name: str) -> re.Pattern[str]:
-    """The span of a top-level function, including any decorators above it."""
+    """Fallback span of a top-level function (with decorators) in an unparseable file."""
     return re.compile(
         rf"^(?:@[^\n]*\n)*(?:async\s+)?def {re.escape(function_name)}\b.*?(?=^\S|\Z)",
         re.DOTALL | re.MULTILINE,
@@ -1468,6 +1640,9 @@ def _function_block_pattern(function_name: str) -> re.Pattern[str]:
 
 def function_exists(content: str, function_name: str) -> bool:
     """Return True if a top-level function named *function_name* is defined."""
+    tree = _parse(content)
+    if tree is not None:
+        return _top_level(tree, function_name, _FUNCTION_KINDS) is not None
     return bool(
         re.search(
             rf"^(?:async\s+)?def {re.escape(function_name)}\b",
@@ -1484,10 +1659,17 @@ def extract_function_block(content: str, function_name: str) -> str | None:
     *is* the registration — extracting the body alone would archive code that no
     longer means anything.
     """
-    if not function_exists(content, function_name):
+    tree = _parse(content)
+    if tree is None:
+        if not function_exists(content, function_name):
+            return None
+        match = _function_block_pattern(function_name).search(content)
+        return match.group(0).rstrip("\n") + "\n" if match else None
+    node = _top_level(tree, function_name, _FUNCTION_KINDS)
+    if node is None:
         return None
-    match = _function_block_pattern(function_name).search(content)
-    return match.group(0).rstrip("\n") + "\n" if match else None
+    start, end = _block_lines(content.splitlines(), node)
+    return "".join(content.splitlines(keepends=True)[start:end]).rstrip("\n") + "\n"
 
 
 def remove_route_function(content: str, function_name: str) -> str | None:
@@ -1500,9 +1682,36 @@ def remove_route_function(content: str, function_name: str) -> str | None:
 
     Returns updated content, or ``None`` when the function is not defined.
     """
-    if not function_exists(content, function_name):
+    tree = _parse(content)
+    if tree is None:
+        if not function_exists(content, function_name):
+            return None
+        pattern = _function_block_pattern(function_name)
+        return pattern.sub("", content, count=1).rstrip("\n") + "\n"
+    node = _top_level(tree, function_name, _FUNCTION_KINDS)
+    if node is None:
         return None
-    return _function_block_pattern(function_name).sub("", content, count=1).rstrip("\n") + "\n"
+    start, end = _block_lines(content.splitlines(), node)
+    return _cut_block(content, start, end)
+
+
+def append_to_class(content: str, class_name: str, block: str) -> str | None:
+    """Insert *block* (already indented for the body) at the end of *class_name*.
+
+    AST-located: the class ends after its last body line, not at the next line
+    that happens to start in column 0 or the next ``def``. Returns ``None``
+    when the class is absent or the file does not parse.
+    """
+    tree = _parse(content)
+    node = _top_level(tree, class_name, (ast.ClassDef,)) if tree is not None else None
+    if node is None:
+        return None
+    lines = content.splitlines(keepends=True)
+    _start, end = _block_lines(content.splitlines(), node)
+    head = "".join(lines[:end])
+    if not head.endswith("\n"):
+        head += "\n"
+    return head + "\n" + block.rstrip("\n") + "\n" + "".join(lines[end:])
 
 
 # ---------------------------------------------------------------------------

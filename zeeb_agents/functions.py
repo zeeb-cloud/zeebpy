@@ -26,6 +26,7 @@ from zeeb_agents._utils.code_gen import (
     remove_method_from_class,
     remove_route_function,
     replace_function_body,
+    write_source,
 )
 from zeeb_agents._utils.errors import AgentError, close_matches, fail
 from zeeb_agents._utils.project import get_app_path
@@ -112,7 +113,7 @@ async def delete_function(
             updated = remove_route_function(content, name)
         if updated is None:
             return False
-        path.write_text(updated, encoding="utf-8")
+        write_source(path, updated)
         return True
 
     removed = await asyncio.to_thread(_remove)
@@ -250,7 +251,7 @@ async def edit_function(
                 code="function_not_found",
                 suggestions=close_matches(name, known),
             )
-        path.write_text(updated, encoding="utf-8")
+        write_source(path, updated)
         added: list[str] = []
         for line in imports or []:
             before = path.read_text(encoding="utf-8")
