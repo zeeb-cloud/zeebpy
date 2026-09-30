@@ -73,6 +73,8 @@ def test_configured_settings_win_over_a_settings_py_on_disk(tmp_path, monkeypatc
     monkeypatch.chdir(project)
     saved = (settings._wrapped, settings._configured, set(settings._explicit_settings))
     try:
+        settings._configured = False  # configure() refuses a configured instance
+        settings._explicit_settings = set()
         settings.configure(AUTH_USER_MODEL=None, DEBUG=True)
         from zeeb_api.auth.models import User
 
@@ -89,6 +91,8 @@ def test_configured_auth_user_model_is_used(tmp_path, monkeypatch):
     monkeypatch.syspath_prepend(str(tmp_path))
     saved = (settings._wrapped, settings._configured, set(settings._explicit_settings))
     try:
+        settings._configured = False  # configure() refuses a configured instance
+        settings._explicit_settings = set()
         settings.configure(AUTH_USER_MODEL="discoveryapp.models.DiscoveryUser")
         assert backends.get_user_model().__name__ == "DiscoveryUser"
     finally:
