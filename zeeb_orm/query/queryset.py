@@ -1406,20 +1406,36 @@ class QuerySet(Generic[ModelT]):
         for item in results:
             yield item
 
+    def _sync_access_error(self, operation: str) -> TypeError:
+        return TypeError(
+            f"{operation} on an unevaluated QuerySet is not supported: queries are "
+            "async. Use 'await qs' (a list), 'async for obj in qs', "
+            "'await qs.count()' or 'await qs.exists()'."
+        )
+
     def __iter__(self) -> Iterator[Any]:
-        """Sync iteration (runs event loop)."""
-        import asyncio
+        """Iterate an already evaluated queryset.
 
-        try:
-            asyncio.get_running_loop()
-            raise RuntimeError(
-                "Cannot use sync iteration inside an async context. Use 'async for' instead."
-            )
-        except RuntimeError:
-            pass
+        Never runs a query: an event loop cannot be driven from sync code
+        inside a running loop, and ``asyncio.run()`` would create a second
+        loop that the connection pool is not bound to. Evaluate with
+        ``await qs`` or ``async for`` first.
+        """
+        if self._result_cache is None:
+            raise self._sync_access_error("Synchronous iteration")
+        return iter(self._result_cache)
 
-        results = asyncio.run(self._fetch_all())
-        return iter(results)
+    def __len__(self) -> int:
+        """Length of an already evaluated queryset (see ``__iter__``)."""
+        if self._result_cache is None:
+            raise self._sync_access_error("len()")
+        return len(self._result_cache)
+
+    def __bool__(self) -> bool:
+        """Truth of an already evaluated queryset (see ``__iter__``)."""
+        if self._result_cache is None:
+            raise self._sync_access_error("Truth-testing")
+        return bool(self._result_cache)
 
     def __await__(self) -> Any:
         """Allow awaiting QuerySet directly to get list of results."""
@@ -2129,12 +2145,6 @@ class QuerySet(Generic[ModelT]):
 
     def __repr__(self) -> str:
         return f"<QuerySet [{self.model.__name__}]>"
-
-    def __len__(self) -> int:
-        """Sync length (runs event loop)."""
-        import asyncio
-
-        return asyncio.run(self.count())
 
 
 class Prefetch:

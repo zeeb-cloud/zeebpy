@@ -15,6 +15,12 @@ async for article in Article.objects.all():
     print(article.title)
 ```
 
+Querysets are evaluated asynchronously only. Sync `for x in qs`, `list(qs)`,
+`len(qs)` and `if qs:` on a queryset that has not been evaluated raise
+`TypeError` (use `await qs`, `async for`, `await qs.count()`,
+`await qs.exists()`); once evaluated (`await qs`), they read the result
+cache without a query.
+
 ### Filtering
 
 ```python
