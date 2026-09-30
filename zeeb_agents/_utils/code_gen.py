@@ -1162,16 +1162,22 @@ def atomic_write_text(path: Path, content: str) -> None:
 
     A reader — the running app's reloader, a concurrent tool — sees either the
     old file or the new one, never a truncated half. An existing file keeps its
-    permission bits.
+    permission bits; a new one gets ``0o644``, as a plain ``open()`` would under
+    the usual umask (``mkstemp`` alone would leave it ``0o600``). On a
+    filesystem that does not store POSIX permissions (a Windows drive mounted
+    into Linux, where ``chmod`` by a non-owner fails) the bits are left as the
+    filesystem reports them rather than failing the write.
     """
     path = Path(path)
-    mode = path.stat().st_mode & 0o7777 if path.exists() else None
+    mode = path.stat().st_mode & 0o7777 if path.exists() else 0o644
     fd, tmp = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
     try:
         with os.fdopen(fd, "w", encoding="utf-8", newline="") as handle:
             handle.write(content)
-        if mode is not None:
+        try:
             os.chmod(tmp, mode)
+        except PermissionError:
+            pass
         os.replace(tmp, path)
     except BaseException:
         try:
