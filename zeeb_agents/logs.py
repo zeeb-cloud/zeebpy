@@ -13,6 +13,38 @@ from zeeb_agents._utils.project import require_project_root
 
 _LOG_LEVELS = {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
 
+#: Severity rank of every level spelling a log line may carry.
+_SEVERITY = {
+    "DEBUG": 10,
+    "INFO": 20,
+    "WARN": 30,
+    "WARNING": 30,
+    "ERROR": 40,
+    "CRITICAL": 50,
+    "FATAL": 50,
+}
+_LEVEL_TOKEN_RE = re.compile(r"\b(" + "|".join(_SEVERITY) + r")\b")
+
+
+def _at_or_above(lines: list[str], floor: int) -> list[str]:
+    """The lines of every record at *floor* severity or above.
+
+    A line with no level of its own (a traceback frame, a wrapped message)
+    belongs to the record before it and is kept or dropped with it — so an
+    ERROR comes back with its traceback. Lines before the first leveled one
+    are kept: there is nothing to judge them by, and hiding output is the
+    worse mistake.
+    """
+    kept: list[str] = []
+    current: int | None = None
+    for line in lines:
+        found = _LEVEL_TOKEN_RE.search(line)
+        if found:
+            current = _SEVERITY[found.group(1)]
+        if current is None or current >= floor:
+            kept.append(line)
+    return kept
+
 
 def _find_log_files(root: Path) -> list[Path]:
     """Return log files from ``logs/`` subdirectory or project root."""
@@ -39,15 +71,20 @@ async def read_logs(
     level: str | None = None,
     log_file: str | None = None,
     project_root: Path | None = None,
+    min_level: str | None = None,
 ) -> AgentResult:
     """Return the last *lines* lines from the project log file.
 
     Args:
         lines: Number of tail lines to return (default 200).
         level: If set, only return lines whose text contains this log level
-               (DEBUG, INFO, WARNING, ERROR, CRITICAL).
+               (DEBUG, INFO, WARNING, ERROR, CRITICAL) — exactly that level.
         log_file: Path to a specific log file.  Auto-detected if ``None``.
         project_id: The host-assigned project id (required).
+        min_level: If set, return the records at this severity **or above**
+            (``"WARNING"`` → WARNING, ERROR, CRITICAL), each with its
+            continuation lines (tracebacks). Accepts DEBUG, INFO, WARN/WARNING,
+            ERROR, CRITICAL/FATAL. Mutually exclusive with *level*.
 
     Returns data (on success):
         path (str): log file path relative to the project root
@@ -62,10 +99,23 @@ async def read_logs(
         - ``level`` is matched as a whole token (word boundaries), so
           ``level="ERROR"`` matches ``"[ERROR]"`` / ``" ERROR "`` but not
           ``"NOTANERROR"`` or ``"ERRORCODE"``.
-        - The ``level`` filter is applied first, then the last *lines* of the
-          filtered result are returned.
+        - The ``level`` / ``min_level`` filter is applied first, then the last
+          *lines* of the filtered result are returned.
+        - An unknown ``min_level``, or both filters at once, fails with
+          ``error_code="invalid_input"``.
     """
     root = project_root
+    floor: int | None = None
+    if min_level is not None:
+        if level:
+            return fail("Pass either level or min_level, not both.", code="invalid_input")
+        floor = _SEVERITY.get(str(min_level).strip().upper())
+        if floor is None:
+            return fail(
+                f"Unknown log level '{min_level}'.",
+                code="invalid_input",
+                suggestions=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
+            )
 
     def _read() -> dict:
         path = _resolve_log_file(root, log_file)
@@ -76,6 +126,8 @@ async def read_logs(
         if level:
             level_re = re.compile(rf"\b{re.escape(level.upper())}\b")
             content = [ln for ln in content if level_re.search(ln)]
+        elif floor is not None:
+            content = _at_or_above(content, floor)
 
         tail = content[-lines:] if len(content) > lines else content
         return {

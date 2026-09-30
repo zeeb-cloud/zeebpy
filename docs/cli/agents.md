@@ -109,7 +109,7 @@ see `create_project`.)
 
 | Function | Behavior to know |
 |---|---|
-| `read_logs(level=...)` | `level` matches the level as a whole token (`[ERROR]`, ` ERROR `), not as a substring — so it won't match `NOTANERROR`. |
+| `read_logs(level=...)` | `level` matches the level as a whole token (`[ERROR]`, ` ERROR `), not as a substring — so it won't match `NOTANERROR`; `min_level=` returns that severity or above, tracebacks included. |
 | `create_route(path=..., body=...)` | Generates a FastAPI `APIRouter` handler and auto-wires it into `urls.py`; pass logic via `body=`. `{name}` path segments (`/items/{item_id}`) become typed `str` handler params. |
 | `get_env()` | A missing `.env` is reported as `success=False` (with an empty `env` dict). |
 | `make_migrations()` | "No changes detected" is `success=True` with `data["created"] = None`. |
@@ -339,7 +339,10 @@ prefixes.
 ### `delete_app(name, project_id=None)`
 Delete an app directory, and the `tests/test_<name>.py` `startapp` wrote for it
 (`data.removed`) — unless that file was edited, in which case it stays and is
-reported in `data.kept`.
+reported in `data.kept`. The app is unregistered first: `"apps.<name>"` leaves
+`INSTALLED_APPS` and its router import/include leave the project `urls.py`
+(`data.unwired`), so the project still boots; a wiring file that cannot be
+edited is reported in `data.warnings`.
 
 ### `rename_app(old_name, new_name, project_id=None)`
 Rename an app directory.
@@ -649,11 +652,12 @@ The exact zeeb_orm class name is always accepted too (e.g. `"CharField"`).
 
 ## Logs
 
-### `read_logs(lines=200, level=None, log_file=None, project_id=None)`
+### `read_logs(lines=200, level=None, log_file=None, project_id=None, min_level=None)`
 Return the last *lines* lines from the project log file.  Auto-detects log files in a `logs/` subdirectory or `*.log` files in the project root.
 
-- `level`: Optional filter — only lines containing `DEBUG`, `INFO`, `WARNING`, `ERROR`, or `CRITICAL`.
-- `log_file`: Explicit path to a log file (relative to project root or absolute).
+- `level`: Optional filter — only lines containing exactly this level (`DEBUG`, `INFO`, `WARNING`, `ERROR`, or `CRITICAL`).
+- `min_level`: Optional filter — the records at this severity **or above**, each with its continuation lines (tracebacks). Mutually exclusive with `level`.
+- `log_file`: Explicit path to a log file inside the project (relative, or absolute within it).
 
 ```python
 result = await read_logs(lines=50, level="ERROR")
@@ -865,7 +869,9 @@ Write generated smoke tests for a feature app. Idempotent, and never
 overwrites an existing file unless `overwrite=True` — and then only the
 generated test file, never `conftest.py`/`pytest.ini`. Pass `filename` to
 write alongside an existing suite. `build_feature` calls this when
-`tests=True`; `regenerate_tests` calls it with `overwrite=True`.
+`tests=True`; `regenerate_tests` calls it with `overwrite=True`. With
+`overwrite=True` a regeneration that produces the same text is not written and
+is listed under `skipped`, not `overwritten`.
 
 ### `check_code(paths=None, imports=True, project_id=None)`
 Read-only. Compile every project file and import every project module in a
@@ -1012,7 +1018,8 @@ Remove one generated function: an `action`, `endpoint`, `hook`, `task`, or
 `rule`. Each kind is removed from wherever that kind lives, and nothing else in
 the file is touched — an `action` is cut from its own ViewSet's body, so a
 same-named action on another entity survives. A function that is already gone
-reports `removed: False` with `success: True`.
+reports `removed: False`, `skipped: True` and a `reason` (`file_not_found` /
+`function_not_found`) with `success: True`.
 
 ```python
 await delete_function("blog", "publish", kind="action", entity="Post")
@@ -1327,8 +1334,11 @@ result = await export_openapi(port=8000)
 
 ## BaaS — Deployment Scaffolding
 
-### `generate_dockerfile(python_version="3.12", port=8000, project_id=None)`
-Generate a multi-stage production `Dockerfile` and `.dockerignore`.
+### `generate_dockerfile(python_version="3.12", port=8000, project_id=None, if_exists="error")`
+Generate a multi-stage production `Dockerfile` and `.dockerignore`. An existing
+`Dockerfile` fails the call (`already_exists`) unless `if_exists="skip"` (leave
+it — it may hold hand edits — and succeed with `skipped=True`) or
+`if_exists="replace"` (regenerate it).
 
 ```python
 result = await generate_dockerfile(python_version="3.12", port=8080)

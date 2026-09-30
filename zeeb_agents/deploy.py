@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from zeeb_agents._utils import AgentResult, agent_function
+from zeeb_agents._utils.code_gen import atomic_write_text
 from zeeb_agents._utils.errors import fail
 from zeeb_agents._utils.paths import confine_path
 from zeeb_agents._utils.project import load_project_settings, settings_error_message
@@ -63,6 +64,7 @@ async def generate_dockerfile(
     python_version: str = "3.12",
     port: int = 8000,
     project_root: Path | None = None,
+    if_exists: str = "error",
 ) -> AgentResult:
     """Generate a production-ready ``Dockerfile`` in the project root.
 
@@ -74,21 +76,28 @@ async def generate_dockerfile(
             Defaults to ``"3.12"``.
         port: Port the application listens on.  Defaults to ``8000``.
         project_id: The host-assigned project id (required).
+        if_exists: What to do when a ``Dockerfile`` already exists —
+            ``"error"`` (default: fail, nothing written), ``"skip"`` (leave it,
+            succeed with ``skipped=True``; it may hold hand edits) or
+            ``"replace"`` (regenerate it).
 
     Example::
 
         await generate_dockerfile(python_version="3.12", port=8080)
 
     Returns data (on success):
-        files_written (list[str]): names written — always ``"Dockerfile"``,
-            plus ``".dockerignore"`` if it did not already exist
+        files_written (list[str]): names written — ``"Dockerfile"`` (unless
+            skipped), plus ``".dockerignore"`` if it did not already exist
         path (str): the Dockerfile path, relative to the project root
         python_version (str): the version tag used
         port (int): the port baked into the image
+        skipped (bool): present and ``True`` when an existing Dockerfile was
+            left as it is (``if_exists="skip"``)
 
     Notes:
-        - If ``Dockerfile`` already exists, returns ``success=False`` with
-          ``data={"path": "Dockerfile"}`` (nothing is written).
+        - If ``Dockerfile`` already exists and *if_exists* is ``"error"``,
+          returns ``success=False`` with ``data={"path": "Dockerfile"}`` plus
+          ``error_code="already_exists"`` (nothing is written).
         - ``.dockerignore`` is only written when absent; an existing one is
           left untouched.
     """
@@ -101,15 +110,33 @@ async def generate_dockerfile(
         )
     if isinstance(port, bool) or not isinstance(port, int) or not 1 <= port <= 65535:
         return fail(f"port must be an integer in 1..65535, got {port!r}", code="invalid_input")
+    if if_exists not in ("error", "skip", "replace"):
+        return fail(
+            f"if_exists must be 'error', 'skip' or 'replace', got {if_exists!r}",
+            code="invalid_input",
+        )
     root = project_root
     dockerfile = root / "Dockerfile"
     dockerignore = root / ".dockerignore"
 
-    if dockerfile.exists():
+    if dockerfile.exists() and if_exists == "error":
+        return fail(
+            "Dockerfile already exists.  Delete it first to regenerate, or pass "
+            "if_exists='skip' / 'replace'.",
+            code="already_exists",
+            path="Dockerfile",
+        )
+    if dockerfile.exists() and if_exists == "skip":
         return AgentResult(
-            success=False,
-            message="Dockerfile already exists.  Delete it first to regenerate.",
-            data={"path": "Dockerfile"},
+            success=True,
+            message="Dockerfile already exists and was left as is; skipped.",
+            data={
+                "files_written": [],
+                "path": "Dockerfile",
+                "python_version": python_version,
+                "port": port,
+                "skipped": True,
+            },
         )
 
     def _write() -> list[str]:
@@ -118,10 +145,10 @@ async def generate_dockerfile(
             python_version=python_version,
             port=port,
         )
-        dockerfile.write_text(content, encoding="utf-8")
+        atomic_write_text(dockerfile, content)
         written.append("Dockerfile")
         if not dockerignore.exists():
-            dockerignore.write_text(_DOCKERIGNORE, encoding="utf-8")
+            atomic_write_text(dockerignore, _DOCKERIGNORE)
             written.append(".dockerignore")
         return written
 
@@ -131,6 +158,7 @@ async def generate_dockerfile(
         message=f"Dockerfile generated (Python {python_version}, port {port}).",
         data={
             "files_written": written,
+            "path": "Dockerfile",
             "python_version": python_version,
             "port": port,
         },

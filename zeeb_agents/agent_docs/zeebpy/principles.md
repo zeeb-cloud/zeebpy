@@ -245,7 +245,7 @@ Two tools are deliberately sandboxed:
 
 | Tool | What to watch for |
 |---|---|
-| `{prefix}read_logs(level=...)` | `level` matches the log level as a whole token / `[LEVEL]` tag — it will not match it as an incidental substring of another word. |
+| `{prefix}read_logs(level=...)` | `level` matches the log level as a whole token / `[LEVEL]` tag — it will not match it as an incidental substring of another word — and returns that level only. For "this severity or worse" (with tracebacks) pass `min_level=` instead. |
 | `{prefix}create_route(path=..., body=..., imports=...)` | Writes a FastAPI `@router.<method>` handler to `views.py` on a `router = APIRouter()` (FastAPI's `APIRouter` — `zeeb_api` exposes **no** `Router`) **and** auto-includes it into `urls.py` so it is served. Pass the implementation in `body=` and any imports it needs in `imports=` — don't `write_file` the wrapper. `{name}` segments in the path (e.g. `/items/{item_id}`) are auto-extracted as typed `str` handler params; the handler always gets a typed `request: Request`. |
 | `{prefix}add_viewset_action(model_name=..., action_name=...)` | Scaffolds a routed `@action` method on `<model_name>ViewSet` (e.g. `model_name="Post"` → `PostViewSet`). `detail=True` operates on one object (`/posts/{id}/<action_name>/`), `detail=False` on the collection; `action_name` doubles as the URL segment (override with `url_path=`). Wire `request_serializer=`/`response_serializer=` (or `request_schema=`/`response_schema=`) to validate and shape the body, and `permission=` for a per-action permission. |
 | `{prefix}get_env` | Returns `success=False` when there is **no `.env` file** (the returned `env` dict is empty). A missing file is reported as a failure, not an empty success. |

@@ -9,7 +9,7 @@ import shutil
 from pathlib import Path
 
 from zeeb_agents._utils import AgentResult, agent_function
-from zeeb_agents._utils.errors import close_matches, fail
+from zeeb_agents._utils.errors import AgentError, close_matches, fail
 from zeeb_agents._utils.project import (
     ensure_framework_key,
     get_app_path,
@@ -27,6 +27,8 @@ from zeeb_agents._utils.wiring import (
     ensure_app_urls_included,
     ensure_installed_app,
     find_project_package,
+    remove_app_urls,
+    remove_installed_app,
 )
 from zeeb_orm.scaffold.app import render_app_tests
 
@@ -254,10 +256,15 @@ async def wire_app_urls(
 
 @agent_function(aliases={"app": "name"})
 async def delete_app(name: str, project_root: Path | None = None) -> AgentResult:
-    """Delete an existing app directory from the project.
+    """Delete an existing app directory from the project — and unregister it.
 
     ``name`` is also accepted as ``app=`` for consistency with the other
     app-scoped tools.
+
+    Deleting the directory alone left ``"apps.<name>"`` in ``INSTALLED_APPS``
+    and the app's router import in the project ``urls.py``: a project that
+    imports a module that no longer exists does not boot. Both are removed
+    first — the reverse of what :func:`create_app` wires.
 
     Returns data (on success):
         name (str): the app name
@@ -266,6 +273,11 @@ async def delete_app(name: str, project_root: Path | None = None) -> AgentResult
             directory — the ``tests/test_<name>.py`` ``startapp`` wrote
         kept (list[str]): that test file when it was edited by hand, left in
             place because it may hold tests worth keeping
+        unwired (list[str]): project-relative files the app was unregistered
+            from (``<package>/settings.py``, ``<package>/urls.py``)
+        warnings (list[str]): present only when a wiring file could not be
+            edited (e.g. ``settings.py`` does not parse) — remove the entry
+            by hand
 
     Notes:
         - If the app directory does not exist, fails with
@@ -302,16 +314,48 @@ async def delete_app(name: str, project_root: Path | None = None) -> AgentResult
             apps=apps,
         )
 
+    unwired, warnings = await asyncio.to_thread(_unwire_app, root, name)
     await asyncio.to_thread(shutil.rmtree, app_path)
     removed, kept = await asyncio.to_thread(_remove_app_test_stub, name, root)
     message = f"App '{name}' deleted"
+    if unwired:
+        message += f" and unregistered ({', '.join(unwired)})"
     if kept:
         message += f"; {kept[0]} was edited by hand, so it was left in place"
-    return AgentResult(
-        success=True,
-        message=message,
-        data={"name": name, "path": str(app_path), "removed": removed, "kept": kept},
-    )
+    data = {
+        "name": name,
+        "path": str(app_path),
+        "removed": removed,
+        "kept": kept,
+        "unwired": unwired,
+    }
+    if warnings:
+        data["warnings"] = warnings
+    return AgentResult(success=True, message=message, data=data)
+
+
+def _unwire_app(root: Path, name: str) -> tuple[list[str], list[str]]:
+    """Unregister *name* from ``INSTALLED_APPS`` and the project ``urls.py``.
+
+    Returns ``(changed files, warnings)``. Best effort by design: a wiring file
+    that cannot be edited is reported, not fatal — the app is still removed.
+    """
+    changed: list[str] = []
+    warnings: list[str] = []
+    try:
+        package = find_project_package(root)
+    except AgentError:
+        return changed, warnings
+    for filename, unwire in (("settings.py", remove_installed_app), ("urls.py", remove_app_urls)):
+        try:
+            if unwire(root, name):
+                changed.append(f"{package.name}/{filename}")
+        except AgentError as exc:
+            warnings.append(
+                f"{package.name}/{filename} still references apps.{name}: {exc} "
+                "Remove the entry by hand."
+            )
+    return changed, warnings
 
 
 #: The header ``startapp --model`` writes, naming the model its test imports.

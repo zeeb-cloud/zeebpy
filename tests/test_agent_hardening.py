@@ -1087,3 +1087,121 @@ async def test_a_second_receiver_imports_its_own_signal_and_model(project):
         alias.name for node in tree.body if isinstance(node, ast.ImportFrom) for alias in node.names
     }
     assert {"post_save", "pre_delete", "receiver", "Post", "Comment"} <= imported
+
+
+# ---------------------------------------------------------------------------
+# 12. Quirks the zeeb-mcp adapter used to work around
+# ---------------------------------------------------------------------------
+
+
+async def test_delete_app_unwires_the_app(project):
+    settings = project / "demo" / "settings.py"
+    urls = project / "demo" / "urls.py"
+    assert '"apps.blog"' in settings.read_text()
+    assert "blog_router" in urls.read_text()
+    # A comment next to another entry must survive the edit.
+    settings.write_text(
+        settings.read_text().replace('"apps.blog",', '"apps.blog",\n    # keep this comment')
+    )
+
+    res = await agents.delete_app("blog", project_id=project)
+    assert res.success, res.message
+    assert sorted(res.data["unwired"]) == ["demo/settings.py", "demo/urls.py"]
+    settings_tree = ast.parse(settings.read_text())
+    installed = next(
+        n.value
+        for n in settings_tree.body
+        if isinstance(n, ast.Assign) and getattr(n.targets[0], "id", None) == "INSTALLED_APPS"
+    )
+    assert "apps.blog" not in [e.value for e in installed.elts if isinstance(e, ast.Constant)]
+    assert "# keep this comment" in settings.read_text()
+    assert "blog_router" not in urls.read_text()
+    ast.parse(urls.read_text())
+    assert not (project / "apps" / "blog").exists()
+
+
+_LOG = (
+    "2026-01-01 INFO boot\n"
+    "2026-01-01 DEBUG noise\n"
+    "2026-01-01 WARNING disk low\n"
+    "2026-01-01 ERROR crashed\n"
+    "Traceback (most recent call last):\n"
+    '  File "x.py", line 1\n'
+    "2026-01-01 INFO recovered\n"
+    "2026-01-01 CRITICAL gone\n"
+)
+
+
+async def test_read_logs_min_level_keeps_records_at_or_above(project):
+    (project / "logs").mkdir(exist_ok=True)
+    (project / "logs" / "app.log").write_text(_LOG)
+    res = await agents.read_logs(min_level="WARNING", project_id=project)
+    assert res.success, res.message
+    assert res.data["lines"] == [
+        "2026-01-01 WARNING disk low",
+        "2026-01-01 ERROR crashed",
+        "Traceback (most recent call last):",
+        '  File "x.py", line 1',
+        "2026-01-01 CRITICAL gone",
+    ]
+    exact = await agents.read_logs(level="INFO", project_id=project)
+    assert exact.data["lines"] == ["2026-01-01 INFO boot", "2026-01-01 INFO recovered"]
+    bad = await agents.read_logs(min_level="LOUD", project_id=project)
+    assert not bad.success and bad.data["error_code"] == "invalid_input"
+    both = await agents.read_logs(level="INFO", min_level="INFO", project_id=project)
+    assert not both.success
+
+
+async def test_generate_dockerfile_if_exists(project):
+    first = await agents.generate_dockerfile(project_id=project)
+    assert first.success and first.data["path"] == "Dockerfile"
+    dockerfile = project / "Dockerfile"
+    dockerfile.write_text(dockerfile.read_text() + "# hand edit\n")
+
+    refused = await agents.generate_dockerfile(project_id=project)
+    assert not refused.success and refused.data["error_code"] == "already_exists"
+    skipped = await agents.generate_dockerfile(if_exists="skip", project_id=project)
+    assert skipped.success and skipped.data["skipped"] is True
+    assert "# hand edit" in dockerfile.read_text()
+    replaced = await agents.generate_dockerfile(port=9000, if_exists="replace", project_id=project)
+    assert replaced.success and replaced.data["files_written"] == ["Dockerfile"]
+    assert "EXPOSE 9000" in dockerfile.read_text()
+    assert "# hand edit" not in dockerfile.read_text()
+
+
+async def test_generate_tests_reports_an_identical_rewrite_as_skipped(project):
+    entities = [
+        {
+            "name": "Post",
+            "prefix": "posts",
+            "exposed": True,
+            "permission": ["AllowAny"],
+            "operations": ["list"],
+            "fields": [{"name": "title", "type": "CharField", "max_length": 20}],
+        }
+    ]
+    first = await agents.generate_tests("blog", entities, project_id=project)
+    assert "tests/test_blog_generated.py" in first.data["created"]
+    target = project / "tests" / "test_blog_generated.py"
+    mtime = target.stat().st_mtime_ns
+    again = await agents.generate_tests("blog", entities, overwrite=True, project_id=project)
+    assert again.success
+    assert again.data["overwritten"] == []
+    assert "tests/test_blog_generated.py" in again.data["skipped"]
+    assert target.stat().st_mtime_ns == mtime
+
+    target.write_text(target.read_text() + "\n# drift\n")
+    changed = await agents.generate_tests("blog", entities, overwrite=True, project_id=project)
+    assert changed.data["overwritten"] == ["tests/test_blog_generated.py"]
+
+
+async def test_delete_function_reports_a_no_op_as_skipped(project):
+    res = await agents.delete_function("blog", "ghost", kind="task", project_id=project)
+    assert res.success
+    assert res.data["removed"] is False
+    assert res.data["skipped"] is True and res.data["reason"] == "file_not_found"
+    await agents.create_task("blog", "real", project_id=project)
+    res = await agents.delete_function("blog", "ghost", kind="task", project_id=project)
+    assert res.data["skipped"] is True and res.data["reason"] == "function_not_found"
+    res = await agents.delete_function("blog", "real", kind="task", project_id=project)
+    assert res.data["removed"] is True and res.data["skipped"] is False

@@ -107,7 +107,7 @@ the change. Grouped by category below.
 | Tool | Description |
 |---|---|
 | `{prefix}create_app(name, wire=True)` | Ensure an app exists in a Zeeb project — scaffolded, wired, and served. |
-| `{prefix}delete_app(name)` | Delete an existing app directory from the project. |
+| `{prefix}delete_app(name)` | Delete an existing app directory from the project — and unregister it. |
 | `{prefix}get_project_info()` | Return a summary of the current project structure and settings. |
 | `{prefix}get_project_structure(max_depth=3)` | Return a nested directory tree for the project. |
 | `{prefix}install_app(app)` | Register an app in ``INSTALLED_APPS`` so migrations see its models. |
@@ -183,7 +183,7 @@ the change. Grouped by category below.
 | Tool | Description |
 |---|---|
 | `{prefix}clear_logs(log_file=None)` | Truncate log file(s) to zero bytes. |
-| `{prefix}read_logs(lines=200, level=None, log_file=None)` | Return the last *lines* lines from the project log file. |
+| `{prefix}read_logs(lines=200, level=None, log_file=None, min_level=None)` | Return the last *lines* lines from the project log file. |
 | `{prefix}search_logs(pattern, log_file=None)` | Search log file(s) for lines matching *pattern* (regex). |
 
 #### Config & Environment
@@ -279,7 +279,7 @@ the change. Grouped by category below.
 | Tool | Description |
 |---|---|
 | `{prefix}check_production_readiness()` | Validate that the project is ready for production deployment. |
-| `{prefix}generate_dockerfile(python_version="3.12", port=8000)` | Generate a production-ready ``Dockerfile`` in the project root. |
+| `{prefix}generate_dockerfile(python_version="3.12", port=8000, if_exists="error")` | Generate a production-ready ``Dockerfile`` in the project root. |
 | `{prefix}generate_requirements(output_path="requirements.txt")` | Generate a ``requirements.txt`` from ``pip freeze`` output. |
 
 #### Permissions (BaaS)

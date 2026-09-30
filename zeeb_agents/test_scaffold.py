@@ -614,7 +614,9 @@ async def generate_tests(
         created (list[str]): project-relative paths written.
         skipped (list[str]): paths that already existed and were kept.
         overwritten (list[str]): paths that existed and were rewritten
-            (only ever the generated test file, only with ``overwrite``).
+            (only ever the generated test file, only with ``overwrite``, and
+            only when its content actually changed — an identical
+            regeneration is listed under ``skipped``).
         tests (int): number of test functions in the generated file (0 when
             the file already existed and was kept).
     """
@@ -657,6 +659,11 @@ async def generate_tests(
         path = confine_path(root, relative, kind="filename")
         if path.exists():
             if overwrite and relative == target:
+                if path.read_text(encoding="utf-8") == content:
+                    # Regenerating to the same text is not a rewrite: report
+                    # it as kept, so a caller can tell a no-op from a change.
+                    skipped.append(relative)
+                    return
                 write_source(path, content)
                 overwritten.append(relative)
                 return
