@@ -509,7 +509,16 @@ class SimpleRouter:
 
                 # Register with FastAPI router
                 route_name = route.name.format(basename=basename)
-                
+
+                # Authentication, permissions and throttling run as a route
+                # dependency, which FastAPI resolves before it validates the
+                # body. As endpoint code they ran after it, so an anonymous
+                # POST with a bad body was answered 422 instead of 401 — the
+                # body was inspected before the caller was.
+                dependencies = [Depends(bearer_scheme)] if secured else []
+                dependencies.append(
+                    Depends(self._access_guard(viewset, action_name, action_permission_classes))
+                )
                 router.add_api_route(
                     url,
                     endpoint,
@@ -518,9 +527,10 @@ class SimpleRouter:
                     response_model=action_response_model,
                     status_code=action_status_code,
                     responses=responses,
-                    # Declares the HTTP bearer scheme in OpenAPI; auto_error is
-                    # off, so it never rejects a request by itself.
-                    dependencies=[Depends(bearer_scheme)] if secured else None,
+                    # The bearer dependency declares the HTTP bearer scheme in
+                    # OpenAPI; auto_error is off, so it never rejects a request
+                    # by itself.
+                    dependencies=dependencies,
                 )
 
         return router
@@ -730,6 +740,40 @@ class SimpleRouter:
                 return hint
         return None
 
+    #: Where the access guard leaves the viewset it admitted, for the endpoint.
+    _GUARDED_VIEWSET_ATTR = "zeeb_guarded_viewset"
+
+    @classmethod
+    def _access_guard(
+        cls,
+        viewset_class: Type[ViewSet],
+        action_name: str,
+        permission_classes: list | None,
+    ) -> Callable:
+        """A route dependency that admits the caller before the body is validated.
+
+        Builds the action's viewset, authenticates, checks permissions and
+        throttles — the checks the endpoint used to run first thing — and
+        leaves the viewset on ``request.state`` for the endpoint to use, so the
+        throttle is counted once. Object permissions still belong to the
+        action: there is no object before it runs.
+        """
+
+        async def guard(request: Request) -> None:
+            path_params = dict(request.path_params)
+            viewset = viewset_class(request=request, **path_params)
+            viewset.action = action_name
+            viewset.kwargs = path_params
+            if permission_classes is not None:
+                viewset._action_permission_classes = permission_classes
+            await viewset.perform_authentication(request)
+            await viewset.check_permissions(request)
+            viewset.version = getattr(request.state, "version", None)
+            await viewset.check_throttles(request)
+            setattr(request.state, cls._GUARDED_VIEWSET_ATTR, viewset)
+
+        return guard
+
     def _create_endpoint(
         self,
         viewset_class: Type[ViewSet],
@@ -747,6 +791,29 @@ class SimpleRouter:
         from pydantic import BaseModel
 
         lookup_field = lookup.strip("{}")
+        guarded_attr = self._GUARDED_VIEWSET_ATTR
+
+        async def _admitted_viewset(request: Request, path_params: dict[str, Any]) -> ViewSet:
+            """The viewset the access guard admitted, or one admitted here.
+
+            The guard runs as a route dependency, so an endpoint reached
+            through the router finds its viewset on the request. Called any
+            other way — a test building the endpoint by hand — the checks run
+            here, in their old order.
+            """
+            viewset = getattr(request.state, guarded_attr, None)
+            if viewset is None:
+                viewset = viewset_class(request=request, **path_params)
+                viewset.action = action_name
+                if permission_classes is not None:
+                    viewset._action_permission_classes = permission_classes
+                await viewset.perform_authentication(request)
+                await viewset.check_permissions(request)
+                viewset.version = getattr(request.state, "version", None)
+                await viewset.check_throttles(request)
+            # The route's typed path params, not the raw strings the guard saw.
+            viewset.kwargs = path_params
+            return viewset
 
         def _finish(result: Any) -> Any:
             # None is "no content". A route documented as 204 (destroy) that
@@ -799,18 +866,7 @@ class SimpleRouter:
                     body: BaseModel,  # Will be overridden by signature
                     **path_params: Any,
                 ) -> Any:
-                    viewset = viewset_class(request=request, **path_params)
-                    viewset.action = action_name
-                    viewset.kwargs = path_params
-                    
-                    # Use action-specific permissions if provided
-                    if permission_classes is not None:
-                        viewset._action_permission_classes = permission_classes
-                    
-                    await viewset.perform_authentication(request)
-                    await viewset.check_permissions(request)
-                    viewset.version = getattr(request.state, "version", None)
-                    await viewset.check_throttles(request)
+                    viewset = await _admitted_viewset(request, path_params)
 
                     # Store body data for action
                     viewset._request_body = _dump_body(body)
@@ -831,18 +887,7 @@ class SimpleRouter:
                 return detail_endpoint_with_body
             else:
                 async def detail_endpoint(request: Request, **path_params: Any) -> Any:
-                    viewset = viewset_class(request=request, **path_params)
-                    viewset.action = action_name
-                    viewset.kwargs = path_params
-                    
-                    # Use action-specific permissions if provided
-                    if permission_classes is not None:
-                        viewset._action_permission_classes = permission_classes
-                    
-                    await viewset.perform_authentication(request)
-                    await viewset.check_permissions(request)
-                    viewset.version = getattr(request.state, "version", None)
-                    await viewset.check_throttles(request)
+                    viewset = await _admitted_viewset(request, path_params)
 
                     action = getattr(viewset, action_name)
                     result = await action(request, **_adapt_action_kwargs(action, path_params))
@@ -863,18 +908,7 @@ class SimpleRouter:
                     request: Request,
                     body: BaseModel,
                 ) -> Any:
-                    viewset = viewset_class(request=request)
-                    viewset.action = action_name
-                    viewset.kwargs = {}
-                    
-                    # Use action-specific permissions if provided
-                    if permission_classes is not None:
-                        viewset._action_permission_classes = permission_classes
-                    
-                    await viewset.perform_authentication(request)
-                    await viewset.check_permissions(request)
-                    viewset.version = getattr(request.state, "version", None)
-                    await viewset.check_throttles(request)
+                    viewset = await _admitted_viewset(request, {})
 
                     # Store body data for serializer/query
                     viewset._request_body = _dump_body(body)
@@ -893,18 +927,7 @@ class SimpleRouter:
                 return list_endpoint_with_body
             else:
                 async def list_endpoint(request: Request) -> Any:
-                    viewset = viewset_class(request=request)
-                    viewset.action = action_name
-                    viewset.kwargs = {}
-                    
-                    # Use action-specific permissions if provided
-                    if permission_classes is not None:
-                        viewset._action_permission_classes = permission_classes
-                    
-                    await viewset.perform_authentication(request)
-                    await viewset.check_permissions(request)
-                    viewset.version = getattr(request.state, "version", None)
-                    await viewset.check_throttles(request)
+                    viewset = await _admitted_viewset(request, {})
 
                     action = getattr(viewset, action_name)
                     result = await action(request)
