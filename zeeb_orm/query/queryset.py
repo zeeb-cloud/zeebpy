@@ -887,6 +887,16 @@ class QuerySet(Generic[ModelT]):
         JOIN (shared with filter/order traversal via ``joins``) and its
         columns labeled ``_sr_{prefix}_{col}`` for hydration.
         """
+        columns: list[Any] = []
+        for prefix in self._select_related_prefixes():
+            info = self._select_related_join(joins, prefix)
+            label_prefix = "_".join(prefix)
+            for col in info.alias.c:
+                columns.append(col.label(f"_sr_{label_prefix}_{col.name}"))
+        return columns
+
+    def _select_related_prefixes(self) -> list[tuple[str, ...]]:
+        """Every cumulative prefix of every select_related path, in order."""
         prefixes: list[tuple[str, ...]] = []
         for field_path in self._select_related:
             parts = field_path.split("__")
@@ -894,18 +904,31 @@ class QuerySet(Generic[ModelT]):
                 prefix = tuple(parts[:i])
                 if prefix not in prefixes:
                     prefixes.append(prefix)
+        return prefixes
 
-        columns: list[Any] = []
-        for prefix in prefixes:
-            info = joins.ensure_join(list(prefix))
-            if info.relation.kind not in ("fk", "o2o"):
-                raise ValueError(
-                    f"select_related: '{prefix[-1]}' is not a ForeignKey "
-                    f"field on {info.relation.source_model.__name__}"
-                )
-            label_prefix = "_".join(prefix)
-            for col in info.alias.c:
-                columns.append(col.label(f"_sr_{label_prefix}_{col.name}"))
+    @staticmethod
+    def _select_related_join(joins: JoinContext, prefix: tuple[str, ...]) -> Any:
+        """The (shared) JOIN for one select_related prefix; only FK/O2O hops."""
+        info = joins.ensure_join(list(prefix))
+        if info.relation.kind not in ("fk", "o2o"):
+            raise ValueError(
+                f"select_related: '{prefix[-1]}' is not a ForeignKey "
+                f"field on {info.relation.source_model.__name__}"
+            )
+        return info
+
+    def _select_related_pk_columns(self, joins: JoinContext) -> list[Any]:
+        """The primary key of every select_related JOIN.
+
+        Grouping by them makes every joined column functionally dependent on
+        the GROUP BY, which PostgreSQL and MySQL accept, as they do the base
+        table's columns under its primary key.
+        """
+        columns = []
+        for prefix in self._select_related_prefixes():
+            info = self._select_related_join(joins, prefix)
+            meta = info.target_model._meta
+            columns.append(info.alias.c[meta.pk.db_column or meta.pk_name])
         return columns
 
     def _pk_column_name(self) -> str:
@@ -1010,23 +1033,42 @@ class QuerySet(Generic[ModelT]):
             if getattr(expr, "contains_aggregate", False)
         }
 
-    def _build_group_by(self, table: Any, grouping_columns: list[Any]) -> list[Any]:
+    def _build_group_by(
+        self,
+        table: Any,
+        joins: JoinContext,
+        grouping_columns: list[Any],
+        annotations: dict[str, Any],
+    ) -> list[Any]:
         """GROUP BY columns implied by aggregate annotations.
 
         Without one, ``values("author").annotate(n=Count("id"))`` collapses to
-        a single row instead of one row per author.
+        a single row instead of one row per author. The GROUP BY covers
+        everything the SELECT list holds outside an aggregate, so PostgreSQL
+        (and MySQL's ONLY_FULL_GROUP_BY) accept it:
+
+        * the ``values()`` columns, or for whole rows the primary key plus
+          the primary key of every ``select_related()`` JOIN (each joined
+          column is functionally dependent on it);
+        * every non-aggregate annotation that reads a column
+          (``_groups_annotation``), resolved as it is selected.
         """
         if not self._aggregate_aliases():
             return []
 
         if self._requested_value_names() is not None:
             # Exactly the non-aggregate columns in the SELECT list.
-            return list(grouping_columns)
+            group_by = [_unlabeled(column) for column in grouping_columns]
+        else:
+            pk_column = getattr(table.c, self._pk_column_name(), None)
+            group_by = [pk_column] if pk_column is not None else []
+            if self._select_related:
+                group_by.extend(self._select_related_pk_columns(joins))
 
-        # Whole rows are selected: grouping by the primary key is enough and
-        # is accepted by SQLite, PostgreSQL and MySQL (functional dependency).
-        pk_column = getattr(table.c, self._pk_column_name(), None)
-        return [pk_column] if pk_column is not None else []
+        for alias, expr in self._annotations.items():
+            if alias in annotations and _groups_annotation(expr):
+                group_by.append(annotations[alias])
+        return group_by
 
     def _split_aggregate_q(self, q: Q, aggregate_aliases: set[str]) -> tuple[Any, Any]:
         """Split ``q`` into a WHERE part and a HAVING part.
@@ -1162,9 +1204,11 @@ class QuerySet(Generic[ModelT]):
 
         grouping_columns = list(columns)
 
-        if self._annotations:
-            for alias, expr in self._annotations.items():
-                columns.append(expr.resolve(self.model, joins=joins).label(alias))
+        annotations = {
+            alias: expr.resolve(self.model, joins=joins)
+            for alias, expr in self._annotations.items()
+        }
+        columns.extend(resolved.label(alias) for alias, resolved in annotations.items())
 
         # Apply filters (registers traversal JOINs on the shared context).
         # Conditions on aggregate annotations belong in HAVING, not WHERE.
@@ -1174,7 +1218,7 @@ class QuerySet(Generic[ModelT]):
         if where_clause is not None:
             stmt = stmt.where(where_clause)
 
-        group_by = self._build_group_by(table, grouping_columns)
+        group_by = self._build_group_by(table, joins, grouping_columns, annotations)
         if group_by:
             stmt = stmt.group_by(*group_by)
         if having_clause is not None:
@@ -2357,6 +2401,51 @@ async def _create_block(alias: str | None) -> AsyncIterator[None]:
             return
     async with atomic(alias):
         yield
+
+
+def _unlabeled(column: Any) -> Any:
+    """The expression under a ``.label()``, so GROUP BY never names an alias."""
+    from sqlalchemy.sql.elements import Label
+
+    return column.element if isinstance(column, Label) else column
+
+
+def _groups_annotation(expr: Any) -> bool:
+    """Whether a non-aggregate annotation belongs in an aggregation's GROUP BY.
+
+    It is selected next to the aggregates, so every column it reads must be
+    grouped. Aggregates and window functions never go into a GROUP BY, nor
+    does a subquery (it is evaluated per group); an expression that reads no
+    column (``Value(1)``) needs no grouping, and a literal there would be
+    refused by PostgreSQL ("non-integer constant in GROUP BY").
+    """
+    if getattr(expr, "contains_aggregate", False) or getattr(expr, "contains_over_clause", False):
+        return False
+    return _reads_columns(expr)
+
+
+def _reads_columns(node: Any) -> bool:
+    """Whether an expression tree reads a column of the current query.
+
+    ``F`` reads one; so does any node holding a ``Q`` condition (``When``, a
+    ``Case`` given ``(Q, result)`` pairs). A ``Subquery``/``Exists`` reads its
+    own query's columns, not this one's.
+    """
+    from zeeb_orm.query.expressions import Exists, F, Subquery
+
+    if isinstance(node, (Subquery, Exists)):
+        return False
+    if isinstance(node, F):
+        return True
+
+    def holds_q(value: Any) -> bool:
+        if isinstance(value, Q):
+            return True
+        return isinstance(value, (list, tuple)) and any(holds_q(item) for item in value)
+
+    if any(holds_q(value) for value in vars(node).values()):
+        return True
+    return any(_reads_columns(source) for source in node.get_source_expressions())
 
 
 def _require_expressions(method: str, values: dict[str, Any]) -> None:
