@@ -197,6 +197,11 @@ Return last object or None. Reverses the effective ordering (explicit
 `order_by`, then `Meta.ordering`, then the primary key), so it is
 deterministic and mirror-images `first()` even on unordered querysets.
 
+An aggregation (a queryset with an aggregate annotation) ignores
+`Meta.ordering`. Unordered, it falls back to the primary key only when grouped
+by it; otherwise `first()` and `last()` raise `TypeError` asking for an
+explicit `order_by()` rather than return an arbitrary group.
+
 ```python
 user = await User.objects.order_by("created_at").last()
 ```
@@ -257,6 +262,11 @@ An explicit `order_by()` replaces `Meta.ordering`. Every name — in
 `order_by()` and in `Meta.ordering` — must resolve to a field, an annotation,
 a `__` path or a datetime transform; an unknown name raises `FieldError`
 when the query is built.
+
+`Meta.ordering` is not applied to an aggregation (a query with an aggregate
+annotation, hence a `GROUP BY`): it would sort by columns that are neither
+grouped nor aggregated. An explicit `order_by()` still applies there and must
+name grouped fields or aggregates.
 
 ### order_by with F expressions
 
@@ -326,6 +336,10 @@ for product in products:
 
 Values must be expressions; `annotate(x="price * 2")` raises `TypeError`
 (a string is never interpreted as SQL). The same holds for `aggregate()`.
+
+An aggregate annotation adds a `GROUP BY` (by the `values()` fields, else the
+primary key), and the model's `Meta.ordering` is then left out of the query;
+use an explicit `order_by()` on grouped fields or aggregates.
 
 ### aggregate(\*\*kwargs)
 

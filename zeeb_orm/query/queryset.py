@@ -798,18 +798,34 @@ class QuerySet(Generic[ModelT]):
         """Resolve a field path (potentially with __ for relations) to a column."""
         return resolve_field_path(self.model, field_path, self._annotations, joins)
 
+    def _applies_default_ordering(self) -> bool:
+        """Whether ``Meta.ordering`` orders this query.
+
+        Not once ``order_by()`` was called, and never in an aggregation (a
+        query with an aggregate annotation, so a GROUP BY). There the default
+        ordering names columns that are neither grouped nor aggregated —
+        ``values("tool").annotate(n=Count("id"))`` on a model ordered by
+        ``-created_at`` — which PostgreSQL and MySQL's ONLY_FULL_GROUP_BY
+        reject outright and SQLite answers by picking an arbitrary row per
+        group. Django leaves it out for the same reason; an explicit
+        ``order_by()`` still applies and must name grouped fields or
+        aggregates.
+        """
+        return self._default_ordering and not self._order_by and not self._aggregate_aliases()
+
     def _build_order_by(self, joins: JoinContext | None = None) -> list[Any]:
         """Build SQLAlchemy ORDER BY clause.
 
-        Uses the explicit ``order_by()`` fields, else ``Meta.ordering``.
-        Every name must resolve — an unknown one raises ``FieldError``
-        instead of being dropped from the ORDER BY.
+        Uses the explicit ``order_by()`` fields, else ``Meta.ordering`` unless
+        the query aggregates (see ``_applies_default_ordering``). Every name
+        must resolve — an unknown one raises ``FieldError`` instead of being
+        dropped from the ORDER BY.
         """
         from sqlalchemy import asc, desc
 
         order_clauses = []
         fields = self._order_by
-        if self._default_ordering and not fields:
+        if self._applies_default_ordering():
             fields = list(self.model._meta.ordering or [])
         for field in fields:
             descending = field.startswith("-")
@@ -1159,8 +1175,8 @@ class QuerySet(Generic[ModelT]):
         if having_clause is not None:
             stmt = stmt.having(having_clause)
 
-        # Apply ordering (explicit order_by, else Meta.ordering) - can also
-        # order by annotations and "__" paths
+        # Apply ordering (explicit order_by, else Meta.ordering unless the
+        # query aggregates) - can also order by annotations and "__" paths
         order_clauses = self._build_order_by(joins)
         if order_clauses:
             stmt = stmt.order_by(*order_clauses)
@@ -1563,22 +1579,51 @@ class QuerySet(Generic[ModelT]):
             )
         return results[0]
 
-    def _effective_ordering(self) -> list[str]:
+    def _effective_ordering(self, method: str = "first") -> list[str]:
         """Explicit order_by, else Meta.ordering, else the primary key.
 
         Guarantees first()/last() are deterministic and mirror-images of
         each other even on querysets with no explicit ordering.
+
+        An aggregation ignores ``Meta.ordering`` (``_applies_default_ordering``),
+        and the primary key is only a valid fallback when the rows are grouped
+        by it. Grouped by anything else, there is no ordering to fall back on
+        that the database would accept, so — as in Django — ``first()`` /
+        ``last()`` raise ``TypeError`` and ask for an explicit ``order_by()``.
         """
         if self._order_by:
             return list(self._order_by)
-        if self._default_ordering and self.model._meta.ordering:
+        if self._applies_default_ordering() and self.model._meta.ordering:
             return list(self.model._meta.ordering)
+        if self._aggregate_aliases() and not self._groups_by_pk():
+            raise TypeError(
+                f"Cannot use {type(self).__name__}.{method}() on an unordered queryset "
+                "performing aggregation. Add an ordering with order_by()."
+            )
         return [self.model._meta.pk_name or "id"]
 
+    def _groups_by_pk(self) -> bool:
+        """Whether an aggregation's GROUP BY includes the primary key.
+
+        Whole rows are grouped by the primary key (``_build_group_by``); a
+        ``values()``/``values_list()`` aggregation only when it names it.
+        """
+        names = self._requested_value_names()
+        if names is None:
+            return True
+        meta = self.model._meta
+        pk_names = {"pk", meta.pk_name, self._pk_column_name()}
+        return any(name in pk_names for name in names)
+
     async def first(self) -> ModelT | None:
-        """Get the first object or None (primary-key order when unordered)."""
+        """Get the first object or None (primary-key order when unordered).
+
+        An unordered aggregation that is not grouped by the primary key has no
+        such order to fall back on, so it raises ``TypeError`` asking for an
+        ``order_by()``.
+        """
         clone = self._clone()
-        clone._order_by = self._effective_ordering()
+        clone._order_by = self._effective_ordering("first")
         clone._limit = 1
         results = await clone._fetch_all()
         return results[0] if results else None
@@ -1587,11 +1632,13 @@ class QuerySet(Generic[ModelT]):
         """Get the last object or None.
 
         Reverses the effective ordering (explicit order_by, Meta.ordering,
-        or the primary key) and returns the first row.
+        or the primary key) and returns the first row. Raises ``TypeError``
+        where ``first()`` does: an unordered aggregation not grouped by the
+        primary key.
         """
         clone = self._clone()
         clone._order_by = [
-            f[1:] if f.startswith("-") else f"-{f}" for f in self._effective_ordering()
+            f[1:] if f.startswith("-") else f"-{f}" for f in self._effective_ordering("last")
         ]
         clone._limit = 1
         results = await clone._fetch_all()
