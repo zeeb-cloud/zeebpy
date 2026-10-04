@@ -265,8 +265,11 @@ when the query is built.
 
 `Meta.ordering` is not applied to an aggregation (a query with an aggregate
 annotation, hence a `GROUP BY`): it would sort by columns that are neither
-grouped nor aggregated. An explicit `order_by()` still applies there and must
-name grouped fields or aggregates.
+grouped nor aggregated. Nor is it applied to a `distinct()` query that does not
+select every column it names. An explicit `order_by()` is always compiled as
+written: in an aggregation it must name grouped fields or aggregates, in a
+distinct query selected fields, or PostgreSQL refuses it — an ungrouped
+column is not added to the `GROUP BY` for you.
 
 ### order_by with F expressions
 
@@ -505,6 +508,12 @@ users = await User.objects.distinct().all()
 # Unique values of one column
 emails = await User.objects.values_list("email", flat=True).distinct()
 ```
+
+`Meta.ordering` applies to a distinct query only when every column it names is
+selected (a `DISTINCT` query may only sort by selected columns, and adding the
+column would change what is de-duplicated); otherwise the query is unordered.
+An explicit `order_by()` is compiled as written. `first()`/`last()` then fall
+back to the primary key if it is selected, else raise `TypeError`.
 
 ---
 

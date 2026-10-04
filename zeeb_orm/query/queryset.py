@@ -926,11 +926,15 @@ class QuerySet(Generic[ModelT]):
         """
         return self._default_ordering and not self._order_by and not self._aggregate_aliases()
 
-    def _build_order_by(self, joins: JoinContext | None = None) -> list[Any]:
+    def _build_order_by(
+        self, joins: JoinContext | None = None, columns: list[Any] | None = None
+    ) -> list[Any]:
         """Build SQLAlchemy ORDER BY clause.
 
         Uses the explicit ``order_by()`` fields, else ``Meta.ordering`` unless
-        the query aggregates (see ``_applies_default_ordering``). Every name
+        the query aggregates (see ``_applies_default_ordering``) or is
+        DISTINCT and the default ordering names a column outside ``columns``,
+        the SELECT list (see ``_default_ordering_is_selected``). Every name
         must resolve — an unknown one raises ``FieldError`` instead of being
         dropped from the ORDER BY.
         """
@@ -940,6 +944,13 @@ class QuerySet(Generic[ModelT]):
         fields = self._order_by
         if self._applies_default_ordering():
             fields = list(self.model._meta.ordering or [])
+            if (
+                self._distinct_fields
+                and columns is not None
+                and joins is not None
+                and not self._default_ordering_is_selected(joins, columns)
+            ):
+                fields = []
         for field in fields:
             descending = field.startswith("-")
             field_name = field[1:] if descending else field
@@ -976,6 +987,38 @@ class QuerySet(Generic[ModelT]):
                 f"on {self.model.__name__}. Choices are: {', '.join(choices)}"
             )
         return column
+
+    def _default_ordering_is_selected(self, joins: JoinContext, columns: list[Any]) -> bool:
+        """Whether every ``Meta.ordering`` term is in the SELECT list.
+
+        A DISTINCT query may only sort by what it selects (PostgreSQL: "for
+        SELECT DISTINCT, ORDER BY expressions must appear in select list").
+        Adding the column to the SELECT list instead would change what is
+        de-duplicated — ``values("tool").distinct()`` on a model ordered by
+        ``-created_at`` would return one row per object — so a default
+        ordering that is not fully selected is left out. A relation path
+        counts only when ``select_related()`` selects that relation; it is
+        never resolved otherwise, so the check adds no JOIN.
+        """
+        from sqlalchemy import Table
+
+        selected: list[Any] = []
+        for column in columns:
+            if isinstance(column, Table):
+                selected.extend(column.c)
+            else:
+                selected.append(_unlabeled(column))
+
+        related = set(self._select_related_prefixes())
+        whole_rows = self._requested_value_names() is None
+        for term in self.model._meta.ordering or []:
+            name = term[1:] if term.startswith("-") else term
+            if "__" in name and not (whole_rows and tuple(name.split("__")[:-1]) in related):
+                return False
+            expression = self._order_expression(name, joins)
+            if not any(expression.compare(column) for column in selected):
+                return False
+        return True
 
     def _resolve_path_expression(self, path: str, joins: JoinContext | None) -> Any:
         """Resolve a ``__`` path (relations and/or datetime transform) to a
@@ -1318,21 +1361,15 @@ class QuerySet(Generic[ModelT]):
 
         return combine(where_conditions), combine(having_conditions)
 
-    def _build_select(self) -> Select[Any]:
-        """Build the complete SELECT statement."""
-        if self._combinator is not None:
-            return self._build_combined_select()
+    def _select_list(self, table: Any, joins: JoinContext) -> tuple[list[Any], dict[str, Any]]:
+        """The SELECT list, and the selected annotations resolved by alias.
 
-        table = self.model._get_table()
-        joins = self._make_join_context()
-
-        # Build select columns. Named values()/values_list() fields restrict
-        # the SELECT list (and win over only()/defer(), as in Django);
-        # select_related columns are dead weight there because dicts are
-        # built straight from the row mapping.
+        Named values()/values_list() fields restrict the SELECT list (and win
+        over only()/defer(), as in Django) — even when every name is an
+        annotation (values("total")); select_related columns are dead weight
+        there because dicts are built straight from the row mapping.
+        """
         if self._requested_value_names() is not None:
-            # Even when every name is an annotation (values("total")): the
-            # SELECT list is what was asked for, never the whole row.
             columns = self._values_columns(joins)
         else:
             columns = list(self._get_select_columns(table))
@@ -1346,6 +1383,16 @@ class QuerySet(Generic[ModelT]):
             for alias in self._selected_annotation_aliases()
         }
         columns.extend(resolved.label(alias) for alias, resolved in annotations.items())
+        return columns, annotations
+
+    def _build_select(self) -> Select[Any]:
+        """Build the complete SELECT statement."""
+        if self._combinator is not None:
+            return self._build_combined_select()
+
+        table = self.model._get_table()
+        joins = self._make_join_context()
+        columns, annotations = self._select_list(table, joins)
 
         # Apply filters (registers traversal JOINs on the shared context).
         # Conditions on aggregate annotations belong in HAVING, not WHERE.
@@ -1362,8 +1409,9 @@ class QuerySet(Generic[ModelT]):
             stmt = stmt.having(having_clause)
 
         # Apply ordering (explicit order_by, else Meta.ordering unless the
-        # query aggregates) - can also order by annotations and "__" paths
-        order_clauses = self._build_order_by(joins)
+        # query aggregates, or is DISTINCT and would sort by a column it does
+        # not select) - can also order by annotations and "__" paths
+        order_clauses = self._build_order_by(joins, columns)
         if order_clauses:
             stmt = stmt.order_by(*order_clauses)
 
@@ -1782,17 +1830,41 @@ class QuerySet(Generic[ModelT]):
         by it. Grouped by anything else, there is no ordering to fall back on
         that the database would accept, so — as in Django — ``first()`` /
         ``last()`` raise ``TypeError`` and ask for an explicit ``order_by()``.
+        A DISTINCT query uses ``Meta.ordering`` only when it selects every
+        column it names (``_default_ordering_is_selected``) and the primary
+        key only when it selects it; otherwise it raises the same way.
         """
         if self._order_by:
             return list(self._order_by)
         if self._applies_default_ordering() and self.model._meta.ordering:
-            return list(self.model._meta.ordering)
+            if not self._distinct_fields or self._default_ordering_fits_distinct():
+                return list(self.model._meta.ordering)
         if self._aggregate_aliases() and not self._groups_by_pk():
             raise TypeError(
                 f"Cannot use {type(self).__name__}.{method}() on an unordered queryset "
                 "performing aggregation. Add an ordering with order_by()."
             )
+        if self._distinct_fields and not self._selects_pk():
+            raise TypeError(
+                f"Cannot use {type(self).__name__}.{method}() on a distinct queryset "
+                "whose default ordering and primary key are not selected. Add an "
+                "ordering on selected fields with order_by()."
+            )
         return [self.model._meta.pk_name or "id"]
+
+    def _default_ordering_fits_distinct(self) -> bool:
+        """``_default_ordering_is_selected`` for this queryset's own SELECT list."""
+        joins = self._make_join_context()
+        columns, _ = self._select_list(self.model._get_table(), joins)
+        return self._default_ordering_is_selected(joins, columns)
+
+    def _selects_pk(self) -> bool:
+        """Whether the SELECT list holds the primary key (whole rows always do)."""
+        names = self._requested_value_names()
+        if names is None:
+            return True
+        meta = self.model._meta
+        return any(name in {"pk", meta.pk_name, self._pk_column_name()} for name in names)
 
     def _groups_by_pk(self) -> bool:
         """Whether an aggregation's GROUP BY includes the primary key.

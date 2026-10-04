@@ -540,6 +540,13 @@ busiest = await Article.objects.values("author_id").annotate(
 ).order_by("-n", "author_id")
 ```
 
+An explicit `order_by()` is compiled exactly as written. Ordering an
+aggregation by a column that is neither grouped nor aggregated
+(`values("author_id").annotate(n=Count("id")).order_by("-created_at")`) is not
+turned into an extra grouping key: PostgreSQL refuses the query ("must appear
+in the GROUP BY clause"), and SQLite sorts each group by an arbitrary row.
+Name the column in `values()` if it should be a grouping key.
+
 For the same reason `first()`/`last()` on an unordered aggregation fall back to
 the primary key only when the rows are grouped by it (whole-object
 `annotate()`, or `values()` naming the key); otherwise they raise `TypeError`
@@ -665,6 +672,25 @@ articles = await Article.objects.defer("content")  # Load all except content
 # Remove duplicates
 categories = await Article.objects.values_list("category", flat=True).distinct()
 ```
+
+A `DISTINCT` query can only sort by columns it selects. `Meta.ordering` is
+therefore applied to a `distinct()` query only when every column it names is
+selected — on an `Article` ordered by `-created_at`, the query above is
+unordered rather than refused by PostgreSQL. Selecting `created_at` as well
+would change what is de-duplicated (every article would come back), which is
+why the column is not added behind your back. Sort explicitly by a selected
+field instead:
+
+```python
+categories = await (
+    Article.objects.values_list("category", flat=True).distinct().order_by("category")
+)
+```
+
+An explicit `order_by()` on an unselected column is compiled as written, and
+PostgreSQL refuses it. `first()`/`last()` on a distinct query whose default
+ordering does not apply fall back to the primary key when it is selected, and
+otherwise raise `TypeError` asking for an `order_by()`.
 
 ## Related Object Loading
 

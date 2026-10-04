@@ -203,3 +203,58 @@ async def test_postgres_accepts_every_aggregation_shape(events):
     assert await per_tool().exists() is True
     assert await per_tool().order_by("tool").first() == {"tool": "x", "n": 2}
     assert len(await AgOrdByAuthor.objects.annotate(n=Count("author__events"))) == 2
+
+
+class TestDistinctAndDefaultOrdering:
+    """A DISTINCT query takes Meta.ordering only when it selects every column.
+
+    ``values("tool").distinct()`` on a model ordered by ``-created_at`` used
+    to compile to ``SELECT DISTINCT tool ... ORDER BY created_at DESC``,
+    which PostgreSQL refuses ("for SELECT DISTINCT, ORDER BY expressions must
+    appear in select list"). Selecting ``created_at`` as well would make
+    every row distinct, so the implicit ordering is left out instead.
+    """
+
+    def test_an_unselected_default_ordering_is_left_out(self):
+        assert "ORDER BY" not in sql(AgOrdEvent.objects.values("tool").distinct())
+        assert "ORDER BY" not in sql(AgOrdEvent.objects.only("tool").distinct())
+        assert "ORDER BY" not in sql(AgOrdByAuthor.objects.distinct())
+
+    def test_a_selected_default_ordering_is_kept(self):
+        ordered = "ORDER BY agord_events.created_at DESC"
+        assert ordered in sql(AgOrdEvent.objects.values("tool", "created_at").distinct())
+        assert ordered in sql(AgOrdEvent.objects.distinct())
+        assert ordered in sql(AgOrdEvent.objects.values("tool"))  # not DISTINCT
+        joined = sql(AgOrdByAuthor.objects.select_related("author").distinct())
+        assert "ORDER BY _sr_author" in joined and "name ASC" in joined
+
+    def test_an_explicit_ordering_is_compiled_as_written(self):
+        explicit = AgOrdEvent.objects.values("tool").distinct().order_by("-created_at")
+        assert "ORDER BY agord_events.created_at DESC" in sql(explicit)
+
+    async def test_distinct_values_come_back_once_each(self, events):
+        rows = await AgOrdEvent.objects.values("tool").distinct()
+        assert sorted(r["tool"] for r in rows) == ["x", "y", "z"]
+        titles = await AgOrdByAuthor.objects.select_related("author").distinct()
+        assert [t.title for t in titles] == ["by amy", "by zed"]
+
+    async def test_first_and_last_on_a_distinct_queryset(self, events):
+        with pytest.raises(TypeError, match=r"first\(\) on a distinct queryset"):
+            await AgOrdEvent.objects.values("tool").distinct().first()
+        assert await AgOrdEvent.objects.values("tool").distinct().order_by("tool").last() == {
+            "tool": "z"
+        }
+        assert (await AgOrdEvent.objects.values("id", "tool").distinct().first())["tool"] == "x"
+        assert (await AgOrdByAuthor.objects.distinct().first()).title == "by zed"
+        assert (await AgOrdEvent.objects.distinct().first()).tool == "z"
+
+
+@requires_postgres()
+async def test_postgres_accepts_distinct_with_a_default_ordering(events):
+    rows = await AgOrdEvent.objects.values("tool").distinct()
+    assert sorted(r["tool"] for r in rows) == ["x", "y", "z"]
+    assert len(await AgOrdEvent.objects.only("tool").distinct()) == 4
+    assert len(await AgOrdByAuthor.objects.distinct()) == 2
+    titles = await AgOrdByAuthor.objects.select_related("author").distinct()
+    assert [t.title for t in titles] == ["by amy", "by zed"]
+    assert (await AgOrdEvent.objects.values("id", "tool").distinct().first())["tool"] == "x"
