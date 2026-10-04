@@ -337,9 +337,11 @@ for product in products:
 Values must be expressions; `annotate(x="price * 2")` raises `TypeError`
 (a string is never interpreted as SQL). The same holds for `aggregate()`.
 
-An aggregate annotation adds a `GROUP BY` (by the `values()` fields, else the
-primary key), and the model's `Meta.ordering` is then left out of the query;
-use an explicit `order_by()` on grouped fields or aggregates.
+An aggregate annotation adds a `GROUP BY` covering everything selected outside
+an aggregate: the `values()` fields (else the primary key and the primary key
+of each `select_related()` join) and every non-aggregate annotation that reads
+a column. The model's `Meta.ordering` is then left out of the query; use an
+explicit `order_by()` on grouped fields or aggregates.
 
 ### aggregate(\*\*kwargs)
 

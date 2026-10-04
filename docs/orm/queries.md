@@ -490,6 +490,24 @@ for author in authors:
     print(author.name, author.post_count)
 ```
 
+The `GROUP BY` covers everything selected outside an aggregate, so every
+backend accepts the query:
+
+- with `values()`, its fields; without, the primary key plus the primary key
+  of every `select_related()` join (each selected column depends on one of
+  them);
+- every non-aggregate annotation that reads a column. As in plain SQL, it is a
+  grouping key: `values("author_id").annotate(double=F("views") * 2,
+  n=Count("id"))` yields one row per `(author_id, double)`. Constants such as
+  `Value(1)` are selected but not grouped.
+
+```python
+# One annotated instance per article, author loaded in the same query
+articles = await Article.objects.select_related("author").annotate(
+    n_comments=Count("comments")
+)
+```
+
 A model's `Meta.ordering` is **not** applied to an aggregate annotation's
 query: on a model ordered by `-created_at`,
 `values("author_id").annotate(n=Count("id"))` would otherwise sort groups by a
