@@ -472,6 +472,25 @@ stats = await Article.objects.filter(published=True).aggregate(
 `aggregate()` never groups — it reduces the whole (filtered) QuerySet to a
 single row. Use `annotate()` for per-group values.
 
+It reduces exactly the rows the QuerySet yields. A sliced, `distinct()` or
+aggregating QuerySet, or one whose annotation the aggregates read, is
+aggregated over its own query as a subquery, so a slice counts as sliced and
+an annotation can itself be aggregated:
+
+```python
+# The ten most viewed articles only
+top = await Article.objects.order_by("-views")[:10].aggregate(views=Sum("views"))
+
+# Aggregate over an aggregate: the busiest author's article count
+busiest = await Article.objects.values("author_id").annotate(
+    n=Count("id")
+).aggregate(most=Max("n"))
+```
+
+Over such a subquery an aggregate reads the columns and annotations that
+query selects; relation traversal (`Max("author__name")`) raises `FieldError`
+there — annotate it first, or aggregate the unsliced QuerySet.
+
 ### annotate() with aggregates
 
 An aggregate annotation adds a `GROUP BY`. Pair it with `values()` to choose
