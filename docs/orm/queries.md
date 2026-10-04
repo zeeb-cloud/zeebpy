@@ -415,6 +415,11 @@ article = await Article.objects.order_by("created_at").last()
 latest = await Article.objects.filter(published=True).order_by("-created_at").first()
 ```
 
+Without an explicit `order_by()` both use `Meta.ordering`, then the primary
+key. An aggregation ignores `Meta.ordering`, and unless it is grouped by the
+primary key `first()`/`last()` raise `TypeError` instead of guessing (see
+[annotate() with aggregates](#annotate-with-aggregates)).
+
 ## Aggregation
 
 ### count()
@@ -484,6 +489,24 @@ authors = await Author.objects.annotate(post_count=Count("articles"))
 for author in authors:
     print(author.name, author.post_count)
 ```
+
+A model's `Meta.ordering` is **not** applied to an aggregate annotation's
+query: on a model ordered by `-created_at`,
+`values("author_id").annotate(n=Count("id"))` would otherwise sort groups by a
+column that is neither grouped nor aggregated, which PostgreSQL (and MySQL's
+`ONLY_FULL_GROUP_BY`) reject and SQLite answers with an arbitrary row per
+group. Order an aggregation explicitly, by grouped fields or aggregates:
+
+```python
+busiest = await Article.objects.values("author_id").annotate(
+    n=Count("id")
+).order_by("-n", "author_id")
+```
+
+For the same reason `first()`/`last()` on an unordered aggregation fall back to
+the primary key only when the rows are grouped by it (whole-object
+`annotate()`, or `values()` naming the key); otherwise they raise `TypeError`
+and ask for an `order_by()`.
 
 Filtering an aggregate annotation compiles to `HAVING`, while filters on
 plain fields stay in `WHERE` — both may appear in the same call:
