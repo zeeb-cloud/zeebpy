@@ -150,7 +150,7 @@ class Article(Model):
 |--------|-------------|-----------|
 | `table_name` / `db_table` | Database table name | no |
 | `abstract` | If `True`, no table is created (use as base class) | no |
-| `ordering` | Default query ordering (list of field names, prefix `-` for descending; an unknown name raises `FieldError` when a query is built; replaced by any explicit `order_by()`; not applied to an aggregation's `GROUP BY` query) | yes |
+| `ordering` | Default query ordering (list of field names, prefix `-` for descending; an unknown name raises `FieldError` when a query is built; replaced by any explicit `order_by()`; not applied to an aggregation's `GROUP BY` query, nor to a `distinct()` query that does not select every column it names) | yes |
 | `managed` | If `False`, `makemigrations` generates nothing for the table and test schemas (`create_all`, `temporary_database`) do not create it | yes |
 | `indexes` | List of `Index` objects | yes |
 | `constraints` | List of `UniqueConstraint` / `CheckConstraint` objects | yes |
