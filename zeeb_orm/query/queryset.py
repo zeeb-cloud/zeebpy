@@ -1230,7 +1230,11 @@ class QuerySet(Generic[ModelT]):
           ``select_related()`` JOIN (each joined column is functionally
           dependent on it);
         * every selected non-aggregate annotation that reads a column
-          (``_groups_annotation``), resolved as it is selected.
+          (``_groups_annotation``), resolved as it is selected;
+        * every column a selected aggregate annotation reads outside its
+          aggregate functions (``_columns_outside_aggregates``): the ``tool``
+          in ``Case(When(tool="x", then=Sum("cost")))`` is evaluated once per
+          group, so it has to be one of the keys.
         """
         if not self._aggregate_aliases():
             return []
@@ -1247,8 +1251,14 @@ class QuerySet(Generic[ModelT]):
                 group_by.extend(self._select_related_pk_columns(joins))
 
         for alias, resolved in annotations.items():
-            if _groups_annotation(self._annotations[alias]):
+            expr = self._annotations[alias]
+            if _groups_annotation(expr):
                 group_by.append(resolved)
+            elif getattr(expr, "contains_aggregate", False):
+                for column in _columns_outside_aggregates(self.model, expr, joins):
+                    # Compared by identity: == on a column builds SQL.
+                    if not any(column is key for key in group_by):
+                        group_by.append(column)
         return group_by
 
     def _split_aggregate_q(self, q: Q, aggregate_aliases: set[str]) -> tuple[Any, Any]:
@@ -2695,6 +2705,68 @@ def _reads_columns(node: Any) -> bool:
     if any(holds_q(value) for value in vars(node).values()):
         return True
     return any(_reads_columns(source) for source in node.get_source_expressions())
+
+
+def _columns_outside_aggregates(model: type, node: Any, joins: JoinContext) -> list[Any]:
+    """The columns an aggregate annotation reads outside its aggregate functions.
+
+    ``Case(When(tool="x", then=Sum("cost")))`` compiles to ``CASE WHEN tool =
+    'x' THEN SUM(cost) END`` and ``Sum("cost") * F("rate")`` to ``SUM(cost) *
+    rate``: ``tool`` and ``rate`` are read once per group, so the GROUP BY
+    must hold them, or PostgreSQL refuses the query and SQLite reads them from
+    an arbitrary row. What an aggregate reads, its ``filter=`` included, is
+    evaluated per row; a window or a subquery reads on its own. An ``F()`` is
+    resolved on the statement's join context, so it is the column the SELECT
+    list reads, transform included.
+    """
+    from zeeb_orm.query.expressions import Aggregate, Exists, F, Subquery, Window
+
+    if isinstance(node, (Aggregate, Window, Subquery, Exists)):
+        return []
+    if isinstance(node, F):
+        return [node.resolve(model, joins=joins)]
+
+    def conditions(value: Any) -> Iterator[Q]:
+        if isinstance(value, Q):
+            yield value
+        elif isinstance(value, (list, tuple)):
+            for item in value:
+                yield from conditions(item)
+
+    columns: list[Any] = []
+    for value in vars(node).values():
+        for q in conditions(value):
+            columns.extend(_q_columns(model, q, joins))
+    for source in node.get_source_expressions():
+        columns.extend(_columns_outside_aggregates(model, source, joins))
+    return columns
+
+
+def _q_columns(model: type, q: Q, joins: JoinContext) -> list[Any]:
+    """The columns a ``When``/``Case`` condition reads, as its lookups read them.
+
+    Each lookup contributes its left-hand side (``created_at__hour`` the
+    hour), and an expression on the right (``cost__gt=F("price")``) its own
+    columns. These conditions compile without a join context, so a relation
+    traversal has already raised while the SELECT list was resolved: only
+    local columns get here.
+    """
+    from zeeb_orm.query.expressions import Expression
+    from zeeb_orm.query.transforms import apply_transform
+
+    columns: list[Any] = []
+    for child in q.resolve()[2]:
+        if isinstance(child, Q):
+            columns.extend(_q_columns(model, child, joins))
+            continue
+        lookup_string, value = child
+        _relation_parts, field_name, transform, _lookup = parse_path(model, lookup_string)
+        column = resolve_field_path(model, field_name)
+        if column is not None:
+            columns.append(apply_transform(column, transform) if transform else column)
+        if isinstance(value, Expression):
+            columns.extend(_columns_outside_aggregates(model, value, joins))
+    return columns
 
 
 def _require_expressions(method: str, values: dict[str, Any]) -> None:

@@ -518,7 +518,10 @@ backend accepts the query:
 - every non-aggregate annotation that reads a column. As in plain SQL, it is a
   grouping key: `values("author_id").annotate(double=F("views") * 2,
   n=Count("id"))` yields one row per `(author_id, double)`. Constants such as
-  `Value(1)` are selected but not grouped.
+  `Value(1)` are selected but not grouped;
+- every column an aggregate annotation reads outside its aggregate functions:
+  `Case(When(tool="x", then=Sum("cost")))` groups by `tool` too. Use
+  `Sum("cost", filter=Q(tool="x"))` to keep the grouping as it is.
 
 ```python
 # One annotated instance per article, author loaded in the same query

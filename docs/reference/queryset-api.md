@@ -342,9 +342,12 @@ Values must be expressions; `annotate(x="price * 2")` raises `TypeError`
 
 An aggregate annotation adds a `GROUP BY` covering everything selected outside
 an aggregate: the `values()` fields (else the primary key and the primary key
-of each `select_related()` join) and every non-aggregate annotation that reads
-a column. The model's `Meta.ordering` is then left out of the query; use an
-explicit `order_by()` on grouped fields or aggregates.
+of each `select_related()` join), every non-aggregate annotation that reads
+a column, and every column an aggregate annotation reads outside its aggregate
+functions (the `tool` of `Case(When(tool="x", then=Sum("cost")))`; a
+`filter=Q(...)` condition is inside the aggregate and adds no grouping). The
+model's `Meta.ordering` is then left out of the query; use an explicit
+`order_by()` on grouped fields or aggregates.
 
 ### aggregate(\*\*kwargs)
 
