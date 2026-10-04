@@ -18,6 +18,43 @@ class Expression:
         """Resolve expression to SQLAlchemy expression."""
         raise NotImplementedError
 
+    def get_source_expressions(self) -> list[Expression]:
+        """The expressions this one is built from, for walking the tree.
+
+        Found on the instance: every attribute holding an ``Expression`` or a
+        list/tuple of them (``Case``'s ``(condition, result)`` pairs
+        included). ``Q`` conditions are not expressions and are not entered.
+        """
+        found: list[Expression] = []
+
+        def collect(value: Any) -> None:
+            if isinstance(value, Expression):
+                found.append(value)
+            elif isinstance(value, (list, tuple)):
+                for item in value:
+                    collect(item)
+
+        for value in vars(self).values():
+            collect(value)
+        return found
+
+    @property
+    def contains_aggregate(self) -> bool:
+        """Whether an aggregate function appears anywhere in this expression.
+
+        ``Coalesce(Sum("cost"), 0)``, ``Sum("cost") + 1`` and a ``Case`` whose
+        branch is an aggregate all aggregate, so annotating with one groups
+        the query exactly as a bare ``Sum`` does. A window function over an
+        aggregate does not (``Window`` overrides this), nor does a subquery,
+        which aggregates on its own.
+        """
+        return any(source.contains_aggregate for source in self.get_source_expressions())
+
+    @property
+    def contains_over_clause(self) -> bool:
+        """Whether a window function (``OVER (...)``) appears in this expression."""
+        return any(source.contains_over_clause for source in self.get_source_expressions())
+
     def __add__(self, other: Any) -> CombinedExpression:
         return CombinedExpression(self, "+", other)
 
@@ -196,6 +233,7 @@ class Aggregate(Expression):
 
     function: str = ""
     allow_distinct: bool = False
+    contains_aggregate = True  # type: ignore[assignment]  # shadows the base property
 
     def __init__(
         self,
@@ -932,6 +970,11 @@ class Window(Expression):
 
     Requires SQLite >= 3.25 or MySQL >= 8.0 (PostgreSQL: any version).
     """
+
+    # Evaluated per row after grouping: ``Window(Sum("views"))`` is not an
+    # aggregation and must not make the query GROUP BY.
+    contains_aggregate = False  # type: ignore[assignment]
+    contains_over_clause = True  # type: ignore[assignment]
 
     def __init__(
         self,

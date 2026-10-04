@@ -995,15 +995,20 @@ class QuerySet(Generic[ModelT]):
         return [table]
 
     def _aggregate_aliases(self) -> set[str]:
-        """Annotation aliases whose expression is an aggregate.
+        """Annotation aliases whose expression aggregates.
 
-        Deliberately an ``isinstance`` check rather than a walk of the
-        expression tree: ``Window(Sum(...))`` contains an aggregate but is a
-        window function, and grouping by it would be wrong.
+        Walks the expression tree (``Expression.contains_aggregate``), so an
+        aggregate wrapped in ``Coalesce``, arithmetic or a ``Case`` groups the
+        query too; a type check on the outermost node let those through
+        ungrouped, which collapsed every group into one row on SQLite and was
+        refused by PostgreSQL. ``Window(Sum(...))`` is a window function, not
+        an aggregation, and stays ungrouped.
         """
-        from zeeb_orm.query.expressions import Aggregate
-
-        return {alias for alias, expr in self._annotations.items() if isinstance(expr, Aggregate)}
+        return {
+            alias
+            for alias, expr in self._annotations.items()
+            if getattr(expr, "contains_aggregate", False)
+        }
 
     def _build_group_by(self, table: Any, grouping_columns: list[Any]) -> list[Any]:
         """GROUP BY columns implied by aggregate annotations.
