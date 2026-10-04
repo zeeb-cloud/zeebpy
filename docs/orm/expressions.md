@@ -516,6 +516,21 @@ posts = await Post.objects.annotate(
 )
 ```
 
+The selected column may be an annotation of the inner query, e.g. a
+per-group aggregate:
+
+```python
+from zeeb_orm import Sum
+
+comment_votes = (
+    Comment.objects.filter(post_id=OuterRef("id"))
+    .values("post_id")
+    .annotate(total=Sum("votes"))
+    .values("total")
+)
+posts = await Post.objects.annotate(comment_votes=Subquery(comment_votes))
+```
+
 ### OuterRef
 
 Reference the outer query in a subquery:

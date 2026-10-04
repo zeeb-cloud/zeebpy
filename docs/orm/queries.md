@@ -574,6 +574,29 @@ per_author = await Article.objects.values("author_id").annotate(n=Count("id"))
 # [{"author_id": 1, "n": 12}, {"author_id": 2, "n": 3}]
 ```
 
+The order of `values()` and `annotate()` matters:
+
+- **`values()` then `annotate()`** — the named fields are the grouping, and
+  the annotation is included in every row.
+- **`annotate()` then `values()`** — the annotation was computed per object;
+  `values()` only picks what is returned. An earlier annotation is returned
+  only when it is named.
+- The grouping is fixed when the aggregate is annotated, so a later `values()`
+  narrows the output without regrouping:
+
+```python
+# Still one row per author, returning only the counts
+counts = await Article.objects.values("author_id").annotate(
+    n=Count("id")
+).values("n")
+# [{"n": 12}, {"n": 3}]
+
+# Per article: the count is not regrouped by author
+per_article = await Article.objects.annotate(n=Count("comments")).values("author_id", "n")
+```
+
+`values()` without fields returns every field and every annotation.
+
 ### values_list()
 
 Return tuples instead of model instances:
@@ -590,6 +613,20 @@ titles = await Article.objects.values_list("title", flat=True)
 # Get all IDs
 ids = await Article.objects.values_list("id", flat=True)
 ```
+
+Annotations follow the same rules as for `values()`. One annotated after
+`values_list()` comes after the named fields, in the order annotated; one
+named among the fields keeps its position:
+
+```python
+await Article.objects.values_list("author_id").annotate(n=Count("id"))
+# [(1, 12), (2, 3)]
+await Author.objects.annotate(n=Count("articles")).values_list("n", "name")
+# [(12, "Ada"), (3, "Bob")]
+```
+
+With `flat=True` each row is its first value. Of `values()` and
+`values_list()`, the last one called decides the row type.
 
 ### only() / defer()
 

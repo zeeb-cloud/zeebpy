@@ -76,6 +76,13 @@ class QuerySet(Generic[ModelT]):
         self._values_fields: list[str] | None = None
         self._values_list_fields: list[str] | None = None
         self._flat: bool = False
+        # Annotations a named values()/values_list() outputs besides the ones
+        # it names: those added after it. None = every annotation (model
+        # instances, or a values()/values_list() called without fields).
+        self._values_annotations: list[str] | None = None
+        # The values() names an aggregation groups by, fixed when the
+        # aggregate is annotated; None = whole rows (the primary key).
+        self._group_by_fields: list[str] | None = None
         self._db_alias: str | None = None
         self._raw_sql: str | None = None
         self._raw_params: list[Any] | None = None
@@ -126,6 +133,12 @@ class QuerySet(Generic[ModelT]):
             self._values_list_fields.copy() if self._values_list_fields else None
         )
         clone._flat = self._flat
+        clone._values_annotations = (
+            list(self._values_annotations) if self._values_annotations is not None else None
+        )
+        clone._group_by_fields = (
+            list(self._group_by_fields) if self._group_by_fields is not None else None
+        )
         clone._db_alias = self._db_alias
         clone._raw_sql = self._raw_sql
         clone._raw_params = self._raw_params.copy() if self._raw_params else None
@@ -393,19 +406,34 @@ class QuerySet(Generic[ModelT]):
         their ``<name>_id`` column name). Named fields restrict the SELECT
         list and are labeled exactly as given, so ``values("pk")`` and
         ``values("author")`` come back under those keys.
+
+        Annotations: without arguments every annotation is included. Named
+        fields include the annotations they name plus every annotation added
+        by a later ``annotate()``; an earlier annotation left unnamed is not
+        selected. An aggregation keeps the grouping it had when it was
+        annotated, so ``values("tool").annotate(n=Count("id")).values("n")``
+        is still one row per tool.
         """
         clone = self._clone()
         clone._values_mode = True
         clone._values_fields = list(fields) if fields else None
+        clone._values_list_fields = None
+        clone._flat = False
+        clone._values_annotations = [] if fields else None
         return clone
 
     def values_list(self, *fields: str, flat: bool = False) -> QuerySet[ModelT]:
         """Return tuples instead of model instances.
 
         With no fields, all model fields are returned in declaration order
-        (FK fields as their ``<name>_id`` column value).
+        (FK fields as their ``<name>_id`` column value). Annotations follow
+        the rules of ``values()``; the ones not named come after the fields,
+        in the order they were annotated, so
+        ``values_list("tool").annotate(n=Count("id"))`` yields
+        ``("x", 2)``. ``flat=True`` yields the first value of each tuple.
         """
         clone = self._clone()
+        clone._values_annotations = [] if fields else None
         if not fields:
             fields = tuple(f.db_column or f.name for f in self.model._meta.local_fields)
         if flat and len(fields) > 1:
@@ -414,6 +442,8 @@ class QuerySet(Generic[ModelT]):
             )
         clone._values_list_fields = list(fields)
         clone._flat = flat
+        clone._values_mode = False
+        clone._values_fields = None
         return clone
 
     # Related object loading
@@ -463,6 +493,19 @@ class QuerySet(Generic[ModelT]):
         _require_expressions("annotate", kwargs)
         clone = self._clone()
         clone._annotations.update(kwargs)
+        names = clone._requested_value_names()
+        if clone._values_annotations is not None:
+            clone._values_annotations.extend(
+                alias
+                for alias in kwargs
+                if alias not in (names or ()) and alias not in clone._values_annotations
+            )
+        if any(expr.contains_aggregate for expr in kwargs.values()):
+            # The grouping is fixed here, from the fields selected now: a
+            # later values() changes what is returned, not what is grouped.
+            clone._group_by_fields = (
+                None if names is None else [n for n in names if n not in clone._annotations]
+            )
         return clone
 
     async def aggregate(self, **kwargs: Any) -> dict[str, Any]:
@@ -960,8 +1003,6 @@ class QuerySet(Generic[ModelT]):
         if names is None:
             return []
 
-        table = self.model._get_table()
-        meta = self.model._meta
         columns = []
         seen: set[str] = set()
         for name in names:
@@ -969,20 +1010,44 @@ class QuerySet(Generic[ModelT]):
                 # Annotations are appended from _annotations with their own label.
                 continue
             seen.add(name)
-
-            if "__" in name:
-                column = self._resolve_path_expression(name, joins)
-            elif name == "pk":
-                column = getattr(table.c, self._pk_column_name(), None)
-            else:
-                field = meta.get_field(name) or meta.get_field_by_column(name)
-                col_name = (field.db_column or field.name) if field else name
-                column = getattr(table.c, col_name, None)
-
-            if column is None:
-                raise ValueError(f"Unknown field: {name}")
-            columns.append(column.label(name))
+            columns.append(self._value_column(name, joins).label(name))
         return columns
+
+    def _value_column(self, name: str, joins: JoinContext) -> Any:
+        """The (unlabeled) column a values()/values_list() field name reads."""
+        table = self.model._get_table()
+        meta = self.model._meta
+        if "__" in name:
+            column = self._resolve_path_expression(name, joins)
+        elif name == "pk":
+            column = getattr(table.c, self._pk_column_name(), None)
+        else:
+            field = meta.get_field(name) or meta.get_field_by_column(name)
+            col_name = (field.db_column or field.name) if field else name
+            column = getattr(table.c, col_name, None)
+        if column is None:
+            raise ValueError(f"Unknown field: {name}")
+        return column
+
+    def _selected_annotation_aliases(self) -> list[str]:
+        """The annotations this query selects and returns, in output order.
+
+        Every annotation for model instances and for a values()/values_list()
+        called without fields; otherwise the ones the fields name, then the
+        ones annotated after the values()/values_list() call. HAVING and
+        ORDER BY resolve an annotation themselves, so leaving one out of the
+        SELECT list never breaks a filter or an ordering on it.
+        """
+        names = self._requested_value_names()
+        if names is None or self._values_annotations is None:
+            return list(self._annotations)
+        named = [name for name in names if name in self._annotations]
+        later = [
+            alias
+            for alias in self._values_annotations
+            if alias in self._annotations and alias not in named
+        ]
+        return named + later
 
     def _get_select_columns(self, table: Any) -> list[Any]:
         """Get columns to select based on only/defer fields."""
@@ -1037,7 +1102,6 @@ class QuerySet(Generic[ModelT]):
         self,
         table: Any,
         joins: JoinContext,
-        grouping_columns: list[Any],
         annotations: dict[str, Any],
     ) -> list[Any]:
         """GROUP BY columns implied by aggregate annotations.
@@ -1047,27 +1111,31 @@ class QuerySet(Generic[ModelT]):
         everything the SELECT list holds outside an aggregate, so PostgreSQL
         (and MySQL's ONLY_FULL_GROUP_BY) accept it:
 
-        * the ``values()`` columns, or for whole rows the primary key plus
-          the primary key of every ``select_related()`` JOIN (each joined
-          column is functionally dependent on it);
-        * every non-aggregate annotation that reads a column
+        * the ``values()`` fields selected when the aggregate was annotated
+          (``_group_by_fields`` — a later ``values()`` does not regroup), or
+          for whole rows the primary key plus the primary key of every
+          ``select_related()`` JOIN (each joined column is functionally
+          dependent on it);
+        * every selected non-aggregate annotation that reads a column
           (``_groups_annotation``), resolved as it is selected.
         """
         if not self._aggregate_aliases():
             return []
 
-        if self._requested_value_names() is not None:
-            # Exactly the non-aggregate columns in the SELECT list.
-            group_by = [_unlabeled(column) for column in grouping_columns]
+        group_by: list[Any] = []
+        if self._group_by_fields is not None:
+            for name in dict.fromkeys(self._group_by_fields):
+                group_by.append(self._value_column(name, joins))
         else:
             pk_column = getattr(table.c, self._pk_column_name(), None)
-            group_by = [pk_column] if pk_column is not None else []
-            if self._select_related:
+            if pk_column is not None:
+                group_by.append(pk_column)
+            if self._select_related and self._requested_value_names() is None:
                 group_by.extend(self._select_related_pk_columns(joins))
 
-        for alias, expr in self._annotations.items():
-            if alias in annotations and _groups_annotation(expr):
-                group_by.append(annotations[alias])
+        for alias, resolved in annotations.items():
+            if _groups_annotation(self._annotations[alias]):
+                group_by.append(resolved)
         return group_by
 
     def _split_aggregate_q(self, q: Q, aggregate_aliases: set[str]) -> tuple[Any, Any]:
@@ -1192,9 +1260,10 @@ class QuerySet(Generic[ModelT]):
         # the SELECT list (and win over only()/defer(), as in Django);
         # select_related columns are dead weight there because dicts are
         # built straight from the row mapping.
-        value_columns = self._values_columns(joins)
-        if value_columns:
-            columns = list(value_columns)
+        if self._requested_value_names() is not None:
+            # Even when every name is an annotation (values("total")): the
+            # SELECT list is what was asked for, never the whole row.
+            columns = self._values_columns(joins)
         else:
             columns = list(self._get_select_columns(table))
             # select_related paths register their JOINs FIRST so filter/order
@@ -1202,11 +1271,9 @@ class QuerySet(Generic[ModelT]):
             if self._select_related:
                 columns.extend(self._select_related_columns(joins))
 
-        grouping_columns = list(columns)
-
         annotations = {
-            alias: expr.resolve(self.model, joins=joins)
-            for alias, expr in self._annotations.items()
+            alias: self._annotations[alias].resolve(self.model, joins=joins)
+            for alias in self._selected_annotation_aliases()
         }
         columns.extend(resolved.label(alias) for alias, resolved in annotations.items())
 
@@ -1218,7 +1285,7 @@ class QuerySet(Generic[ModelT]):
         if where_clause is not None:
             stmt = stmt.where(where_clause)
 
-        group_by = self._build_group_by(table, joins, grouping_columns, annotations)
+        group_by = self._build_group_by(table, joins, annotations)
         if group_by:
             stmt = stmt.group_by(*group_by)
         if having_clause is not None:
@@ -1233,6 +1300,10 @@ class QuerySet(Generic[ModelT]):
         # One FROM clause containing all registered JOINs
         if joins.has_joins:
             stmt = stmt.select_from(joins.apply(table))
+        elif table not in stmt.get_final_froms():
+            # Nothing selected reads the table (values("one") over a constant
+            # annotation): still one row per object, never a bare SELECT.
+            stmt = stmt.select_from(table)
 
         # Apply distinct
         if self._distinct_fields:
@@ -1256,9 +1327,9 @@ class QuerySet(Generic[ModelT]):
             fields = self._values_fields or [
                 f.db_column or f.name for f in self.model._meta.local_fields
             ]
-            # Include annotations if requested
+            # Annotations the query selects (see _selected_annotation_aliases)
             all_fields = list(fields)
-            for alias in self._annotations:
+            for alias in self._selected_annotation_aliases():
                 if alias not in all_fields:
                     all_fields.append(alias)
             for row in rows:
@@ -1272,14 +1343,16 @@ class QuerySet(Generic[ModelT]):
         # Handle values_list() mode - return tuples
         if self._values_list_fields is not None:
             instances = []
-            fields = self._values_list_fields
+            fields = list(self._values_list_fields)
+            # Annotations not named among the fields come after them.
+            fields += [a for a in self._selected_annotation_aliases() if a not in fields]
             for row in rows:
                 if hasattr(row, "_mapping"):
                     values = tuple(row._mapping.get(f) for f in fields)
                 else:
                     values = tuple(row[i] for i in range(len(fields)) if i < len(row))
 
-                if self._flat and len(fields) == 1:
+                if self._flat:
                     instances.append(values[0])
                 else:
                     instances.append(values)
@@ -1655,14 +1728,13 @@ class QuerySet(Generic[ModelT]):
         """Whether an aggregation's GROUP BY includes the primary key.
 
         Whole rows are grouped by the primary key (``_build_group_by``); a
-        ``values()``/``values_list()`` aggregation only when it names it.
+        ``values()``/``values_list()`` aggregation only when it grouped by it.
         """
-        names = self._requested_value_names()
-        if names is None:
+        if self._group_by_fields is None:
             return True
         meta = self.model._meta
         pk_names = {"pk", meta.pk_name, self._pk_column_name()}
-        return any(name in pk_names for name in names)
+        return any(name in pk_names for name in self._group_by_fields)
 
     async def first(self) -> ModelT | None:
         """Get the first object or None (primary-key order when unordered).

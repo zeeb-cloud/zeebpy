@@ -571,7 +571,14 @@ class Subquery(Expression):
         # Point OuterRefs at the outer model BEFORE building the statement
         _bind_outer_refs(inner_qs, model)
         inner_stmt = inner_qs._build_select()
-        inner_stmt = inner_stmt.with_only_columns(_single_inner_column(inner_qs.model, fields[0]))
+        if fields[0] in inner_qs._annotations:
+            # An annotation (``.values("author").annotate(total=Sum("cost"))
+            # .values("total")``) is selected under its own label, resolved
+            # with the inner statement's joins; keep exactly that column.
+            column = inner_stmt.selected_columns[fields[0]]
+        else:
+            column = _single_inner_column(inner_qs.model, fields[0])
+        inner_stmt = inner_stmt.with_only_columns(column)
 
         # Correlate: keep the outer table out of the inner FROM clause
         return inner_stmt.correlate(_outer_table(model)).scalar_subquery()

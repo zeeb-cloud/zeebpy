@@ -18,6 +18,7 @@ from zeeb_orm.query.expressions import (
     Coalesce,
     Count,
     F,
+    OuterRef,
     Rank,
     Subquery,
     Sum,
@@ -202,3 +203,109 @@ async def test_postgres_accepts_grouped_selections(events):
     flag = Case(When(tool="x", then=Value(1)), default=Value(0))
     rows = await AqEvent.objects.values("author_id").annotate(f=flag, n=Count("id"))
     assert sorted((r["f"], r["n"]) for r in rows) == [(0, 1), (0, 1), (1, 2)]
+
+
+def author_totals():
+    """Each author's total cost, from a grouped subquery selecting an annotation."""
+    per_author = (
+        AqEvent.objects.filter(author_id=OuterRef("id"))
+        .values("author")
+        .annotate(total=Sum("cost"))
+        .values("total")
+    )
+    return AqAuthor.objects.annotate(total=Subquery(per_author)).order_by("name")
+
+
+class TestValuesListAnnotations:
+    """values_list() tuples carry the annotations added after it.
+
+    They used to hold only the named fields: ``values_list("tool").annotate(
+    n=Count("id"))`` yielded ``("x",)`` and the count was lost.
+    """
+
+    async def test_annotations_follow_the_fields(self, events):
+        rows = await AqEvent.objects.values_list("tool").annotate(n=Count("id"))
+        assert sorted(rows) == [("x", 2), ("y", 1), ("z", 1)]
+
+    async def test_several_fields_then_annotations_in_order(self, events):
+        rows = await AqEvent.objects.values_list("tool", "author__name").annotate(
+            n=Count("id"), spend=Sum("cost")
+        )
+        assert sorted(rows, key=lambda r: r[0]) == [
+            ("x", "Amy", 2, 3),
+            ("y", "Zed", 1, 4),
+            ("z", None, 1, 8),
+        ]
+
+    async def test_a_named_annotation_keeps_its_position(self, events):
+        rows = await AqAuthor.objects.annotate(n=Count("events")).values_list("n", "name")
+        assert sorted(rows) == [(1, "Zed"), (2, "Amy")]
+
+    async def test_an_earlier_unnamed_annotation_is_not_returned(self, events):
+        rows = await AqAuthor.objects.annotate(n=Count("events")).values_list("name")
+        assert sorted(rows) == [("Amy",), ("Zed",)]
+
+    async def test_flat_yields_the_first_value(self, events):
+        rows = await AqEvent.objects.values_list("tool", flat=True).annotate(n=Count("id"))
+        assert sorted(rows) == ["x", "y", "z"]
+
+
+class TestValuesAfterAnnotate:
+    """The grouping is fixed when the aggregate is annotated.
+
+    ``values()`` after ``annotate()`` changes what is returned, not what is
+    grouped. The GROUP BY used to be recomputed from the last ``values()``:
+    ``values("tool").annotate(n=...).values("n")`` lost the grouping
+    altogether (one row per event, every n = 1), and an annotation made
+    before ``values()`` was regrouped by the named fields instead of per
+    object.
+    """
+
+    async def test_a_second_values_keeps_the_grouping(self, events):
+        rows = await AqEvent.objects.values("tool").annotate(n=Count("id")).values("n")
+        assert sorted(r["n"] for r in rows) == [1, 1, 2]
+        rows = await (
+            AqEvent.objects.values("tool").annotate(n=Count("id")).values_list("n", flat=True)
+        )
+        assert sorted(rows) == [1, 1, 2]
+
+    async def test_values_after_a_whole_row_aggregate_stays_per_object(self, events):
+        rows = await AqEvent.objects.annotate(n=Count("id")).values("tool", "n")
+        assert sorted((r["tool"], r["n"]) for r in rows) == [
+            ("x", 1),
+            ("x", 1),
+            ("y", 1),
+            ("z", 1),
+        ]
+
+    async def test_an_earlier_unnamed_annotation_is_not_returned(self, events):
+        rows = await AqEvent.objects.annotate(double=F("cost") * 2).values("tool")
+        assert all(set(row) == {"tool"} for row in rows)
+        rows = await AqEvent.objects.annotate(double=F("cost") * 2).values("tool", "double")
+        assert sorted((r["tool"], r["double"]) for r in rows)[0] == ("x", 2)
+
+    async def test_values_naming_only_a_constant_annotation_reads_every_row(self, events):
+        rows = await AqEvent.objects.annotate(one=Value(1)).values("one")
+        assert rows == [{"one": 1}] * 4
+        assert await AqEvent.objects.annotate(one=Value(1)).values_list("one", flat=True) == [1] * 4
+
+    async def test_the_last_of_values_and_values_list_wins(self, events):
+        costs = await AqEvent.objects.values("tool").values_list("cost", flat=True)
+        assert sorted(costs) == [1, 2, 4, 8]
+        rows = await AqEvent.objects.values_list("cost").values("tool")
+        assert sorted(r["tool"] for r in rows) == ["x", "x", "y", "z"]
+
+    async def test_a_subquery_can_select_an_annotation(self, events):
+        rows = await author_totals()
+        assert [(a.name, a.total) for a in rows] == [("Amy", 3), ("Zed", 4)]
+
+
+@requires_postgres()
+async def test_postgres_accepts_values_after_annotate(events):
+    rows = await AqEvent.objects.values("tool").annotate(n=Count("id")).values("n")
+    assert sorted(r["n"] for r in rows) == [1, 1, 2]
+    rows = await AqEvent.objects.values_list("tool").annotate(n=Count("id"))
+    assert sorted(rows) == [("x", 2), ("y", 1), ("z", 1)]
+    rows = await AqEvent.objects.annotate(n=Count("id")).values("tool", "n")
+    assert len(rows) == 4
+    assert [(a.name, a.total) for a in await author_totals()] == [("Amy", 3), ("Zed", 4)]
