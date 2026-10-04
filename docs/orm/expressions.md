@@ -194,6 +194,15 @@ Filtering on an **aggregate** annotation compiles to `GROUP BY` + `HAVING`,
 not `WHERE` — the grouping keys are the plain (non-aggregate) columns being
 selected. Filtering on a non-aggregate annotation still compiles to `WHERE`.
 
+An annotation is an aggregate when an aggregate function appears anywhere in
+it, not only at the top: `Coalesce(Sum("views"), 0)`, `Sum("views") + 1` and a
+`Case` with an aggregate branch group and filter exactly like a bare `Sum`. A
+window function over an aggregate (`Window(Sum("views"))`) is evaluated per row
+and does not group, and neither does a `Subquery`. Inside an aggregate
+annotation, a column used outside the aggregate function (the `When(tool=...)`
+condition in `Case(When(tool="x", then=Sum("cost")))`) must be one of the
+grouped fields — name it in `values()` — or PostgreSQL refuses the query.
+
 Because the two land in different SQL clauses, they cannot be mixed inside a
 single `OR` or `NOT`:
 
