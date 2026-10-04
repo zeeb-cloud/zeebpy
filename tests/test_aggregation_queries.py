@@ -207,6 +207,114 @@ async def test_postgres_accepts_grouped_selections(events):
     assert sorted((r["f"], r["n"]) for r in rows) == [(0, 1), (0, 1), (1, 2)]
 
 
+def x_cost():
+    """Tool x's summed cost, with the condition outside the aggregate."""
+    return Case(When(tool="x", then=Sum("cost")), default=Value(0))
+
+
+def early_cost():
+    """The summed cost of the first two hours, conditioned on a transform."""
+    return Case(When(created_at__hour__lt=2, then=Sum("cost")), default=Value(0))
+
+
+async def amy_also_uses_y(events):
+    """One more event, so an author has two tools."""
+    await AqEvent.objects.create(
+        tool="y",
+        cost=16,
+        author=events["amy"],
+        created_at=datetime.datetime(2026, 1, 1, 4, tzinfo=datetime.UTC),
+    )
+
+
+def per_author(rows, events, key):
+    names = {events["amy"].id: "Amy", events["zed"].id: "Zed", None: "-"}
+    return sorted((names[row["author_id"]], row[key]) for row in rows)
+
+
+def grouping(qs):
+    return str(qs._build_select()).split("GROUP BY")[1].split("HAVING")[0].strip()
+
+
+class TestColumnsOutsideTheAggregate:
+    """A column an aggregate annotation reads outside its aggregate is grouped.
+
+    ``Case(When(tool="x", then=Sum("cost")))`` compiles to ``CASE WHEN tool =
+    'x' THEN SUM(cost) END``: ``tool`` is evaluated once per group, so it must
+    be grouped. It was left out, so ``values("author_id")`` over it was refused
+    by PostgreSQL, and SQLite tested the condition against an arbitrary row of
+    each author. A condition inside the aggregate (``filter=``) is evaluated
+    per row and is not grouped.
+    """
+
+    def test_a_when_condition_is_grouped(self):
+        qs = AqEvent.objects.values("author_id").annotate(s=x_cost())
+        assert grouping(qs) == "aq_events.author_id, aq_events.tool"
+        qs = AqEvent.objects.values("author_id").annotate(
+            s=Case((Q(tool="x"), Sum("cost")), default=Value(0))
+        )
+        assert grouping(qs) == "aq_events.author_id, aq_events.tool"
+
+    def test_every_column_of_a_compound_condition_is_grouped(self):
+        either = Q(tool="x") | Q(cost__gte=F("id"))
+        qs = AqEvent.objects.values("author_id").annotate(s=Case(When(either, then=Sum("cost"))))
+        assert grouping(qs) == "aq_events.author_id, aq_events.tool, aq_events.cost, aq_events.id"
+
+    def test_a_column_beside_the_aggregate_is_grouped(self):
+        qs = AqEvent.objects.values("author_id").annotate(s=Sum("cost") * F("cost"))
+        assert grouping(qs) == "aq_events.author_id, aq_events.cost"
+
+    def test_a_condition_inside_the_aggregate_is_not_grouped(self):
+        qs = AqEvent.objects.values("author_id").annotate(s=Sum("cost", filter=Q(tool="x")))
+        assert grouping(qs) == "aq_events.author_id"
+
+    def test_an_already_grouped_column_is_not_repeated(self):
+        assert grouping(AqEvent.objects.values("tool").annotate(s=x_cost())) == "aq_events.tool"
+
+    async def test_one_row_per_author_and_tool(self, events):
+        await amy_also_uses_y(events)
+        rows = await AqEvent.objects.values("author_id").annotate(s=x_cost())
+        assert per_author(rows, events, "s") == [("-", 0), ("Amy", 0), ("Amy", 3), ("Zed", 0)]
+
+    async def test_the_filter_form_keeps_one_row_per_author(self, events):
+        await amy_also_uses_y(events)
+        rows = await AqEvent.objects.values("author_id").annotate(s=Sum("cost", filter=Q(tool="x")))
+        assert per_author(rows, events, "s") == [("-", None), ("Amy", 3), ("Zed", None)]
+
+    async def test_a_transform_in_the_condition_groups_as_the_transform(self, events):
+        rows = await AqEvent.objects.values("tool").annotate(s=early_cost())
+        assert sorted((r["tool"], r["s"]) for r in rows) == [("x", 1), ("x", 2), ("y", 0), ("z", 0)]
+
+    async def test_filtering_the_annotation_goes_to_having(self, events):
+        await amy_also_uses_y(events)
+        qs = AqEvent.objects.values("author_id").annotate(s=x_cost()).filter(s__gt=0)
+        assert "HAVING" in str(qs._build_select())
+        assert per_author(await qs, events, "s") == [("Amy", 3)]
+
+
+@requires_postgres()
+async def test_postgres_accepts_columns_read_outside_an_aggregate(events):
+    await amy_also_uses_y(events)
+    by_author = AqEvent.objects.values("author_id")
+    rows = await by_author.annotate(s=x_cost())
+    assert per_author(rows, events, "s") == [("-", 0), ("Amy", 0), ("Amy", 3), ("Zed", 0)]
+    rows = await by_author.annotate(s=Case((Q(tool="x"), Sum("cost")), default=Value(0)))
+    assert len(rows) == 4
+    either = Q(tool="x") | Q(cost__gte=F("id"))
+    assert len(await by_author.annotate(s=Case(When(either, then=Sum("cost"))))) == 5
+    assert len(await by_author.annotate(s=Sum("cost") * F("cost"))) == 5
+    rows = await by_author.annotate(s=x_cost()).filter(s__gt=0)
+    assert per_author(rows, events, "s") == [("Amy", 3)]
+    rows = await AqEvent.objects.values("tool").annotate(s=early_cost())
+    assert sorted((r["tool"], r["s"]) for r in rows) == [
+        ("x", 1),
+        ("x", 2),
+        ("y", 0),
+        ("y", 0),
+        ("z", 0),
+    ]
+
+
 def author_totals():
     """Each author's total cost, from a grouped subquery selecting an annotation."""
     per_author = (

@@ -198,10 +198,22 @@ An annotation is an aggregate when an aggregate function appears anywhere in
 it, not only at the top: `Coalesce(Sum("views"), 0)`, `Sum("views") + 1` and a
 `Case` with an aggregate branch group and filter exactly like a bare `Sum`. A
 window function over an aggregate (`Window(Sum("views"))`) is evaluated per row
-and does not group, and neither does a `Subquery`. Inside an aggregate
-annotation, a column used outside the aggregate function (the `When(tool=...)`
-condition in `Case(When(tool="x", then=Sum("cost")))`) must be one of the
-grouped fields — name it in `values()` — or PostgreSQL refuses the query.
+and does not group, and neither does a `Subquery`.
+
+Inside an aggregate annotation, a column read outside the aggregate function —
+the `When(tool=...)` condition in `Case(When(tool="x", then=Sum("cost")))`, the
+`F("rate")` in `Sum("cost") * F("rate")` — is evaluated once per group, so it
+is added to the grouping, as plain SQL requires. That makes
+`values("author_id").annotate(s=Case(When(tool="x", then=Sum("cost")), default=Value(0)))`
+one row per `(author_id, tool)`. To sum one tool's cost per author, put the
+condition inside the aggregate, where it is evaluated per row and adds no
+grouping:
+
+```python
+x_cost = await Event.objects.values("author_id").annotate(
+    s=Sum("cost", filter=Q(tool="x"))
+)
+```
 
 Because the two land in different SQL clauses, they cannot be mixed inside a
 single `OR` or `NOT`:

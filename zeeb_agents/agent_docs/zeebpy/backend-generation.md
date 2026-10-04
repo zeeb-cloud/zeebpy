@@ -203,7 +203,9 @@ signal receivers, seed scripts):
   (`Count("posts")`, `Avg("posts__views")`), and filtering the annotation
   compiles to `HAVING` — but an aggregate and a plain field may not share one
   `OR`/`NOT` group (raises `NotSupportedError`; use separate `filter()`
-  calls).
+  calls). For a per-kind total use `Sum("amount", filter=Q(kind="x"))`: a
+  `Case(When(kind="x", then=Sum("amount")))` reads `kind` outside the
+  aggregate, so it groups by `kind` too.
 - A relation may be followed by a lookup operator directly:
   `filter(feed__guild__in=[...])`, `filter(author__isnull=True)`. A
   ForeignKey is reachable by field name *and* column name
