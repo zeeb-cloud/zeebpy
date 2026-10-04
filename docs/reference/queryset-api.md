@@ -378,11 +378,21 @@ users = await User.objects.values("id", "name").all()
 # [{'id': 1, 'name': 'John'}, ...]
 ```
 
+Without fields every annotation is included. With fields: the annotations
+they name, plus every annotation added by a later `annotate()`. An
+aggregation keeps the grouping it had when the aggregate was annotated, so
+`values("team").annotate(n=Count("id")).values("n")` is still one row per
+team, and `annotate(n=Count("posts")).values("name", "n")` one row per object.
+
 ### values_list(\*fields, flat=False)
 
 Return tuples instead of dictionaries. With no fields, every model field
 is returned in declaration order (relation fields as their `<name>_id`
-column). `flat=True` requires exactly one field.
+column). `flat=True` requires exactly one field and yields each row's first
+value. Annotations follow the `values()` rules; those not named come after
+the fields, in annotation order: `values_list("team").annotate(n=Count("id"))`
+yields `("red", 3)`. The last of `values()`/`values_list()` decides the row
+type.
 
 ```python
 # Tuples
