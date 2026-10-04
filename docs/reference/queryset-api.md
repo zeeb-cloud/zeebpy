@@ -360,6 +360,12 @@ result = await Product.objects.aggregate(
 # {'total': 5000, 'average': 50, 'count': 100, 'highest': 200, 'lowest': 10}
 ```
 
+A sliced, `distinct()` or aggregating queryset, or one whose annotation the
+aggregates read, is aggregated over its own query as a subquery: `qs.order_by("price")[:10].aggregate(Sum("price"))` sums those
+ten rows, and `qs.values("category").annotate(n=Count("id")).aggregate(Max("n"))`
+aggregates the annotation. Over a subquery an aggregate reads the columns and
+annotations the query selects and cannot traverse relations (`FieldError`).
+
 ---
 
 ## Value Methods

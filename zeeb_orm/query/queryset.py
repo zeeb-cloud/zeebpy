@@ -512,6 +512,14 @@ class QuerySet(Generic[ModelT]):
         """
         Compute aggregate values over the entire QuerySet.
 
+        A plain (filtered) queryset is aggregated in one ``SELECT``. A sliced,
+        ``distinct()`` or aggregating one, or one whose annotation the
+        aggregates read, is aggregated over its own query as a subquery, so
+        ``qs.order_by("price")[:10].aggregate(Sum("price"))`` sums those ten
+        rows and ``qs.annotate(n=Count("books")).aggregate(Avg("n"))``
+        averages the annotation. Over a subquery an aggregate can name the
+        columns and annotations that query selects, not traverse relations.
+
         Usage:
             await Author.objects.aggregate(avg_age=Avg('age'))
         """
@@ -519,11 +527,37 @@ class QuerySet(Generic[ModelT]):
         from zeeb_orm.db.connection import get_session
 
         _require_expressions("aggregate", kwargs)
+        stmt = self._build_aggregate_select(kwargs)
+
+        async with get_session(self._db_alias) as (session, _):
+            result = await session.execute(stmt)
+            row = result.fetchone()
+            if row:
+                return dict(row._mapping)
+            return {alias: None for alias in kwargs}
+
+    def _build_aggregate_select(self, aggregates: dict[str, Any]) -> Any:
+        """The ``SELECT`` behind ``aggregate()``.
+
+        A subquery when the rows to reduce are not simply "the filtered
+        table": a slice, ``distinct()``, an aggregation (its GROUP BY and
+        HAVING), or an annotation the aggregates read. An annotation nothing
+        reads changes no row and keeps the single SELECT, which can still
+        traverse relations.
+        """
+        if (
+            self._limit is not None
+            or self._offset is not None
+            or self._distinct_fields
+            or self._aggregate_aliases()
+            or set(_referenced_names(aggregates.values())) & set(self._annotations)
+        ):
+            return self._build_subquery_aggregate(aggregates)
+
         table = self.model._get_table()
         joins = self._make_join_context()
-
         select_exprs = [
-            agg.resolve(self.model, joins=joins).label(alias) for alias, agg in kwargs.items()
+            agg.resolve(self.model, joins=joins).label(alias) for alias, agg in aggregates.items()
         ]
 
         # Apply filters (may register traversal JOINs)
@@ -532,13 +566,49 @@ class QuerySet(Generic[ModelT]):
         stmt = select(*select_exprs).select_from(joins.apply(table) if joins.has_joins else table)
         if where_clause is not None:
             stmt = stmt.where(where_clause)
+        return stmt
 
-        async with get_session(self._db_alias) as (session, _):
-            result = await session.execute(stmt)
-            row = result.fetchone()
-            if row:
-                return dict(row._mapping)
-            return {alias: None for alias in kwargs}
+    def _build_subquery_aggregate(self, aggregates: dict[str, Any]) -> Any:
+        """Aggregate over this queryset's own ``SELECT`` as a subquery.
+
+        The inner query keeps the slice (and the ordering that defines it),
+        ``distinct()``, the GROUP BY of an aggregation and its HAVING; the
+        outer aggregates read its columns by name. An annotation the
+        aggregates name is selected even where ``values()`` would leave it
+        out. ``select_related()`` is dropped: it adds columns, not rows.
+        """
+        from zeeb_orm.exceptions import FieldError
+
+        inner_qs = self._clone()
+        inner_qs._select_related = []
+        inner_qs._prefetch_related = []
+        if inner_qs._values_annotations is not None:
+            named = set(_referenced_names(aggregates.values()))
+            inner_qs._values_annotations += [
+                alias
+                for alias in inner_qs._annotations
+                if alias in named and alias not in inner_qs._values_annotations
+            ]
+
+        inner = inner_qs._build_select()
+        if self._limit is None and self._offset is None:
+            inner = inner.order_by(None)  # ordering cannot change an aggregate
+        subquery = inner.subquery("_aggregate")
+        scope = _SubqueryScope(self.model, subquery)
+
+        select_exprs = []
+        for alias, agg in aggregates.items():
+            try:
+                resolved = agg.resolve(scope, joins=None)
+            except (FieldError, ValueError) as exc:
+                available = ", ".join(subquery.c.keys())
+                raise FieldError(
+                    f"Cannot compute {alias}={agg!r} over this sliced, distinct or "
+                    f"annotated queryset: an aggregate can only read the columns its "
+                    f"query selects ({available}), not traverse relations. {exc}"
+                ) from exc
+            select_exprs.append(resolved.label(alias))
+        return select(*select_exprs).select_from(subquery)
 
     # Database selection
 
@@ -2473,6 +2543,41 @@ async def _create_block(alias: str | None) -> AsyncIterator[None]:
             return
     async with atomic(alias):
         yield
+
+
+class _SubqueryScope:
+    """Stands in for a model when expressions resolve against a subquery.
+
+    ``F("price")`` and lookups resolve columns through ``_get_table()``, which
+    returns the subquery, and field metadata through ``_meta``, which is the
+    model's. Relation traversal has no join context here and is refused.
+    """
+
+    def __init__(self, model: Any, subquery: Any) -> None:
+        self._model = model
+        self._subquery = subquery
+        self._meta = model._meta
+        self.__name__ = model.__name__
+
+    def _get_table(self) -> Any:
+        return self._subquery
+
+    def __repr__(self) -> str:
+        return f"<subquery of {self._model.__name__}>"
+
+
+def _referenced_names(expressions: Any) -> list[str]:
+    """The first ``__`` segment of every ``F()`` name inside ``expressions``."""
+    from zeeb_orm.query.expressions import F
+
+    names: list[str] = []
+    stack = list(expressions)
+    while stack:
+        node = stack.pop()
+        if isinstance(node, F):
+            names.append(node.field_name.split("__")[0])
+        stack.extend(node.get_source_expressions())
+    return names
 
 
 def _unlabeled(column: Any) -> Any:

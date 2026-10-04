@@ -12,12 +12,14 @@ import datetime
 
 import pytest
 
-from zeeb_orm import Model, fields
+from zeeb_orm import FieldError, Model, Q, fields
 from zeeb_orm.query.expressions import (
+    Avg,
     Case,
     Coalesce,
     Count,
     F,
+    Max,
     OuterRef,
     Rank,
     Subquery,
@@ -309,3 +311,65 @@ async def test_postgres_accepts_values_after_annotate(events):
     rows = await AqEvent.objects.annotate(n=Count("id")).values("tool", "n")
     assert len(rows) == 4
     assert [(a.name, a.total) for a in await author_totals()] == [("Amy", 3), ("Zed", 4)]
+
+
+class TestAggregateOverASubquery:
+    """aggregate() reduces exactly the rows the queryset yields.
+
+    It used to ignore slicing, distinct() and annotations and aggregate the
+    filtered table: ``order_by("cost")[:2].aggregate(Sum("cost"))`` summed
+    all four events, and an aggregate over an annotation raised
+    ``Field 'n' not found``.
+    """
+
+    async def test_a_slice_is_aggregated_as_sliced(self, events):
+        ordered = AqEvent.objects.order_by("cost")
+        assert await ordered[:2].aggregate(s=Sum("cost")) == {"s": 3}
+        assert await ordered[1:3].aggregate(s=Sum("cost"), n=Count("id")) == {"s": 6, "n": 2}
+
+    async def test_an_annotation_can_be_aggregated(self, events):
+        per_tool = AqEvent.objects.values("tool").annotate(n=Count("id"))
+        result = await per_tool.aggregate(most=Max("n"), groups=Count("tool"))
+        assert result == {"most": 2, "groups": 3}
+        total = await AqAuthor.objects.annotate(n=Count("events")).aggregate(total=Sum("n"))
+        assert int(total["total"]) == 3
+
+    async def test_an_annotation_left_out_of_values_can_still_be_aggregated(self, events):
+        qs = AqAuthor.objects.annotate(n=Count("events")).values("name")
+        assert await qs.aggregate(most=Max("n")) == {"most": 2}
+
+    async def test_distinct_and_having_are_respected(self, events):
+        assert await AqEvent.objects.values("tool").distinct().aggregate(n=Count("tool")) == {
+            "n": 3
+        }
+        busy = AqEvent.objects.values("tool").annotate(n=Count("id")).filter(n__gt=1)
+        assert await busy.aggregate(c=Count("tool")) == {"c": 1}
+
+    async def test_conditional_aggregates_and_empty_querysets(self, events):
+        cheapest = AqEvent.objects.order_by("cost")[:1]
+        assert await cheapest.aggregate(s=Sum("cost", filter=Q(tool="x"))) == {"s": 1}
+        assert await AqEvent.objects.none()[:2].aggregate(s=Sum("cost"), n=Count("id")) == {
+            "s": None,
+            "n": 0,
+        }
+
+    async def test_an_unread_non_aggregate_annotation_keeps_the_single_select(self, events):
+        doubled = AqEvent.objects.annotate(double=F("cost") * 2)
+        assert await doubled.aggregate(name=Max("author__name")) == {"name": "Zed"}
+        assert await doubled.aggregate(total=Sum("double")) == {"total": 30}
+
+    async def test_relation_traversal_over_a_subquery_is_refused_clearly(self, events):
+        with pytest.raises(FieldError, match="only read the columns its query selects"):
+            await AqEvent.objects.all()[:2].aggregate(name=Max("author__name"))
+        # Unsliced and unannotated, the single-SELECT path still traverses.
+        assert await AqEvent.objects.aggregate(name=Max("author__name")) == {"name": "Zed"}
+
+
+@requires_postgres()
+async def test_postgres_aggregates_over_subqueries(events):
+    assert await AqEvent.objects.order_by("cost")[:2].aggregate(s=Sum("cost")) == {"s": 3}
+    per_tool = AqEvent.objects.values("tool").annotate(n=Count("id"))
+    assert await per_tool.aggregate(most=Max("n")) == {"most": 2}
+    result = await per_tool.aggregate(mean=Avg("n"))
+    assert round(float(result["mean"]), 4) == 1.3333
+    assert await AqEvent.objects.values("tool").distinct().aggregate(n=Count("tool")) == {"n": 3}
