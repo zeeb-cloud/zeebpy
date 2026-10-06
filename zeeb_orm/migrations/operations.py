@@ -7,6 +7,7 @@ and knows how to apply itself forward and backward.
 
 from __future__ import annotations
 
+from decimal import Decimal
 from typing import Any
 
 
@@ -983,6 +984,10 @@ def _scalar_default(col):
     arg = getattr(default, "arg", default)
     if callable(arg) or isinstance(arg, (list, dict, set)):
         return None
+    if isinstance(arg, Decimal):
+        # Exact text, as a DecimalField default written as a string always
+        # was: a float would round it, and a migration file needs no import.
+        return str(arg)
     return arg if isinstance(arg, (str, int, float, bool)) else None
 
 

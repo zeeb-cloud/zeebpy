@@ -42,8 +42,10 @@ async def test_generate_tests_writes_suite(fake_project: Path):
     assert "DATABASE_URL" in conftest
 
     generated = (fake_project / "tests" / "test_shop_generated.py").read_text()
-    # Required decimal gets a sample; nullable and defaulted fields are omitted.
-    assert "Order.objects.create(total='9.99')" in generated
+    # Required decimal gets a sample — a Decimal for the ORM, which binds it as
+    # given; nullable and defaulted fields are omitted.
+    assert 'Order.objects.create(total=Decimal("9.99"))' in generated
+    assert "from decimal import Decimal\n\nimport pytest" in generated
     assert "note=" not in generated
     assert "status=" not in generated
     assert 'resp = await client.get(f"{api_prefix}/orders")' in generated

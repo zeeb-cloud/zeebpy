@@ -23,6 +23,7 @@ generated tests are a starting point the user may edit freely.
 from __future__ import annotations
 
 import asyncio
+import re
 from pathlib import Path
 
 from zeeb_agents._utils import AgentResult, agent_function
@@ -61,11 +62,13 @@ _FILE_HEADER = '''\
 """Generated smoke tests for the '{app}' feature. Safe to edit."""
 
 from __future__ import annotations
-
+{stdlib_imports}
 import pytest
 '''
 
-# Sample literals per native field type (rendered with repr()).
+# Sample values per native field type for a JSON request body (rendered with
+# repr()). The API parses strings into dates, decimals and UUIDs; the ORM does
+# not — see _ORM_EXPRESSIONS.
 _SAMPLE_VALUES = {
     "CharField": "sample",
     "TextField": "sample text",
@@ -87,6 +90,26 @@ _SAMPLE_VALUES = {
     "URLField": "https://example.com",
     "GenericIPAddressField": "127.0.0.1",
 }
+
+#: Source expressions for the types an ORM ``create()`` needs as Python
+#: objects. The column types bind values as given, and SQLite's Date/Time/
+#: DateTime/Interval types refuse a string outright — so a generated roundtrip
+#: that passed the JSON sample failed before it tested anything.
+_ORM_EXPRESSIONS = {
+    "DecimalField": 'Decimal("9.99")',
+    "DateField": "datetime.date(2026, 1, 1)",
+    "DateTimeField": "datetime.datetime(2026, 1, 1, 0, 0)",
+    "TimeField": "datetime.time(12, 0)",
+    "DurationField": "datetime.timedelta(seconds=60)",
+    "UUIDField": 'uuid.UUID("00000000-0000-0000-0000-000000000001")',
+}
+
+#: The import each ORM expression needs, keyed by what the expression starts with.
+_ORM_IMPORTS = (
+    ("datetime.", "import datetime"),
+    ("Decimal(", "from decimal import Decimal"),
+    ("uuid.", "import uuid"),
+)
 
 
 def _native_type(field: dict) -> str:
@@ -115,6 +138,26 @@ def _sample_literal(field: dict) -> str | None:
     return repr(value)
 
 
+def _orm_literal(field: dict) -> str | None:
+    """The sample as a Python expression an ORM ``create()`` can bind."""
+    if not field.get("choices"):
+        expression = _ORM_EXPRESSIONS.get(_native_type(field))
+        if expression is not None:
+            return expression
+    return _sample_literal(field)
+
+
+def _stdlib_imports(source: str) -> str:
+    """The import block the rendered tests' ORM expressions need ("" for none)."""
+    used = {
+        line
+        for prefix, line in _ORM_IMPORTS
+        if re.search(rf"(?<![\w.]){re.escape(prefix)}", source)
+    }
+    needed = sorted(used, key=lambda line: (line.startswith("from "), line))
+    return "\n" + "\n".join(needed) + "\n" if needed else ""
+
+
 def _entity_create_kwargs(entity: dict) -> tuple[list[str], list[str], bool]:
     """(kwargs lines, required spec-internal fk targets, supported?) for create()."""
     kwargs: list[str] = []
@@ -130,7 +173,7 @@ def _entity_create_kwargs(entity: dict) -> tuple[list[str], list[str], bool]:
             fk_targets.append(to)
             kwargs.append(f"{field['name']}_id={to.lower()}.id")
             continue
-        literal = _sample_literal(field)
+        literal = _orm_literal(field)
         if literal is None:
             return [], [], False  # no sample synthesis for this type
         kwargs.append(f"{field['name']}={literal}")
@@ -677,9 +720,10 @@ async def generate_tests(
         _write("pytest.ini", _PYTEST_INI)
         _write("tests/__init__.py", "")
         _write("tests/conftest.py", render_conftest(settings_module))
-        body = _FILE_HEADER.format(app=app)
+        rendered = "\n\n\n".join(blocks)
+        body = _FILE_HEADER.format(app=app, stdlib_imports=_stdlib_imports(rendered))
         if blocks:
-            body += "\n\n" + "\n\n\n".join(blocks) + "\n"
+            body += "\n\n" + rendered + "\n"
         _write(target, body)
 
     await asyncio.to_thread(_write_all)
