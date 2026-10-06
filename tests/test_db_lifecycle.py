@@ -254,11 +254,13 @@ class TestConnectionRegistry:
             ("postgresql+asyncpg://u:p@h/db", True, False),
             ("mysql+aiomysql://u:p@h/db", True, False),
             ("mysql+asyncmy://u:p@h/db", True, False),
-            ("postgresql://u:p@h/db", False, False),
+            # A bare scheme gets the async driver zeebpy installs.
+            ("postgresql://u:p@h/db", True, False),
+            ("postgresql+psycopg2://u:p@h/db", False, False),
             ("sqlite:///db.sqlite3", False, True),
             # A database *named* after an async driver is not an async URL.
-            ("postgresql://u:p@h/aiosqlite_asyncpg", False, False),
-            ("postgresql://u:p@sqlitehost/db", False, False),
+            ("postgresql+psycopg2://u:p@h/aiosqlite_asyncpg", False, False),
+            ("postgresql+psycopg2://u:p@sqlitehost/db", False, False),
         ],
     )
     def test_driver_detection_parses_the_url(self, url, is_async, is_sqlite):

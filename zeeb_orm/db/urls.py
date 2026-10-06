@@ -1,6 +1,8 @@
-"""The synchronous driver of a database URL, named rather than defaulted."""
+"""The driver of a database URL, named rather than defaulted."""
 
 from __future__ import annotations
+
+import importlib.util
 
 # The sync drivers zeebpy installs: psycopg2 with the ``postgresql`` extra,
 # pymysql with ``mysql``, and the standard library's sqlite3.
@@ -114,4 +116,54 @@ def sync_database_url(url: str) -> str:
     return f"{sync_scheme}://{rest}"
 
 
-__all__ = ["sync_database_url"]
+#: Bare schemes that name a backend but no driver, mapped to the asyncio driver
+#: zeebpy installs for it.
+_ASYNC_SCHEMES: dict[str, tuple[str, str]] = {
+    "postgresql": ("postgresql+asyncpg", "asyncpg"),
+    "postgres": ("postgresql+asyncpg", "asyncpg"),
+}
+
+
+def _driver_installed(module: str) -> bool:
+    return importlib.util.find_spec(module) is not None
+
+
+def async_database_url(url: str) -> str:
+    """Return the URL an *asyncio* server should connect with.
+
+    A platform or a ``DATABASE_URL`` written for libpq names the backend and
+    leaves the driver out (``postgresql://…``). Read literally that means
+    psycopg2, a synchronous driver: every query an async server makes would
+    block its event loop. A bare scheme names no choice, so it gets the async
+    driver zeebpy ships when that driver is installed.
+
+    Only a URL with nothing a driver swap could break is upgraded. A URL that
+    already names a driver is the author's choice and is returned unchanged;
+    so is one whose query carries anything but ``sslmode``, which is
+    translated to asyncpg's ``ssl`` — libpq's other options have no asyncpg
+    equivalent, and passing them on would refuse the connection.
+    """
+    scheme, separator, rest = url.partition("://")
+    if not separator:
+        return url
+    target = _ASYNC_SCHEMES.get(scheme.lower())
+    if target is None:
+        return url
+    async_scheme, module = target
+    if not _driver_installed(module):
+        return url
+    location, question, query = rest.partition("?")
+    if question and query:
+        kept: list[str] = []
+        for segment in query.split("&"):
+            key, eq, value = segment.partition("=")
+            if key != "sslmode":
+                return url
+            kept.append(f"ssl{eq}{value}")
+        rest = f"{location}?{'&'.join(kept)}"
+    else:
+        rest = location
+    return f"{async_scheme}://{rest}"
+
+
+__all__ = ["async_database_url", "sync_database_url"]
