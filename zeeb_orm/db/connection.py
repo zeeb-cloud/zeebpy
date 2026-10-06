@@ -21,7 +21,7 @@ from sqlalchemy.ext.asyncio import (
 from sqlalchemy.orm import Session, sessionmaker
 
 from zeeb_orm.conf.settings import DatabaseConfig, get_settings
-from zeeb_orm.db.urls import sync_database_url
+from zeeb_orm.db.urls import async_database_url, sync_database_url
 
 logger = logging.getLogger("zeeb_orm.db")
 
@@ -105,9 +105,22 @@ class Database:
         self._sync_session_factory: sessionmaker[Session] | None = None
         self._connected = False
 
+    @property
+    def _engine_url(self) -> str:
+        """The URL the engine connects with.
+
+        A bare ``postgresql://`` gets the async driver (see
+        :func:`async_database_url`), unless ``connect_args`` are configured:
+        those are written for whichever driver the URL means today, and
+        handing psycopg2's arguments to asyncpg would refuse the connection.
+        """
+        if self.config.connect_args:
+            return self.config.url
+        return async_database_url(self.config.url)
+
     def _parsed_url(self) -> Any:
         try:
-            return make_url(self.config.url)
+            return make_url(self._engine_url)
         except _sa_exc.ArgumentError:
             return None
 
@@ -156,7 +169,7 @@ class Database:
 
         if self.is_async:
             self._async_engine = create_async_engine(
-                self.config.url,
+                self._engine_url,
                 echo=self.config.echo,
                 connect_args=self.config.connect_args,
                 **pool_kwargs,
@@ -176,8 +189,10 @@ class Database:
                 RuntimeWarning,
                 stacklevel=2,
             )
-            # Create sync engine for non-async drivers, with the driver named:
-            # a bare scheme gets SQLAlchemy's default, which is not ours to pick.
+            # Create sync engine for non-async drivers, with the driver named.
+            # A bare scheme only lands here when no async driver is installed
+            # (or connect_args pin the sync one); SQLAlchemy's default for it
+            # moves between releases, so name the one zeebpy ships.
             self._sync_engine = create_engine(
                 sync_database_url(self.config.url),
                 echo=self.config.echo,

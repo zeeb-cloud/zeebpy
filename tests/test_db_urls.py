@@ -16,8 +16,9 @@ from sqlalchemy.engine import make_url
 import zeeb_agents.database
 import zeeb_agents.health
 import zeeb_agents.users
-from zeeb_orm.db import Database, sync_database_url
+from zeeb_orm.db import Database, async_database_url, sync_database_url
 from zeeb_orm.db import connection as connection_module
+from zeeb_orm.db import urls as urls_module
 from zeeb_orm.migrations import executor
 
 
@@ -123,15 +124,81 @@ def test_the_migrator_connects_with_a_named_driver(command, monkeypatch, tmp_pat
 
 
 async def test_a_database_on_a_sync_url_connects_with_a_named_driver(monkeypatch):
+    # Without asyncpg a bare URL stays on the sync driver zeebpy ships.
+    monkeypatch.setattr(urls_module, "_driver_installed", lambda module: False)
     seen: list[str] = []
     monkeypatch.setattr(connection_module, "create_engine", _capturing(seen))
     database = Database("postgresql://u:p@h/db")
 
-    with pytest.raises(_EngineRequestedError):
+    with (
+        pytest.raises(_EngineRequestedError),
+        pytest.warns(RuntimeWarning, match="synchronous driver"),
+    ):
         await database.connect()
 
     assert seen == ["postgresql+psycopg2://u:p@h/db"]
     assert database.url == "postgresql://u:p@h/db", "the configured URL itself is left as given"
+
+
+@pytest.mark.parametrize(
+    ("url", "expected"),
+    [
+        ("postgresql://u:p@h:5432/db", "postgresql+asyncpg://u:p@h:5432/db"),
+        ("postgres://u:p@h/db", "postgresql+asyncpg://u:p@h/db"),
+        ("POSTGRESQL://u:p@h/db", "postgresql+asyncpg://u:p@h/db"),
+        ("postgresql://u:p%40ss@h/db?sslmode=require", "postgresql+asyncpg://u:p%40ss@h/db?ssl=require"),
+        ("postgresql://u:p@h/db?", "postgresql+asyncpg://u:p@h/db"),
+        # libpq options with no asyncpg equivalent: the URL is left alone.
+        ("postgresql://u:p@h/db?connect_timeout=5", "postgresql://u:p@h/db?connect_timeout=5"),
+        ("postgresql://u:p@h/db?sslmode=require&application_name=x", "postgresql://u:p@h/db?sslmode=require&application_name=x"),
+        # A named driver is the author's choice.
+        ("postgresql+psycopg2://u:p@h/db", "postgresql+psycopg2://u:p@h/db"),
+        ("postgresql+asyncpg://u:p@h/db", "postgresql+asyncpg://u:p@h/db"),
+        ("mysql://u:p@h/db", "mysql://u:p@h/db"),
+        ("sqlite:///db.sqlite3", "sqlite:///db.sqlite3"),
+        ("not a url", "not a url"),
+    ],
+)
+def test_a_bare_postgres_url_gets_the_async_driver(url, expected):
+    assert async_database_url(url) == expected
+
+
+def test_no_upgrade_without_asyncpg(monkeypatch):
+    monkeypatch.setattr(urls_module, "_driver_installed", lambda module: False)
+    assert async_database_url("postgresql://u:p@h/db") == "postgresql://u:p@h/db"
+
+
+def test_the_upgraded_url_still_maps_back_for_the_migrator():
+    url = async_database_url("postgresql://u:p@h/db?sslmode=require")
+    assert sync_database_url(url) == "postgresql+psycopg2://u:p@h/db?sslmode=require"
+
+
+async def test_a_database_on_a_bare_url_connects_async(monkeypatch, recwarn):
+    seen: list[str] = []
+    monkeypatch.setattr(connection_module, "create_async_engine", _capturing(seen))
+    database = Database("postgresql://u:p@h/db")
+
+    assert database.is_async
+    with pytest.raises(_EngineRequestedError):
+        await database.connect()
+
+    assert seen == ["postgresql+asyncpg://u:p@h/db"]
+    assert not [w for w in recwarn if "synchronous driver" in str(w.message)]
+    assert database.url == "postgresql://u:p@h/db", "the configured URL itself is left as given"
+
+
+async def test_connect_args_keep_the_configured_driver(monkeypatch):
+    seen: list[str] = []
+    monkeypatch.setattr(connection_module, "create_engine", _capturing(seen))
+    database = Database("postgresql://u:p@h/db", connect_args={"options": "-c search_path=app"})
+
+    with (
+        pytest.raises(_EngineRequestedError),
+        pytest.warns(RuntimeWarning, match="synchronous driver"),
+    ):
+        await database.connect()
+
+    assert seen == ["postgresql+psycopg2://u:p@h/db"]
 
 
 @pytest.mark.parametrize("module", [zeeb_agents.database, zeeb_agents.health, zeeb_agents.users])
