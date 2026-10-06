@@ -11,6 +11,7 @@ import functools
 import inspect
 import keyword
 import math
+from decimal import Decimal, InvalidOperation
 
 from zeeb_agents._utils.errors import AgentError, close_matches
 
@@ -325,6 +326,8 @@ def validate_field_spec(spec: object) -> tuple[str, str]:
         if key in ("name", "type", "to", "raw"):
             continue
         render_py_literal(val)  # raises AgentError if not literal-safe
+    if "default" in spec and "default" not in (raw or {}):
+        _decimal_default(field_type, spec["default"])  # raises on a non-decimal default
 
     return name, field_type
 
@@ -372,6 +375,10 @@ def render_field_line(field: dict) -> str:
     for key, val in spec.items():
         if key in raw:
             continue  # raw wins
+        decimal_text = _decimal_default(field_type, val) if key == "default" else None
+        if decimal_text is not None:
+            parts.append(f"default=Decimal({render_py_literal(decimal_text)})")
+            continue
         parts.append(f"{key}={render_py_literal(val)}")
     for key, code in raw.items():
         parts.append(f"{key}={code}")
@@ -379,10 +386,44 @@ def render_field_line(field: dict) -> str:
     return f"{name} = fields.{field_type}({', '.join(parts)})"
 
 
+def _decimal_default(field_type: str, value: object) -> str | None:
+    """A DecimalField default's exact decimal text, or ``None`` to render it as given.
+
+    ``default="0.00"`` on a DecimalField gave the model a *string* default, so
+    a row created without the field held ``"0.00"`` until it was reloaded.
+    A string or number is rendered as ``Decimal("…")`` instead; a value that
+    is not a decimal number is refused rather than emitted.
+    """
+    if field_type != "DecimalField" or isinstance(value, bool):
+        return None
+    if not isinstance(value, (str, int, float)):
+        return None
+    try:
+        parsed = Decimal(str(value).strip())
+    except InvalidOperation:
+        raise AgentError(
+            f"DecimalField default {value!r} is not a decimal number",
+            code="invalid_field_spec",
+        ) from None
+    if not parsed.is_finite():
+        raise AgentError(
+            f"DecimalField default {value!r} is not a finite number",
+            code="invalid_field_spec",
+        )
+    return str(parsed)
+
+
 def field_extra_imports(field: dict) -> list[str]:
-    """Return import lines needed by a field spec's ``raw`` code."""
+    """Return import lines needed by a field spec's ``raw`` code and rendered defaults."""
     raw = field.get("raw") or {}
     imports: list[str] = []
     if any("validators." in code for code in raw.values()):
         imports.append("from zeeb_orm import validators")
+    if "default" in field and "default" not in raw:
+        try:
+            field_type = resolve_field_type(field.get("type", ""))
+        except AgentError:
+            field_type = ""
+        if _decimal_default(field_type, field["default"]) is not None:
+            imports.append("from decimal import Decimal")
     return imports

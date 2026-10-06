@@ -13,7 +13,7 @@ from typing import (
     Annotated, Any, Callable, Optional, TypeVar, Generic, ClassVar, Sequence,
     get_type_hints, TYPE_CHECKING,
 )
-from datetime import datetime, date, time
+from datetime import datetime, date, time, timedelta
 from decimal import Decimal
 from enum import Enum
 import inspect
@@ -83,12 +83,16 @@ ORM_TO_PYTHON_TYPE: dict[str, type] = {
     "IntegerField": int,
     "BigIntegerField": int,
     "SmallIntegerField": int,
+    "PositiveIntegerField": int,
     "FloatField": float,
     "DecimalField": Decimal,
     "BooleanField": bool,
     "DateTimeField": datetime,
     "DateField": date,
     "TimeField": time,
+    # Unmapped, a duration fell to Any: the request's ``60`` reached the column
+    # as an int and the insert failed. pydantic parses seconds and ISO 8601.
+    "DurationField": timedelta,
     "EmailField": str,
     "URLField": str,
     "UUIDField": uuid.UUID,

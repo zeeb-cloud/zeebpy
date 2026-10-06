@@ -655,6 +655,50 @@ async def test_generated_workflow_transition_test_passes_live(root: Path):
     assert (run.data or {}).get("passed", 0) > 0
 
 
+TYPED_SPEC = {
+    "name": "ledger",
+    "api": {"authentication": "public"},
+    "entities": [
+        {
+            "name": "Booking",
+            "fields": [
+                {"name": "day", "type": "date"},
+                {"name": "starts_at", "type": "datetime"},
+                {"name": "opens", "type": "time"},
+                {"name": "length", "type": "duration"},
+                {"name": "amount", "type": "decimal"},
+                {"name": "rate", "type": "decimal", "default": "0.00"},
+                {"name": "ref", "type": "uuid"},
+                {"name": "note", "type": "string"},
+            ],
+        }
+    ],
+}
+
+
+async def test_generated_orm_roundtrip_binds_typed_values_live(root: Path):
+    """Date, time, duration, decimal and UUID samples are Python objects in ORM calls.
+
+    The JSON sample strings reached ``objects.create()`` too, and SQLite's
+    Date/Time/DateTime/Interval types refuse a string — the roundtrip failed
+    before it tested anything.
+    """
+    res = await agents.build_feature(TYPED_SPEC, verify=False, project_id=root)
+    assert res.success, res.message
+    generated = (root / "tests" / "test_ledger_generated.py").read_text()
+    assert "day=datetime.date(2026, 1, 1)" in generated
+    assert 'amount=Decimal("9.99")' in generated
+    assert "import datetime\nimport uuid\nfrom decimal import Decimal\n\nimport pytest" in generated
+    models = (root / "apps" / "ledger" / "models.py").read_text()
+    assert 'default=Decimal("0.00")' in models
+    assert "from decimal import Decimal" in models
+
+    run = await agents.run_tests("tests/test_ledger_generated.py", project_id=root)
+    assert run.success, (run.data or {}).get("output", run.message)
+    assert (run.data or {}).get("failed") == 0
+    assert (run.data or {}).get("passed", 0) > 0
+
+
 # ---------------------------------------------------------------------------
 # Convergence: re-running build_feature with an extended spec
 # ---------------------------------------------------------------------------
