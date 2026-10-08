@@ -19,13 +19,13 @@ lookups, and unhandled crashes — into this shape.
         "code": "FIELD_REQUIRED",
         "field": "email",
         "message": "Field required",
-        "meta": {"input": null}
+        "meta": null
       },
       {
         "code": "FIELD_TOO_SHORT",
-        "field": "password",
-        "message": "String should have at least 8 characters",
-        "meta": {"min_length": 8, "input": "abc"}
+        "field": "username",
+        "message": "String should have at least 3 characters",
+        "meta": {"min_length": 3, "input": "ab"}
       }
     ],
     "meta": {
@@ -274,8 +274,13 @@ code.
    (e.g. `missing` → `FIELD_REQUIRED`, `string_too_short` → `FIELD_TOO_SHORT`,
    `enum` → `FIELD_INVALID_CHOICE`, `uuid_parsing` → `FIELD_INVALID_UUID`),
    with constraint context and the (truncated) offending input in
-   `details[].meta`. The `body`/`query`/`path` location prefix is stripped
-   from `field`; nested paths are dotted (`"address.zip"`).
+   `details[].meta`. The input is echoed only when it is a single value under
+   a field whose name is not a credential (`password`, `*secret*`, `*token*`,
+   `pin`, `api_key`, `dsn`, ...): an object or a list never is — for a missing
+   field Pydantic reports the whole enclosing body as the input, which would
+   hand the caller's other fields, a password included, back in the error.
+   The `body`/`query`/`path` location prefix is stripped from `field`; nested
+   paths are dotted (`"address.zip"`).
 3. **Starlette/FastAPI `HTTPException`** → status code mapped through
    `STATUS_CODE_TO_ERROR_CODE` (400/422 → `VALIDATION_ERROR`,
    401 → `AUTH_TOKEN_MISSING`, 403 → `PERM_DENIED`,
