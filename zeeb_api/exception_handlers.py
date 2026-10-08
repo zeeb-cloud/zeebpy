@@ -197,12 +197,16 @@ def _echoable_input(loc: Any, value: Any) -> bool:
 
     A scalar is echoed - it is what a caller needs to see what was wrong - but
     never one under a credential-like field name (``password``, ``client_secret``,
-    ``pin``...). An object or a list is never echoed: for a missing field
+    ``pin``...), and never anything but a JSON scalar. An object or a list is
+    never echoed: for a missing field
     Pydantic reports the *whole* enclosing object as the input, so echoing it
     handed the caller's other fields - a password beside a missing email -
     back in the error, and from there into logs and proxies.
     """
-    if isinstance(value, (dict, list, tuple, set)):
+    # Only a JSON scalar: raw bytes (a body sent without a JSON content type
+    # arrives as bytes and fails as a whole) cannot be rendered into the
+    # envelope at all, and crashed the handler instead of answering 422.
+    if value is not None and not isinstance(value, (str, int, float, bool)):
         return False
     return not any(isinstance(part, str) and _SENSITIVE_FIELD_RE.search(part) for part in loc or ())
 
