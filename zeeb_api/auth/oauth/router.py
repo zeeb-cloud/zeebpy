@@ -37,8 +37,19 @@ from zeeb_api.auth.schemas import TokenResponse
 from zeeb_api.exceptions import (
     AuthenticationException,
     ErrorCode,
-    ErrorResponse,
     ZeebException,
+    error_response_doc,
+)
+
+# Documented error answers of the OAuth routes, each with its own example code.
+_UNKNOWN_PROVIDER = error_response_doc(
+    404,
+    "Unknown provider",
+    code=ErrorCode.AUTH_OAUTH_PROVIDER_NOT_FOUND.value,
+    message="Unknown OAuth provider",
+)
+_LOGIN_FAILED = error_response_doc(
+    401, "OAuth login failed", code=ErrorCode.AUTH_OAUTH_EXCHANGE_FAILED.value
 )
 
 # Custom user-resolution hook: (provider_name, claims) -> (user, identity, created)
@@ -282,7 +293,7 @@ def create_oauth_router(
         "/{provider}/authorize/",
         dependencies=login_deps,
         name="oauth_authorize",
-        responses={404: {"model": ErrorResponse, "description": "Unknown provider"}},
+        responses={404: _UNKNOWN_PROVIDER},
         summary="Start OAuth Login",
         description=(
             "Redirects the browser to the identity provider. Carries a signed "
@@ -333,8 +344,8 @@ def create_oauth_router(
         methods=["GET", "POST"],
         name="oauth_callback",
         responses={
-            401: {"model": ErrorResponse, "description": "OAuth login failed"},
-            404: {"model": ErrorResponse, "description": "Unknown provider"},
+            401: _LOGIN_FAILED,
+            404: _UNKNOWN_PROVIDER,
         },
         summary="OAuth Callback",
         description=(
@@ -413,7 +424,7 @@ def create_oauth_router(
         "/{provider}/state/",
         dependencies=login_deps,
         response_model=StateResponse,
-        responses={404: {"model": ErrorResponse, "description": "Unknown provider"}},
+        responses={404: _UNKNOWN_PROVIDER},
         summary="Issue OAuth State (SPA)",
         description=(
             "For an SPA that builds the IdP authorization URL itself: returns a "
@@ -438,8 +449,8 @@ def create_oauth_router(
         dependencies=login_deps,
         response_model=TokenResponse,
         responses={
-            401: {"model": ErrorResponse, "description": "OAuth login failed"},
-            404: {"model": ErrorResponse, "description": "Unknown provider"},
+            401: _LOGIN_FAILED,
+            404: _UNKNOWN_PROVIDER,
         },
         summary="Exchange OAuth Code (SPA)",
         description=(

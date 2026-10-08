@@ -78,6 +78,9 @@ from zeeb_api.exceptions import (
     ValidationError,
     ValidationException,
     ZeebException,
+    error_example,
+    error_response_doc,
+    error_responses,
     field_error,
     validation_error,
 )
@@ -150,6 +153,7 @@ from zeeb_api.viewsets import (
     ReadOnlyModelViewSet,
     ViewSet,
     action,
+    extend_schema,
 )
 
 # OAuth2/OIDC names are exported lazily (PEP 562): plain ``import zeeb_api``
@@ -241,6 +245,7 @@ __all__ = [
     "ModelViewSet",
     "ReadOnlyModelViewSet",
     "action",
+    "extend_schema",
     "QueryModelMixin",
     # Routers
     "DefaultRouter",
@@ -291,6 +296,9 @@ __all__ = [
     "install_exception_handlers",
     "install_error_response_schema",
     "get_error_responses",
+    "error_example",
+    "error_response_doc",
+    "error_responses",
     # Authentication
     "JWTConfig",
     "TokenPayload",

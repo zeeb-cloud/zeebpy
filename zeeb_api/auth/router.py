@@ -29,8 +29,8 @@ from zeeb_api.auth.middleware import (
 from zeeb_api.exceptions import (
     AuthenticationException,
     ErrorCode,
-    ErrorResponse,
     ValidationException,
+    error_response_doc,
     field_error,
 )
 
@@ -222,8 +222,13 @@ def create_auth_router(
             response_model=TokenResponse,
             dependencies=credential_deps,
             responses={
-                401: {"model": ErrorResponse, "description": "Invalid credentials"},
-                429: {"model": ErrorResponse, "description": "Too many attempts"},
+                401: error_response_doc(
+                    401,
+                    "Invalid credentials",
+                    code=ErrorCode.AUTH_INVALID_CREDENTIALS.value,
+                    message="Invalid email or password",
+                ),
+                429: error_response_doc(429, "Too many attempts"),
             },
             summary="Login",
             description="Authenticate with email/password and receive access/refresh tokens.",
@@ -258,9 +263,11 @@ def create_auth_router(
             response_model=RegisterResponse,
             dependencies=credential_deps,
             responses={
-                400: {"model": ErrorResponse, "description": "Validation error"},
-                409: {"model": ErrorResponse, "description": "Email already exists"},
-                429: {"model": ErrorResponse, "description": "Too many attempts"},
+                400: error_response_doc(400),
+                409: error_response_doc(
+                    409, "Email already exists", message="A user with this email already exists"
+                ),
+                429: error_response_doc(429, "Too many attempts"),
             },
             summary="Register",
             description="Create a new user account.",
@@ -314,8 +321,13 @@ def create_auth_router(
         response_model=TokenResponse,
         dependencies=refresh_deps,
         responses={
-            401: {"model": ErrorResponse, "description": "Invalid or expired refresh token"},
-            429: {"model": ErrorResponse, "description": "Too many attempts"},
+            401: error_response_doc(
+                401,
+                "Invalid or expired refresh token",
+                code=ErrorCode.AUTH_TOKEN_INVALID.value,
+                message="Invalid refresh token",
+            ),
+            429: error_response_doc(429, "Too many attempts"),
         },
         summary="Refresh Token",
         description="Get a new access token using a refresh token.",
@@ -449,7 +461,7 @@ def create_auth_router(
         "/me",
         response_model=UserInfo,
         responses={
-            401: {"model": ErrorResponse, "description": "Not authenticated"},
+            401: error_response_doc(401),
         },
         summary="Get Current User",
         description="Get information about the currently authenticated user.",

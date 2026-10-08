@@ -10,6 +10,7 @@ so raising ``MAX_LIMIT`` had no effect.
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from pydantic import BaseModel
 
 from zeeb_api.conf import settings
 from zeeb_api.exception_handlers import install_error_response_schema, install_exception_handlers
@@ -17,7 +18,7 @@ from zeeb_api.pagination import LimitOffsetPagination
 from zeeb_api.permissions import AllowAny, IsAuthenticated
 from zeeb_api.routers.default import SimpleRouter
 from zeeb_api.serializers import ModelSerializer
-from zeeb_api.viewsets import ModelViewSet, action
+from zeeb_api.viewsets import ModelViewSet, ViewSet, action, extend_schema
 from zeeb_orm import Model, fields
 
 
@@ -195,3 +196,187 @@ def test_viewset_with_a_required_init_argument_still_routes():
 
     spec = _openapi(NeedsArg)
     assert "/posts/{id}" in spec["paths"]
+
+
+# --- error responses document their own status ------------------------------
+#
+# Every error response referenced one ErrorResponse schema whose only example
+# was a VALIDATION_ERROR, so Swagger UI showed a validation error under 401,
+# 404 and 429 alike; FastAPI's own 422 still documented HTTPValidationError.
+
+
+def _error_examples(spec: dict) -> list[tuple[str, str, str, dict]]:
+    found = []
+    for path, item in spec["paths"].items():
+        for method, operation in item.items():
+            for status, response in operation["responses"].items():
+                if status.isdigit() and int(status) >= 400:
+                    media = response["content"]["application/json"]
+                    found.append((path, method, status, media))
+    return found
+
+
+def test_each_error_response_shows_its_own_code():
+    from zeeb_api.exceptions import STATUS_CODE_TO_ERROR_CODE
+
+    spec = _openapi(Secured)
+    examples = _error_examples(spec)
+    assert examples
+    for path, method, status, media in examples:
+        assert media["schema"]["$ref"].endswith("ErrorResponse"), (path, method, status)
+        example = media["example"]
+        assert example["success"] is False
+        assert example["error"]["code"] == STATUS_CODE_TO_ERROR_CODE[int(status)], (path, status)
+    codes = {status: media["example"]["error"]["code"] for _, _, status, media in examples}
+    assert codes["401"] == "AUTH_TOKEN_MISSING"
+    assert codes["404"] == "RESOURCE_NOT_FOUND"
+
+
+def test_error_response_schema_carries_no_validation_example():
+    spec = _openapi(Secured)
+    error_schema = spec["components"]["schemas"]["ErrorResponse"]
+    assert "examples" not in error_schema and "example" not in error_schema
+
+
+def test_validated_routes_document_the_envelope_422():
+    spec = _openapi(Secured)
+    assert "HTTPValidationError" not in spec["components"]["schemas"]
+    create = spec["paths"]["/posts"]["post"]["responses"]
+    detail = spec["paths"]["/posts/{id}"]["get"]["responses"]
+    for responses in (create, detail):
+        assert responses["422"]["description"] == "Request validation failed"
+        example = responses["422"]["content"]["application/json"]["example"]
+        assert example["error"]["details"][0]["code"] == "FIELD_REQUIRED"
+    # A write may break a uniqueness constraint; a read cannot.
+    assert "409" in create and "409" not in detail
+    # The collection GET validates nothing.
+    assert "422" not in spec["paths"]["/posts"]["get"]["responses"]
+
+
+# --- built-in routes of a plain ViewSet, and per-action status -----------------
+
+
+class _CreatePost(BaseModel):
+    title: str
+
+
+class _PostOut(BaseModel):
+    id: str
+    title: str
+
+
+def _plain_app(viewset) -> FastAPI:
+    router = SimpleRouter()
+    router.register("posts", viewset)
+    app = FastAPI()
+    install_exception_handlers(app)
+    install_error_response_schema(app)
+    for api_router in router.get_urls():
+        app.include_router(api_router)
+    return app
+
+
+def test_extend_schema_declares_a_plain_viewset_create_body():
+    seen = {}
+
+    class Plain(ViewSet):
+        @extend_schema(request_schema=_CreatePost, response_schema=_PostOut)
+        async def create(self, request):
+            seen["model"] = self.get_action_request_model()
+            seen["body"] = self.get_action_request_body()
+            return {"id": "1", "title": seen["model"].title}
+
+    app = _plain_app(Plain)
+    operation = app.openapi()["paths"]["/posts"]["post"]
+    ref = operation["requestBody"]["content"]["application/json"]["schema"]["$ref"]
+    assert ref.endswith("_CreatePost")
+    assert "201" in operation["responses"]
+
+    client = TestClient(app)
+    created = client.post("/posts", json={"title": "hello"})
+    assert created.status_code == 201
+    assert isinstance(seen["model"], _CreatePost)
+    assert seen["body"] == {"title": "hello"}
+
+    bad = client.post("/posts", json={})
+    assert bad.status_code == 422
+    assert bad.json()["error"]["code"] == "VALIDATION_ERROR"
+
+
+def test_extend_schema_status_and_responses_on_destroy():
+    from zeeb_api.exceptions import error_response_doc
+
+    class Plain(ViewSet):
+        lookup_field = "id"
+
+        @extend_schema(
+            status_code=202,
+            responses={409: error_response_doc(409, "Busy", code="POST_BUSY")},
+        )
+        async def destroy(self, request, id: str):
+            return {"accepted": True}
+
+    responses = _plain_app(Plain).openapi()["paths"]["/posts/{id}"]["delete"]["responses"]
+    assert "202" in responses and "204" not in responses
+    assert responses["409"]["content"]["application/json"]["example"]["error"]["code"] == "POST_BUSY"
+
+
+def test_action_status_code_and_responses():
+    from zeeb_api.exceptions import error_response_doc
+
+    class Plain(ViewSet):
+        @action(
+            detail=False,
+            methods=["post"],
+            request_schema=_CreatePost,
+            status_code=202,
+            responses={409: error_response_doc(409, "Already queued", code="ALREADY_QUEUED")},
+        )
+        async def enqueue(self, request):
+            return {"queued": self.get_action_request_model().title}
+
+    app = _plain_app(Plain)
+    responses = app.openapi()["paths"]["/posts/enqueue"]["post"]["responses"]
+    assert "202" in responses and "200" not in responses
+    assert responses["409"]["description"] == "Already queued"
+    assert responses["409"]["content"]["application/json"]["example"]["error"]["code"] == (
+        "ALREADY_QUEUED"
+    )
+    assert {"400", "422"} <= set(responses)
+
+    answered = TestClient(app).post("/posts/enqueue", json={"title": "x"})
+    assert answered.status_code == 202
+    assert answered.json() == {"queued": "x"}
+
+
+class _SuspendOptions(BaseModel):
+    billing_action: str | None = None
+
+
+def test_an_all_optional_body_may_be_left_out():
+    """Declaring a body whose fields are all optional must not turn a body-less
+    POST - which a view reading the request itself accepted - into a 422."""
+    seen = []
+
+    class Plain(ViewSet):
+        @action(detail=True, methods=["post"], request_schema=_SuspendOptions)
+        async def suspend(self, request, pk=None):
+            model = self.get_action_request_model()
+            seen.append((model.model_fields_set, self.get_action_request_body()))
+            return {"ok": True}
+
+        @action(detail=False, methods=["post"], request_schema=_CreatePost)
+        async def publish(self, request):
+            return {"ok": True}
+
+    app = _plain_app(Plain)
+    client = TestClient(app)
+    target = "/posts/3fa85f64-5717-4562-b3fc-2c963f66afa6/suspend"
+    assert client.post(target).status_code == 200
+    assert client.post(target, json={"billing_action": "none"}).status_code == 200
+    assert seen == [(set(), {"billing_action": None}), ({"billing_action"}, {"billing_action": "none"})]
+
+    spec = app.openapi()
+    assert spec["paths"]["/posts/{id}/suspend"]["post"]["requestBody"].get("required") is not True
+    assert spec["paths"]["/posts/publish"]["post"]["requestBody"]["required"] is True
+    assert client.post("/posts/publish").status_code == 422

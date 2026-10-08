@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import uuid
 from collections.abc import Iterable
+from inspect import Parameter
 from typing import Any, Callable, Type
 from fastapi import APIRouter, Depends, Request, Response
 from fastapi.responses import JSONResponse
@@ -154,6 +155,14 @@ def add_slash_alias_routes(router: APIRouter) -> None:
             dependencies=list(route.dependencies or []),
             include_in_schema=False,
         )
+
+
+def _all_fields_optional(model: Any) -> bool:
+    """True when every field of the pydantic ``model`` has a default."""
+    fields = getattr(model, "model_fields", None)
+    if fields is None:
+        return False
+    return not any(field.is_required() for field in fields.values())
 
 
 def _bare_viewset(viewset: Type[ViewSet]) -> Any:
@@ -429,6 +438,22 @@ class SimpleRouter:
                     action_partial_request_schema = getattr(
                         serializer_class, "PartialRequestSchema", None
                     )
+
+                # @extend_schema on a built-in action (create, update, ...)
+                # declares what a serializer would, and wins over one: a plain
+                # ViewSet has no serializer, so without it the route declared
+                # no body at all.
+                schema_config = (
+                    getattr(action_method, "_schema_config", None)
+                    if action_config is None
+                    else None
+                )
+                if schema_config:
+                    if schema_config.get("response_schema") is not None:
+                        action_response_schema = schema_config["response_schema"]
+                    if schema_config.get("request_schema") is not None:
+                        action_request_schema = schema_config["request_schema"]
+                        action_partial_request_schema = schema_config["request_schema"]
                 
                 # Determine response model and request schema based on action
                 action_response_model = None
@@ -487,6 +512,14 @@ class SimpleRouter:
                         action_config, method
                     )
                     action_permission_classes = action_config.get("permission_classes")
+                    if action_config.get("status_code"):
+                        action_status_code = action_config["status_code"]
+
+                # Responses and status the action itself declares win over the
+                # router's defaults.
+                declared = action_config or schema_config or {}
+                if not action_config and declared.get("status_code"):
+                    action_status_code = declared["status_code"]
 
                 # Create the endpoint function
                 endpoint = self._create_endpoint(
@@ -504,8 +537,10 @@ class SimpleRouter:
                     has_body=final_request_schema is not None or action_name == "query",
                     secured=secured,
                     throttled=throttled,
+                    writes=action_name in ("create", "update", "partial_update"),
                 )
                 responses.update(doc_responses)
+                responses.update(declared.get("responses") or {})
 
                 # Register with FastAPI router
                 route_name = route.name.format(basename=basename)
@@ -583,21 +618,38 @@ class SimpleRouter:
 
     @staticmethod
     def _error_responses(
-        *, detail: bool, has_body: bool, secured: bool, throttled: bool
+        *,
+        detail: bool,
+        has_body: bool,
+        secured: bool,
+        throttled: bool,
+        writes: bool = False,
     ) -> dict[int | str, dict[str, Any]]:
-        """The error envelopes an action can answer with, for OpenAPI."""
-        from zeeb_api.exceptions import ErrorResponse
+        """The error envelopes an action can answer with, for OpenAPI.
+
+        Each carries an example with its own status's error code. 422 is
+        declared wherever FastAPI validates something - a body or a path
+        parameter - which is exactly where it would otherwise add its own 422
+        documenting ``HTTPValidationError``, a body the server never sends.
+        400 is the model's own validation at save; 409 a write that breaks a
+        uniqueness constraint.
+        """
+        from zeeb_api.exceptions import error_response_doc
 
         responses: dict[int | str, dict[str, Any]] = {}
         if has_body:
-            responses[400] = {"model": ErrorResponse, "description": "Validation error"}
+            responses[400] = error_response_doc(400)
         if secured:
-            responses[401] = {"model": ErrorResponse, "description": "Not authenticated"}
-            responses[403] = {"model": ErrorResponse, "description": "Permission denied"}
+            responses[401] = error_response_doc(401)
+            responses[403] = error_response_doc(403)
         if detail:
-            responses[404] = {"model": ErrorResponse, "description": "Not found"}
+            responses[404] = error_response_doc(404)
+        if writes:
+            responses[409] = error_response_doc(409)
+        if has_body or detail:
+            responses[422] = error_response_doc(422)
         if throttled:
-            responses[429] = {"model": ErrorResponse, "description": "Rate limit exceeded"}
+            responses[429] = error_response_doc(429)
         return responses
 
     @staticmethod
@@ -830,6 +882,20 @@ class SimpleRouter:
             # applied; everything else uses the full dump.
             return body.model_dump(exclude_unset=True) if exclude_unset else body.model_dump()
 
+        # A body whose fields are all optional may be left out entirely: the
+        # action gets the model with nothing set, as if the client sent {}.
+        # Declaring such a body must not turn a body-less POST - which the
+        # view accepted before it declared one - into a 422.
+        body_optional = request_schema is not None and _all_fields_optional(request_schema)
+        # The annotation stays the model (not ``Model | None``): FastAPI fills
+        # a missing optional body with the default without validating it, and
+        # the document keeps a plain $ref, marked not required.
+        body_default = None if body_optional else Parameter.empty
+        body_annotation = request_schema
+
+        def _validated(body: BaseModel | None) -> BaseModel:
+            return request_schema() if body is None else body
+
         def _adapt_action_kwargs(func: Callable, path_params: dict[str, Any]) -> dict[str, Any]:
             """Match path params to the action's signature.
 
@@ -869,7 +935,9 @@ class SimpleRouter:
                     viewset = await _admitted_viewset(request, path_params)
 
                     # Store body data for action
+                    body = _validated(body)
                     viewset._request_body = _dump_body(body)
+                    viewset._request_model = body
 
                     action = getattr(viewset, action_name)
                     result = await action(request, **_adapt_action_kwargs(action, path_params))
@@ -877,11 +945,16 @@ class SimpleRouter:
                     return _finish(result)
                 
                 # Build signature with typed body
-                from inspect import Parameter, Signature
+                from inspect import Signature
                 params = [
                     Parameter("request", Parameter.POSITIONAL_OR_KEYWORD, annotation=Request),
                     Parameter(lookup_field, Parameter.POSITIONAL_OR_KEYWORD, annotation=lookup_type),
-                    Parameter("body", Parameter.POSITIONAL_OR_KEYWORD, annotation=request_schema),
+                    Parameter(
+                        "body",
+                        Parameter.POSITIONAL_OR_KEYWORD,
+                        default=body_default,
+                        annotation=body_annotation,
+                    ),
                 ]
                 detail_endpoint_with_body.__signature__ = Signature(params)  # type: ignore
                 return detail_endpoint_with_body
@@ -894,7 +967,7 @@ class SimpleRouter:
 
                     return _finish(result)
 
-                from inspect import Parameter, Signature
+                from inspect import Signature
                 params = [
                     Parameter("request", Parameter.POSITIONAL_OR_KEYWORD, annotation=Request),
                     Parameter(lookup_field, Parameter.POSITIONAL_OR_KEYWORD, annotation=lookup_type),
@@ -911,17 +984,24 @@ class SimpleRouter:
                     viewset = await _admitted_viewset(request, {})
 
                     # Store body data for serializer/query
+                    body = _validated(body)
                     viewset._request_body = _dump_body(body)
+                    viewset._request_model = body
 
                     action = getattr(viewset, action_name)
                     result = await action(request)
                     
                     return _finish(result)
                 
-                from inspect import Parameter, Signature
+                from inspect import Signature
                 params = [
                     Parameter("request", Parameter.POSITIONAL_OR_KEYWORD, annotation=Request),
-                    Parameter("body", Parameter.POSITIONAL_OR_KEYWORD, annotation=request_schema),
+                    Parameter(
+                        "body",
+                        Parameter.POSITIONAL_OR_KEYWORD,
+                        default=body_default,
+                        annotation=body_annotation,
+                    ),
                 ]
                 list_endpoint_with_body.__signature__ = Signature(params)  # type: ignore
                 return list_endpoint_with_body

@@ -48,8 +48,49 @@ lookups, and unhandled crashes — into this shape.
 
 The Pydantic models behind the envelope — `ErrorResponse`, `ErrorBody`,
 `ErrorDetail`, `ErrorMeta` — live in `zeeb_api.exceptions` and can be used in
-OpenAPI annotations. `zeeb_api.exception_handlers.get_error_responses()`
-returns ready-made `responses=` schemas for routes.
+OpenAPI annotations.
+
+### Errors in OpenAPI
+
+Every error status of every route references the one `ErrorResponse` schema, so
+the schema itself carries no example: each response carries its own, with the
+code that status really answers with (`STATUS_CODE_TO_ERROR_CODE`) — a
+documented 401 shows `AUTH_TOKEN_MISSING`, a 404 `RESOURCE_NOT_FOUND`, a 422
+`VALIDATION_ERROR` with a `FIELD_REQUIRED` detail.
+
+| Helper (`zeeb_api`) | Returns |
+|---|---|
+| `error_response_doc(status, description=None, *, code=None, message=None, details=None)` | one `responses=` entry: the `ErrorResponse` model, a description and an example |
+| `error_responses(*statuses, descriptions=None)` | `{status: error_response_doc(status)}` for each status |
+| `error_example(status, *, code=None, message=None, details=None)` | the example body alone |
+| `get_error_responses()` | `error_responses(400, 401, 403, 404, 422, 429, 500)` |
+
+```python
+from fastapi import APIRouter
+
+from zeeb_api import error_response_doc, error_responses
+
+router = APIRouter()
+
+
+@router.post(
+    "/articles/{article_id}/publish",
+    responses=error_responses(401, 404)
+    | {409: error_response_doc(409, "Already published", code="ALREADY_PUBLISHED")},
+)
+async def publish(article_id: str):
+    ...
+```
+
+Defaults per status (description and example message) are in
+`ERROR_DOC_DEFAULTS`. `install_error_response_schema(app)` — installed by
+`create_app()` — rewrites the generated document so that every 4xx/5xx response
+references `ErrorResponse`, including one declared with a description only;
+gives each an example of its status unless it declares one; describes FastAPI's
+automatic 422 as "Request validation failed"; and drops FastAPI's
+`HTTPValidationError`, a body the server never sends. Routers built with
+`DefaultRouter` declare 422 themselves wherever FastAPI validates a body or a
+path parameter.
 
 ## Error code taxonomy
 

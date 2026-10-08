@@ -262,6 +262,19 @@ class ViewSet(metaclass=ViewSetMeta):
         """
         return getattr(self, "_request_body", None)
 
+    def get_action_request_model(self) -> Any:
+        """
+        Get the validated request body for the current action, as its model.
+
+        The instance of the route's ``request_schema`` (``@action`` or
+        ``@extend_schema``) the router validated. Unlike
+        :meth:`get_action_request_body`, which is its ``model_dump()``, it keeps
+        field aliases, which fields the client actually sent
+        (``model_fields_set``) and the model's own methods. Returns None when
+        the route declares no request schema.
+        """
+        return getattr(self, "_request_model", None)
+
 
 class GenericViewSet(ViewSet):
     """
