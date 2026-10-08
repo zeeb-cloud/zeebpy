@@ -205,6 +205,23 @@ class TestErrorResponseSchema:
         fields = {d["field"] for d in body["error"]["details"]}
         assert {"email", "password"} <= fields
 
+    def test_a_422_never_echoes_the_body_or_a_credential(self):
+        """For a missing field Pydantic reports the whole body as the input; it
+        was echoed into ``meta.input``, password and all."""
+        client = _make_openapi_app()
+        resp = client.post("/login", json={"password": "hunter2-secret"})
+        assert resp.status_code == 422
+        assert "hunter2-secret" not in resp.text
+
+        resp = client.post("/login", json={"email": "a@b.c", "password": 12345678})
+        assert resp.status_code == 422
+        assert "12345678" not in resp.text
+
+        resp = client.post("/login", json={"email": 42, "password": "hunter2-secret"})
+        detail = next(d for d in resp.json()["error"]["details"] if d["field"] == "email")
+        assert detail["meta"]["input"] == 42  # a plain field's value still helps the caller
+        assert "hunter2-secret" not in resp.text
+
     def test_openapi_422_references_error_response(self):
         client = _make_openapi_app()
         spec = client.get("/openapi.json").json()

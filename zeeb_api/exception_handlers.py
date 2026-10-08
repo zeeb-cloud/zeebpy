@@ -184,6 +184,29 @@ def _field_required_hint(field: str | None, body: Any) -> str | None:
     return None
 
 
+# A location segment naming a credential: its value is never echoed back.
+_SENSITIVE_FIELD_RE = re.compile(
+    r"password|passwd|passphrase|secret|token|credential|api_?key|private_?key|access_?key"
+    r"|authorization|cookie|dsn|(?:^|_)pin(?:$|_)",
+    re.IGNORECASE,
+)
+
+
+def _echoable_input(loc: Any, value: Any) -> bool:
+    """Whether a validation error may echo the value it rejected.
+
+    A scalar is echoed - it is what a caller needs to see what was wrong - but
+    never one under a credential-like field name (``password``, ``client_secret``,
+    ``pin``...). An object or a list is never echoed: for a missing field
+    Pydantic reports the *whole* enclosing object as the input, so echoing it
+    handed the caller's other fields - a password beside a missing email -
+    back in the error, and from there into logs and proxies.
+    """
+    if isinstance(value, (dict, list, tuple, set)):
+        return False
+    return not any(isinstance(part, str) and _SENSITIVE_FIELD_RE.search(part) for part in loc or ())
+
+
 def _parse_pydantic_errors(
     errors: list[dict[str, Any]], body: Any = None
 ) -> list[ErrorDetail]:
@@ -214,8 +237,8 @@ def _parse_pydantic_errors(
                 if key in ctx:
                     meta[key] = ctx[key]
         
-        # Include input value if present (for debugging)
-        if "input" in error:
+        # Include the offending value when it is safe to echo (for debugging)
+        if "input" in error and _echoable_input(loc, error["input"]):
             input_val = error["input"]
             # Truncate long values
             if isinstance(input_val, str) and len(input_val) > 100:
