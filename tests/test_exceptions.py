@@ -222,6 +222,17 @@ class TestErrorResponseSchema:
         assert detail["meta"]["input"] == 42  # a plain field's value still helps the caller
         assert "hunter2-secret" not in resp.text
 
+    def test_a_body_without_a_json_content_type_is_a_422_not_a_crash(self):
+        """FastAPI hands such a body over as bytes; echoing them broke the envelope."""
+        client = _make_openapi_app()
+        resp = client.post(
+            "/login",
+            content=b'{"email": "a@b.c", "password": "x"}',
+            headers={"Content-Type": "text/plain"},
+        )
+        assert resp.status_code == 422
+        assert resp.json()["error"]["code"] == "VALIDATION_ERROR"
+
     def test_openapi_422_references_error_response(self):
         client = _make_openapi_app()
         spec = client.get("/openapi.json").json()
