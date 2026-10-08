@@ -520,6 +520,15 @@ class SimpleRouter:
                 declared = action_config or schema_config or {}
                 if not action_config and declared.get("status_code"):
                     action_status_code = declared["status_code"]
+                # A destroy that answers with a body (202 + the record) says so
+                # with @extend_schema(response_schema=..., status_code=202).
+                if (
+                    action_name == "destroy"
+                    and schema_config
+                    and schema_config.get("response_schema") is not None
+                    and action_status_code != 204
+                ):
+                    action_response_model = schema_config["response_schema"]
 
                 # Create the endpoint function
                 endpoint = self._create_endpoint(
@@ -540,7 +549,13 @@ class SimpleRouter:
                     writes=action_name in ("create", "update", "partial_update"),
                 )
                 responses.update(doc_responses)
-                responses.update(declared.get("responses") or {})
+                # ``None`` withdraws a response the router would document - a
+                # create that cannot conflict has no 409.
+                for status, doc in (declared.get("responses") or {}).items():
+                    if doc is None:
+                        responses.pop(status, None)
+                    else:
+                        responses[status] = doc
 
                 # Register with FastAPI router
                 route_name = route.name.format(basename=basename)

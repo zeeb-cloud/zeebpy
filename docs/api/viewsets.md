@@ -126,9 +126,9 @@ class ProjectViewSet(ViewSet):
 | Argument | Meaning |
 |---|---|
 | `request_schema` | Pydantic model of the body; a bad body answers `422` before the action runs |
-| `response_schema` | Pydantic model of the success response |
+| `response_schema` | Pydantic model of the success response (on `destroy`, with a `status_code` other than 204) |
 | `status_code` | Documented success status (create `201`, destroy `204`, the rest `200` by default) |
-| `responses` | Extra OpenAPI responses, merged last (e.g. `{409: error_response_doc(409, ...)}`) |
+| `responses` | Extra OpenAPI responses, merged last (e.g. `{409: error_response_doc(409, ...)}`); `None` withdraws one the router documents (`{409: None}` on a create that cannot conflict) |
 
 It does not create a route; `@action` is for routes of your own.
 
@@ -260,7 +260,7 @@ class ArticleViewSet(ModelViewSet):
 | `request_serializer` | None | Custom Serializer for request validation |
 | `response_serializer` | None | Custom Serializer for response |
 | `status_code` | `200` | Success status the route documents and answers plain data with; an action returning its own `Response` keeps that response's status, so set this to match (e.g. `202`) |
-| `responses` | None | Extra OpenAPI responses merged over the router's error responses, e.g. `{409: error_response_doc(409, "Already published", code="ALREADY_PUBLISHED")}` |
+| `responses` | None | Extra OpenAPI responses merged over the router's error responses, e.g. `{409: error_response_doc(409, "Already published", code="ALREADY_PUBLISHED")}`; `None` withdraws one the router documents |
 
 A body declared with `request_schema` is validated before the action runs. The
 action reads it as the model with `self.get_action_request_model()` (aliases,
