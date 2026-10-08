@@ -53,7 +53,8 @@ def action(
                 status, so set this to what it returns, e.g. ``202``.
         responses: Extra OpenAPI responses, merged over the router's own
                 error responses, e.g.
-                ``{409: error_response_doc(409, "Already published")}``.
+                ``{409: error_response_doc(409, "Already published")}``; a
+                status mapped to ``None`` withdraws one the router documents.
     
     Usage:
         class UserViewSet(ModelViewSet):
@@ -153,10 +154,13 @@ def extend_schema(
                 a bad body, and the action reads it from
                 ``self.get_action_request_model()`` (or the dumped dict from
                 ``self.get_action_request_body()``).
-        response_schema: Pydantic model of the success response.
+        response_schema: Pydantic model of the success response (on
+                ``destroy`` together with a ``status_code`` other than 204).
         status_code: The documented success status (``create`` defaults to
                 201, ``destroy`` to 204, the rest to 200).
-        responses: Extra OpenAPI responses, merged last.
+        responses: Extra OpenAPI responses, merged last; a status mapped to
+                ``None`` withdraws one the router documents (a ``create``
+                that cannot conflict: ``{409: None}``).
 
     It overrides what a serializer would declare and does not create a route.
 

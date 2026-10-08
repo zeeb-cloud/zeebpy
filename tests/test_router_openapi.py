@@ -380,3 +380,21 @@ def test_an_all_optional_body_may_be_left_out():
     assert spec["paths"]["/posts/{id}/suspend"]["post"]["requestBody"].get("required") is not True
     assert spec["paths"]["/posts/publish"]["post"]["requestBody"]["required"] is True
     assert client.post("/posts/publish").status_code == 422
+
+
+def test_extend_schema_documents_a_destroy_body_and_withdraws_a_response():
+    class Plain(ViewSet):
+        lookup_field = "id"
+
+        @extend_schema(response_schema=_PostOut, status_code=202)
+        async def destroy(self, request, id: str):
+            return {"id": id, "title": "gone"}
+
+        @extend_schema(request_schema=_CreatePost, responses={409: None})
+        async def create(self, request):
+            return {"id": "1", "title": self.get_action_request_model().title}
+
+    paths = _plain_app(Plain).openapi()["paths"]
+    accepted = paths["/posts/{id}"]["delete"]["responses"]["202"]
+    assert accepted["content"]["application/json"]["schema"]["$ref"].endswith("_PostOut")
+    assert "409" not in paths["/posts"]["post"]["responses"]
