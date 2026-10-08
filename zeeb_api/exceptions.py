@@ -8,6 +8,7 @@ All errors follow the same format with machine-readable codes.
 from __future__ import annotations
 
 import uuid
+from collections.abc import Mapping
 from datetime import datetime, timezone
 from enum import Enum
 from typing import Any
@@ -211,6 +212,11 @@ class ErrorResponse(BaseModel):
         }
     """
 
+    # No schema-level example: every error status of every route references
+    # this one schema, so an example here was shown under 401, 404 and 429
+    # alike. Each response object carries its own example instead
+    # (``error_response_doc`` and ``install_error_response_schema``).
+
     success: bool = Field(
         default=False,
         description="Always false for error responses"
@@ -220,30 +226,6 @@ class ErrorResponse(BaseModel):
         description="Error details"
     )
 
-    model_config = {
-        "json_schema_extra": {
-            "examples": [
-                {
-                    "success": False,
-                    "error": {
-                        "code": "VALIDATION_ERROR",
-                        "message": "Validation failed",
-                        "details": [
-                            {
-                                "code": "FIELD_REQUIRED",
-                                "field": "email",
-                                "message": "This field is required"
-                            }
-                        ],
-                        "meta": {
-                            "request_id": "550e8400-e29b-41d4-a716-446655440000",
-                            "timestamp": "2024-01-15T10:30:00Z"
-                        }
-                    }
-                }
-            ]
-        }
-    }
 
 
 class ZeebException(Exception):
@@ -514,6 +496,113 @@ STATUS_CODE_TO_ERROR_CODE: dict[int, str] = {
     500: ErrorCode.SERVER_ERROR.value,
     503: ErrorCode.SERVER_UNAVAILABLE.value,
 }
+
+
+# What OpenAPI says about each error status: the response description and the
+# message of its example body. The example's code comes from
+# STATUS_CODE_TO_ERROR_CODE, so a documented 401 shows AUTH_TOKEN_MISSING and a
+# documented 404 RESOURCE_NOT_FOUND - not the validation error every status
+# used to show.
+ERROR_DOC_DEFAULTS: dict[int, tuple[str, str]] = {
+    400: ("Invalid field values", "Validation failed"),
+    401: ("Not authenticated", "Authentication credentials were not provided"),
+    403: ("Permission denied", "You do not have permission to perform this action"),
+    404: ("Not found", "Resource not found"),
+    405: ("Method not allowed", "Method not allowed"),
+    409: ("Conflict", "The request conflicts with the current state of the resource"),
+    422: ("Request validation failed", "Request validation failed"),
+    429: ("Rate limit exceeded", "Rate limit exceeded"),
+    500: ("Internal server error", "Internal server error"),
+    502: ("Bad gateway", "An upstream service failed"),
+    503: ("Service unavailable", "Service temporarily unavailable"),
+}
+
+_EXAMPLE_META = {
+    "request_id": "550e8400-e29b-41d4-a716-446655440000",
+    "timestamp": "2024-01-15T10:30:00+00:00",
+}
+
+
+def _field_detail(code: ErrorCode, message: str) -> dict[str, Any]:
+    return {"code": code.value, "field": "name", "message": message}
+
+
+def error_example(
+    status_code: int,
+    *,
+    code: str | None = None,
+    message: str | None = None,
+    details: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """An ``ErrorResponse`` body for status ``status_code``, for OpenAPI examples.
+
+    ``code`` defaults to the status's entry in ``STATUS_CODE_TO_ERROR_CODE``
+    (``SERVER_ERROR`` for a status without one, as ``http_exception_handler``
+    answers), ``message`` to ``ERROR_DOC_DEFAULTS``. A 422 carries one
+    ``FIELD_REQUIRED`` detail and a 400 one ``FIELD_INVALID_VALUE`` detail -
+    the field-level shape those statuses really have; other statuses none.
+    """
+    if details is None:
+        if status_code == 422:
+            details = [_field_detail(ErrorCode.FIELD_REQUIRED, "Field required")]
+        elif status_code == 400:
+            details = [_field_detail(ErrorCode.FIELD_INVALID_VALUE, "Invalid value")]
+        else:
+            details = []
+    default_message = ERROR_DOC_DEFAULTS.get(status_code, ("", "An error occurred"))[1]
+    return {
+        "success": False,
+        "error": {
+            "code": code
+            or STATUS_CODE_TO_ERROR_CODE.get(status_code, ErrorCode.SERVER_ERROR.value),
+            "message": message or default_message,
+            "details": details,
+            "meta": dict(_EXAMPLE_META),
+        },
+    }
+
+
+def error_response_doc(
+    status_code: int,
+    description: str | None = None,
+    *,
+    code: str | None = None,
+    message: str | None = None,
+    details: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """One entry of a FastAPI ``responses=`` mapping for an error status.
+
+    The response documents the ``ErrorResponse`` envelope with an example of
+    its own, so Swagger UI shows each status's real code::
+
+        @router.get("/items/{id}", responses={404: error_response_doc(404)})
+
+        @action(detail=True, methods=["post"],
+                responses={409: error_response_doc(409, "Already published",
+                                                   code="FRAMEWORK_PUBLISHED")})
+    """
+    default_description = ERROR_DOC_DEFAULTS.get(status_code, ("Error", ""))[0]
+    return {
+        "model": ErrorResponse,
+        "description": description or default_description,
+        "content": {
+            "application/json": {
+                "example": error_example(status_code, code=code, message=message, details=details),
+            }
+        },
+    }
+
+
+def error_responses(
+    *status_codes: int,
+    descriptions: Mapping[int, str] | None = None,
+) -> dict[int | str, dict[str, Any]]:
+    """``{status: error_response_doc(status)}`` for each of ``status_codes``.
+
+    ``descriptions`` overrides the default description of individual statuses.
+    """
+    descriptions = descriptions or {}
+    return {status: error_response_doc(status, descriptions.get(status)) for status in status_codes}
 
 
 def details_from_field_errors(detail: Any) -> list[ErrorDetail]:

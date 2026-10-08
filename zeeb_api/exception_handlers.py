@@ -20,6 +20,7 @@ from pydantic import ValidationError as PydanticValidationError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from zeeb_api.exceptions import (
+    ERROR_DOC_DEFAULTS,
     STATUS_CODE_TO_ERROR_CODE,
     ErrorBody,
     ErrorCode,
@@ -28,6 +29,8 @@ from zeeb_api.exceptions import (
     ErrorResponse,
     ZeebException,
     details_from_field_errors,
+    error_example,
+    error_responses,
 )
 
 logger = logging.getLogger(__name__)
@@ -544,25 +547,36 @@ def _envelope_errors_in_debug(app: FastAPI) -> None:
     app.middleware_stack = None
 
 
-# HTTP status codes that return the standardized ErrorResponse envelope.
-# Used to rewrite the generated OpenAPI so the documented schema matches the
-# runtime body produced by the exception handlers above.
-_ERROR_STATUS_CODES = frozenset({"400", "401", "403", "404", "409", "422", "429", "500"})
+# FastAPI's own description for the 422 it adds to every route with a body
+# or a path parameter. Replaced by ours: the body is the envelope, not
+# FastAPI's ``{"detail": [...]}``.
+_FASTAPI_422_DESCRIPTION = "Validation Error"
+
+
+def _is_error_status(status_code: Any) -> bool:
+    """A numeric 4xx/5xx status (``"404"``), not ``"default"`` or ``"4XX"``."""
+    text = str(status_code)
+    return text.isdigit() and 400 <= int(text) < 600
 
 
 def install_error_response_schema(app: FastAPI) -> None:
     """
     Override ``app.openapi`` so error responses document the ErrorResponse envelope.
 
-    The runtime handlers installed by :func:`install_exception_handlers` return the
-    standardized ``ErrorResponse`` body for 4xx/5xx errors, but FastAPI still
-    auto-generates a ``HTTPValidationError`` schema for 422 responses. This makes
-    the published ``openapi.json`` advertise a shape the server never returns.
+    The runtime handlers installed by :func:`install_exception_handlers` answer
+    every 4xx/5xx with the standardized ``ErrorResponse`` body, but FastAPI
+    still documents its own ``HTTPValidationError`` for 422, and a response
+    declared without a model documents no body at all. This makes the
+    published ``openapi.json`` advertise shapes the server never returns.
 
     This function patches the OpenAPI generation to:
     - inject ``ErrorResponse`` (and its nested models) into ``components.schemas``;
-    - point every error-status response (400/401/403/404/409/422/429/500) at
-      ``#/components/schemas/ErrorResponse``;
+    - point every 4xx/5xx response at ``#/components/schemas/ErrorResponse``,
+      including responses declared with a description only;
+    - give each of them an example with that status's own error code
+      (:func:`~zeeb_api.exceptions.error_example`) unless it already has one,
+      so a 401 no longer shows the validation error a 422 does;
+    - describe FastAPI's automatic 422 as what it is ("Request validation failed");
     - drop the now-unreferenced ``HTTPValidationError`` / ``ValidationError`` schemas.
 
     Idempotent and lazy: the schema is built (and cached on ``app.openapi_schema``)
@@ -598,17 +612,15 @@ def install_error_response_schema(app: FastAPI) -> None:
         for name, definition in nested_defs.items():
             components.setdefault(name, definition)
 
-        # Point every error-status response at ErrorResponse.
-        error_ref = {"$ref": "#/components/schemas/ErrorResponse"}
+        # Point every error response at ErrorResponse, with its own example.
         for path_item in schema.get("paths", {}).values():
             for operation in path_item.values():
                 if not isinstance(operation, dict):
                     continue
                 for status_code, response in operation.get("responses", {}).items():
-                    if str(status_code) not in _ERROR_STATUS_CODES:
+                    if not _is_error_status(status_code) or not isinstance(response, dict):
                         continue
-                    for media_type in response.get("content", {}).values():
-                        media_type["schema"] = error_ref
+                    _document_error_response(int(status_code), response)
 
         # Drop the default validation schemas now that nothing references them.
         components.pop("HTTPValidationError", None)
@@ -620,41 +632,28 @@ def install_error_response_schema(app: FastAPI) -> None:
     app.openapi = custom_openapi
 
 
+def _document_error_response(status_code: int, response: dict[str, Any]) -> None:
+    """Make one OpenAPI error response describe the envelope the server sends."""
+    default_description = ERROR_DOC_DEFAULTS.get(status_code, ("Error", ""))[0]
+    description = response.get("description")
+    if not description or (status_code == 422 and description == _FASTAPI_422_DESCRIPTION):
+        response["description"] = default_description
+    content = response.setdefault("content", {})
+    media_type = content.setdefault("application/json", {})
+    media_type["schema"] = {"$ref": "#/components/schemas/ErrorResponse"}
+    if "example" not in media_type and "examples" not in media_type:
+        media_type["example"] = error_example(status_code)
+
+
 def get_error_responses() -> dict[int | str, dict[str, Any]]:
     """
     Get OpenAPI response schemas for common error codes.
+
+    Each entry documents the ErrorResponse envelope with an example carrying
+    that status's own error code.
 
     Usage in router:
         @app.get("/items/{id}", responses=get_error_responses())
         async def get_item(id: int): ...
     """
-    return {
-        400: {
-            "model": ErrorResponse,
-            "description": "Bad Request - Validation error",
-        },
-        401: {
-            "model": ErrorResponse,
-            "description": "Unauthorized - Authentication required",
-        },
-        403: {
-            "model": ErrorResponse,
-            "description": "Forbidden - Permission denied",
-        },
-        404: {
-            "model": ErrorResponse,
-            "description": "Not Found - Resource not found",
-        },
-        422: {
-            "model": ErrorResponse,
-            "description": "Unprocessable Entity - Validation error",
-        },
-        429: {
-            "model": ErrorResponse,
-            "description": "Too Many Requests - Rate limit exceeded",
-        },
-        500: {
-            "model": ErrorResponse,
-            "description": "Internal Server Error",
-        },
-    }
+    return error_responses(400, 401, 403, 404, 422, 429, 500)

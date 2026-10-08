@@ -23,6 +23,8 @@ def action(
     response_serializer: type[Serializer] | None = None,
     permission_classes: list[type[BasePermission]] | None = None,
     permission_type: str | None = None,
+    status_code: int | None = None,
+    responses: dict[int | str, dict[str, Any]] | None = None,
     **kwargs: Any,
 ) -> Callable:
     """
@@ -45,6 +47,13 @@ def action(
                 Default: derived from the HTTP method (GET/HEAD/OPTIONS ->
                 read, DELETE -> delete, anything else -> change), so a
                 POST that only reads must say ``permission_type="read"``.
+        status_code: The success status the route documents (and answers
+                with when the action returns plain data). Default 200. An
+                action returning its own ``Response`` keeps that response's
+                status, so set this to what it returns, e.g. ``202``.
+        responses: Extra OpenAPI responses, merged over the router's own
+                error responses, e.g.
+                ``{409: error_response_doc(409, "Already published")}``.
     
     Usage:
         class UserViewSet(ModelViewSet):
@@ -104,6 +113,8 @@ def action(
             "response_serializer": response_serializer,
             "permission_classes": permission_classes,
             "permission_type": permission_type,
+            "status_code": status_code,
+            "responses": responses,
             "kwargs": kwargs,
         }
         
@@ -115,4 +126,55 @@ def action(
         wrapper._action_config = func._action_config
         return wrapper
     
+    return decorator
+
+
+def extend_schema(
+    request_schema: type[BaseModel] | None = None,
+    response_schema: type[BaseModel] | None = None,
+    *,
+    status_code: int | None = None,
+    responses: dict[int | str, dict[str, Any]] | None = None,
+) -> Callable:
+    """
+    Declare the OpenAPI shape of a viewset's built-in route.
+
+    ``@action`` is for routes of your own; the routes a router generates for
+    ``create``, ``update``, ``partial_update``, ``retrieve``, ``list`` and
+    ``destroy`` take their schemas from a serializer, which a plain
+    :class:`~zeeb_api.viewsets.ViewSet` does not have. Without one the route
+    declares no body: the docs show none, nothing is validated, and the
+    action has to parse ``request`` itself. ``extend_schema`` gives such a
+    route what ``@action`` gives a custom one:
+
+    Args:
+        request_schema: Pydantic model of the body (``create``, ``update``,
+                ``partial_update``). The router validates it, answering 422 on
+                a bad body, and the action reads it from
+                ``self.get_action_request_model()`` (or the dumped dict from
+                ``self.get_action_request_body()``).
+        response_schema: Pydantic model of the success response.
+        status_code: The documented success status (``create`` defaults to
+                201, ``destroy`` to 204, the rest to 200).
+        responses: Extra OpenAPI responses, merged last.
+
+    It overrides what a serializer would declare and does not create a route.
+
+    Usage:
+        class ProjectViewSet(ViewSet):
+            @extend_schema(request_schema=CreateProject, response_schema=Project)
+            async def create(self, request):
+                body = self.get_action_request_model()
+                ...
+    """
+
+    def decorator(func: Callable) -> Callable:
+        func._schema_config = {
+            "request_schema": request_schema,
+            "response_schema": response_schema,
+            "status_code": status_code,
+            "responses": responses,
+        }
+        return func
+
     return decorator

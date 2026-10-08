@@ -222,6 +222,61 @@ class TestErrorResponseSchema:
         assert "HTTPValidationError" not in comps
         assert "ValidationError" not in comps
 
+    def test_openapi_422_is_described_as_the_envelope(self):
+        client = _make_openapi_app()
+        response = client.get("/openapi.json").json()["paths"]["/login"]["post"]["responses"]["422"]
+        assert response["description"] == "Request validation failed"
+        example = response["content"]["application/json"]["example"]
+        assert example["error"]["code"] == "VALIDATION_ERROR"
+        assert example["error"]["details"][0]["code"] == "FIELD_REQUIRED"
+
+    def test_description_only_error_responses_get_the_envelope(self):
+        """A route declaring ``responses={404: {"description": ...}}`` documented
+        no body; the server answers it with the envelope all the same."""
+        app = FastAPI(title="probe", version="1.0.0")
+        install_exception_handlers(app)
+        install_error_response_schema(app)
+
+        @app.get("/things/{name}", responses={404: {"description": "No such thing"}, 503: {}})
+        async def thing(name: str):
+            return {"name": name}
+
+        responses = TestClient(app).get("/openapi.json").json()["paths"]["/things/{name}"]["get"][
+            "responses"
+        ]
+        not_found = responses["404"]
+        assert not_found["description"] == "No such thing"
+        media = not_found["content"]["application/json"]
+        assert media["schema"] == {"$ref": "#/components/schemas/ErrorResponse"}
+        assert media["example"]["error"]["code"] == "RESOURCE_NOT_FOUND"
+        unavailable = responses["503"]
+        assert unavailable["content"]["application/json"]["example"]["error"]["code"] == (
+            "SERVER_UNAVAILABLE"
+        )
+
+    def test_an_example_the_route_declares_is_kept(self):
+        from zeeb_api.exceptions import error_response_doc
+
+        app = FastAPI(title="probe", version="1.0.0")
+        install_error_response_schema(app)
+
+        @app.post("/publish", responses={409: error_response_doc(409, code="ALREADY_PUBLISHED")})
+        async def publish():
+            return {}
+
+        media = TestClient(app).get("/openapi.json").json()["paths"]["/publish"]["post"][
+            "responses"
+        ]["409"]["content"]["application/json"]
+        assert media["example"]["error"]["code"] == "ALREADY_PUBLISHED"
+
+    def test_get_error_responses_examples_match_their_status(self):
+        from zeeb_api.exception_handlers import get_error_responses
+        from zeeb_api.exceptions import STATUS_CODE_TO_ERROR_CODE
+
+        for status, doc in get_error_responses().items():
+            example = doc["content"]["application/json"]["example"]
+            assert example["error"]["code"] == STATUS_CODE_TO_ERROR_CODE[status]
+
 
 class TestScaffoldAsgiTemplate:
     """The generated asgi.py delegates the standard error contract to create_app()."""

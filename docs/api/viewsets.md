@@ -90,11 +90,47 @@ total — see [Pagination](pagination.md).
 | `POST /items/query` | `200` + `{count, limit, offset, results}` | `limit` bounded by `DEFAULT_LIMIT`/`MAX_LIMIT` |
 
 Every route also lists the error envelopes it can answer with: `400` when it
-takes a body, `404` on detail routes, `429` when throttles apply, and `401`/`403`
-plus the **HTTP bearer security scheme** whenever its permission classes (the
-action's, the viewset's or `DEFAULT_PERMISSION_CLASSES`) contain anything but
-`AllowAny` — so generated clients send the token and type the errors. The
-bearer declaration is documentation only; it never rejects a request itself.
+takes a body (the model's own validation at save), `422` when it validates a
+body or a path parameter, `404` on detail routes, `409` on create and update,
+`429` when throttles apply, and `401`/`403` plus the **HTTP bearer security
+scheme** whenever its permission classes (the action's, the viewset's or
+`DEFAULT_PERMISSION_CLASSES`) contain anything but `AllowAny` — so generated
+clients send the token and type the errors. The bearer declaration is
+documentation only; it never rejects a request itself. Each error response
+carries an example with its own status's error code (`AUTH_TOKEN_MISSING` under
+401, `RESOURCE_NOT_FOUND` under 404 — see [Errors](errors.md)).
+
+### Built-in routes of a plain `ViewSet`: `@extend_schema`
+
+`create`, `update`, `partial_update`, `retrieve`, `list` and `destroy` take
+their schemas from the serializer. A plain `ViewSet` has none, so its built-in
+routes declare no body: the docs show none, nothing is validated, and the
+action would have to parse `request` itself. `@extend_schema` declares them —
+and it wins over a serializer when both are present:
+
+```python
+from zeeb_api.viewsets import ViewSet, extend_schema
+
+
+class ProjectViewSet(ViewSet):
+    @extend_schema(request_schema=CreateProject, response_schema=ProjectOut)
+    async def create(self, request):
+        body = self.get_action_request_model()  # a validated CreateProject
+        ...
+
+    @extend_schema(status_code=202)
+    async def destroy(self, request, id: str):
+        ...
+```
+
+| Argument | Meaning |
+|---|---|
+| `request_schema` | Pydantic model of the body; a bad body answers `422` before the action runs |
+| `response_schema` | Pydantic model of the success response |
+| `status_code` | Documented success status (create `201`, destroy `204`, the rest `200` by default) |
+| `responses` | Extra OpenAPI responses, merged last (e.g. `{409: error_response_doc(409, ...)}`) |
+
+It does not create a route; `@action` is for routes of your own.
 
 ## ReadOnlyModelViewSet
 
@@ -223,6 +259,13 @@ class ArticleViewSet(ModelViewSet):
 | `response_schema` | None | Pydantic model for response (OpenAPI docs) |
 | `request_serializer` | None | Custom Serializer for request validation |
 | `response_serializer` | None | Custom Serializer for response |
+| `status_code` | `200` | Success status the route documents and answers plain data with; an action returning its own `Response` keeps that response's status, so set this to match (e.g. `202`) |
+| `responses` | None | Extra OpenAPI responses merged over the router's error responses, e.g. `{409: error_response_doc(409, "Already published", code="ALREADY_PUBLISHED")}` |
+
+A body declared with `request_schema` is validated before the action runs. The
+action reads it as the model with `self.get_action_request_model()` (aliases,
+`model_fields_set` and the model's methods intact) or as its `model_dump()`
+with `self.get_action_request_body()`.
 
 ### Actions with Request/Response Schemas
 
