@@ -1031,7 +1031,7 @@ async def test_path_passthrough_internal_forwarding(project):
 
 
 # ---------------------------------------------------------------------------
-# Platform runtime references
+# Hosted runtime references
 # ---------------------------------------------------------------------------
 
 

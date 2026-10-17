@@ -187,7 +187,7 @@ from zeeb_agents.resources import (
 # Standalone routes
 from zeeb_agents.routes import create_route
 
-# Host-managed runtime references (preview URLs, live OpenAPI)
+# Hosted runtime references (preview URLs, live OpenAPI)
 from zeeb_agents.runtime import (
     get_openapi_url,
     get_project_reference,
@@ -334,7 +334,7 @@ __all__ = [
     "rollback_migration",
     "show_migration",
     "squash_migrations",
-    # Host-managed runtime references
+    # Hosted runtime references
     "get_project_reference",
     "get_openapi_url",
     # Logs

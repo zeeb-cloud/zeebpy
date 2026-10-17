@@ -15,7 +15,7 @@ A failed call's `data` carries more than the code:
 | key | meaning |
 |---|---|
 | `error_code` | Why it failed, from the closed vocabulary below. |
-| `recoverable` | `true` when a corrected argument or a preparatory call in this session can succeed; `false` for context faults (no project id, unknown project, runtime not configured, filesystem permission) that need the platform or the user. |
+| `recoverable` | `true` when a corrected argument or a preparatory call in this session can succeed; `false` for context faults (no project id, unknown project, runtime not configured, filesystem permission) that need the host or the user. |
 | `suggestions` | Close-match candidates for the rejected input (also echoed in `message`). |
 | `problems` | For spec/change compilation: EVERY problem at once, each `{"path", "code", "message", "suggestions"?}` — fix them in one pass instead of one call per problem. |
 | `affected` | `{"apps", "entities", "files"}` the call was touching. |
@@ -132,5 +132,5 @@ the failing test node ids), and `next_actions` says what to do.
 
 | `error_code` | Meaning | What to do |
 |---|---|---|
-| `runtime_not_configured` | The platform has not published preview/OpenAPI URLs yet. | Retry later; the preview runtime becomes live asynchronously. |
-| `server_not_reachable` | A health check could not reach the API. | The platform manages the runtime; verify via `{prefix}check_system_health`. |
+| `runtime_not_configured` | No host has published preview/OpenAPI URLs for this project. | On a hosted preview, retry later (the URLs appear asynchronously); otherwise run the server locally. |
+| `server_not_reachable` | A health check could not reach the API. | Start the server (or wait for the hosted preview); verify via `{prefix}check_system_health`. |

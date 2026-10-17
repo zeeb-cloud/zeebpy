@@ -249,9 +249,9 @@ several models at once with `models=["A", "B"]`.
 {prefix}get_openapi_url()         # the live OpenAPI URL to build a client against
 ```
 
-The preview runtime is always-on and host-managed — you do not start a dev
-server. If these fail with `runtime_not_configured`, the platform has not
-published the URLs for this project yet.
+These read the URLs a hosted preview publishes. If they fail with
+`runtime_not_configured`, no host has published them: run the server locally
+and read `/openapi.json`.
 
 ## Recipe: inspect what exists
 

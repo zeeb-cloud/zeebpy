@@ -1,10 +1,11 @@
-"""Host-managed runtime references (preview URLs, live OpenAPI).
+"""Hosted runtime references (preview URLs, live OpenAPI).
 
-Zeeb projects run on an always-on, host-managed preview runtime — an agent
-does **not** start a dev server. Instead it fetches the live URLs the platform
-publishes for a project and builds/reads against them.
+A host that runs the project for you — a hosted preview — can publish the
+project's live URLs, and an agent then builds and reads against those instead
+of starting a dev server. Without such a host, run ``zeeb-manage runserver``;
+these tools then report ``runtime_not_configured``.
 
-The platform injects these values into the project's ``.env`` (or the process
+A host publishes the values in the project's ``.env`` (or the process
 environment); these tools surface them:
 
     ZEEB_PROJECT_ID          → data["project_id"]
@@ -49,29 +50,30 @@ def _runtime_env(project_root: Path) -> dict[str, str]:
 
 @agent_function
 async def get_project_reference(project_root: Path | None = None) -> AgentResult:
-    """Return the host-published runtime references for the project.
+    """Return the runtime references a host published for the project.
 
-    Reads the URLs the always-on preview runtime exposes — build and test the
-    frontend against these rather than starting a local server.
+    Reads the URLs a hosted preview of the project exposes — when they exist,
+    build and test the frontend against these rather than a local server.
 
     Returns data (on success):
-        project_id (str | None): the platform project id, if published.
+        project_id (str | None): the host's project id, if published.
         preview_url (str): the browsable preview URL.
         runtime_api_base_url (str): base URL of the live API.
         openapi_url (str): URL of the live OpenAPI document.
 
     Notes:
-        - When the runtime values are not configured (the platform has not
-          published them yet) this fails with
+        - When the runtime values are not configured (no host has published
+          them) this fails with
           ``error_code="runtime_not_configured"``.
     """
     assert project_root is not None  # resolved by @agent_function
     env = _runtime_env(project_root)
     if not env.get("ZEEB_PREVIEW_URL") and not env.get("ZEEB_RUNTIME_API_BASE_URL"):
         return fail(
-            "Runtime references not configured for this project. The platform "
-            "publishes ZEEB_PREVIEW_URL / ZEEB_RUNTIME_API_BASE_URL / "
-            "ZEEB_OPENAPI_URL once the preview runtime is live.",
+            "Runtime references not configured for this project. A host that "
+            "runs the project publishes ZEEB_PREVIEW_URL / ZEEB_RUNTIME_API_BASE_URL / "
+            "ZEEB_OPENAPI_URL in its .env; without one, run the server locally "
+            "(zeeb-manage runserver).",
             code="runtime_not_configured",
         )
     data = {key: env.get(env_key) for key, env_key in _PREVIEW_KEYS.items()}
@@ -86,7 +88,7 @@ async def get_project_reference(project_root: Path | None = None) -> AgentResult
 async def get_openapi_url(project_root: Path | None = None) -> AgentResult:
     """Return the live OpenAPI document URL for the project.
 
-    The preview runtime serves an always-current OpenAPI spec; prefer this over
+    A hosted preview serves an always-current OpenAPI spec; prefer this over
     ``export_openapi`` (which writes a static snapshot) when you need the live
     contract to build a client against.
 
@@ -94,16 +96,17 @@ async def get_openapi_url(project_root: Path | None = None) -> AgentResult:
         openapi_url (str): URL of the live OpenAPI document.
 
     Notes:
-        - Fails with ``error_code="runtime_not_configured"`` when the platform
-          has not published ``ZEEB_OPENAPI_URL`` yet.
+        - Fails with ``error_code="runtime_not_configured"`` when no host has
+          published ``ZEEB_OPENAPI_URL``.
     """
     assert project_root is not None  # resolved by @agent_function
     env = _runtime_env(project_root)
     openapi_url = env.get("ZEEB_OPENAPI_URL")
     if not openapi_url:
         return fail(
-            "Live OpenAPI URL not configured. The platform publishes "
-            "ZEEB_OPENAPI_URL once the preview runtime is live.",
+            "Live OpenAPI URL not configured. A host that runs the project "
+            "publishes ZEEB_OPENAPI_URL in its .env; without one, run the server "
+            "locally (zeeb-manage runserver) and use /openapi.json.",
             code="runtime_not_configured",
         )
     return AgentResult(

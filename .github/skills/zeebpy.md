@@ -659,21 +659,24 @@ zeeb-manage runserver             # start uvicorn dev server
 
 ---
 
-## MCP Server
+## Agent Functions (`zeeb_agents`)
 
-Zeeb includes a Model Context Protocol server (`zeeb-agent-server`) for AI-assisted development:
+zeebpy ships its agent tooling as a plain async library: no server, no MCP
+dependency. Any host (an MCP server, a script, a test) imports and calls it:
 
-```bash
-zeeb-agent-server    # start MCP server
+```python
+from zeeb_agents import create_model, generate_crud, make_migrations, run_migrations
 ```
 
-Available MCP tools:
-- `zeeb_create_project` / `zeeb_create_app` — scaffold projects and apps
-- `zeeb_create_model` — add models with fields to `models.py`
-- `zeeb_create_serializer` — generate serializers in `serializers.py`
-- `zeeb_create_viewset` — generate viewsets in `views.py`
-- `zeeb_create_migration` / `zeeb_run_migrations` — manage migrations
-- `zeeb_seed_data` — seed database with sample data
+- `create_project` / `create_app`: scaffold projects and apps
+- `create_model` / `add_field`: add models and fields to `models.py`
+- `create_serializer` / `create_viewset` / `generate_crud`: the API layer
+- `make_migrations` / `run_migrations`: manage migrations
+- `generate_seed_script`: write a script that seeds sample data
+- `list_capabilities(tier="core")`: the tools an LLM agent should see first
+
+Every function returns an `AgentResult(success, message, data)` and never raises.
+Full reference: `docs/cli/agents.md`.
 
 ---
 

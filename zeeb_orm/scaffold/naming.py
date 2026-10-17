@@ -28,9 +28,9 @@ def to_title(name: str) -> str:
 def pluralize(word: str) -> str:
     """English-plural a lowercase model name for a default route prefix.
 
-    Same rule set as the hosting platform's codegen layer (company →
-    companies, status → statuses, box → boxes) so plans and directly issued
-    tool calls mount resources under identical prefixes.
+    Regular rules only (company → companies, status → statuses, box → boxes),
+    so plans and directly issued tool calls mount resources under identical
+    prefixes.
 
     Lives here rather than in the agent layer because ``startapp`` needs the
     same prefix the agent tools would produce; ``zeeb_agents._utils.code_gen``

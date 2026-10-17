@@ -43,7 +43,7 @@ Rules you can rely on:
   `true` when a corrected input or a preparatory call in the same session can
   succeed (bad field type, missing app, thing already exists, …) and `false`
   for session/context-level faults (missing project id, unknown project,
-  runtime not configured, filesystem permission) that need the platform or
+  runtime not configured, filesystem permission) that need the host or
   the user, not another attempt.
 - **Mutating intent results report their blast radius.** `build_feature`,
   `apply_plan`, `change_feature`, and `plan_feature` attach
@@ -171,8 +171,8 @@ built rather than only created:
 
 Features may share an app; ownership is tracked per artifact, so archiving one
 feature leaves its app-mates serving. A project whose `.zeeb/features.json` is a
-newer format — the host writes format 2 there — is managed by that
-platform's feature tools: these tools refuse to change it
+newer format (format 2 and up, written by another tool) is managed by that
+tool's feature tools: these tools refuse to change it
 (`manifest_version_unsupported`, before touching any file) and never rewrite
 the manifest; `list_features` still answers, from disk, with a
 `manifest_warning`. Projects built before this was recorded
@@ -253,7 +253,7 @@ Two tools are deliberately sandboxed:
 | `{prefix}manage_settings` | Dual-mode: pass only `key` (or `read_only=True`) to **read**; pass `key` + `value` to **write**. Both modes return `data={"key": ..., "value": ...}`. |
 | `{prefix}add_field` / `{prefix}remove_field` | Incremental model edits — add or drop a single field in place, leaving the rest of the model (and `class Meta`) untouched. |
 | `{prefix}generate_crud` | Best-effort: on partial failure it returns `success=False` with `data["steps_completed"]` and `data["errors"]` so you can see how far it got. |
-| `{prefix}export_openapi` | Writes a static copy of the OpenAPI spec into the project tree. For the live contract prefer `{prefix}get_openapi_url` / `{prefix}get_project_reference` — the preview runtime is always-on and host-managed, so you do not (and cannot) start a dev server yourself. |
+| `{prefix}export_openapi` | Writes a static copy of the OpenAPI spec into the project tree. For the live contract prefer `{prefix}get_openapi_url` / `{prefix}get_project_reference` when a hosted preview publishes them; otherwise run the server and read its `/openapi.json`. |
 | Field specs — relations | `ForeignKey` / `OneToOneField` / `ManyToManyField` specs **require `"to"`** (the target model name); `on_delete="SET_NULL"` requires `null=True`; M2M rejects `on_delete`/`null` but accepts `through`/`through_fields`. Invalid specs are rejected *before* anything is written. |
 | Field specs — the `"raw"` escape hatch | Any field-spec value must be a plain literal (str/num/bool/None/list/tuple/dict). For validators, callables, or other arbitrary Python, use the reserved `"raw"` key: a dict of kwarg name → verbatim source, e.g. `{"name": "score", "type": "IntegerField", "raw": {"validators": "[validators.MinValueValidator(0)]"}}`. Raw entries win over same-named plain keys; `from zeeb_orm import validators` is imported automatically when referenced. |
 | `{prefix}setup_auth` / `{prefix}setup_oauth` | Idempotent wiring: re-running reports `already_wired=True` instead of duplicating includes. OAuth credentials are read from env vars (`data["client_id_env"]` / `data["client_secret_env"]`) — set them with `{prefix}set_env`. |

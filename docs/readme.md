@@ -104,7 +104,7 @@ through `.env` — see [Settings](configuration/settings.md).
 
 ### CLI & Tools
 - [Commands](cli/commands.md) - Management commands
-- [Agent Functions](cli/agents.md) - Importable async functions for scaffolding, management and operations
+- [Agent Functions](cli/agents.md) - Importable async functions for scaffolding, project management and operations
 
 ### Configuration
 - [Settings](configuration/settings.md) - Project configuration

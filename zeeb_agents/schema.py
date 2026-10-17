@@ -387,9 +387,9 @@ async def _fetch_openapi_spec(port: int) -> dict[str, Any]:
         ) from exc
     except httpx.HTTPError as exc:
         raise AgentError(
-            f"API not reachable on port {port} ({exc}) — the platform "
-            "preview runtime serves the live contract; use "
-            "get_openapi_url() for its URL.",
+            f"API not reachable on port {port} ({exc}) — start it with "
+            "zeeb-manage runserver, or, on a hosted preview, use "
+            "get_openapi_url() for the live contract.",
             code="server_not_reachable",
             port=port,
         ) from exc
@@ -407,11 +407,10 @@ async def export_openapi(
     JSON to ``openapi.json`` in the project root (or *output_path*).
 
     This needs a reachable API on ``localhost:{port}`` — it does **not** start
-    one, and you do not (and cannot) start a dev server yourself: the preview
-    runtime is always-on and host-managed. For the live contract prefer
-    :func:`~zeeb_agents.get_openapi_url` / :func:`~zeeb_agents.get_project_reference`;
-    reach for ``export_openapi`` only when you specifically need a static file
-    written into the project tree.
+    one (``zeeb-manage runserver`` does). On a hosted preview, prefer
+    :func:`~zeeb_agents.get_openapi_url` / :func:`~zeeb_agents.get_project_reference`
+    for the live contract and reach for ``export_openapi`` only when you
+    specifically need a static file written into the project tree.
 
     Args:
         output_path: Override output file path.  Relative to project root.
@@ -425,8 +424,8 @@ async def export_openapi(
 
     Notes:
         - Writes a *static* snapshot fetched over HTTP.  For the always-current
-          contract prefer :func:`~zeeb_agents.get_openapi_url`, which returns
-          the platform preview runtime's live OpenAPI URL.
+          contract on a hosted preview prefer :func:`~zeeb_agents.get_openapi_url`,
+          which returns the live OpenAPI URL the host published.
         - Requires ``httpx`` and a reachable running API.  A missing dependency
           fails with ``error_code="dependency_missing"``; a connection error
           or non-2xx response with ``error_code="server_not_reachable"``

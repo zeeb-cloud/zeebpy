@@ -840,7 +840,7 @@ async def test_run_query_times_out(query_project):
 
 
 # ---------------------------------------------------------------------------
-# 9. A newer feature manifest (the host's) is never rewritten
+# 9. A newer feature manifest (another tool's) is never rewritten
 # ---------------------------------------------------------------------------
 
 _V2_MANIFEST = {
@@ -887,7 +887,7 @@ def test_manifest_writers_refuse_a_newer_manifest(tmp_path):
         with pytest.raises(AgentError) as info:
             write()
         assert info.value.result.data["error_code"] == "manifest_version_unsupported"
-        assert "the host" in str(info.value)
+        assert "feature-manifest format 2" in str(info.value)
     assert (tmp_path / ".zeeb" / "features.json").read_text() == text
     degraded = load_manifest(tmp_path)
     assert degraded["features"] == {} and degraded["unsupported_version"] == 2
@@ -913,7 +913,7 @@ async def test_feature_lifecycle_refuses_a_platform_managed_project(project):
 
     listed = await agents.list_features(project_id=project)
     assert listed.success
-    assert "the host" in listed.data["manifest_warning"]
+    assert "feature-manifest format 2" in listed.data["manifest_warning"]
     assert (project / ".zeeb" / "features.json").read_text() == text
 
 

@@ -66,7 +66,7 @@ ERROR_CODES = frozenset(
 
 
 # Codes an agent cannot fix from inside the session: they signal a missing or
-# broken project/platform context, not a correctable input. Everything else is
+# broken project/host context, not a correctable input. Everything else is
 # recoverable — a corrected argument or a preparatory call can succeed.
 _NON_RECOVERABLE_CODES = frozenset(
     {

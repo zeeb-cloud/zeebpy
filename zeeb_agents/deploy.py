@@ -178,7 +178,7 @@ async def generate_requirements(
 
     The environment frozen is the interpreter running this tool — the same one
     ``run_tests`` and ``run_management_command`` run the project with (in the
-    platform's preview runtime, the project's own environment). It is never
+    project's own environment, also on a hosted preview). It is never
     whatever ``pip`` happens to be first on ``PATH``, which could belong to a
     different Python entirely.
 

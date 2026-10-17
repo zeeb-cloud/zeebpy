@@ -131,7 +131,7 @@ def _driver_installed(module: str) -> bool:
 def async_database_url(url: str) -> str:
     """Return the URL an *asyncio* server should connect with.
 
-    A platform or a ``DATABASE_URL`` written for libpq names the backend and
+    A hosting provider or a ``DATABASE_URL`` written for libpq names the backend and
     leaves the driver out (``postgresql://…``). Read literally that means
     psycopg2, a synchronous driver: every query an async server makes would
     block its event loop. A bare scheme names no choice, so it gets the async

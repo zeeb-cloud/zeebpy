@@ -158,8 +158,8 @@ name, `Post` → `/posts` — override it with `url_prefix=`):
 
 ## Step 8 — Preview the API
 
-The preview runtime is always-on and host-managed — you do not start a dev
-server. After a change, fetch the live URLs and re-read the OpenAPI contract:
+On a hosted preview, fetch the live URLs after a change and re-read the
+OpenAPI contract (without one, run the server locally and read `/openapi.json`):
 
 ```
 {prefix}get_project_reference(project_id="…")   # preview_url, runtime_api_base_url, openapi_url

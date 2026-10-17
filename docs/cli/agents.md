@@ -116,7 +116,7 @@ see `create_project`.)
 | `manage_settings(key, value=...)` | Read mode = only `key`; write mode = `key` + `value`. Write only updates keys that already exist. |
 | `replace_model_fields(...)` | Destructive — replaces **all** fields. Use `add_field`/`remove_field` for incremental edits. |
 | `run_query(sql)` | Read-only: SELECT/WITH/EXPLAIN only, single statement, always rolled back. |
-| `export_openapi(...)` | Writes a static snapshot of the spec. For the live contract use `get_openapi_url()` / `get_project_reference()` (host-managed runtime). |
+| `export_openapi(...)` | Writes a static snapshot of the spec. For the live contract use `get_openapi_url()` / `get_project_reference()` (on a hosted preview). |
 | Relation field specs | `to` is **required**; `on_delete="SET_NULL"` needs `null=True`; M2M rejects `on_delete`/`null`. Invalid specs are rejected before anything is written. |
 | Field spec `"raw"` key | Escape hatch for non-literal kwargs (validators, callables): a dict of kwarg → verbatim Python source. The *values* are the one place (with `body=`/`imports=`) where caller text becomes code verbatim, by design; the *keys* must still be kwargs the field accepts. |
 | Structural edits | Classes, methods and functions are located through the AST (decorators included), never by text; each generated edit is written atomically and only if the module still parses — otherwise nothing changes and the call fails with `syntax_error`. |
@@ -186,13 +186,11 @@ the result — instead of a dozen `create_model` / `create_serializer` /
 `create_viewset` / `register_route` calls whose ordering the agent has to get
 right.
 
-> **Scope**: the host does not use this layer (nor `tiers.py`,
-> `list_capabilities`, the `mcp://docs` resources): it has its own
-> framework-neutral intent implementation and feature-manifest format 2, and
-> drives zeebpy projects through the per-object tools below. The layer remains
-> a supported part of this library for direct callers. On a project whose
-> `.zeeb/features.json` the platform manages, the lifecycle tools refuse to act
-> (`manifest_version_unsupported`) rather than rewrite that manifest.
+> **Shared manifests**: a host may drive zeebpy projects through the
+> per-object tools below and keep its own feature manifest in
+> `.zeeb/features.json`. On a project whose manifest is in a newer format than
+> this library's, the lifecycle tools refuse to act
+> (`manifest_version_unsupported`) rather than rewrite it.
 
 All of them return `affected` (`{"apps", "entities", "files"}`) so the caller
 knows what was touched, and the executing ones return `verified`. A partial
@@ -241,8 +239,8 @@ List the features a project is made of — name, app, status, entities,
 endpoints, functions. Projects built before features were recorded still list:
 theirs are reconstructed from disk, one per app, and marked `inferred`.
 
-A `.zeeb/features.json` in a newer format than this library's (format 2, written
-by the host) is never rewritten: the lifecycle tools
+A `.zeeb/features.json` in a newer format than this library's (format 2 and up,
+written by another tool) is never rewritten: the lifecycle tools
 (`build_feature`, `change_feature`, `apply_plan` with a feature,
 `deactivate_feature`, `activate_feature`, `delete_feature`) fail with
 `manifest_version_unsupported` before touching any file, and `list_features`
@@ -606,15 +604,16 @@ originals; the executor never applies them twice. Delete the originals with
 
 ---
 
-## Platform Runtime
+## Hosted Runtime
 
-The preview runtime is always-on and host-managed — you do not start a dev
-server. Fetch the live URLs the platform publishes for a project.
+A host that runs the project for you (a hosted preview) can publish its
+URLs into the project's `.env`; these tools read them. Without one, run
+`zeeb-manage runserver` yourself — the API serves `/openapi.json` and `/docs`.
 
 ### `get_project_reference(project_id=None)`
 Return `{project_id, preview_url, runtime_api_base_url, openapi_url}` from the
-host-published env. Fails with `runtime_not_configured` when the runtime is
-not live yet.
+`ZEEB_*` variables a host published. Fails with `runtime_not_configured` when
+none are set.
 
 ### `get_openapi_url(project_id=None)`
 Return `{openapi_url}` — the live OpenAPI document URL to build a client against.
@@ -1357,7 +1356,7 @@ result = await generate_dockerfile(python_version="3.12", port=8080)
 
 ### `generate_requirements(output_path="requirements.txt", project_id=None)`
 Run `<sys.executable> -m pip freeze` — the interpreter running the tools, which
-is the project's environment in the preview runtime, never whatever `pip` is
+is the project's own environment, never whatever `pip` is
 first on `PATH` — and write `requirements.txt` (filters out editable installs).
 
 ```python

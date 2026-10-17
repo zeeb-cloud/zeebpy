@@ -557,7 +557,7 @@ async def describe_project(project_root: Path | None = None) -> AgentResult:
             "pending_count": int}`` (``"available": False`` when the migration
             state could not be read, e.g. the DB is not initialised yet).
         runtime (dict): ``{"configured": bool, "preview_url": str | None,
-            "openapi_url": str | None}`` from the platform preview runtime.
+            "openapi_url": str | None}`` from a hosted preview, when one published them.
         served (bool): whether at least one endpoint is actually routed.
         warnings (list[str]): human-readable wiring/migration gaps to fix —
             unregistered apps, unrouted endpoints, duplicate route prefixes

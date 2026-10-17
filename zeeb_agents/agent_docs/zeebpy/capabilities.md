@@ -171,12 +171,12 @@ the change. Grouped by category below.
 | `{prefix}show_migration(name)` | Show one migration file — its source, operations, dependencies and applied state. |
 | `{prefix}squash_migrations(start, end, name=None)` | Squash a range of migrations into one file. |
 
-#### Platform Runtime
+#### Hosted Runtime
 
 | Tool | Description |
 |---|---|
 | `{prefix}get_openapi_url()` | Return the live OpenAPI document URL for the project. |
-| `{prefix}get_project_reference()` | Return the host-published runtime references for the project. |
+| `{prefix}get_project_reference()` | Return the runtime references a host published for the project. |
 
 #### Logs
 
@@ -259,7 +259,7 @@ the change. Grouped by category below.
 | `{prefix}delete_task(app, function_name)` | Remove an async task function from ``apps/{app}/tasks.py``. |
 | `{prefix}list_tasks(app)` | Return all async task functions defined in ``apps/{app}/tasks.py``. |
 
-#### Health
+#### Health Checks
 
 | Tool | Description |
 |---|---|
@@ -282,7 +282,7 @@ the change. Grouped by category below.
 | `{prefix}generate_dockerfile(python_version="3.12", port=8000, if_exists="error")` | Generate a production-ready ``Dockerfile`` in the project root. |
 | `{prefix}generate_requirements(output_path="requirements.txt")` | Generate a ``requirements.txt`` from ``pip freeze`` output. |
 
-#### Permissions
+#### Permission Classes
 
 | Tool | Description |
 |---|---|

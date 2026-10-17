@@ -84,12 +84,9 @@ def empty_manifest() -> dict:
     return {"version": MANIFEST_VERSION, "features": {}}
 
 
-#: Who writes a manifest newer than this module understands. The the host
-#: platform keeps its own feature manifest (format 2 and up) in the same file.
-_NEWER_MANIFEST_OWNER = (
-    "the host's feature tools (zeeb_build_feature, "
-    "zeeb_change_feature, …)"
-)
+#: Who writes a manifest newer than this module understands: a host that keeps
+#: its own feature manifest (format 2 and up) in the same file.
+_NEWER_MANIFEST_OWNER = "the tool that wrote it"
 
 
 def _declared_version(data: object) -> int | None:
@@ -122,7 +119,8 @@ def newer_manifest_message(version: int) -> str:
     return (
         f"{STATE_DIR}/{MANIFEST_NAME} is feature-manifest format {version}; this zeebpy "
         f"understands format {MANIFEST_VERSION} and will not rewrite it. It is managed "
-        f"by {_NEWER_MANIFEST_OWNER} — use those to change features in this project."
+        f"by {_NEWER_MANIFEST_OWNER} — use its feature tools to change features in "
+        "this project."
     )
 
 

@@ -1356,7 +1356,7 @@ async def list_features(
         inferred_count (int): how many were reconstructed rather than recorded.
         manifest_path (str): project-relative path of the feature manifest.
         manifest_warning (str): present only when the manifest is a newer
-            format written by another tool (the host); its
+            format written by another tool; its
             recorded features are not interpreted and only features inferred
             from disk are listed.
 
@@ -2425,7 +2425,7 @@ async def diagnose_problem(
         next_actions.append(
             "The database is unreachable — get_env() shows DATABASE_URL, "
             "set_env(key='DATABASE_URL', value=...) fixes it, check_system_health() "
-            "confirms; the database service itself is host-managed."
+            "confirms."
         )
     elif pending_count:
         root_cause = {
