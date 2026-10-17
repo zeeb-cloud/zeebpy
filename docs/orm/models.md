@@ -181,6 +181,45 @@ resolve in this order:
    `"User"` over zeeb_api's own). Two project models with the name raise
    `AmbiguousModelReferenceError` asking for the app-qualified label.
 
+#### When registration fails
+
+Before it diffs anything, `makemigrations` — the `manage.py` command,
+`zeeb_orm.migrations.makemigrations()` and the agent layer's `make_migrations`
+alike — imports the `models` module of every app in `INSTALLED_APPS`
+(`apps.<name>.models`, then `<name>.models`) and builds the table of every
+concrete model it finds. If any of that fails it raises
+`zeeb_orm.exceptions.ModelRegistrationError` instead of carrying on, with one
+line per failure:
+
+```text
+zeeb_orm.exceptions.ModelRegistrationError: Could not register all models from INSTALLED_APPS — refusing to continue with an incomplete model state:
+  - app 'apps.blog': NameError("name 'Autor' is not defined")
+  - model 'Invoice' (app 'apps.billing'): ...
+```
+
+The refusal is deliberate: a model missing from the registry would look like a
+deleted model, and the generated migration would drop its table. What counts
+as a failure:
+
+- an existing `models.py` that raises on import — including a
+  `ModuleNotFoundError` for something it imports;
+- a model whose table cannot be built.
+
+An app that has no `models` module at all is not an error; it only produces a
+`UserWarning` (see
+[App models not detected](migrations.md#app-models-not-detected)). The agent
+layer reports the exception as a failed result rather than raising it.
+
+```python
+from zeeb_orm.exceptions import ModelRegistrationError
+from zeeb_orm.migrations import makemigrations
+
+try:
+    makemigrations(message="add_invoices")
+except ModelRegistrationError as exc:
+    print(exc)   # every app and model that could not be registered
+```
+
 ## Model Inheritance
 
 ### Abstract Base Classes

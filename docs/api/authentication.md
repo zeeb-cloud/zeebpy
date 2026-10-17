@@ -316,6 +316,37 @@ configure_auth(user_model=User)
 In a scaffolded project this is driven by the `AUTH_USER_MODEL` setting
 instead, and you do not need to call `configure_auth()` yourself.
 
+#### clear_user_model_cache()
+
+`get_user_model()` resolves `AUTH_USER_MODEL` once and caches the class for
+the life of the process; `configure_auth(user_model=...)` simply writes that
+same cache. `clear_user_model_cache()` (no arguments, returns `None`) empties
+it, so the next `get_user_model()` call resolves `AUTH_USER_MODEL` again — or
+falls back to the built-in `User` when the setting is unset. It also undoes an
+earlier `configure_auth()`.
+
+You only need it when the user model changes inside one process, which in
+practice means tests:
+
+```python
+import pytest
+
+from zeeb_api.auth import clear_user_model_cache, configure_auth, get_user_model
+
+
+@pytest.fixture
+def custom_user_model():
+    from apps.accounts.models import CustomUser
+
+    configure_auth(user_model=CustomUser)
+    yield get_user_model()
+    clear_user_model_cache()   # the next test resolves AUTH_USER_MODEL afresh
+```
+
+A model path that cannot be imported is never cached (a warning is issued and
+the built-in `User` is returned for that call only), so there is nothing to
+clear after fixing a typo in `AUTH_USER_MODEL`.
+
 ## Permissions
 
 Permissions work with both the default `User` and custom user models.
@@ -524,6 +555,33 @@ A user's roles (`zeeb_api.auth.middleware.get_user_roles`) are the union of:
 `AbstractUser.get_roles()` returns the flag-derived roles and
 `get_claims()` emits them as the `roles` claim, so a token-only
 `AuthenticatedUser` (`AUTH_LOAD_USER_FROM_DB = False`) sees the same set.
+
+#### bearer_scheme
+
+`zeeb_api.auth.middleware.bearer_scheme` is the FastAPI security scheme the
+dependencies above declare — `HTTPBearer(auto_error=False)`. Declaring it is
+what puts the *Authorize* (bearer token) button into `/docs` and the
+`HTTPBearer` security requirement into `/openapi.json`. Because `auto_error` is
+off, a request without an `Authorization: Bearer` header is not rejected by the
+scheme itself: the dependency receives `None` and decides (401 from
+`get_current_user`, `None` from `get_current_user_optional`).
+
+Reuse it in a dependency of your own when you need the raw credentials and
+want the route documented as bearer-protected:
+
+```python
+from fastapi import Depends
+from fastapi.security import HTTPAuthorizationCredentials
+
+from zeeb_api.auth.middleware import bearer_scheme
+
+
+@app.get("/debug/token")
+async def raw_token(
+    credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
+):
+    return {"has_token": credentials is not None}
+```
 
 ### Refresh Token Rotation
 
@@ -736,6 +794,211 @@ row, and a deleted or inactive user is treated as unauthenticated. Setting it to
 `False` skips the query and builds an `AuthenticatedUser` from the token claims
 alone — faster, but see the warning in
 [Permissions](permissions.md) about combining that with `ModelPermissions`.
+
+`JWTAuthMiddleware(app, user_loader=None, load_user_from_db=None,
+external_validators=None)` resolves its loader in this order: an explicit
+`user_loader` wins; otherwise `load_user_from_db` (or, when that is `None`, the
+`AUTH_LOAD_USER_FROM_DB` setting) picks `default_user_loader` or the
+claims-only `AuthenticatedUser`. `external_validators` is covered in
+[External Bearer Mode](oauth.md#external-bearer-mode-accept-idp-tokens-directly).
+
+#### default_user_loader
+
+`default_user_loader(payload)` is the loader used when
+`AUTH_LOAD_USER_FROM_DB` is on. It takes the decoded `TokenPayload` of a valid
+access token and:
+
+1. resolves the user model with `get_user_model()`;
+2. converts `payload.sub` to a `UUID` when it parses as one (otherwise the raw
+   string is used) and fetches `User.objects.get(id=...)`;
+3. returns `None` — the request is anonymous — when no row, or more than one,
+   matches, or when the account has `is_active = False`;
+4. otherwise attaches the payload as `user._token_payload` (so the token's
+   claims stay reachable, e.g. for `get_user_roles`) and returns the user.
+
+It fails **closed**: it never falls back to a claims-only user, and any other
+error (the database is down, say) propagates and fails the request instead of
+authenticating it from claims nobody could check. When the middleware's loader
+returns `None` for a valid token, it records `AUTH_TOKEN_INVALID` on
+`request.state.auth_error`, so a later permission denial answers
+`401 AUTH_TOKEN_INVALID` rather than "credentials not provided".
+
+#### Custom user loaders (UserLoaderFunc)
+
+`zeeb_api.auth.middleware.UserLoaderFunc` is the type of a loader:
+`Callable[[TokenPayload], Awaitable[Any]]` — an async function that receives the
+decoded access token and returns the object to place on `request.state.user`,
+or `None` to treat the request as anonymous. Pass one as `user_loader=` to
+replace the database lookup, for instance to add a check on top of the default
+one:
+
+```python
+from zeeb_api.auth import TokenPayload
+from zeeb_api.auth.middleware import UserLoaderFunc, default_user_loader
+from zeeb_api.middleware import JWTAuthMiddleware
+
+
+async def load_unlocked_user(payload: TokenPayload):
+    user = await default_user_loader(payload)
+    if user is not None and getattr(user, "is_locked", False):
+        return None   # anonymous; recorded as AUTH_TOKEN_INVALID
+    return user
+
+
+loader: UserLoaderFunc = load_unlocked_user
+app.add_middleware(JWTAuthMiddleware, user_loader=loader)
+```
+
+Keep a custom loader fail-closed in the same way: return `None` for an account
+that should no longer authenticate, and let unexpected errors raise. A loader
+passed to the middleware applies only to the middleware; the route
+dependencies, when they resolve a token themselves because no middleware ran,
+use the settings-driven choice (`default_user_loader` or claims only).
+
+### Per-viewset Authentication
+
+The middleware authenticates every request the same way. A viewset can take
+over authentication for its own endpoints with `authentication_classes`, a list
+of backend classes from `zeeb_api.authentication`:
+
+```python
+from zeeb_api.authentication import JWTAuthentication, OAuth2BearerAuthentication
+from zeeb_api.permissions import IsAuthenticated
+from zeeb_api.viewsets import ModelViewSet
+
+
+class ReportViewSet(ModelViewSet):
+    queryset = Report.objects.all()
+    serializer_class = ReportSerializer
+    authentication_classes = [JWTAuthentication, OAuth2BearerAuthentication]
+    permission_classes = [IsAuthenticated]
+```
+
+How the router applies the list, on every action of the viewset:
+
+- **Unset (`None`, the default) or empty** — nothing happens; whatever
+  `JWTAuthMiddleware` put on `request.state.user` stands.
+- **Non-empty** — the viewset owns authentication. The middleware's
+  `request.state.user` and `request.state.auth_error` are discarded, then each
+  class is instantiated (with no arguments) and its `authenticate(request)`
+  awaited in order. The first one that returns a user wins and becomes
+  `request.state.user`; the rest are not called.
+- If none returns a user, the request continues **unauthenticated** and the
+  permission classes decide — with `IsAuthenticated` that is a 401, carrying
+  `AUTH_TOKEN_EXPIRED` or `AUTH_TOKEN_INVALID` when a backend recorded why the
+  token failed. Without permission classes the request proceeds anonymously.
+
+Authentication runs before the permission check, which runs before
+throttling.
+
+#### BaseAuthentication
+
+The base class every backend subclasses. Implement one method:
+
+```python
+async def authenticate(self, request) -> object | None: ...
+```
+
+- return a user object to authenticate the request (it becomes
+  `request.state.user`; permission classes treat it as signed in unless it has
+  `is_authenticated = False`);
+- return `None` when the request carries no credentials this backend
+  understands, so the next class in the list can try;
+- raise `zeeb_api.exceptions.AuthenticationException` to reject the request
+  outright with a 401 — no further backend is tried.
+
+Calling `authenticate()` on `BaseAuthentication` itself raises
+`NotImplementedError`. Backends are instantiated with no arguments for every
+request, so put configuration in class attributes. An API-key backend:
+
+```python
+from zeeb_api.authentication import BaseAuthentication
+from zeeb_api.exceptions import AuthenticationException, ErrorCode
+
+
+class ApiKeyAuthentication(BaseAuthentication):
+    header = "X-API-Key"
+
+    async def authenticate(self, request):
+        key = request.headers.get(self.header)
+        if key is None:
+            return None   # not ours: let the next backend try
+        client = await ApiClient.objects.filter(key=key, is_active=True).first()
+        if client is None:
+            raise AuthenticationException(
+                code=ErrorCode.AUTH_TOKEN_INVALID,
+                message="Unknown API key",
+            )
+        return client
+```
+
+The built-in backends below never raise for a bad token: they record the
+reason on `request.state.auth_error` (where applicable) and return `None`, so
+they compose — a token one backend cannot validate may still be valid for the
+next.
+
+#### JWTAuthentication
+
+Authenticates the framework's own access tokens from the
+`Authorization: Bearer <token>` header, using the same validation as
+`JWTAuthMiddleware`:
+
+- no Bearer header → `None` (no error recorded);
+- an expired token → `None` with `auth_error = AUTH_TOKEN_EXPIRED`;
+- any other invalid token (bad signature, wrong `type`, issuer/audience
+  mismatch, …) → `None` with `auth_error = AUTH_TOKEN_INVALID`;
+- a valid token → the user from `default_user_loader`. A deleted or
+  deactivated account gives `None` with `AUTH_TOKEN_INVALID`; a database
+  error propagates.
+
+The database lookup is controlled by the class attribute
+`load_user_from_db = True` — not by the `AUTH_LOAD_USER_FROM_DB` setting.
+Unlike the middleware, `JWTAuthentication` does not consult
+`OAUTH_ACCEPT_EXTERNAL_TOKENS`; add `OAuth2BearerAuthentication` to the list
+for that.
+
+#### JWTStatelessAuthentication
+
+`JWTAuthentication` with `load_user_from_db = False`: a valid access token
+yields an `AuthenticatedUser` built from the token's claims alone (`id`,
+`claims`, and `is_staff` / `is_admin` / `is_superuser` read from those
+claims), with no database query. Error handling is identical. The trade-off is
+the same as `AUTH_LOAD_USER_FROM_DB = False`: a user deleted or deactivated
+after the token was issued stays authenticated until it expires.
+
+#### OAuth2BearerAuthentication
+
+Authenticates bearer tokens issued by an external identity provider (Azure AD,
+Google, …), validated against the provider's JWKS through
+`ExternalTokenValidator` and resolved to the linked local user — see
+[External Bearer Mode](oauth.md#external-bearer-mode-accept-idp-tokens-directly)
+for exactly what a validator checks and returns. It needs the
+`zeebpy[oauth]` extra; the OAuth package is imported only when the backend
+first runs.
+
+The class attribute `providers` picks the providers to try:
+
+- `None` (default) — the names in `OAUTH_ACCEPT_EXTERNAL_TOKENS`, the same
+  setting the middleware honours;
+- a list of names — looked up in `OAUTH_PROVIDERS` via `get_oauth_provider()`.
+  A name that is not configured raises `KeyError` when the backend runs.
+
+Each provider's validator is tried in turn and the first user returned wins.
+A token no provider accepts (or a validator that raises) gives `None`; this
+backend records no `auth_error`.
+
+```python
+from zeeb_api.authentication import OAuth2BearerAuthentication
+
+
+class AzureOnly(OAuth2BearerAuthentication):
+    providers = ["azure"]
+
+
+class PartnerViewSet(ModelViewSet):
+    authentication_classes = [AzureOnly]
+    permission_classes = [IsAuthenticated]
+```
 
 ## OAuth2 / OIDC Single Sign-On
 

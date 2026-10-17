@@ -33,10 +33,12 @@ class ExternalAuthenticatedUser:
 
     @property
     def is_staff(self) -> bool:
+        """The token's ``is_staff`` claim (False when absent)."""
         return bool(self.claims.get("is_staff", False))
 
     @property
     def is_superuser(self) -> bool:
+        """The token's ``is_superuser`` claim (False when absent)."""
         return bool(self.claims.get("is_superuser", False))
 
     def __repr__(self) -> str:

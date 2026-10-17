@@ -174,6 +174,42 @@ override `async allow_request(request, view)` and optionally `wait()`.
 | `DEFAULT_THROTTLE_RATES` | `{"anon": None, "user": None}` | Rate per throttle scope |
 | `THROTTLE_NUM_PROXIES` | `None` | Number of trusted proxies. When set, the client IP is taken `THROTTLE_NUM_PROXIES` entries **from the right** of `X-Forwarded-For` instead of the socket address — the leftmost entry is client-controlled and would let anyone forge unlimited distinct throttle keys |
 
+### `get_default_throttle_classes()`
+
+```text
+get_default_throttle_classes() -> list[type[BaseThrottle]]
+```
+
+Resolves the dotted paths in `DEFAULT_THROTTLE_CLASSES` to the throttle
+classes themselves — the list a viewset with `throttle_classes = None` uses
+(`ViewSet.get_throttles()` calls it). Resolution is cached and repeated only
+when the setting's value changes; each call returns a new list, so mutating it
+does not affect the cache. An empty or unset setting gives `[]`. A path that
+does not import — a malformed path, a missing module, or a module without that
+attribute — raises `ImportError` on the first request that needs the defaults.
+
+Use it to build on the project defaults instead of copying them:
+
+```python
+from zeeb_api.throttling import ScopedRateThrottle, get_default_throttle_classes
+from zeeb_api.viewsets import ModelViewSet
+
+
+class ReportViewSet(ModelViewSet):
+    queryset = Report.objects.all()
+    serializer_class = ReportSerializer
+    throttle_scope = "reports"
+
+    def get_throttles(self):
+        # The project-wide throttles, plus this viewset's scoped limit.
+        classes = [*get_default_throttle_classes(), ScopedRateThrottle]
+        return [throttle() for throttle in classes]
+```
+
+Calling it inside `get_throttles()` (per request) rather than in the class body
+keeps the viewset following the setting, and does not read settings at import
+time.
+
 ## Caching Caveat (Multi-Process Deployments)
 
 The default throttle cache (`InMemoryThrottleCache`) is **per process**:
@@ -216,6 +252,20 @@ concurrent requests all see the same free slot and burst past the limit. The
 in-memory cache does it under one lock. A cache that implements only
 `get_history`/`set_history` still works — the base class composes them — but is
 only as accurate as that composition under concurrency.
+
+`get_throttle_cache()` returns the cache currently installed — an
+`InMemoryThrottleCache` until `set_throttle_cache()` replaces it. It is a
+process-wide singleton, and every rate throttle looks it up on each request,
+so a cache installed at startup takes effect immediately for every throttle,
+including the ones the framework mounts on `/login` and the OAuth routes. Use
+it to reach the cache from your own code, e.g. a startup check:
+
+```python
+from zeeb_api.throttling import InMemoryThrottleCache, get_throttle_cache
+
+if isinstance(get_throttle_cache(), InMemoryThrottleCache):
+    logger.warning("throttling is per process; limits multiply by the worker count")
+```
 
 In tests, install a fresh `InMemoryThrottleCache()` between tests to reset
 state:

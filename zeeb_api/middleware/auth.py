@@ -200,6 +200,7 @@ class JWTAuthMiddleware(BaseHTTPMiddleware):
         request: Request,
         call_next: RequestResponseEndpoint,
     ) -> Response:
+        """Resolve the Bearer token onto ``request.state.user``, then continue."""
         # Initialize user as None
         request.state.user = None
         # The dependencies below read this: once the middleware has decided a

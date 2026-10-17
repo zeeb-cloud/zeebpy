@@ -80,24 +80,31 @@ class PrefetchedRelated(list):  # type: ignore[type-arg]
         return result
 
     async def add(self, *objs: Any, **kwargs: Any) -> Any:
+        """Add *objs* to the relation in the database; drops the prefetched list."""
         return await self._write("add", *objs, **kwargs)
 
     async def remove(self, *objs: Any, **kwargs: Any) -> Any:  # type: ignore[override]
+        """Remove *objs* from the relation in the database; drops the prefetched list."""
         return await self._write("remove", *objs, **kwargs)
 
     async def clear(self, **kwargs: Any) -> Any:  # type: ignore[override]
+        """Empty the relation in the database; drops the prefetched list."""
         return await self._write("clear", **kwargs)
 
     async def set(self, objs: Any, **kwargs: Any) -> Any:
+        """Replace the relation's members with *objs*; drops the prefetched list."""
         return await self._write("set", objs, **kwargs)
 
     async def create(self, **kwargs: Any) -> Any:
+        """Create a related object in the database; drops the prefetched list."""
         return await self._write("create", **kwargs)
 
     async def get_or_create(self, **kwargs: Any) -> Any:
+        """``get_or_create`` through the relation; drops the prefetched list."""
         return await self._write("get_or_create", **kwargs)
 
     async def update_or_create(self, **kwargs: Any) -> Any:
+        """``update_or_create`` through the relation; drops the prefetched list."""
         return await self._write("update_or_create", **kwargs)
 
     def __getattr__(self, name: str) -> Any:

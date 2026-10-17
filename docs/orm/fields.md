@@ -563,6 +563,90 @@ default validators: `CharField` enforces `max_length`; `EmailField`,
 `URLField` and `SlugField` enforce their formats; `Positive*IntegerField`
 enforce `>= 0`; `GenericIPAddressField` enforces valid addresses.
 
+### Writing a validator
+
+A validator is any callable that takes the field's value and raises
+`zeeb_orm.exceptions.ValidationError` when the value is invalid; its return
+value is ignored. `Field.validate()` calls every validator in the field's list
+and collects the messages of each `ValidationError` (together with a failed
+`choices` check) into a single `ValidationError`, so a value that breaks two
+rules reports both. Validators are not called for `None` — the `null` check
+handles that first. Any exception other than `ValidationError` is not caught
+and propagates out of `full_clean()` / `save()`.
+
+```python
+from zeeb_orm import fields
+from zeeb_orm.exceptions import ValidationError
+
+
+def validate_even(value):
+    if value % 2:
+        raise ValidationError(f"{value} is not an even number.", code="even")
+
+
+class Order(Model):
+    quantity = fields.IntegerField(validators=[validate_even])
+```
+
+#### BaseValidator
+
+For a rule of the form "the value must stay within a limit", subclass
+`zeeb_orm.validators.BaseValidator` — the four length and value validators
+above are built on it.
+
+```text
+BaseValidator(limit_value, message=None)
+```
+
+- `limit_value` — the limit the value is compared against; stored as
+  `self.limit_value`.
+- `message` — overrides the class's `message` for this instance.
+
+A subclass sets two class attributes and overrides up to two methods:
+
+| Member | Default | Purpose |
+|--------|---------|---------|
+| `message` | `"Ensure this value is %(limit_value)s (it is %(show_value)s)."` | `%`-format string; the keys `limit_value`, `show_value` (the cleaned value) and `value` (the raw value) are available |
+| `code` | `"limit_value"` | Passed as `ValidationError.code` |
+| `clean(x)` | returns `x` | Transforms the value before the comparison (`MinLengthValidator` returns `len(x)`) |
+| `compare(a, b)` | `a is not b` | Receives the cleaned value and `limit_value`; returns `True` when the value **violates** the limit |
+
+Calling the instance runs `clean()`, then `compare()`, and raises
+`ValidationError(message % params, code=code)` when `compare()` returns
+`True`. Two validators compare equal when they are the same class with the same
+`limit_value`, `message` and `code`.
+
+```python
+from zeeb_orm import fields, validators
+
+
+class MultipleOfValidator(validators.BaseValidator):
+    message = "Ensure this value is a multiple of %(limit_value)s (it is %(show_value)s)."
+    code = "multiple_of"
+
+    def compare(self, a, b):
+        return a % b != 0
+
+
+class MaxWordsValidator(validators.BaseValidator):
+    message = "Use at most %(limit_value)d words (this has %(show_value)d)."
+    code = "max_words"
+
+    def clean(self, x):
+        return len(x.split())
+
+    def compare(self, a, b):
+        return a > b
+
+
+class Pack(Model):
+    size = fields.IntegerField(validators=[MultipleOfValidator(6)])
+    summary = fields.TextField(
+        default="",
+        validators=[MaxWordsValidator(50, message="Keep the summary under 50 words.")],
+    )
+```
+
 ## Next Steps
 
 - [Models](models.md) - Model definition

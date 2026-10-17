@@ -257,6 +257,33 @@ from zeeb_api.auth.oauth import get_oauth_provider
 provider = get_oauth_provider("azure")
 ```
 
+`get_oauth_provider()` raises `KeyError` for a name that is not in
+`OAUTH_PROVIDERS`, and `build_providers_from_settings()` raises
+`ImproperlyConfigured` for an entry whose name is not `azure`/`google`/`github`
+and that has no `"class"` dotted path.
+
+The registry is built on first use and then cached for the process — each
+provider instance also caches its discovery document and JWKS.
+`clear_provider_cache()` (no arguments) drops the cached registry so the next
+lookup rebuilds it from the current `OAUTH_PROVIDERS`: call it in tests that
+override that setting, or after changing it at runtime.
+
+```python
+from zeeb_api.auth.oauth import clear_provider_cache, get_oauth_provider
+from zeeb_api.conf import settings
+
+
+def test_uses_the_overridden_provider():
+    settings.OAUTH_PROVIDERS = {"google": {"client_id": "test-id"}}
+    clear_provider_cache()
+    assert get_oauth_provider("google").client_id == "test-id"
+```
+
+Clearing the cache affects code that looks providers up afterwards — the
+router built by `create_oauth_router()` without `providers=`, and
+`OAuth2BearerAuthentication`. A running `JWTAuthMiddleware` resolves its
+external validators once, on its first request, and keeps them.
+
 Every provider constructor also takes `require_verified_email=` to override
 `OAUTH_REQUIRE_VERIFIED_EMAIL` for that provider alone.
 
@@ -306,6 +333,68 @@ upsert step, pass `get_or_create_user=async fn(provider_name, claims)` to
 `create_oauth_router`; a post-login hook `on_login(user, identity, created)`
 is also available.
 
+### get_or_create_user_for_identity()
+
+The default upsert step, used by the router and by `ExternalTokenValidator`,
+is a public coroutine you can call yourself — typically from a custom
+`get_or_create_user` that adds a rule and then defers to the standard
+behaviour:
+
+```python
+async def get_or_create_user_for_identity(
+    provider: str,
+    claims: ExternalClaims,
+    *,
+    auto_create: bool,
+    link_by_email: bool,
+    require_verified_email: bool = True,
+) -> tuple[user, ExternalIdentity, bool]: ...
+```
+
+`provider` is the provider name stored on the `ExternalIdentity` row and
+`claims` the normalised `ExternalClaims`. The keyword flags are taken
+literally — unlike the router, the function does not read
+`OAUTH_AUTO_CREATE_USERS` / `OAUTH_LINK_BY_EMAIL` /
+`OAUTH_REQUIRE_VERIFIED_EMAIL`, so pass them explicitly. It runs exactly the
+five steps listed above and returns `(user, identity, created)`:
+
+- an existing `(provider, subject)` identity → its user, with the identity's
+  `last_login_at`, `email` and `extra_data` (the raw claims) refreshed;
+  `created` is `False`;
+- an email link or a newly provisioned user → a new identity row;
+  `created` is `True`. A provisioned user gets `email` from the claims,
+  `first_name`/`last_name` split from the `name` claim (when the user model
+  has those fields), no usable password, and `date_joined`/`last_login` set
+  to now.
+
+Every refusal is an `AuthenticationException` (401) with the code from the
+steps above: `AUTH_ACCOUNT_DISABLED`, `AUTH_OAUTH_EMAIL_UNVERIFIED`,
+`AUTH_OAUTH_ACCOUNT_EXISTS` or `AUTH_OAUTH_USER_NOT_PROVISIONED` (the last also
+when auto-creation is on but the claims carry no email address).
+
+```python
+from zeeb_api.auth.oauth import create_oauth_router, get_or_create_user_for_identity
+from zeeb_api.exceptions import AuthenticationException, ErrorCode
+
+
+async def corporate_users_only(provider_name, claims):
+    if not (claims.email or "").endswith("@example.com"):
+        raise AuthenticationException(
+            code=ErrorCode.AUTH_OAUTH_USER_NOT_PROVISIONED,
+            message="Only example.com accounts may sign in",
+        )
+    return await get_or_create_user_for_identity(
+        provider_name, claims, auto_create=True, link_by_email=False
+    )
+
+
+app.include_router(create_oauth_router(get_or_create_user=corporate_users_only))
+```
+
+Like `ExternalIdentity`, it lives in the module that registers the
+`auth_external_identities` table, so importing it has the same effect on
+migrations (see the next section).
+
 ### Migration note
 
 `ExternalIdentity` is imported **lazily**: it only registers its table with
@@ -352,6 +441,187 @@ deactivated authenticates nobody, and neither does one whose identity lookup
 errors (database down, or the `auth_external_identities` table never
 migrated) — an error is logged and the request proceeds unauthenticated
 rather than as a claims-only user.
+
+To accept IdP tokens on some viewsets only, leave
+`OAUTH_ACCEPT_EXTERNAL_TOKENS` empty and list `OAuth2BearerAuthentication` in
+those viewsets' `authentication_classes` — see
+[Per-viewset Authentication](authentication.md#per-viewset-authentication).
+
+## Building Blocks
+
+The router and the provider classes are assembled from the pieces below. They
+are public so a custom provider, a custom flow or a test can reuse them. All of
+them are importable from `zeeb_api.auth.oauth`; the error classes,
+`OIDCMetadata`, `JWKSCache` and `get_or_create_user_for_identity` are also
+re-exported (lazily) from `zeeb_api.auth`.
+
+### Errors
+
+The OAuth client layer raises its own exceptions rather than HTTP errors:
+
+| Exception | Raised when |
+|---|---|
+| `OAuthError` | Base class of the two below — catch it to handle any OAuth client failure |
+| `OAuthExchangeError` | An HTTP call to the IdP failed: network error, a non-2xx status, a non-JSON body, a token response without `access_token`, or a JWKS document without `keys` |
+| `OAuthValidationError` | A token or its configuration failed validation: bad signature, audience, expiry, issuer or nonce; a forbidden algorithm; an unknown `kid`; a provider with no `jwks_uri`, or with neither `server_metadata_url` nor manual endpoints; a subject claim missing from the token |
+
+At the router boundary, while completing a login, `OAuthValidationError`
+becomes `401 AUTH_OAUTH_ID_TOKEN_INVALID` and any other `OAuthError`
+`401 AUTH_OAUTH_EXCHANGE_FAILED`. `ExternalTokenValidator` swallows them and
+treats the token as unauthenticated.
+
+```python
+from zeeb_api.auth.oauth import OAuthError, OAuthValidationError, get_oauth_provider
+
+provider = get_oauth_provider("azure")
+try:
+    claims = await provider.validate_external_token(token)
+except OAuthValidationError:
+    claims = None   # signature, audience, issuer, expiry, ...
+except OAuthError:
+    raise           # the IdP could not be reached
+```
+
+### OIDCMetadata
+
+`OIDCMetadata` is the Pydantic model for an OpenID Connect discovery document
+(`/.well-known/openid-configuration`). `OAuthProvider.get_metadata()` returns
+one — fetched from `server_metadata_url`, or assembled from the manual
+endpoint arguments — and caches it on the provider. Manually configured
+endpoints always override discovered ones.
+
+| Field | Type | Default |
+|---|---|---|
+| `issuer` | `str` | required |
+| `authorization_endpoint` | `str` | required |
+| `token_endpoint` | `str` | required |
+| `userinfo_endpoint` | `str \| None` | `None` |
+| `jwks_uri` | `str \| None` | `None` |
+| `id_token_signing_alg_values_supported` | `list[str]` | `["RS256"]` |
+
+Any other keys in the document are kept as extra attributes. The
+`id_token_signing_alg_values_supported` list is what a provider passes as
+`allowed_algs` when validating tokens.
+
+```python
+metadata = await get_oauth_provider("google").get_metadata()
+metadata.jwks_uri                              # as published by the IdP
+metadata.id_token_signing_alg_values_supported  # e.g. ["RS256"]
+```
+
+### JWKSCache and validate_id_token()
+
+`JWKSCache(client, jwks_uri, ttl_seconds=3600)` caches an IdP's JSON Web Key
+Set, fetched asynchronously through an `OAuth2Client`. Its one method,
+`await cache.get_signing_key(kid)`, returns the `jwt.PyJWK` for a key id:
+
+- the key set is fetched on first use and refetched once it is older than
+  `ttl_seconds`;
+- an unknown `kid` forces exactly **one** extra refetch (the usual key
+  rollover case) before failing with `OAuthValidationError`;
+- a JWKS document PyJWT cannot parse raises `OAuthValidationError`; a failed
+  fetch raises `OAuthExchangeError`.
+
+Each provider creates one lazily from its metadata's `jwks_uri`.
+
+`validate_id_token()` verifies a JWT against such a cache and returns its
+claims as a `dict`:
+
+```python
+async def validate_id_token(
+    id_token: str,
+    *,
+    jwks: JWKSCache,
+    client_id: str,
+    issuer: str | None = None,
+    issuer_validator: Callable[[str], bool] | None = None,
+    nonce: str | None = None,
+    allowed_algs: list[str] | None = None,
+) -> dict[str, Any]: ...
+```
+
+| Parameter | Meaning |
+|---|---|
+| `jwks` | The key cache used to find the signing key named by the token's `kid` header |
+| `client_id` | The required audience (`aud`) |
+| `issuer` | Exact expected `iss`; ignored when `issuer_validator` is given; with neither, any issuer is accepted |
+| `issuer_validator` | A callable receiving `iss` and returning `True` to accept it (how `AzureADProvider` handles multi-tenant issuers) |
+| `nonce` | When not `None`, the token's `nonce` claim must equal it |
+| `allowed_algs` | Accepted signature algorithms, default `["RS256"]` |
+
+`none` and every `HS*` algorithm are refused even if listed — the list itself
+is rejected. The token must carry a `kid` header and the `exp`, `iat`, `aud`
+and `iss` claims; signature, audience and expiry are verified by PyJWT. Every
+failure raises `OAuthValidationError`.
+
+```python
+from zeeb_api.auth.oauth import JWKSCache, OAuth2Client, validate_id_token
+
+jwks = JWKSCache(OAuth2Client(), "https://login.example.com/keys", ttl_seconds=900)
+claims = await validate_id_token(
+    id_token,
+    jwks=jwks,
+    client_id="my-client-id",
+    issuer="https://login.example.com",
+    nonce=expected_nonce,
+)
+```
+
+### State, nonce and PKCE helpers
+
+These are the functions the browser and SPA flows use to protect the
+authorization-code round trip. Use them when building a flow of your own.
+
+| Function | Returns |
+|---|---|
+| `generate_nonce()` | A random URL-safe string (32 bytes of entropy) for the OIDC `nonce` |
+| `generate_pkce_pair()` | `(code_verifier, code_challenge)` — an RFC 7636 S256 pair; the verifier is 86 characters, the challenge its unpadded base64url SHA-256 |
+| `pkce_cookie_name(provider)` | The name of the cookie holding the PKCE verifier: `zeeb_oauth_pkce_{provider}` |
+| `create_state_token(provider, *, nonce, redirect_uri, next_url=None)` | A signed `state` string |
+| `decode_state_token(token, provider)` | The state's claims: `{"nonce", "redirect_uri", "next"}` |
+
+`create_state_token()` signs a short-lived JWT of type `oauth_state` with the
+application's JWT secret and algorithm. Its subject is the provider name, it
+lives for `OAUTH_STATE_TTL_SECONDS` (default 600) and it carries the nonce, the
+redirect URI and the optional post-login `next` URL — so no server-side session
+is needed. The insecure-secret guard applies: with `DEBUG` off and a weak
+secret it raises `InsecureSecretError`.
+
+`decode_state_token()` verifies the signature, expiry and token type, and that
+the state was issued for `provider`. Any failure — expired, tampered, a
+different provider, a different token type — raises
+`AuthenticationException` with `AUTH_OAUTH_STATE_INVALID` (401).
+
+The PKCE verifier is never put in the state, because the state travels through
+the IdP. The built-in authorize endpoint stores it in an `HttpOnly`, `Secure`,
+`SameSite=Lax` cookie named by `pkce_cookie_name()`, and the callback reads and
+deletes it:
+
+```python
+from zeeb_api.auth.oauth import (
+    create_state_token,
+    decode_state_token,
+    generate_nonce,
+    generate_pkce_pair,
+    pkce_cookie_name,
+)
+
+nonce = generate_nonce()
+verifier, challenge = generate_pkce_pair()
+state = create_state_token("azure", nonce=nonce, redirect_uri=redirect_uri)
+url = await provider.build_authorization_url(
+    redirect_uri=redirect_uri, state=state, nonce=nonce, code_challenge=challenge
+)
+response.set_cookie(pkce_cookie_name("azure"), verifier, httponly=True, secure=True)
+
+# ... later, in the callback
+claims = decode_state_token(request.query_params["state"], "azure")
+verifier = request.cookies.get(pkce_cookie_name("azure"))
+tokens = await provider.exchange_code(
+    code=code, redirect_uri=claims["redirect_uri"], code_verifier=verifier
+)
+identity_claims = await provider.get_claims(tokens, nonce=claims["nonce"])
+```
 
 ## Settings Reference
 

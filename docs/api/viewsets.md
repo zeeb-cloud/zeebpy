@@ -176,6 +176,107 @@ returns the route object that was declared. It reads FastAPI's internal
 fails, and raises `zeeb_api.exceptions.RouteInventoryError` if a route still
 cannot be read — an inventory never silently omits routes.
 
+### `SimpleRouter` and `DefaultRouter`
+
+`SimpleRouter` is the router that turns registrations into FastAPI routes;
+`DefaultRouter` is a `SimpleRouter` with two additions. Both live in
+`zeeb_api.routers`.
+
+```python
+from fastapi import FastAPI
+from zeeb_api.routers import SimpleRouter
+
+router = SimpleRouter()
+router.register("articles", ArticleViewSet)
+router.register("articles/{article_pk}/comments", CommentViewSet, basename="article-comments")
+
+app = FastAPI()
+for api_router in router.routes:
+    app.include_router(api_router)
+```
+
+`SimpleRouter()` takes no arguments.
+`register(prefix, viewset, basename=None)` records a viewset under a URL prefix:
+
+| Parameter | Meaning |
+|---|---|
+| `prefix` | URL prefix, with or without slashes (`"articles"`, `"/articles/"`) |
+| `viewset` | The `ViewSet` class |
+| `basename` | Stem of the route names; defaults to the prefix with its slashes stripped and inner `/` replaced by `-` |
+
+Registering a second viewset at a prefix that is already taken (compared with
+slashes stripped) raises `ValueError` — FastAPI matches the first route, so the
+later registration would otherwise be silently shadowed.
+
+`router.routes` (or `router.get_urls()`, which builds a fresh list each call)
+returns one `APIRouter` per registration, prefixed `/{prefix}` and tagged with
+the basename. Only the actions the viewset implements get a route. They are
+ordered so a collection action wins over the detail route:
+
+| Order | Path | Route name |
+|---|---|---|
+| 1 | `POST /{prefix}/query` | `{basename}-query` |
+| 2 | `GET /{prefix}` | `{basename}-list` |
+| 3 | `POST /{prefix}` | `{basename}-create` |
+| 4 | `/{prefix}/{url_path}` — `@action(detail=False)` | `{basename}-{url_name}` |
+| 5 | `GET`/`PUT`/`PATCH`/`DELETE /{prefix}/{lookup}` | `{basename}-detail` |
+| 6 | `/{prefix}/{lookup}/{url_path}` — `@action(detail=True)` | `{basename}-{url_name}` |
+
+So `GET /articles/featured` reaches the `featured` action rather than being read
+as `GET /articles/{id}` with `id="featured"`. Every router it returns has
+already been passed through `add_slash_alias_routes()` (below).
+
+`DefaultRouter(include_root_view=True)` adds:
+
+- an **API root** — `GET /` (route name `api-root`) answers a map of each
+  basename to its absolute URL, e.g. `{"articles": "http://host/articles"}`.
+  Pass `include_root_view=False` to leave `/` free.
+- **`include(router, prefix="")`** — merges another `SimpleRouter`/
+  `DefaultRouter`'s registrations (under `prefix`, with the same duplicate-prefix
+  `ValueError`) or mounts a plain FastAPI `APIRouter` such as the auth routes.
+  Anything else raises `TypeError`.
+
+`SimpleRouter` has neither: use it when the API root and router composition are
+not wanted, e.g. a self-contained app that mounts its own routes.
+
+### Trailing-slash aliases: `add_slash_alias_routes`
+
+Canonical paths have no trailing slash. A client that appends one would get
+FastAPI's `307` redirect, which browsers refuse to follow on a CORS-preflighted
+request (the request fails while the backend is fine).
+`add_slash_alias_routes(router)` prevents that: for every route the
+`APIRouter` serves — including routes of routers included into it — it
+registers the opposite variant (`/reports/daily/` for `/reports/daily`, and the
+other way round) on the same endpoint, with the same methods, response model,
+status code and dependencies, named `{name}-slash` and **hidden from OpenAPI**
+(`include_in_schema=False`), so the schema stays slash-less.
+
+```python
+from fastapi import APIRouter
+from zeeb_api.routers import add_slash_alias_routes
+
+reports = APIRouter(prefix="/reports")
+
+
+@reports.get("/daily")
+async def daily_report():
+    return {"rows": []}
+
+
+add_slash_alias_routes(reports)  # /reports/daily and /reports/daily/ both answer 200
+```
+
+- It returns `None` and modifies the router in place; call it **after** the
+  routes are declared — a route added later gets no alias.
+- It is idempotent: a path the router already serves is skipped, so it is safe
+  to run on a sub-router and again on the router that includes it.
+- Only HTTP routes (`APIRoute`) are aliased; the root path `/` and mounts or
+  websocket routes are left alone.
+
+The viewset routers, the routers a `DefaultRouter` includes, and the JWT and
+OAuth auth routers already call it — you only need it for an `APIRouter` you
+mount on the app yourself.
+
 ### The detail path parameter
 
 Detail routes are `/{prefix}/{lookup}`, where `{lookup}` is named after
@@ -748,6 +849,13 @@ query_fields = ["title", "author", "author__name"]   # author__name, nothing els
 `regex` and `iregex` lookups are refused unless the viewset sets
 `query_allow_regex = True`: on SQLite they run Python's `re` inside the
 database, so a crafted pattern can pin a worker.
+
+Under the hood the endpoint collects every keyword path of the filter with
+`extract_q_paths()` and checks each one, and each `order_by` term, with
+`check_field_path()`; a refused path raises `FieldPathError`, which the
+endpoint turns into that 400. Both helpers are public, for a hand-written
+endpoint that wants the same rules — see
+[Checking client-supplied field paths](filtering.md#checking-client-supplied-field-paths).
 
 `limit` defaults to `DEFAULT_LIMIT` and may not exceed `MAX_LIMIT` (a larger
 value is a 422); both are settings, so raising `MAX_LIMIT` above 100 lets

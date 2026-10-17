@@ -494,6 +494,11 @@ cached on the instance (`post.author` returns the object).
 `select_related()` already loaded are reused. An unknown name at any level
 raises `FieldError`.
 
+To prefetch onto a list of instances you already hold, call
+`await prefetch_related_objects(instances, model, lookups, using)` from
+`zeeb_orm.query.prefetch` — the same machinery, without a queryset. See
+[prefetch_related_objects()](../orm/queries.md#prefetch_related_objects).
+
 ---
 
 ## Distinct

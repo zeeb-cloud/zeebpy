@@ -160,6 +160,7 @@ class SerializerMethodField:
         self.field_name: str = ""
     
     def bind(self, field_name: str) -> None:
+        """Attach to *field_name*; the method defaults to ``get_<field_name>``."""
         self.field_name = field_name
         if self.method_name is None:
             self.method_name = f"get_{field_name}"

@@ -41,6 +41,7 @@ class BaseAuthentication:
     """
 
     async def authenticate(self, request: Request) -> Any | None:
+        """Return the user for *request*, or None to let the next authenticator try."""
         raise NotImplementedError(
             f"{type(self).__name__} must implement authenticate()"
         )

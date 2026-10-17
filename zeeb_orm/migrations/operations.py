@@ -137,6 +137,7 @@ class Operation:
     reversible = True
 
     def describe(self) -> str:
+        """Human-readable one-line summary, used in migration output and errors."""
         raise NotImplementedError
 
     def forward(self, connection) -> None:
@@ -245,6 +246,7 @@ class DeleteModel(Operation):
 
     @property
     def reversible(self):
+        """Whether ``backward`` can undo this operation."""
         return bool(self.columns)
 
     def describe(self) -> str:
@@ -356,6 +358,7 @@ class RemoveField(Operation):
 
     @property
     def reversible(self):
+        """Whether ``backward`` can undo this operation."""
         return self.field is not None
 
     def describe(self) -> str:
@@ -422,6 +425,7 @@ class AlterField(Operation):
 
     @property
     def reversible(self):
+        """Whether ``backward`` can undo this operation."""
         return (
             self.old_column_type is not None
             or self.old_nullable is not None
@@ -559,6 +563,7 @@ class RemoveIndex(Operation):
 
     @property
     def reversible(self):
+        """Whether ``backward`` can undo this operation."""
         return bool(self.columns)
 
     def describe(self) -> str:
@@ -611,6 +616,7 @@ class RunSQL(Operation):
 
     @property
     def reversible(self):
+        """Whether ``backward`` can undo this operation."""
         return self.reverse_sql is not None
 
     def describe(self) -> str:
@@ -654,6 +660,7 @@ class RunPython(Operation):
 
     @property
     def reversible(self):
+        """Whether ``backward`` can undo this operation."""
         return self.reverse_code is not None
 
     def describe(self) -> str:

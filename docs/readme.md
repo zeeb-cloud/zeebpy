@@ -15,7 +15,7 @@ Zeeb provides a batteries-included, declarative API for building async web appli
 
 ```python
 from zeeb_orm import Model, fields
-from zeeb_api import Serializer, ModelViewSet, DefaultRouter
+from zeeb_api import DefaultRouter, ModelSerializer, ModelViewSet
 
 # Define a model
 class Post(Model):
@@ -28,13 +28,12 @@ class Post(Model):
         table_name = "posts"
         ordering = ["-created_at"]
 
-# Create a serializer
-class PostSerializer(Serializer):
-    id = fields.UUIDField(read_only=True)
-    title = fields.CharField(max_length=200)
-    content = fields.CharField()
-    published = fields.BooleanField()
-    created_at = fields.DateTimeField(read_only=True)
+# Create a serializer — validation and response shape come from the model
+class PostSerializer(ModelSerializer):
+    class Meta:
+        model = Post
+        fields = ["id", "title", "content", "published", "created_at"]
+        read_only_fields = ["id", "created_at"]
 
 # Create a viewset
 class PostViewSet(ModelViewSet):

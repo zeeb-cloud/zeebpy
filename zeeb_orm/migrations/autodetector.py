@@ -73,6 +73,7 @@ class PossibleRename:
     new_name: str
 
     def as_dict(self) -> dict[str, str]:
+        """JSON-ready form: ``{"model", "table", "old", "new"}``."""
         return {
             "model": self.model_name,
             "table": self.table,
@@ -81,6 +82,7 @@ class PossibleRename:
         }
 
     def describe(self) -> str:
+        """One-line summary, e.g. ``Post.title -> Post.headline``."""
         return f"{self.model_name}.{self.old_name} -> {self.model_name}.{self.new_name}"
 
 

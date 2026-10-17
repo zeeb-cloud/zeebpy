@@ -623,7 +623,8 @@ class ForeignKeyField(Field[ModelT]):
             _set_fk_id(self, field_name, value)
 
         # Create the property and set it on the model class
-        setattr(model, id_attr, property(id_getter, id_setter))
+        doc = f"Raw primary key of the related ``{name}`` object (reading it runs no query)."
+        setattr(model, id_attr, property(id_getter, id_setter, doc=doc))
 
 
 class ForeignKeyLazyLoader:

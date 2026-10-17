@@ -1,827 +1,426 @@
-# Zeeb ORM & API
+<div align="center">
 
-A batteries-included framework for building async APIs with FastAPI. Includes a powerful ORM (SQLAlchemy-based) and declarative serializers/viewsets.
+# zeebpy
 
-## Features
+**The async-first Python framework for APIs that ship on day one.**
 
-### ORM (zeeb_orm)
-- **High-level query API**: Chainable `Model.objects.filter()` syntax
-- **Q Objects**: Complex queries with `Q(a=1) & Q(b=2)`, `Q(x=1) | Q(y=2)`, `~Q(z=3)`
-- **F Expressions**: Reference fields in queries with `F('field_name')`
-- **Async-first**: Built for async Python with sync wrappers
-- **Multi-database**: PostgreSQL, MySQL, SQLite support
-- **Alembic Migrations**: `makemigrations` and `migrate` commands
-- **UUID Primary Keys**: Default UUID PKs for all models
+A model-driven ORM, a declarative API layer and an agent toolkit that can build features for you,<br>
+all async from the database driver to the HTTP response.
 
-### API (zeeb_api)
-- **Declarative Serializers**: Pydantic-based, class-driven field definitions
-- **ModelSerializer**: Auto-generate from ORM models
-- **ViewSets**: CRUD operations out of the box
-- **Routers**: Auto URL generation
-- **JWT Authentication**: Built-in auth with refresh tokens
-- **User Model**: Database-backed User and Permission models built in
-- **Exception Handling**: Standardized error responses with i18n support
+[![Python](https://img.shields.io/badge/python-3.10%2B-3776AB?logo=python&logoColor=white)](pyproject.toml)
+[![SQLAlchemy](https://img.shields.io/badge/SQLAlchemy-2.0%20async-D71F00?logo=sqlalchemy&logoColor=white)](docs/orm/models.md)
+[![FastAPI](https://img.shields.io/badge/FastAPI-Pydantic%20v2-009688?logo=fastapi&logoColor=white)](docs/api/viewsets.md)
+[![Docs coverage](https://img.shields.io/badge/docs%20coverage-100%25-brightgreen)](tests/test_docs_coverage.py)
+[![Lint: ruff](https://img.shields.io/badge/lint-ruff-D7FF64?logo=ruff&logoColor=black)](pyproject.toml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue)](pyproject.toml)
 
-### Agent Functions (zeeb_agents)
-- **111 async functions** — scaffolding, migrations, server lifecycle, logs, config, files, database, testing, plus a high-level intent layer
-- **Zero MCP dependency** — import directly from any Python code; plug into an MCP server externally
-- **Uniform return type** — every function returns `AgentResult(success, message, data)`
+[Quickstart](#-quickstart) · [Tour](#-a-quick-tour) · [Agents](#-zeeb_agents-a-framework-your-coding-agent-can-drive) · [Docs](#-documentation) · [Contributing](#-development)
 
-## Installation
+</div>
+
+---
 
 ```bash
-pip install git+https://github.com/zeeb-cloud/zeebpy.git
-
-# With database drivers (PEP 508 extras syntax)
-pip install "zeebpy[postgresql] @ git+https://github.com/zeeb-cloud/zeebpy.git"  # asyncpg + psycopg2
-pip install "zeebpy[mysql] @ git+https://github.com/zeeb-cloud/zeebpy.git"       # aiomysql + pymysql
-pip install "zeebpy[sqlite] @ git+https://github.com/zeeb-cloud/zeebpy.git"      # aiosqlite
-pip install "zeebpy[all] @ git+https://github.com/zeeb-cloud/zeebpy.git"         # All drivers
+zeeb startproject shop && cd shop
+zeeb-manage startapp catalog --model Product
+zeeb-manage makemigrations --name initial && zeeb-manage migrate
+zeeb-manage runserver        # → http://127.0.0.1:9000/docs
 ```
 
-## Quick Start - Project Setup
+Those four lines give you a running API with a user model, JWT auth, CORS, rate
+limiting, API versioning, health probes, a uniform error envelope, rotating
+logs, a full CRUD resource with its own passing tests, and an `AGENTS.md` that
+tells your coding agent how the project works.
 
-`zeeb startproject` gives you a running, authenticated API. There is no wiring
-step: it ships an `accounts` app owning your user model, mounted JWT auth
-endpoints, CORS, rate limiting, API versioning, health probes and rotating logs
-— all driven from a generated `.env`.
+## ✨ Why zeebpy
+
+<table>
+<tr>
+<td width="33%" valign="top">
+
+### 🗄️ `zeeb_orm`
+A model-first ORM on **SQLAlchemy 2.0 async**.
+
+- Chainable, lazy QuerySets you `await`
+- `Q`, `F`, `Case`/`When`, subqueries, window functions
+- Relation traversal: `author__name__startswith`
+- `ForeignKey`, `OneToOneField`, `ManyToManyField` with every `on_delete` mode
+- Signals, `atomic()`, `on_commit()`
+- Autodetected **Alembic** migrations, rename detection, squashing
+- PostgreSQL · MySQL · SQLite
+
+</td>
+<td width="33%" valign="top">
+
+### ⚡ `zeeb_api`
+Declarative REST on **FastAPI + Pydantic v2**.
+
+- `ModelSerializer` derives validation from the model
+- `ModelViewSet` + routers give you CRUD and a `POST /query` endpoint
+- JWT access/refresh tokens, bcrypt, users and permissions
+- OAuth2/OIDC: Azure AD, Google, GitHub (PKCE)
+- Permissions, throttling, versioning, filtering, pagination
+- One error envelope with i18n-ready codes
+
+</td>
+<td width="33%" valign="top">
+
+### 🤖 `zeeb_agents`
+**130+ async tools** for driving a project from code.
+
+- Scaffolding, migrations, database, users, logs, deployment
+- A feature compiler: spec → models, API, migration, tests
+- Every call returns an `AgentResult` and never raises
+- Tiered surface for LLM agents (22 core tools)
+- Ready for MCP, with **zero** MCP dependency
+
+</td>
+</tr>
+</table>
+
+## 🚀 Quickstart
 
 ```bash
-# Create a new project
-zeeb startproject myproject
-cd myproject
+pip install "zeebpy[sqlite] @ git+https://github.com/zeeb-cloud/zeebpy.git"
+```
 
-# Create an app — it registers itself in INSTALLED_APPS and urls.py
-zeeb-manage startapp posts
+<details>
+<summary>Other databases and extras</summary>
 
-# Create and apply migrations (auth tables included)
+```bash
+pip install "zeebpy[postgresql] @ git+https://github.com/zeeb-cloud/zeebpy.git"  # asyncpg + psycopg2
+pip install "zeebpy[mysql] @ git+https://github.com/zeeb-cloud/zeebpy.git"       # aiomysql + pymysql
+pip install "zeebpy[oauth] @ git+https://github.com/zeeb-cloud/zeebpy.git"       # httpx, pyjwt[crypto]
+pip install "zeebpy[all] @ git+https://github.com/zeeb-cloud/zeebpy.git"         # everything
+```
+
+</details>
+
+Create a project and an app. `startapp` registers itself in `INSTALLED_APPS` and
+`urls.py`, so there's nothing to wire up by hand:
+
+```bash
+zeeb startproject shop
+cd shop
+zeeb-manage startapp catalog --model Product   # model, serializer, viewset, route, tests
 zeeb-manage makemigrations --name initial
 zeeb-manage migrate
-
-# Create a superuser
-zeeb-manage createsuperuser
-
-# Run the server
-zeeb-manage runserver
+pytest                                          # the generated suite passes
+zeeb-manage runserver                           # http://127.0.0.1:9000
 ```
 
 Authentication is live immediately:
 
 ```bash
-curl -X POST localhost:8000/api/v1/auth/register \
+curl -X POST localhost:9000/api/v1/auth/register \
   -H 'content-type: application/json' \
-  -d '{"email":"me@example.com","password":"secret123"}'
+  -d '{"email": "me@example.com", "password": "s3cret-pass-123"}'
 
-curl -X POST localhost:8000/api/v1/auth/login \
+curl -X POST localhost:9000/api/v1/auth/login \
   -H 'content-type: application/json' \
-  -d '{"email":"me@example.com","password":"secret123"}'
+  -d '{"email": "me@example.com", "password": "s3cret-pass-123"}'
+# → {"access_token": "eyJ…", "refresh_token": "eyJ…", …}
 
-curl localhost:8000/api/v1/auth/me -H "Authorization: Bearer <access_token>"
+curl -X POST localhost:9000/api/v1/products \
+  -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' \
+  -d '{"title": "Espresso", "slug": "espresso", "body": "Short and strong.", "published": true}'
 ```
 
-### Project Structure
+<details>
+<summary>What <code>startproject</code> generates</summary>
 
-```
-myproject/
-├── manage.py                 # Management script
-├── myproject/
-│   ├── __init__.py
-│   ├── settings.py           # Environment-driven configuration
-│   ├── urls.py               # Auth + OAuth + app routers
-│   └── asgi.py               # ASGI application
+```text
+shop/
+├── manage.py
+├── .env / .env.example     # every setting, env-driven; .env holds a generated SECRET_KEY
+├── AGENTS.md               # conventions for coding agents (CLAUDE.md + .cursor/rules point here)
+├── pyproject.toml          # [tool.zeeb] marker + ruff config
+├── pytest.ini
+├── requirements.txt
+├── shop/
+│   ├── settings.py         # one line per setting, read from .env
+│   ├── urls.py             # auth, OAuth and app routers
+│   └── asgi.py             # app = create_app("shop.settings")
 ├── apps/
-│   ├── accounts/             # Your user model (AUTH_USER_MODEL)
-│   └── posts/
-│       ├── models.py         # ORM models
-│       ├── serializers.py    # API serializers
-│       ├── views.py          # ViewSets
-│       └── urls.py           # App routes
-├── migrations/               # Migration files
+│   └── accounts/           # your user model (AUTH_USER_MODEL = "accounts.User")
+├── tests/                  # conftest builds the schema from the models, no migration needed
 ├── logs/
-├── .env                      # Generated signing key — gitignored
-├── .env.example              # Every supported variable
-└── requirements.txt
+└── migrations/
 ```
 
-### Configuration
+Every app is five files: `__init__.py`, `models.py`, `serializers.py`, `views.py`
+and `urls.py`. The project passes `ruff check .` and `pytest` before its first
+migration.
 
-Everything is configured from `.env`; real environment variables always win.
+</details>
 
-```bash
-DEBUG=false
-DATABASE_URL=postgresql+asyncpg://user:pass@localhost:5432/mydb
-CORS_ALLOW_ORIGINS=https://app.example.com
-THROTTLE_ANON_RATE=60/min
-GOOGLE_CLIENT_ID=...          # mounts the OAuth routes
-```
+## 🧭 A quick tour
 
-See [Settings](docs/configuration/settings.md) for the full list.
-
-## CLI Commands
-
-```bash
-zeeb startproject <name>      # Create new project
-zeeb-manage startapp <name>   # Create new app (registers it too)
-zeeb-manage init              # Initialize migrations (rarely needed)
-zeeb-manage makemigrations    # Create migration files
-zeeb-manage migrate           # Apply migrations
-zeeb-manage showmigrations    # Show migration status
-zeeb-manage createsuperuser   # Create admin user
-zeeb-manage check             # Verify configuration
-zeeb-manage shell             # Interactive Python shell
-zeeb-manage runserver         # Start dev server
-```
-
-### CRUD Operations
+### Models and queries
 
 ```python
-# Create
-user = await User.objects.create(name='John', email='john@example.com', age=25)
+from zeeb_orm import Count, F, Model, Q, Rank, Window, atomic, fields
 
-# Read
-user = await User.objects.get(id=1)
-users = await User.objects.filter(age__gte=18)
-all_users = await User.objects.all()
 
-# Update
-await User.objects.filter(age__lt=18).update(is_minor=True)
-user.name = 'Jane'
-await user.save()
-
-# Delete
-await User.objects.filter(last_login__lt=old_date).delete()
-await user.delete()
-```
-
-### Filtering with Q Objects
-
-```python
-from zeeb_orm import Q
-
-# Simple AND
-users = await User.objects.filter(active=True, age__gte=18)
-
-# Complex OR
-users = await User.objects.filter(
-    Q(role='admin') | Q(role='moderator')
-)
-
-# Combined AND/OR
-users = await User.objects.filter(
-    Q(age__gte=18) & (Q(name__startswith='A') | Q(name__startswith='B'))
-)
-
-# NOT
-users = await User.objects.filter(~Q(deleted=True))
-```
-
-### Lookup Expressions
-
-```python
-# Comparison
-User.objects.filter(age__gt=18)       # Greater than
-User.objects.filter(age__gte=18)      # Greater than or equal
-User.objects.filter(age__lt=65)       # Less than
-User.objects.filter(age__lte=65)      # Less than or equal
-
-# String matching
-User.objects.filter(name__contains='john')      # LIKE %john%
-User.objects.filter(name__icontains='john')     # Case-insensitive
-User.objects.filter(name__startswith='J')       # LIKE J%
-User.objects.filter(name__endswith='son')       # LIKE %son
-User.objects.filter(email__iexact='JOHN@x.com') # Case-insensitive exact
-
-# In/Range
-User.objects.filter(status__in=['active', 'pending'])
-User.objects.filter(age__range=(18, 65))
-
-# Null checks
-User.objects.filter(deleted_at__isnull=True)
-```
-
-### F Expressions
-
-```python
-from zeeb_orm import F
-
-# Compare fields
-Post.objects.filter(likes__gt=F('dislikes'))
-
-# Arithmetic
-await Post.objects.update(view_count=F('view_count') + 1)
-
-# Complex expressions
-Post.objects.filter(score__gt=F('likes') - F('dislikes'))
-```
-
-### Aggregations
-
-```python
-from zeeb_orm import Count, Sum, Avg, Min, Max
-
-# Aggregate values
-result = await User.objects.aggregate(
-    total=Count('*'),
-    avg_age=Avg('age'),
-    max_age=Max('age')
-)
-# {'total': 100, 'avg_age': 32.5, 'max_age': 65}
-
-# Annotate (add computed fields)
-users = await User.objects.annotate(
-    post_count=Count('posts')
-).filter(post_count__gt=5)
-```
-
-### QuerySet Methods
-
-```python
-# Ordering
-User.objects.order_by('name')           # Ascending
-User.objects.order_by('-created_at')    # Descending
-User.objects.order_by('last_name', 'first_name')
-
-# Limiting
-User.objects.all()[:10]                 # First 10
-User.objects.all()[5:15]                # 5 to 15
-
-# Distinct
-User.objects.values('country').distinct()
-
-# Single objects
-user = await User.objects.first()
-user = await User.objects.last()
-user = await User.objects.get(id=1)     # Raises if not found or multiple
-
-# Existence/Count
-exists = await User.objects.filter(email='x@x.com').exists()
-count = await User.objects.filter(active=True).count()
-
-# Get or create
-user, created = await User.objects.get_or_create(
-    email='john@example.com',
-    defaults={'name': 'John'}
-)
-
-# Update or create
-user, created = await User.objects.update_or_create(
-    email='john@example.com',
-    defaults={'name': 'John Updated'}
-)
-```
-
-### Related Object Loading
-
-```python
-# Eager loading with JOINs (select_related)
-posts = await Post.objects.select_related('author').all()
-for post in posts:
-    print(post.author.name)  # No additional query
-
-# Prefetch in separate queries (prefetch_related)
-users = await User.objects.prefetch_related('posts').all()
-for user in users:
-    for post in user.posts:  # No additional query
-        print(post.title)
-```
-
-### Transactions
-
-```python
-from zeeb_orm import atomic
-
-# As context manager
-async with atomic():
-    user = await User.objects.create(name='John')
-    await Post.objects.create(author=user, title='First post')
-    # Both committed together, or rolled back on error
-
-# As decorator
-@atomic()
-async def create_user_with_profile(name: str):
-    user = await User.objects.create(name=name)
-    await Profile.objects.create(user=user)
-    return user
-```
-
-## Migrations
-
-Zeeb ORM uses Alembic for migrations behind simple `makemigrations`/`migrate` commands.
-
-### Initialize Migrations
-
-```bash
-zeeb init
-# Creates migrations/ directory with Alembic configuration
-```
-
-### Create Migration
-
-```bash
-zeeb makemigrations -m "create users table"
-# Auto-detects model changes and creates migration file
-```
-
-### Apply Migrations
-
-```bash
-zeeb migrate
-# Applies all pending migrations
-
-zeeb migrate abc123
-# Migrate to specific revision
-```
-
-### Rollback
-
-```bash
-zeeb rollback
-# Roll back one migration
-
-zeeb rollback -1
-# Roll back one migration (explicit)
-
-zeeb rollback base
-# Roll back all migrations
-```
-
-### Show Status
-
-```bash
-zeeb showmigrations
-# Shows all migrations and their status
-
-zeeb current
-# Shows current revision
-```
-
-## Field Types
-
-| Field | Description |
-|-------|-------------|
-| `AutoField` | Auto-incrementing integer primary key |
-| `BigAutoField` | Auto-incrementing big integer primary key |
-| `CharField(max_length)` | String with max length |
-| `TextField` | Unlimited text |
-| `EmailField` | Email string |
-| `SlugField` | URL-friendly string |
-| `URLField` | URL string |
-| `IntegerField` | Integer |
-| `SmallIntegerField` | Small integer |
-| `BigIntegerField` | Big integer |
-| `PositiveIntegerField` | Positive integer |
-| `FloatField` | Floating point |
-| `DecimalField(max_digits, decimal_places)` | Fixed precision decimal |
-| `BooleanField` | True/False |
-| `DateField` | Date |
-| `TimeField` | Time |
-| `DateTimeField` | Date and time |
-| `JSONField` | JSON data |
-| `UUIDField` | UUID |
-| `ForeignKey(Model)` | Foreign key relationship |
-| `OneToOneField(Model)` | One-to-one relationship |
-| `ManyToManyField(Model)` | Many-to-many relationship |
-
-### Field Options
-
-```python
-fields.CharField(
-    max_length=100,
-    null=False,          # Allow NULL in database
-    blank=False,         # Allow empty in validation
-    default='value',     # Default value
-    primary_key=False,   # Is primary key
-    unique=False,        # Unique constraint
-    index=False,         # Create index
-    db_column='col',     # Custom column name
-    choices=[('a', 'A')],# Allowed values
-)
-
-fields.DateTimeField(
-    auto_now=False,      # Update on every save
-    auto_now_add=False,  # Set on creation
-)
-
-fields.ForeignKey(
-    User,
-    on_delete='CASCADE', # CASCADE, SET_NULL, PROTECT, etc.
-    related_name='posts',# Reverse relation name
-    null=False,
-)
-```
-
-## Model Meta Options
-
-```python
-class User(Model):
+class Author(Model):
     name = fields.CharField(max_length=100)
-    
-    class Meta:
-        table_name = 'users'              # Database table name
-        ordering = ['-created_at']        # Default ordering
-        abstract = False                  # Abstract base model
-        
-        # Indexes
-        indexes = [
-            Index(fields=['name', 'email']),
-            Index(fields=['status'], name='status_idx'),
-        ]
-        
-        # Constraints
-        constraints = [
-            UniqueConstraint(fields=['email', 'tenant_id']),
-            CheckConstraint(check='age >= 0', name='age_positive'),
-        ]
-        
-        unique_together = [('email', 'tenant_id')]
-```
+    email = fields.EmailField(unique=True)
 
-## Configuration
-
-### Settings
-
-```python
-from zeeb_orm import configure
-
-configure(
-    database={
-        'url': 'postgresql+asyncpg://localhost/mydb',
-        'echo': False,           # Log SQL
-        'pool_size': 5,          # Connection pool size
-        'max_overflow': 10,      # Max extra connections
-        'pool_timeout': 30,      # Wait timeout
-        'pool_recycle': 1800,    # Recycle connections
-    },
-    migrations_dir='migrations',
-)
-```
-
-### Environment Variables
-
-```bash
-DATABASE_URL=postgresql+asyncpg://user:pass@localhost/mydb
-DATABASE_ECHO=false
-DATABASE_POOL_SIZE=5
-```
-
-## Database Support
-
-| Database | Async Driver | Sync Driver |
-|----------|--------------|-------------|
-| PostgreSQL | `asyncpg` | `psycopg2` |
-| MySQL | `aiomysql` | `pymysql` |
-| SQLite | `aiosqlite` | (built-in) |
-
-### Connection URLs
-
-```python
-# PostgreSQL
-'postgresql+asyncpg://user:pass@localhost:5432/mydb'
-
-# MySQL  
-'mysql+aiomysql://user:pass@localhost:3306/mydb'
-
-# SQLite
-'sqlite+aiosqlite:///./mydb.sqlite3'
-```
-
----
-
-## zeeb_api - Declarative API Framework
-
-### Defining Models and Serializers
-
-```python
-# apps/blog/models.py
-from zeeb_orm import Model, fields
 
 class Post(Model):
     title = fields.CharField(max_length=200)
-    content = fields.TextField()
-    author = fields.ForeignKey('User', related_name='posts')
+    author = fields.ForeignKey(Author, on_delete="CASCADE", related_name="posts")
     published = fields.BooleanField(default=False)
+    likes = fields.IntegerField(default=0)
+    dislikes = fields.IntegerField(default=0)
     created_at = fields.DateTimeField(auto_now_add=True)
 
-# apps/blog/serializers.py
-from zeeb_api import serializers
-from .models import Post
-
-class PostSerializer(serializers.ModelSerializer):
-    author_name = serializers.SerializerMethodField()
-    
     class Meta:
-        model = Post
-        fields = ['id', 'title', 'content', 'author_id', 'author_name', 'published', 'created_at']
-        read_only_fields = ['created_at']
-    
-    def get_author_name(self, obj):
-        return obj.author.name if obj.author else None
+        ordering = ["-created_at"]
+
+
+async def tour():
+    async with atomic():                       # both rows, or neither
+        ada = await Author.objects.create(name="Ada", email="ada@example.com")
+        await Post.objects.create(title="Hello, async", author=ada, published=True, likes=12)
+
+    # Chainable and lazy; nothing runs until you await
+    popular = await (
+        Post.objects.filter(Q(published=True) | Q(likes__gt=F("dislikes")))
+        .select_related("author")
+        .order_by("-likes")
+    )
+
+    # Traverse relations, aggregate, rank
+    prolific = await Author.objects.annotate(n=Count("posts")).filter(n__gte=2)
+    ranked = await Post.objects.annotate(
+        rank=Window(Rank(), order_by="-likes")
+    ).values("title", "rank")
+    this_year = await Post.objects.filter(author__name__startswith="A", created_at__year=2026)
+
+    # Set-based updates with field references
+    await Post.objects.filter(published=False).update(likes=F("likes") + 1)
 ```
 
-### Creating ViewSets
+### An API in three small files
+
+This is what `zeeb-manage startapp catalog --model Product` writes:
 
 ```python
-# apps/blog/views.py
-from zeeb_api import viewsets, permissions
-from .models import Post
-from .serializers import PostSerializer
+# apps/catalog/serializers.py
+from zeeb_api import serializers
 
-class PostViewSet(viewsets.ModelViewSet):
-    queryset = Post.objects
-    serializer_class = PostSerializer
+from .models import Product
+
+
+class ProductSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Product
+        fields = ["id", "title", "slug", "body", "published", "owner", "created_at", "updated_at"]
+        # Server-owned: returned, never accepted from the request body.
+        read_only_fields = ["id", "owner", "created_at", "updated_at"]
+```
+
+```python
+# apps/catalog/views.py
+from zeeb_api import permissions, viewsets
+
+from .models import Product
+from .serializers import ProductSerializer
+
+
+class ProductViewSet(viewsets.ModelViewSet):
+    queryset = Product.objects.all()
+    serializer_class = ProductSerializer
     permission_classes = [permissions.IsAuthenticatedOrReadOnly]
-    
-    async def get_queryset(self):
-        qs = self.queryset
-        if not self.request.state.user.is_staff:
-            qs = qs.filter(published=True)
-        return qs
-```
 
-### Routing
+    async def perform_create(self, serializer: ProductSerializer) -> None:
+        """Stamp the authenticated caller as owner; never trust the body."""
+        await serializer.save(owner_id=self.request.state.user.id)
+```
 
 ```python
-# apps/blog/urls.py
+# apps/catalog/urls.py
 from zeeb_api.routers import DefaultRouter
-from .views import PostViewSet
+
+from .views import ProductViewSet
 
 router = DefaultRouter()
-router.register('posts', PostViewSet)
-
-# myproject/urls.py  
-from zeeb_api.routers import DefaultRouter
-from apps.blog.urls import router as blog_router
-
-router = DefaultRouter()
-router.include(blog_router, prefix='blog')
-
-# In asgi.py
-from myproject.urls import router
-app.include_router(router.routes, prefix="/api")
+router.register("products", ProductViewSet)
 ```
 
-### Query Endpoint (POST /api/posts/query/)
-
-ViewSets include a query endpoint for complex filtering:
+That gives you `list`, `retrieve`, `create`, `update`, `partial_update`,
+`destroy`, and a query endpoint that takes a `Q` expression as a string. The
+expression is parsed safely, not evaluated:
 
 ```http
-# Request
-POST /api/posts/query/
-{
-    "filter": "Q(published=True) & Q(author_id=1)",
-    "order_by": ["-created_at"],
-    "limit": 20,
-    "offset": 0
-}
+POST /api/v1/products/query
+Authorization: Bearer eyJ…
 
-# Response
-{
-    "count": 45,
-    "limit": 20,
-    "offset": 0,
-    "results": [...]
-}
+{"filter": "Q(published=True) & Q(title__icontains=\"esp\")", "order_by": ["-created_at"], "limit": 20}
 ```
 
-### Permissions
-
-```python
-from zeeb_api import permissions
-
-# Built-in permissions
-permissions.AllowAny              # No restrictions
-permissions.IsAuthenticated       # Must be logged in
-permissions.IsAdminUser           # Must be admin/superuser
-permissions.IsAuthenticatedOrReadOnly  # Auth for writes
-
-# Custom permission
-class IsAuthor(permissions.BasePermission):
-    async def has_object_permission(self, request, view, obj):
-        return obj.author_id == request.state.user.id
-
-class PostViewSet(viewsets.ModelViewSet):
-    permission_classes = [permissions.IsAuthenticated, IsAuthor]
+```json
+{"count": 1, "limit": 20, "offset": 0, "results": [{"id": "c4d7…", "title": "Espresso", "...": "..."}]}
 ```
 
----
+### One error shape, everywhere
 
-## JWT Authentication
-
-### Configuration
-
-```python
-# In settings.py
-from zeeb_api.auth import configure_jwt
-
-configure_jwt(
-    secret_key="your-secret-key",  # Required
-    algorithm="HS256",
-    access_token_expires=900,       # 15 minutes
-    refresh_token_expires=604800,   # 7 days
-)
-```
-
-### Auth Endpoints
-
-```python
-# In asgi.py
-from zeeb_api.auth import create_auth_router
-
-app.include_router(create_auth_router(), prefix="/api/auth", tags=["auth"])
-```
-
-Endpoints:
-- `POST /api/auth/login` - Get tokens from credentials
-- `POST /api/auth/refresh` - Refresh access token
-- `POST /api/auth/logout` - Invalidate tokens
-- `GET /api/auth/me` - Get current user
-
-### Login Request/Response
-
-```python
-# Request
-POST /api/auth/login
-{"email": "user@example.com", "password": "secret123"}
-
-# Response
-{
-    "access_token": "eyJ...",
-    "refresh_token": "eyJ...",
-    "token_type": "bearer",
-    "expires_in": 900
-}
-```
-
-### Protecting Routes
-
-```python
-from zeeb_api.auth import JWTAuthMiddleware
-
-# Add middleware to FastAPI
-app.add_middleware(JWTAuthMiddleware)
-
-# In viewsets
-class ProtectedViewSet(viewsets.ModelViewSet):
-    permission_classes = [permissions.IsAuthenticated]
-    
-    async def list(self, request):
-        user = request.state.user  # The authenticated user
-        ...
-```
-
-### User Model
-
-Zeeb includes built-in User and Permission models:
-
-```python
-from zeeb_api.auth import get_user_model
-
-User = get_user_model()
-
-# Create user
-user = await User.objects.create(
-    email="user@example.com",
-    username="johndoe"
-)
-user.set_password("secret123")
-await user.save()
-
-# Check password
-if user.check_password("secret123"):
-    print("Valid!")
-```
-
----
-
-## Error Handling
-
-All errors return a consistent structure for frontend i18n:
+Validation, auth, permissions, throttling and unexpected crashes all use the same
+envelope. Error codes are stable and ready for translation (`AUTH_*`, `PERM_*`,
+`FIELD_*`, `RESOURCE_*`, `QUERY_*`, `SERVER_*`):
 
 ```json
 {
-    "success": false,
-    "error": {
-        "code": "VALIDATION_ERROR",
-        "message": "Validation failed",
-        "details": [
-            {
-                "code": "FIELD_REQUIRED",
-                "field": "email",
-                "message": "This field is required"
-            }
-        ],
-        "meta": {
-            "request_id": "abc-123",
-            "timestamp": "2024-01-15T10:30:00Z"
-        }
-    }
+  "success": false,
+  "error": {
+    "code": "VALIDATION_ERROR",
+    "message": "Request validation failed",
+    "details": [{"code": "FIELD_REQUIRED", "field": "body", "message": "Field required", "meta": null}],
+    "meta": {"request_id": "cabe8d14-…", "timestamp": "2026-10-17T21:59:56Z", "path": "/api/v1/products", "method": "POST"}
+  }
 }
 ```
 
-Error codes are designed for frontend translation:
-- `AUTH_*` - Authentication (AUTH_TOKEN_EXPIRED, AUTH_INVALID_CREDENTIALS)
-- `PERM_*` - Permissions (PERM_DENIED)
-- `FIELD_*` - Field validation (FIELD_REQUIRED, FIELD_INVALID_FORMAT)
-- `RESOURCE_*` - Resources (RESOURCE_NOT_FOUND)
-- `QUERY_*` - Query parsing (QUERY_INVALID_FILTER)
-- `SERVER_*` - Server errors (SERVER_ERROR)
-
-### Custom Exceptions
-
-```python
-from zeeb_api.exceptions import ZeebException, ErrorCode
-
-raise ZeebException(
-    code=ErrorCode.RESOURCE_NOT_FOUND,
-    message="Post not found",
-    details=[{"code": "RESOURCE_NOT_FOUND", "field": "id"}]
-)
-```
-
----
-
----
-
-## zeeb_agents — Agent Functions
-
-`zeeb_agents` is a standalone async Python library with 43 functions covering everything needed to scaffold, manage, and inspect a Zeeb project.  It has no MCP dependency — consume it from any Python code or wire it into an external MCP server.
-
-```python
-from zeeb_agents import (
-    # Scaffolding
-    create_project, create_app, create_model, add_field, generate_crud,
-    # Migrations
-    make_migrations, run_migrations, get_migration_status,
-    # Server
-    start_server, stop_server, get_server_status,
-    # Observability
-    read_logs, search_logs,
-    get_settings, get_env, set_env,
-    read_file, write_file, search_code,
-    list_tables, run_query,
-    run_tests,
-    run_management_command,
-)
-```
-
-All functions return an `AgentResult`:
-
-```python
-@dataclass
-class AgentResult:
-    success: bool          # True on success
-    message: str           # Human-readable summary
-    data: dict | None      # Structured output
-
-if result:   # AgentResult is truthy on success
-    print(result.message)
-    print(result.data)
-```
-
-### Quick examples
-
-```python
-# Generate full CRUD (model + serializer + viewset + route) in one call
-result = await generate_crud("blog", "Post", fields=[
-    {"name": "title", "type": "CharField", "max_length": 200},
-    {"name": "body",  "type": "TextField"},
-])
-
-# Read last 50 error log lines
-result = await read_logs(lines=50, level="ERROR")
-
-# Inspect the live database
-tables = await list_tables()
-rows   = await run_query("SELECT id, title FROM blog_post LIMIT 5")
-
-# Manage environment
-await set_env("DEBUG", "0")
-
-# Run tests
-result = await run_tests()
-# result.message == "114 passed"
-
-# Run any management command
-await run_management_command("createsuperuser", args=["--no-input", "--username=admin"])
-```
-
-Full API reference: [`docs/cli/agents.md`](docs/cli/agents.md)
-
----
-
-## Running Tests
+### Configure everything from `.env`
 
 ```bash
-# Run all tests
-pytest
-
-# Run with coverage
-pytest --cov=zeeb_orm --cov=zeeb_api
-
-# Run specific test file
-pytest tests/test_orm.py -v
+DEBUG=false                     # insecure default secrets are refused when false
+DATABASE_URL=postgresql+asyncpg://user:pass@localhost:5432/shop
+CORS_ALLOW_ORIGINS=https://app.example.com
+AUTH_LOGIN_THROTTLE_RATE=10/min
+GOOGLE_CLIENT_ID=…              # setting a client id mounts that provider's OAuth routes
 ```
 
-## License
+Real environment variables always override `.env`. Every setting is listed in
+[Settings](docs/configuration/settings.md).
 
-MIT License
+## 🤖 `zeeb_agents`: a framework your coding agent can drive
+
+`zeeb_agents` is a plain async Python library. Each tool takes structured input,
+works on a project on disk, and returns an `AgentResult(success, message, data)`.
+It never raises: a failure comes back with an `error_code`, suggestions and the
+next step to take.
+
+```python
+from pathlib import Path
+
+import zeeb_agents
+from zeeb_agents import build_feature, list_features
+
+zeeb_agents.configure(project_resolver=lambda pid: Path("/srv/projects") / pid)
+
+
+async def add_blog():
+    # One call compiles the spec, writes the model, serializer, viewset, route
+    # and tests, generates and applies the migration, then verifies the project.
+    result = await build_feature({
+        "name": "blog",
+        "entities": [{"name": "Article", "fields": [
+            {"name": "title", "type": "string", "max_length": 200},
+            {"name": "body", "type": "text"},
+        ]}],
+    }, project_id="shop")
+
+    if result:                                  # AgentResult is truthy on success
+        print(result.data["affected"])          # {"apps": [...], "entities": [...], "files": [...]}
+    else:
+        print(result.data["error_code"], result.data.get("problems"))
+
+    features = await list_features(project_id="shop")
+```
+
+- **Feature lifecycle.** `plan_feature` (dry run), `build_feature`,
+  `change_feature`, `deactivate_feature` (archives the code and keeps the data),
+  `activate_feature`, `delete_feature` (needs `confirm=True`).
+- **Per-object tools.** `create_model`, `add_field`, `generate_crud`,
+  `make_migrations`, `run_query` (read-only, behind a SQL gate),
+  `read_logs`, `create_user`, `generate_dockerfile`, and around 120 more.
+- **Tiers.** `list_capabilities(tier="core")` returns the 22 tools an LLM agent
+  should see first. The rest stay importable and supported.
+- **Safe by construction.** Every path is confined to the project root, generated
+  code is built from validated identifiers, and every `.py` edit is atomic and
+  rejected if the result wouldn't parse.
+
+Full reference: [Agent functions](docs/cli/agents.md).
+
+## 🏗️ Architecture
+
+```mermaid
+flowchart LR
+    agents["<b>zeeb_agents</b><br/>130+ async tools<br/>feature compiler"]
+    api["<b>zeeb_api</b><br/>serializers · viewsets · routers<br/>auth · OAuth · permissions"]
+    orm["<b>zeeb_orm</b><br/>models · QuerySets · expressions<br/>signals · migrations"]
+    fastapi["FastAPI + Pydantic v2"]
+    sa["SQLAlchemy 2.0 async + Alembic"]
+    db[("PostgreSQL · MySQL · SQLite")]
+
+    agents --> api
+    agents --> orm
+    api --> orm
+    api --> fastapi
+    orm --> sa --> db
+```
+
+The three packages ship together and depend on each other in one direction only:
+`zeeb_agents` → `zeeb_api` → `zeeb_orm`.
+
+## 🛠️ CLI
+
+| Command | What it does |
+| --- | --- |
+| `zeeb startproject <name>` | New project with auth, CORS, throttling, versioning, health probes and logs |
+| `zeeb-manage startapp <name> [--model <Name>]` | New app, registered automatically; `--model` adds a working resource and tests |
+| `zeeb-manage makemigrations` / `migrate` | Detect model changes and apply them |
+| `zeeb-manage showmigrations` / `squashmigrations` | Inspect and compact migration history |
+| `zeeb-manage showurls` / `inspect` | Every route; the project as structured data |
+| `zeeb-manage frontend-brief` | A brief of the API contract for a frontend (or the agent building one) |
+| `zeeb-manage createsuperuser` / `check` / `shell` / `runserver` | Everyday management |
+
+Commands that report a result accept `--json` and return the same
+`success`/`message`/`data` envelope as the agent tools. See [CLI commands](docs/cli/commands.md).
+
+## 📚 Documentation
+
+| | |
+| --- | --- |
+| **Start** | [Installation](docs/installation.md) · [Quickstart tutorial](docs/quickstart.md) · [Docs index](docs/readme.md) |
+| **ORM** | [Models](docs/orm/models.md) · [Fields](docs/orm/fields.md) · [Queries](docs/orm/queries.md) · [Expressions](docs/orm/expressions.md) · [Relationships](docs/orm/relationships.md) · [Migrations](docs/orm/migrations.md) · [Signals](docs/orm/signals.md) · [Object permissions](docs/orm/permissions.md) · [Testing](docs/orm/testing.md) |
+| **API** | [Serializers](docs/api/serializers.md) · [ViewSets & routing](docs/api/viewsets.md) · [Authentication](docs/api/authentication.md) · [OAuth2 / OIDC](docs/api/oauth.md) · [Permissions](docs/api/permissions.md) · [Filtering](docs/api/filtering.md) · [Pagination](docs/api/pagination.md) · [Throttling](docs/api/throttling.md) · [Versioning](docs/api/versioning.md) · [Errors](docs/api/errors.md) |
+| **Tools** | [CLI commands](docs/cli/commands.md) · [Agent functions](docs/cli/agents.md) |
+| **Configuration** | [Settings](docs/configuration/settings.md) · [Database](docs/configuration/database.md) · [Logging](docs/configuration/logging.md) |
+| **Reference** | [Field types](docs/reference/field-types.md) · [QuerySet API](docs/reference/queryset-api.md) · [Expressions](docs/reference/expressions.md) · [ORM feature reference](docs/orm/feature-reference.md) |
+
+Runnable examples live at the repository root: [`example_basic.py`](example_basic.py),
+[`example_queries.py`](example_queries.py), [`example_relationships.py`](example_relationships.py),
+[`example_api.py`](example_api.py) and [`example_migrations.py`](example_migrations.py).
+[`demo_blog/`](demo_blog) is a complete project.
+
+### Docs that can't drift
+
+Documentation coverage is **100%**, and the test suite keeps it there:
+
+| Guard | What it enforces |
+| --- | --- |
+| [`test_docs_coverage.py`](tests/test_docs_coverage.py) | Every public export of every public module is documented under `docs/`. Every public module, class, function and method has a docstring. Every page is linked from the index. |
+| [`test_docs_examples_drift.py`](tests/test_docs_examples_drift.py) | Every documented `import` resolves, every `python` block parses, and every relative link resolves (this README included). |
+| [`test_agents_doc_drift.py`](tests/test_agents_doc_drift.py) | Every agent tool is documented with its real signature. |
+| [`test_cli_doc_drift.py`](tests/test_cli_doc_drift.py) / [`test_settings_doc_drift.py`](tests/test_settings_doc_drift.py) | Every CLI command, option and setting is documented, and nothing invented is. |
+
+## 🔧 Development
+
+```bash
+pip install -e ".[dev,sqlite]"
+pytest                                   # the whole suite (asyncio mode is auto)
+pytest --cov=zeeb_orm --cov=zeeb_api     # with coverage
+ruff check .                             # lint
+mypy zeeb_orm zeeb_api zeeb_agents       # advisory type check
+```
+
+When you add or change a feature, update `docs/` in the same change. The guards
+above will tell you what's missing. Contributor and agent conventions are in
+[AGENTS.md](AGENTS.md).
+
+## 📄 License
+
+MIT

@@ -137,6 +137,50 @@ JSON output:
 }
 ```
 
+### The `ZeebLogger` adapter
+
+`get_logger()` and `get_request_logger()` return a `ZeebLogger` — a
+`logging.LoggerAdapter` over a standard library logger. It is what lets the
+calls above take fields as plain keyword arguments; it has the full
+`LoggerAdapter` API (`debug` … `critical`, `exception`, `log`,
+`isEnabledFor`, and `.logger` for the wrapped logger).
+
+```text
+ZeebLogger(logger: logging.Logger, extra: dict | None = None)
+```
+
+On every call, `ZeebLogger.process()` reshapes the keyword arguments:
+
+- `exc_info`, `stack_info`, `stacklevel` and `extra` keep their standard
+  meaning;
+- every other keyword argument is moved into `extra`, so it lands on the
+  `LogRecord` as an attribute — which both formatters print;
+- the adapter's own `extra` (the defaults given to `get_logger(name, **extra)`)
+  is merged in underneath: a field passed on the call wins over a default of
+  the same name.
+
+```python
+import logging
+
+from zeeb_api.logging import ZeebLogger
+
+# What get_logger("billing", service="billing") builds — minus the
+# configure_logging() call get_logger makes on first use.
+logger = ZeebLogger(logging.getLogger("billing"), {"service": "billing"})
+
+logger.info("Charged", order_id=42)                      # order_id=42 | service=billing
+logger.info("Charged", order_id=42, service="refunds")   # the call's value wins
+logger.info("Charged", extra={"order_id": 42}, retry=1)  # extra= and keywords combine
+```
+
+A field may not reuse a `LogRecord` attribute name (`name`, `message`,
+`msg`, `args`, `levelname`, `module`, …): the standard library raises
+`KeyError: "Attempt to overwrite 'name' in LogRecord"`. Pick a distinct field
+name such as `user_name`.
+
+Constructing a `ZeebLogger` directly does **not** configure logging; use it
+to wrap a logger you manage yourself. `get_logger()` is the usual entry point.
+
 ### Request Logging
 
 ```python

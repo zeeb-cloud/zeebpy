@@ -389,7 +389,7 @@ DATABASE = {
 | `pool_size` | 5 | Connection pool size |
 | `max_overflow` | 10 | Extra connections beyond pool |
 | `pool_timeout` | 30 | Seconds to wait for connection |
-| `pool_recycle` | 3600 | Recycle connections after (seconds) |
+| `pool_recycle` | 1800 | Recycle connections after (seconds) |
 | `echo` | False | Log SQL queries |
 
 ## Authentication

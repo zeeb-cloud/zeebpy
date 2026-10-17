@@ -42,6 +42,7 @@ class BaseValidator:
         return a is not b
 
     def clean(self, x: Any) -> Any:
+        """Reduce the value to what ``compare`` checks (identity by default)."""
         return x
 
     def __call__(self, value: Any) -> None:

@@ -68,6 +68,7 @@ class VersioningMiddleware(BaseHTTPMiddleware):
         request: Request,
         call_next: RequestResponseEndpoint,
     ) -> Response:
+        """Set ``request.state.version``; an invalid version short-circuits with a 400."""
         scheme_class = self._get_scheme_class()
 
         if scheme_class is None:

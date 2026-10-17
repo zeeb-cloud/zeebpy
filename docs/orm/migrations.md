@@ -799,6 +799,22 @@ myproject/
 `migrations/versions/` directory if one exists — a flat file wins when both are
 present. `MIGRATIONS_DIR` overrides the location.
 
+`init_migrations(directory="migrations")` creates the directory
+programmatically:
+
+```python
+from zeeb_orm.migrations import init_migrations
+
+init_migrations()                    # ./migrations
+init_migrations("db/migrations")     # parent directories are created too
+```
+
+The path is resolved against the **current working directory**, not the
+project root. An existing directory is left untouched; either way the function
+prints what it did and returns `None`. Unlike `manage.py init` it writes no
+`.gitkeep`. Calling it is optional — `makemigrations()` creates the directory
+on its first run.
+
 ### Guarding against unapplied migrations
 
 Serving traffic against a schema that does not match the models produces
@@ -839,6 +855,36 @@ async def nightly_report():
 
 Both `check_migrations_applied()` and `get_migration_state()` accept
 `project_root=` and `db_url=` to inspect a project other than the current one.
+
+#### When the database cannot be read
+
+If the applied migrations cannot be read — the database is unreachable, the
+credentials are wrong, the driver is missing — `get_migration_state()` raises
+`MigrationStateError` rather than reporting every migration as pending (which
+would send you off to "apply" migrations against a database you cannot reach).
+The message names the database with its password masked and the underlying
+error; the original exception is chained as `__cause__`.
+
+`MigrationStateError` is a subclass of `MigrationError`, so code that already
+catches `MigrationError` — and `require_migrations` — fails closed on it.
+`check_migrations_applied()` propagates it even with `raise_on_pending=False`:
+an unreadable database is not the same answer as "migrations pending". Catch it
+when you need to tell the two apart:
+
+```python
+from zeeb_orm import check_migrations_applied
+from zeeb_orm.migrations import MigrationStateError
+
+try:
+    up_to_date = check_migrations_applied(raise_on_pending=False)
+except MigrationStateError as exc:
+    print(f"database unreachable: {exc}")
+else:
+    print("up to date" if up_to_date else "migrations pending")
+```
+
+A project whose `settings.py` does not import raises `SettingsImportError`
+instead (see [Project discovery](../configuration/database.md#project-discovery)).
 
 The `ENFORCE_MIGRATIONS` setting (default `True`) applies the same check at
 startup outside `DEBUG` — see

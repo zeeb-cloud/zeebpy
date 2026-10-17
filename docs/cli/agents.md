@@ -207,8 +207,10 @@ malformed spec is fixed in one pass instead of one call per error.
 
 ```python
 result = await plan_feature({
-    "app": "blog",
-    "entities": [{"name": "Article", "fields": {"title": "CharField(max_length=200)"}}],
+    "name": "blog",
+    "entities": [{"name": "Article", "fields": [
+        {"name": "title", "type": "string", "max_length": 200},
+    ]}],
 })
 result.data["plan"]           # the operations that would run
 result.data["preconditions"]  # what must already be true

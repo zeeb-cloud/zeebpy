@@ -93,6 +93,7 @@ class JoinContext:
 
     @property
     def has_joins(self) -> bool:
+        """Whether any relation has been joined so far."""
         return bool(self.joins)
 
     @property

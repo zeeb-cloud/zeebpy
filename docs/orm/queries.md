@@ -754,6 +754,45 @@ related manager API: `all()`, `count()` and `exists()` are answered from it,
 other methods query the database, and writes (`add`/`remove`/`clear`/`set`/
 `create`) invalidate it. Unknown lookups raise `FieldError`.
 
+#### prefetch_related_objects()
+
+The machinery behind `prefetch_related()` is available on its own, for objects
+you already have in a list — loaded earlier, assembled from several querysets,
+or returned by code you do not control:
+
+```text
+await prefetch_related_objects(instances, model, lookups, using)
+```
+
+- `instances` — a list of instances of `model`; an empty list does nothing.
+- `model` — the model class the lookups are resolved against.
+- `lookups` — a list of lookup strings (`"posts__comments"`) and/or `Prefetch`
+  objects, exactly as `prefetch_related()` takes them.
+- `using` — the database alias every query runs on (`None` for `default`). It
+  also applies to the queryset of a `Prefetch`.
+
+The instances are filled in place, with the same results as
+`prefetch_related()`: one query per level (two for many-to-many), levels shared
+by several lookups fetched once, to-many accessors that keep the manager API,
+and `to_attr` lists. It returns `None`. An unknown name at any level raises
+`FieldError`; a lookup that is neither a string nor a `Prefetch` raises
+`TypeError`.
+
+```python
+from zeeb_orm import Prefetch
+from zeeb_orm.query.prefetch import prefetch_related_objects
+
+authors = [await Author.objects.get(pk=pk) for pk in featured_ids]
+await prefetch_related_objects(
+    authors,
+    Author,
+    ["posts__comments", Prefetch("books", to_attr="all_books")],
+    None,
+)
+for author in authors:
+    print(await author.posts.count(), len(author.all_books))  # no further queries
+```
+
 ## CRUD Operations
 
 ### create()
@@ -1099,6 +1138,78 @@ scheduled and forgotten). The data is committed by then, so a failing
 callback cannot roll it back: its exception propagates out of `atomic()`,
 or — with `on_commit(func, robust=True)` — is logged to
 `zeeb_orm.db.transaction` and the next callback runs.
+
+### Atomic
+
+`zeeb_orm.db.Atomic` is the class form of `atomic()`, usable both as an async
+context manager and as a decorator:
+
+```text
+Atomic(using=None, savepoint=True)
+```
+
+- `using` — the database alias; `None` means `default`. An alias that was never
+  registered raises `ConnectionDoesNotExist` when the block is entered.
+- `savepoint` — accepted but currently has no effect: a block nested in another
+  block on the same database always becomes a savepoint.
+
+It delegates to `atomic()`, so the shared session, savepoints and `on_commit`
+behave exactly as described above. As a context manager it yields the
+transaction session; as a decorator every call of the decorated coroutine
+function runs in its own block (a savepoint when the call happens inside an
+enclosing block on the same database).
+
+```python
+from zeeb_orm.db import Atomic
+
+
+@Atomic()
+async def register(name: str, email: str):
+    user = await User.objects.create(name=name, email=email)
+    await Profile.objects.create(user=user, bio="")
+    return user  # both rows commit together, or neither does
+
+
+async with Atomic(using="reporting") as session:
+    await DailyTotal.objects.using("reporting").create(day=today, total=total)
+```
+
+An instance holds the state of the block it opened, so give each `async with`
+its own instance instead of re-entering one that is still open. The decorator
+form has no such restriction — concurrent calls each get their own block.
+(`zeeb_orm.db.transaction.atomic` is an alias of `Atomic`; `zeeb_orm.atomic`
+is the function.)
+
+### TransactionManager
+
+`zeeb_orm.db.TransactionManager(session)` wraps a SQLAlchemy `AsyncSession`
+you already hold. Leaving the `async with` block commits the session; an
+exception rolls it back and propagates. `tx.savepoint(name=None)` is an async
+context manager around `session.begin_nested()`: the SAVEPOINT is released when
+the block succeeds and rolled back when it raises (the exception propagates).
+`name` is accepted, but the SAVEPOINT name is chosen by SQLAlchemy.
+
+Unlike `atomic()`, it does **not** make the session the active transaction —
+`Model.objects` queries inside the block do not run on it. It is meant for raw
+SQLAlchemy work on a session from `Database.session()`; for ORM operations use
+`atomic()`.
+
+```python
+from sqlalchemy import text
+
+from zeeb_orm import get_connection
+from zeeb_orm.db import TransactionManager
+
+db = await get_connection()
+async with db.session() as session:
+    async with TransactionManager(session) as tx:
+        await session.execute(text("UPDATE counters SET value = value + 1"))
+        try:
+            async with tx.savepoint():
+                await session.execute(text("INSERT INTO audit_log (event) VALUES ('bump')"))
+        except Exception:
+            pass  # only the savepoint is rolled back; the UPDATE still commits
+```
 
 ### Concurrency inside a transaction
 
