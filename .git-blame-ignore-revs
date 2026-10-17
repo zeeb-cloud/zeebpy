@@ -12,8 +12,8 @@
 # stored form to LF — so this file should stay short.
 
 # chore: add .gitattributes and normalise stored line endings to LF (#16)
-53efad1b83285360354aefe392ac26680d455c19
+c03159980296bef809571041450fde617d666d82
 
 # feat(orm): add zeeb_orm.testing (#15) — carried a CRLF re-commit of 346 files
 # alongside the feature, before .gitattributes existed to prevent it.
-ac628faf2763cd27968cf247a91d13f6cae35247
+df952999a95103c22477ceed26b70c78b4932563
