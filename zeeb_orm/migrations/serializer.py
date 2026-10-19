@@ -222,7 +222,9 @@ class SourceWriter:
     def _sql_function(self, value: Any) -> str:
         """``sa.func.now()``-style SQL functions without arguments."""
         name = getattr(value, "name", None)
-        clauses = list(getattr(value, "clauses", None) or ())
+        # A ClauseList refuses bool(); test it against None, never for truth.
+        arguments = getattr(value, "clauses", None)
+        clauses = list(arguments) if arguments is not None else []
         if not name or clauses or not str(name).isidentifier():
             raise MigrationSerializationError(
                 f"Cannot write the SQL expression {value} to a migration file; "
@@ -482,21 +484,6 @@ class SourceWriter:
                 f"{func.__qualname__} is a nested function or closure and cannot be "
                 f"copied into a migration file; make it module-level."
             )
-        target = self._free_name(name)
-        self._copied[key] = target
-
-        renames = {name: target} if target != name else {}
-        for global_name in sorted(_global_names(func.__code__)):
-            if (
-                global_name == name
-                or global_name not in func.__globals__
-                or (global_name.startswith("__") and global_name.endswith("__"))
-            ):
-                continue  # recursion, a builtin, an attribute name, or module dunder
-            local = self._copy_global(global_name, func.__globals__[global_name], module_name)
-            if local != global_name:
-                renames[global_name] = local
-
         try:
             source = textwrap.dedent(inspect.getsource(func))
         except (OSError, TypeError) as exc:
@@ -504,19 +491,58 @@ class SourceWriter:
                 f"The source of {name} (from {module_name}) is not available to copy: {exc}"
             ) from exc
         tree = ast.parse(source)
+        definition = tree.body[0] if len(tree.body) == 1 else None
         if (
-            len(tree.body) != 1
-            or not isinstance(tree.body[0], (ast.FunctionDef, ast.AsyncFunctionDef))
-            or tree.body[0].decorator_list
+            not isinstance(definition, (ast.FunctionDef, ast.AsyncFunctionDef))
+            or definition.decorator_list
         ):
             raise MigrationSerializationError(
                 f"{name} (from {module_name}) is not a plain function definition and "
                 f"cannot be copied into a migration file."
             )
-        if renames:
-            source = ast.unparse(_Renamer(renames).visit(tree))
-        self._definitions.append(source.rstrip() + "\n")
+
+        target = self._free_name(name)
+        self._copied[key] = target
+
+        # The body looks its globals up when it runs (they are in co_names);
+        # default values are evaluated once, where the function is defined, so
+        # their names are read off the source instead. Each is renamed only
+        # where it is used: a parameter called TABLE stays the parameter.
+        body_renames = self._copy_globals(func, _global_names(func.__code__), module_name)
+        default_renames = self._copy_globals(func, _default_names(definition), module_name)
+        # Annotations are evaluated where the function is defined too; they are
+        # dropped rather than copied, since a data migration does not need them.
+        annotated = _strip_annotations(definition)
+        if not (body_renames or default_renames or annotated or target != name):
+            self._definitions.append(source.rstrip() + "\n")
+            return target
+        definition.name = target
+        for statement in definition.body:
+            _Renamer(body_renames).visit(statement)
+        arguments = definition.args
+        for default in [*arguments.defaults, *arguments.kw_defaults]:
+            if default is not None:
+                _Renamer(default_renames).visit(default)
+        self._definitions.append(ast.unparse(tree).rstrip() + "\n")
         return target
+
+    def _copy_globals(self, func: Any, names: set[str], module_name: str) -> dict[str, str]:
+        """Bring the globals *func* reads under *names* into this file; their renames."""
+        renames: dict[str, str] = {}
+        for global_name in sorted(names):
+            if global_name == func.__name__:
+                # Recursion: the copy calls itself under its name here.
+                if self._copied[(module_name, global_name)] != global_name:
+                    renames[global_name] = self._copied[(module_name, global_name)]
+                continue
+            if global_name not in func.__globals__ or (
+                global_name.startswith("__") and global_name.endswith("__")
+            ):
+                continue  # a builtin, an attribute name, or a module dunder
+            local = self._copy_global(global_name, func.__globals__[global_name], module_name)
+            if local != global_name:
+                renames[global_name] = local
+        return renames
 
     def _copy_global(self, name: str, value: Any, module_name: str) -> str:
         """Bring a global that a copied function uses into this file; its name here."""
@@ -604,6 +630,30 @@ def _global_names(code: pytypes.CodeType) -> set[str]:
         if isinstance(const, pytypes.CodeType):
             names |= _global_names(const)
     return names
+
+
+def _default_names(definition: ast.FunctionDef | ast.AsyncFunctionDef) -> set[str]:
+    """Names the default values of *definition*'s parameters read."""
+    arguments = definition.args
+    return {
+        node.id
+        for default in [*arguments.defaults, *arguments.kw_defaults]
+        if default is not None
+        for node in ast.walk(default)
+        if isinstance(node, ast.Name)
+    }
+
+
+def _strip_annotations(definition: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
+    """Remove *definition*'s own annotations; whether it had any."""
+    arguments = definition.args
+    every = [*arguments.posonlyargs, *arguments.args, *arguments.kwonlyargs]
+    every += [arg for arg in (arguments.vararg, arguments.kwarg) if arg is not None]
+    found = definition.returns is not None or any(arg.annotation is not None for arg in every)
+    definition.returns = None
+    for arg in every:
+        arg.annotation = None
+    return found
 
 
 def _is_scalar(value: Any) -> bool:

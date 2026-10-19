@@ -104,11 +104,14 @@ class ChangeReport:
             always; ``RunSQL`` that SQLite cannot execute), each with the
             migration it came from and why. Their effect is missing from the
             comparison state.
+        latest_migration: The migration a new one depends on — the last one
+            a fresh database applies — or ``None`` when there are none.
     """
 
     possible_renames: list[PossibleRename] = field(default_factory=list)
     renamed: list[PossibleRename] = field(default_factory=list)
     skipped: list[str] = field(default_factory=list)
+    latest_migration: str | None = None
 
     def warnings(self) -> list[str]:
         """Human-readable warnings, one per finding."""
@@ -217,6 +220,7 @@ def detect_changes_with_report(
     loaded = _load_all(mig_dir)
     paths = {name: path for name, path, _ in loaded}
     graph = MigrationGraph(loaded)
+    report.latest_migration = graph.order[-1] if graph.order else None
     state = _TableState()
     mem_engine = create_engine("sqlite:///:memory:")
     try:

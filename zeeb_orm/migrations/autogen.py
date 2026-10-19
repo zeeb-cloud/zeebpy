@@ -69,14 +69,18 @@ def make_migration(
         MigrationSerializationError: a change cannot be written faithfully.
     """
     from zeeb_orm.migrations.autodetector import ChangeReport, detect_changes_with_report
-    from zeeb_orm.migrations.executor import check_layout, list_migration_files
+    from zeeb_orm.migrations.executor import (
+        check_layout,
+        latest_migration,
+        list_migration_files,
+    )
     from zeeb_orm.migrations.writer import migration_name, write_migration
 
     migrations_dir = Path(migrations_dir)
     if empty:
         check_layout(migrations_dir)
         operations: list[Operation] = []
-        report = ChangeReport()
+        report = ChangeReport(latest_migration=latest_migration(migrations_dir))
         name = name or "empty"
     else:
         operations, report = detect_changes_with_report(
@@ -90,5 +94,13 @@ def make_migration(
     if dry_run:
         return MigrationDraft(operations=operations, report=report, name=planned)
 
-    path = write_migration(migrations_dir, operations=operations, name=name, initial=initial)
+    # The replay already loaded every migration; do not load them all again.
+    latest = report.latest_migration
+    path = write_migration(
+        migrations_dir,
+        operations=operations,
+        name=name,
+        dependencies=[latest] if latest else [],
+        initial=initial,
+    )
     return MigrationDraft(operations=operations, report=report, name=path.stem, path=path)

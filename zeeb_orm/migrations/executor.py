@@ -11,7 +11,7 @@ import importlib.util
 import re
 import sys
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, NamedTuple
@@ -354,12 +354,18 @@ class MigrationGraph:
                 )
             match = candidates[0]
         node = self.resolve(match)
+        asked = match
+        # A squash that a later squash replaces in turn is not a step of its
+        # own here; it means the state after the last migration it replaces.
+        while match != node and match in self.migrations and self.migrations[match].replaces:
+            match = list(self.migrations[match].replaces)[-1]
         squash = self.squashes.get(node)
         if squash is not None and match != node and match != list(squash.replaces)[-1]:
-            if self.originals(node):
+            originals = self.originals(node)
+            if originals and match in originals:
                 return match
             raise UnknownMigrationError(
-                f"'{match}' is squashed into '{node}', so the database cannot stop "
+                f"'{asked}' is squashed into '{node}', so the database cannot stop "
                 f"half-way through it. Migrate to '{node}', or to a migration before "
                 f"'{list(squash.replaces)[0]}'.",
                 name=name,
@@ -559,11 +565,20 @@ def _validate_dependencies(
             continue
         for dep in graph.dependencies(name):
             if dep in known and dep not in graph.applied:
+                # `migrate <name> --fake` records what is missing up to *name*
+                # and leaves everything after it alone; say exactly what.
+                missing = [
+                    n for n in graph.order[: graph.order.index(name)]
+                    if n not in graph.applied
+                ]
                 raise MigrationError(
                     f"Inconsistent migration history: '{name}' is applied, but its "
-                    f"dependency '{dep}' is not. Unapply '{name}' first, or record "
-                    f"'{dep}' as applied with --fake if its changes are already in "
-                    f"the database."
+                    f"dependency '{dep}' is not. If the changes of "
+                    f"{', '.join(repr(n) for n in missing)} are already in the "
+                    f"database, record {'it' if len(missing) == 1 else 'them'} as "
+                    f"applied without running anything: `migrate {name} --fake` "
+                    f"(this records only {', '.join(missing)}). Otherwise unapply "
+                    f"'{name}' first."
                 )
 
     satisfied = (set(graph.applied) | graph.recorded) - unapplied_later
@@ -590,24 +605,37 @@ def _apply_plan(
     plan: list[_PlanItem],
     graph: MigrationGraph,
     fake: bool,
+    dry_run: bool = False,
 ) -> list[str]:
-    """Execute a plan, recording each step. Returns the names processed."""
+    """Execute a plan, recording each step. Returns the names processed.
+
+    With *dry_run*, nothing runs and nothing is recorded, but the names come
+    back exactly as a real run would return them — that is what ``--plan``
+    shows — except that a faked-initial migration, which runs nothing, is
+    left out.
+    """
     processed: list[str] = []
     recorded = set(graph.recorded)
 
     def record(name: str) -> None:
         if name not in recorded:
-            record_migration(conn, name)
+            if not dry_run:
+                record_migration(conn, name)
             recorded.add(name)
 
     def unrecord(name: str) -> None:
-        unrecord_migration(conn, name)
+        if not dry_run:
+            unrecord_migration(conn, name)
         recorded.discard(name)
+
+    def commit() -> None:
+        if not dry_run:
+            conn.commit()
 
     for item in plan:
         mig = item.migration
         if item.backward:
-            if not fake:
+            if not (fake or dry_run):
                 _execute(conn, mig, backward=True)
             unrecord(item.name)
             # A squash recorded its replaced migrations as applied; unrecord
@@ -618,27 +646,34 @@ def _apply_plan(
             for squash_name, squash in {**graph.squashes, **graph.unused_squashes}.items():
                 if item.name in squash.replaces and squash_name in recorded:
                     unrecord(squash_name)
-            conn.commit()
+            commit()
             processed.append(item.name)
             continue
 
         # Forward. Skip running operations when faking, faking the initial
         # (tables exist), or when a squash's replaced migrations are all applied.
         skip_run = fake or item.fake_initial or item.replaces_satisfied
-        if not skip_run:
+        if not (skip_run or dry_run):
             _execute(conn, mig, backward=False)
         record(item.name)
         # A squash marks its replaced migrations applied too.
         for replaced_name in mig.replaces:
             record(replaced_name)
-        conn.commit()
-        processed.append(item.name)
+        commit()
+        if not (dry_run and item.fake_initial):
+            processed.append(item.name)
 
-        # The last remaining original of a partly applied squash completes it.
+        # The last remaining original of a partly applied squash completes it,
+        # and the squash is reported as recorded with it.
         for squash_name, squash in graph.unused_squashes.items():
-            if item.name in squash.replaces and all(r in recorded for r in squash.replaces):
+            if (
+                squash_name not in recorded
+                and item.name in squash.replaces
+                and all(r in recorded for r in squash.replaces)
+            ):
                 record(squash_name)
-                conn.commit()
+                commit()
+                processed.append(squash_name)
 
     return processed
 
@@ -721,6 +756,36 @@ def migrate_with_result(
     migrations_dir: Path | str | None = None,
 ) -> MigrateResult:
     """:func:`migrate`, reporting what was applied and what was unapplied."""
+    return _run(
+        target=target,
+        steps=None,
+        database_url=database_url,
+        project_root=project_root,
+        fake=fake,
+        fake_initial=fake_initial,
+        plan=plan,
+        migrations_dir=migrations_dir,
+    )
+
+
+def _run(
+    *,
+    target: str | None,
+    steps: int | None,
+    database_url: str | None,
+    project_root: Path | None,
+    fake: bool,
+    fake_initial: bool,
+    plan: bool,
+    migrations_dir: Path | str | None,
+) -> MigrateResult:
+    """Plan and apply a migrate (or, with *steps*, a rollback of that many).
+
+    The graph, the rollback target and the plan are all worked out under the
+    migration lock, from the state the run then changes. A ``plan`` run
+    changes nothing, so it takes no lock, but it is checked exactly like a
+    real run and reports exactly what the real run would do.
+    """
     if database_url is None:
         from zeeb_orm.conf.project import resolve_database_url
         database_url = resolve_database_url(project_root or _find_project_root())
@@ -732,28 +797,21 @@ def migrate_with_result(
     engine = _migration_engine(database_url)
     try:
         with engine.connect() as conn:
-            if plan:
-                graph = MigrationGraph(loaded, get_applied_migrations(conn))
-                plan_items = _build_plan(conn, graph, target, fake_initial)
-                _validate_dependencies(plan_items, graph)
-                # A faked-initial migration runs nothing, so it is omitted from
-                # the plan output (matching the historical behavior).
-                return _result(
-                    (item for item in plan_items if not item.fake_initial),
-                    _resolved(graph, target),
-                )
-
             # One migrate at a time: replicas that all run migrate on startup
             # would otherwise each apply the same pending migrations.
-            with _migration_lock(conn, database_url):
+            with nullcontext() if plan else _migration_lock(conn, database_url):
                 graph = MigrationGraph(loaded, get_applied_migrations(conn))
+                if steps is not None:
+                    target = _rollback_target(graph, steps)
+                    if target is None:
+                        return MigrateResult(applied=[], unapplied=[])
                 plan_items = _build_plan(conn, graph, target, fake_initial)
                 # --fake is how an inconsistent history gets repaired, so it
                 # is not refused for having one.
                 _validate_dependencies(plan_items, graph, check_history=not fake)
                 if not fake:
                     _check_reversible(plan_items)
-                processed = _apply_plan(conn, plan_items, graph, fake)
+                processed = _apply_plan(conn, plan_items, graph, fake, dry_run=plan)
                 backward = {item.name for item in plan_items if item.backward}
                 return MigrateResult(
                     applied=[name for name in processed if name not in backward],
@@ -766,15 +824,6 @@ def migrate_with_result(
 
 def _resolved(graph: MigrationGraph, target: str | None) -> str | None:
     return target if target in (None, "zero") else graph.target(target)
-
-
-def _result(items, target: str | None) -> MigrateResult:
-    items = list(items)
-    return MigrateResult(
-        applied=[item.name for item in items if not item.backward],
-        unapplied=[item.name for item in items if item.backward],
-        target=target,
-    )
 
 
 def rollback_target(
@@ -806,6 +855,12 @@ def rollback_target(
             graph = MigrationGraph(loaded, get_applied_migrations(conn))
     finally:
         engine.dispose()
+    return _rollback_target(graph, steps)
+
+
+def _rollback_target(graph: MigrationGraph, steps: int) -> str | None:
+    if steps < 1:
+        return None
     applied = [name for name in graph.history() if graph.in_history_applied(name)]
     if not applied:
         return None
@@ -824,19 +879,43 @@ def rollback(
 
     See :func:`rollback_target` for how steps are counted. The one
     implementation behind ``migrate --rollback N``, the programmatic
-    ``rollback()`` and the agent layer's ``rollback_migration``.
+    ``rollback()`` and the agent layer's ``rollback_migration``;
+    :func:`rollback_with_result` also reports the target it rolled back to.
     """
-    target = rollback_target(steps, database_url, project_root, migrations_dir)
-    if target is None:
-        return []
-    return migrate_with_result(
-        target=target,
+    return rollback_with_result(
+        steps,
         database_url=database_url,
         project_root=project_root,
         fake=fake,
         plan=plan,
         migrations_dir=migrations_dir,
     ).unapplied
+
+
+def rollback_with_result(
+    steps: int = 1,
+    database_url: str | None = None,
+    project_root: Path | None = None,
+    fake: bool = False,
+    plan: bool = False,
+    migrations_dir: Path | str | None = None,
+) -> MigrateResult:
+    """:func:`rollback`, as a :class:`MigrateResult`.
+
+    The target is worked out under the migration lock, so a migration another
+    process applies in the meantime is never unapplied in its place. Nothing
+    applied (or *steps* below one) gives an empty result with ``target=None``.
+    """
+    return _run(
+        target=None,
+        steps=steps,
+        database_url=database_url,
+        project_root=project_root,
+        fake=fake,
+        fake_initial=False,
+        plan=plan,
+        migrations_dir=migrations_dir,
+    )
 
 
 def _check_reversible(plan: list[_PlanItem]) -> None:
@@ -988,6 +1067,11 @@ def _execute(conn, mig, backward: bool = False) -> None:
     in autocommit mode, so each statement commits on its own — the only way
     to run statements PostgreSQL refuses inside a transaction block, such as
     ``CREATE INDEX CONCURRENTLY``.
+
+    MySQL commits implicitly before and after every DDL statement, which ends
+    any savepoint, so there an atomic migration runs in the plain transaction
+    instead: its data statements and the row recording it still commit
+    together, but its DDL cannot be rolled back.
     """
     def _body() -> None:
         mig.pre_migrate(conn)
@@ -1000,6 +1084,9 @@ def _execute(conn, mig, backward: bool = False) -> None:
         mig.post_migrate(conn)
 
     if mig.atomic:
+        if conn.dialect.name in ("mysql", "mariadb"):
+            _body()
+            return
         with conn.begin_nested():
             _body()
         return

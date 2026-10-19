@@ -17,6 +17,11 @@ Each class pins a defect that used to pass silently:
 - the optimizer reordered operations past ``RunSQL`` and foreign keys
 - ``migrations_dir`` was ignored, the agent layer never heard about likely
   renames, and ``runserver`` missed a pending migration that sorts early
+- a ``sa.func.now()`` server default crashed the writer; a copied function's
+  default argument bound another file's constant; a nested squash as a target
+  crashed; ``--plan`` disagreed with the real run; a squash could share a
+  number; a rollback picked its target before taking the lock; MySQL DDL broke
+  the savepoint around an atomic migration
 """
 
 from __future__ import annotations
@@ -158,6 +163,34 @@ def _only_op(path):
 
 
 class TestLosslessFiles:
+    def test_a_sql_function_server_default_is_written(self):
+        from zeeb_orm.migrations.serializer import SourceWriter
+
+        column = sa.Column("at", sa.DateTime(), server_default=sa.func.now())
+        assert "server_default=sa.func.now()" in SourceWriter().column(column)
+        with pytest.raises(MigrationSerializationError, match="sa.text"):
+            SourceWriter().column(
+                sa.Column("slug", sa.String(), server_default=sa.func.lower("X"))
+            )
+
+    def test_makemigrations_loads_each_existing_migration_once(self, mig_dir, monkeypatch):
+        from zeeb_orm.migrations.autogen import make_migration
+
+        names = _chain(mig_dir, "ll_once", 3)
+        _model("ll_once", _id(), *(sa.Column(f"c{i}", sa.Integer()) for i in (2, 3, 4)))
+        loads: list[str] = []
+        real = executor.load_migration
+
+        def counting(path):
+            loads.append(Path(path).stem)
+            return real(path)
+
+        monkeypatch.setattr(executor, "load_migration", counting)
+        draft = make_migration(mig_dir)
+        assert draft.path is not None
+        assert sorted(loads) == names
+        assert load_migration(draft.path).dependencies == [names[-1]]
+
     def test_datetime_keeps_its_time_zone(self, mig_dir):
         path = write_migration(
             mig_dir, [_add("lf_events", "at", sa.DateTime(timezone=True))], name="at"
@@ -300,6 +333,28 @@ class TestSquashCopiesCode:
         assert self._rows(db) == ["one", "two"]
         _migrate(mig_dir, db, target="zero")
         assert "sq_log" not in sa.inspect(sa.create_engine(db)).get_table_names()
+
+
+    def test_a_default_argument_keeps_its_own_files_constant(self, mig_dir, db, capsys):
+        from zeeb_orm.migrations.cli import squashmigrations
+
+        self._setup(mig_dir)
+        # A function whose default argument reads LABEL — evaluated where it is
+        # defined, so not in its code's names — and that is annotated.
+        _write(mig_dir, "0003_two.py", _DATA_MIGRATION.format(
+            label="two", deps=["0002_one"]
+        ).replace(
+            "def forwards(conn):\n    _insert(conn, LABEL)",
+            "def forwards(conn: sa.engine.Connection, label=LABEL) -> None:\n"
+            "    _insert(conn, label)",
+        ))
+        name = squashmigrations("0001_initial", "0003_two", migrations_dir=str(mig_dir))
+        assert name is not None, capsys.readouterr().out
+        for original in ("0001_initial.py", "0002_one.py", "0003_two.py"):
+            (mig_dir / original).unlink()
+
+        _migrate(mig_dir, db)
+        assert self._rows(db) == ["one", "two"]
 
 
 # ---------------------------------------------------------------------------
@@ -450,7 +505,7 @@ class TestSquashes:
         assert _recorded(db) == {names[0], names[1]}
 
         # The originals carry on from there, and complete the squash.
-        assert _migrate(mig_dir, db) == [names[2]]
+        assert _migrate(mig_dir, db) == [names[2], squash]
         assert _recorded(db) == {*names, squash}
 
     def test_without_its_originals_a_squash_is_one_step(self, mig_dir, db):
@@ -465,10 +520,17 @@ class TestSquashes:
     def test_a_squash_never_runs_after_a_migration_that_depends_on_it(self, mig_dir, db):
         names = _chain(mig_dir, "sq_mid", 4)
         squash = _squash(mig_dir, names[0], names[2])
-        # It does not share a number with — or sort after — 0004.
-        assert not squash.startswith("0005")
-        assert squash < names[3]
+        # 0004 is taken, so it comes after the last one: numbers stay unique,
+        # and the dependency graph still runs it before 0004.
+        assert squash.startswith("0005_")
+        numbers = [name[:4] for name, _ in list_migration_files(mig_dir)]
+        assert len(numbers) == len(set(numbers))
         assert _migrate(mig_dir, db) == [squash, names[3]]
+        # "0005" names the squash alone (it runs before 0004, so 0004 would go).
+        planned = executor.migrate_with_result(
+            database_url=db, migrations_dir=mig_dir, target="0005", plan=True
+        )
+        assert (planned.target, planned.unapplied) == (squash, [names[3]])
         assert {"c2", "c3", "c4"} <= set(_columns(db, "sq_mid"))
 
     def test_a_partly_applied_squash_finishes_with_its_originals(self, mig_dir, db):
@@ -476,7 +538,9 @@ class TestSquashes:
         _migrate(mig_dir, db, target=names[1])
         squash = _squash(mig_dir, names[0], names[2])
 
-        assert _migrate(mig_dir, db) == [names[2]]
+        # The squash is recorded with its last original, and reported as such.
+        result = executor.migrate_with_result(database_url=db, migrations_dir=mig_dir)
+        assert result.applied == [names[2], squash]
         assert _recorded(db) == {*names, squash}
         assert "c3" in _columns(db, "sq_part")
 
@@ -487,6 +551,21 @@ class TestSquashes:
         # Replaying both used to fail with "duplicate column name".
         ops, _report = detect_changes_with_report(migrations_dir=str(mig_dir))
         assert _mine(ops, "sq_detect") == []
+
+    def test_a_squash_inside_a_later_squash_is_a_target(self, mig_dir, db):
+        names = _chain(mig_dir, "sq_nested", 4)
+        inner = _squash(mig_dir, names[0], names[1])
+        outer = _squash(mig_dir, names[0], inner)  # inner sorts after 0004
+        assert inner in load_migration(mig_dir / f"{outer}.py").replaces
+        _migrate(mig_dir, db)
+
+        # The inner squash means the state after its last original.
+        result = executor.migrate_with_result(
+            database_url=db, migrations_dir=mig_dir, target=inner
+        )
+        assert result.unapplied == [names[3], names[2]]
+        assert {"c2"} <= set(_columns(db, "sq_nested"))
+        assert "c3" not in _columns(db, "sq_nested")
 
     def test_targeting_inside_a_squash_without_originals_is_refused(self, mig_dir, db):
         names = _chain(mig_dir, "sq_gone", 3)
@@ -536,6 +615,84 @@ class TestOrdering:
             _migrate(mig_dir, db)
         # --fake is the repair, and is not refused.
         assert _migrate(mig_dir, db, fake=True) == ["0001_a", "0003_c"]
+
+    def test_the_repair_it_suggests_records_only_the_missing_dependency(self, mig_dir, db):
+        _write(mig_dir, "0001_a.py", _EMPTY.format(deps=[]))
+        _write(mig_dir, "0002_b.py", _EMPTY.format(deps=["0001_a"]))
+        _write(mig_dir, "0003_c.py", _EMPTY.format(deps=["0002_b"]))
+        _record(db, "0002_b")
+        with pytest.raises(MigrationError, match="`migrate 0002_b --fake`") as raised:
+            _migrate(mig_dir, db)
+        assert "records only 0001_a)" in str(raised.value)
+
+        # Previewed, then run: 0003_c stays pending, to run for real.
+        assert _migrate(mig_dir, db, target="0002_b", fake=True, plan=True) == ["0001_a"]
+        assert _migrate(mig_dir, db, target="0002_b", fake=True) == ["0001_a"]
+        assert _recorded(db) == {"0001_a", "0002_b"}
+        assert _migrate(mig_dir, db) == ["0003_c"]
+
+
+class TestPlans:
+    """``--plan`` reports what the real run does, and refuses what it refuses."""
+
+    def test_a_fake_plan_is_not_refused_for_an_inconsistent_history(self, mig_dir, db):
+        _write(mig_dir, "0001_a.py", _EMPTY.format(deps=[]))
+        _write(mig_dir, "0002_b.py", _EMPTY.format(deps=["0001_a"]))
+        _record(db, "0002_b")
+        assert _migrate(mig_dir, db, fake=True, plan=True) == ["0001_a"]
+        assert _recorded(db) == {"0002_b"}
+
+    def test_a_plan_through_an_irreversible_operation_is_refused(self, mig_dir, db):
+        from zeeb_orm.migrations.state import IrreversibleError
+
+        write_migration(mig_dir, [_create("pl_rows", _id())], initial=True)
+        write_migration(mig_dir, [RunSQL("INSERT INTO pl_rows (id) VALUES (1)")], name="seed")
+        _migrate(mig_dir, db)
+        with pytest.raises(IrreversibleError):
+            _migrate(mig_dir, db, target="0001", plan=True)
+        # Faked, nothing runs backward, so the plan (and the run) are allowed.
+        assert _migrate(mig_dir, db, target="0001", plan=True, fake=True) == ["0002_seed"]
+
+    def test_a_plan_reports_the_squash_its_last_original_completes(self, mig_dir, db):
+        names = _chain(mig_dir, "pl_part", 3)
+        _migrate(mig_dir, db, target=names[1])
+        squash = _squash(mig_dir, names[0], names[2])
+        planned = executor.migrate_with_result(
+            database_url=db, migrations_dir=mig_dir, plan=True
+        )
+        assert planned.applied == [names[2], squash]
+        assert _recorded(db) == {names[0], names[1]}
+
+
+class TestRollbackUnderTheLock:
+    def test_a_migration_applied_meanwhile_is_the_one_rolled_back(
+        self, mig_dir, db, monkeypatch
+    ):
+        from contextlib import contextmanager
+
+        for name, deps in (("0001_a", []), ("0002_b", ["0001_a"]), ("0003_c", ["0002_b"])):
+            _write(mig_dir, f"{name}.py", _EMPTY.format(deps=deps))
+        _migrate(mig_dir, db, target="0002_b")
+
+        lock = executor._migration_lock
+
+        @contextmanager
+        def another_replica_got_there_first(conn, url):
+            # Another process applies 0003 while this rollback waits for the lock.
+            _record(db, "0003_c")
+            with lock(conn, url):
+                yield
+
+        monkeypatch.setattr(executor, "_migration_lock", another_replica_got_there_first)
+        result = executor.rollback_with_result(1, database_url=db, migrations_dir=mig_dir)
+        assert result.unapplied == ["0003_c"]
+        assert result.target == "0002_b"
+        assert _recorded(db) == {"0001_a", "0002_b"}
+
+    def test_nothing_applied_is_an_empty_result(self, mig_dir, db):
+        _write(mig_dir, "0001_a.py", _EMPTY.format(deps=[]))
+        result = executor.rollback_with_result(1, database_url=db, migrations_dir=mig_dir)
+        assert result == executor.MigrateResult(applied=[], unapplied=[], target=None)
 
 
 # ---------------------------------------------------------------------------
@@ -836,3 +993,72 @@ class TestOnPostgres:
         assert "5" in _columns(pg, "pg_counts")["n"]["default"]
         _migrate(mig_dir, pg, target="0001_initial")
         assert "0" in _columns(pg, "pg_counts")["n"]["default"]
+
+
+# ---------------------------------------------------------------------------
+# On MySQL — set ZEEB_TEST_MYSQL_URL (e.g.
+# mysql+pymysql://root:pw@127.0.0.1:3306/zeeb) to run these; the database is
+# emptied before each test.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture()
+def my():
+    import os
+
+    url = os.environ.get("ZEEB_TEST_MYSQL_URL")
+    if not url:
+        pytest.skip("ZEEB_TEST_MYSQL_URL is not set")
+    engine = sa.create_engine(url)
+    database = engine.url.database
+    with engine.begin() as conn:
+        conn.execute(sa.text(f"DROP DATABASE IF EXISTS `{database}`"))
+        conn.execute(sa.text(f"CREATE DATABASE `{database}`"))
+    engine.dispose()
+    return url
+
+
+class TestOnMySQL:
+    def test_an_atomic_migration_with_ddl_is_applied_and_recorded(self, mig_dir, my):
+        # DDL commits implicitly on MySQL, which ended the savepoint the
+        # migration ran in: the migration ran, then failed to be recorded.
+        write_migration(
+            mig_dir,
+            [_create("my_posts", _id(), sa.Column("title", sa.String(100)))],
+            initial=True,
+        )
+        write_migration(
+            mig_dir,
+            [
+                _add("my_posts", "views", sa.Integer()),
+                RunSQL(
+                    "INSERT INTO my_posts (id, title) VALUES (1, 'a')",
+                    reverse_sql="DELETE FROM my_posts WHERE id = 1",
+                ),
+            ],
+            name="views",
+        )
+        assert _migrate(mig_dir, my) == ["0001_initial", "0002_views"]
+        assert _recorded(my) == {"0001_initial", "0002_views"}
+        assert "views" in _columns(my, "my_posts")
+
+        assert executor.rollback(1, database_url=my, migrations_dir=mig_dir) == ["0002_views"]
+        assert "views" not in _columns(my, "my_posts")
+        assert _migrate(mig_dir, my) == ["0002_views"]
+
+    def test_concurrent_migrate_runs_apply_each_migration_once(self, mig_dir, my):
+        write_migration(mig_dir, [_create("my_once", _id())], initial=True)
+        results: list = []
+
+        def run():
+            try:
+                results.append(_migrate(mig_dir, my))
+            except Exception as exc:  # pragma: no cover — the failure being guarded
+                results.append(exc)
+
+        threads = [threading.Thread(target=run) for _ in range(2)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        assert sorted(map(str, results)) == ["['0001_initial']", "[]"]

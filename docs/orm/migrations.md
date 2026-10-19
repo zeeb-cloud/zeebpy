@@ -114,7 +114,7 @@ python manage.py migrate --plan
 | `--rollback N` | Roll back N migrations |
 | `--fake` | Mark as applied without executing |
 | `--fake-initial` | Skip the first migration if its tables already exist |
-| `--plan` | Print the list of migrations that would run, without executing them |
+| `--plan` | Print the list of migrations that would run, without executing them. It is checked like the real run (with `--fake` too) and refuses what the real run would refuse |
 
 A target that matches no migration — or more than one — is refused with
 `UnknownMigrationError` (`file_not_found` with `--json`), and nothing runs.
@@ -124,8 +124,9 @@ later ones are unapplied (newest first), missing earlier ones applied.
 **Order.** Migrations are applied in **dependency order** — a topological sort of
 their `dependencies`, file names breaking ties — not merely by file name. A
 dependency cycle is refused. So is an *inconsistent history*: a migration that is
-recorded as applied while one of its dependencies is not (`migrate --fake` is the
-repair, and is allowed).
+recorded as applied while one of its dependencies is not. If the missing changes
+are already in the database, `migrate <that migration> --fake` repairs it: it
+records only the unapplied migrations up to that one, and the error lists them.
 
 **One at a time.** `migrate` holds a database-wide lock while it plans and
 applies — a PostgreSQL advisory lock, MySQL `GET_LOCK`, or on SQLite an OS lock on
@@ -195,12 +196,13 @@ While the original files exist, a database can also be moved *into* a squash:
 original is a valid `migrate` target. Once the originals are deleted the squash
 is one step. A dependency on a replaced migration means the squash, so the
 squashed file may sit anywhere in the directory listing; it is numbered after the
-range, or with the range's last number when a later migration already holds the
-next one.
+range, or after the last migration when a later migration already holds the next
+number (numbers stay unique, so a prefix such as `0003` names one file).
 
 `RunPython` functions defined in the squashed files are copied into the new file,
-along with the module-level helpers, constants and imports they use (renamed when
-two files define the same name). A range containing a migration that overrides
+along with the module-level helpers, constants and imports they use — default
+argument values included — renamed when two files define the same name. Their
+type annotations are left out of the copy. A range containing a migration that overrides
 `pre_migrate`/`post_migrate` is refused — a squash cannot carry those hooks over
 — and a range containing a non-atomic migration produces a non-atomic squash.
 
@@ -286,6 +288,11 @@ statements that cannot run inside a transaction, e.g.
 `CREATE INDEX CONCURRENTLY` on PostgreSQL. The operations then run with the
 connection in autocommit mode: each statement commits on its own, so a failure
 part-way leaves the earlier statements applied.
+
+On MySQL every migration behaves this way for its DDL: MySQL commits implicitly
+around each `CREATE`/`ALTER`/`DROP`, so a migration that fails part-way leaves its
+earlier schema changes in place (and unrecorded). Keep MySQL migrations small, or
+make them safe to re-run.
 
 ```python
 class Migration(Migration):
@@ -871,6 +878,7 @@ result = executor.migrate_with_result(target="0003")   # a unique prefix works
 result.applied, result.unapplied, result.target       # target: the full name
 
 executor.rollback(1)          # names unapplied; executor.rollback_target(1) only plans
+executor.rollback_with_result(1).target   # the target, worked out under the migrate lock
 ```
 
 ### Errors

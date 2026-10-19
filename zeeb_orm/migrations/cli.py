@@ -595,13 +595,14 @@ def squashmigrations(
     else:
         slug = f"squashed_{_slugify(start)}_to_{_slugify(end)}"
 
-    # Numbered after the end migration — unless a later migration already has
-    # that number, in which case it shares the end's own number, so it never
-    # sorts after a migration that comes later. (Apply order follows the
-    # dependency graph either way.)
+    # Numbered right after the end migration — or, when a later migration
+    # already holds that number, after the last migration: every number stays
+    # unique, so "0003" names one file. Apply order follows the dependency
+    # graph, so a squash numbered after migrations that depend on it still
+    # runs before them.
     end_number = int(end[:4]) if end[:4].isdigit() else end_idx + 1
     taken = {int(n[:4]) for n in all_names if n[:4].isdigit()}
-    squash_number = end_number + 1 if end_number + 1 not in taken else end_number
+    squash_number = end_number + 1 if end_number + 1 not in taken else max(taken) + 1
     filename = f"{squash_number:04d}_{slug}.py"
     filepath = mig_dir / filename
 

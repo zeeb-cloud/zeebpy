@@ -337,9 +337,11 @@ def _run_migrate(
     from zeeb_orm.migrations import executor
 
     if rollback_steps is not None:
-        target = executor.rollback_target(
-            rollback_steps, database_url=db_url, project_root=project_root
+        rollback = executor.rollback_with_result(
+            rollback_steps, database_url=db_url, project_root=project_root,
+            fake=fake, plan=plan,
         )
+        target = rollback.target
         if target is None:
             return ok(
                 "No migrations to roll back.",
@@ -350,10 +352,7 @@ def _run_migrate(
             )
 
         if plan:
-            planned = executor.migrate(
-                target=target, database_url=db_url, project_root=project_root,
-                plan=True, fake_initial=fake_initial,
-            )
+            planned = rollback.names
             return ok(
                 f"{len(planned)} migration(s) would be rolled back.",
                 json_output=json_output,
@@ -361,9 +360,7 @@ def _run_migrate(
                 plan=planned, target=target,
             )
 
-        rolled_back = executor.migrate_with_result(
-            target=target, database_url=db_url, project_root=project_root, fake=fake,
-        ).unapplied
+        rolled_back = rollback.unapplied
         return ok(
             f"Rolled back {len(rolled_back)} migration(s).",
             json_output=json_output,
