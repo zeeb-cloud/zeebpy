@@ -474,9 +474,10 @@ ENV/
 .coverage
 htmlcov/
 
-# Database
+# Database (and the lock file `migrate` holds next to a SQLite database)
 *.sqlite3
 *.db
+*-migrate.lock
 
 # Environment — .env holds this project's signing key, .env.example does not
 .env

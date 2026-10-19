@@ -2908,6 +2908,12 @@ async def execute_plan(
                     # warning, never as an error, or a fully successful build
                     # would be reported as a failure the user cannot clear.
                     warnings.append(f"make_migrations: {result.data['warning']}")
+                for rename in (result.data or {}).get("possible_renames", []):
+                    warnings.append(
+                        f"make_migrations: {rename['model']}.{rename['old']} was removed "
+                        f"and {rename['model']}.{rename['new']} added with the same "
+                        f"definition; the migration drops the data in '{rename['old']}'."
+                    )
             else:
                 _record(index, op, "make_migrations", result)
                 remaining = operations[index + 1 :]

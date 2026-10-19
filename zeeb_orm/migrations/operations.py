@@ -2,13 +2,37 @@
 Django-style migration operations.
 
 Each operation represents a single schema change (create table, add column, etc.)
-and knows how to apply itself forward and backward.
+and knows how to apply itself forward and backward, and how to describe itself
+for a migration file (:meth:`Operation.deconstruct`, rendered by
+:mod:`zeeb_orm.migrations.serializer`).
 """
 
 from __future__ import annotations
 
 from decimal import Decimal
 from typing import Any
+
+
+class _NoDefault:
+    """The ``server_default`` value meaning "the column has no server default"."""
+
+    _instance: _NoDefault | None = None
+
+    def __new__(cls) -> _NoDefault:
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+        return cls._instance
+
+    def __repr__(self) -> str:
+        return "operations.NO_DEFAULT"
+
+    def __reduce__(self) -> str:
+        return "NO_DEFAULT"
+
+
+#: Pass as ``AlterField(server_default=...)`` / ``old_server_default`` to say the
+#: column has *no* server default (``None`` there means "leave it unchanged").
+NO_DEFAULT = _NoDefault()
 
 
 def _quote(connection, identifier: str) -> str:
@@ -148,6 +172,25 @@ class Operation:
         """Execute backward migration."""
         raise NotImplementedError
 
+    def deconstruct(self) -> dict[str, Any]:
+        """The keyword arguments that rebuild this operation, defaults left out.
+
+        This is what a migration file records; every argument that changes what
+        the operation does must be in it.
+        """
+        raise NotImplementedError
+
+    def __repr__(self) -> str:
+        from zeeb_orm.migrations.serializer import SourceWriter
+
+        try:
+            return SourceWriter(copy_functions=False).operation(self)
+        except Exception:
+            try:
+                return f"<{type(self).__name__}: {self.describe()}>"
+            except Exception:
+                return f"<{type(self).__name__}>"
+
 
 class CreateModel(Operation):
     """
@@ -185,7 +228,6 @@ class CreateModel(Operation):
 
     def forward(self, connection) -> None:
         from sqlalchemy import MetaData, PrimaryKeyConstraint, Table
-        from sqlalchemy.schema import CreateTable
         tmp_meta = MetaData()
         cols = list(self.columns)
         if self.primary_key:
@@ -200,25 +242,17 @@ class CreateModel(Operation):
         from sqlalchemy import text
         connection.execute(text(f"DROP TABLE IF EXISTS {_quote(connection, self.table)}"))
 
-    def __repr__(self) -> str:
-        parts = [
-            f"    operations.CreateModel(\n"
-            f"        name={self.name!r},\n"
-            f"        table={self.table!r},\n"
-            f"        columns=[\n"
-        ]
-        for col in self.columns:
-            parts.append(f"            {_repr_column(col)},\n")
-        parts.append(f"        ],\n")
+    def deconstruct(self) -> dict[str, Any]:
+        kwargs: dict[str, Any] = {
+            "name": self.name,
+            "table": self.table,
+            "columns": list(self.columns),
+        }
         if self.primary_key:
-            parts.append(f"        primary_key={self.primary_key!r},\n")
+            kwargs["primary_key"] = list(self.primary_key)
         if self.constraints:
-            parts.append(f"        constraints=[\n")
-            for c in self.constraints:
-                parts.append(f"            {_repr_constraint(c)},\n")
-            parts.append(f"        ],\n")
-        parts.append(f"    )")
-        return "".join(parts)
+            kwargs["constraints"] = list(self.constraints)
+        return kwargs
 
 
 class DeleteModel(Operation):
@@ -265,27 +299,15 @@ class DeleteModel(Operation):
             connection, self.table, self.columns, self.primary_key, self.constraints
         )
 
-    def __repr__(self) -> str:
-        if not self.columns:
-            return f"    operations.DeleteModel(name={self.name!r}, table={self.table!r})"
-        parts = [
-            f"    operations.DeleteModel(\n"
-            f"        name={self.name!r},\n"
-            f"        table={self.table!r},\n"
-            f"        columns=[\n"
-        ]
-        for col in self.columns:
-            parts.append(f"            {_repr_column(col)},\n")
-        parts.append("        ],\n")
+    def deconstruct(self) -> dict[str, Any]:
+        kwargs: dict[str, Any] = {"name": self.name, "table": self.table}
+        if self.columns:
+            kwargs["columns"] = list(self.columns)
         if self.primary_key:
-            parts.append(f"        primary_key={self.primary_key!r},\n")
+            kwargs["primary_key"] = list(self.primary_key)
         if self.constraints:
-            parts.append("        constraints=[\n")
-            for c in self.constraints:
-                parts.append(f"            {_repr_constraint(c)},\n")
-            parts.append("        ],\n")
-        parts.append("    )")
-        return "".join(parts)
+            kwargs["constraints"] = list(self.constraints)
+        return kwargs
 
 
 class AddField(Operation):
@@ -301,7 +323,7 @@ class AddField(Operation):
         return f"Add field {self.name} to {self.model_name}"
 
     def forward(self, connection) -> None:
-        from alembic.operations import Operations, MigrateOperation
+        from alembic.operations import Operations
         from alembic.runtime.migration import MigrationContext
         ctx = MigrationContext.configure(connection)
         op = Operations(ctx)
@@ -309,10 +331,8 @@ class AddField(Operation):
         # A NOT NULL column cannot simply be appended to a table that already has
         # rows — Postgres rejects it with NotNullViolation and the migration then
         # fails on every retry, wedging the project. Emit the field's own default as
-        # a SQL DEFAULT so the database backfills existing rows in the same ALTER
-        # (single statement, so it also works on SQLite, which cannot alter columns
-        # afterwards). The DEFAULT mirrors the model's default, so leaving it in
-        # place keeps the schema and the model in agreement.
+        # a SQL DEFAULT so the database backfills existing rows in the same ALTER.
+        backfilled = False
         if not column.nullable and column.server_default is None:
             from zeeb_orm.migrations.state import MigrationError
 
@@ -324,7 +344,22 @@ class AddField(Operation):
                     f"default, or make it nullable."
                 )
             column = _with_server_default(column, backfill)
+            backfilled = True
         op.add_column(self.table, column)
+        # The backfill DEFAULT is a means of adding the column, not part of the
+        # schema the migration declares: drop it again, so the database matches
+        # the migration files (and change detection, which compares the models
+        # against those files, sees no phantom server default). SQLite cannot
+        # drop a default without rebuilding the table; there it stays, unused by
+        # the ORM, which always writes the column.
+        if backfilled and connection.dialect.name != "sqlite":
+            op.alter_column(
+                self.table,
+                self.name,
+                server_default=None,
+                existing_type=column.type,
+                existing_nullable=False,
+            )
 
     def backward(self, connection) -> None:
         from alembic.operations import Operations
@@ -333,15 +368,13 @@ class AddField(Operation):
         op = Operations(ctx)
         op.drop_column(self.table, self.name)
 
-    def __repr__(self) -> str:
-        return (
-            f"    operations.AddField(\n"
-            f"        model_name={self.model_name!r},\n"
-            f"        table={self.table!r},\n"
-            f"        name={self.name!r},\n"
-            f"        column={_repr_column(self.column)},\n"
-            f"    )"
-        )
+    def deconstruct(self) -> dict[str, Any]:
+        return {
+            "model_name": self.model_name,
+            "table": self.table,
+            "name": self.name,
+            "column": self.column,
+        }
 
 
 class RemoveField(Operation):
@@ -380,23 +413,25 @@ class RemoveField(Operation):
         op = Operations(ctx)
         op.add_column(self.table, self.field)
 
-    def __repr__(self) -> str:
-        parts = [
-            f"    operations.RemoveField(\n"
-            f"        model_name={self.model_name!r},\n"
-            f"        table={self.table!r},\n"
-            f"        name={self.name!r},\n"
-        ]
+    def deconstruct(self) -> dict[str, Any]:
+        kwargs: dict[str, Any] = {
+            "model_name": self.model_name,
+            "table": self.table,
+            "name": self.name,
+        }
         if self.field is not None:
-            parts.append(f"        field={_repr_column(self.field)},\n")
-        parts.append(f"    )")
-        return "".join(parts)
+            kwargs["field"] = self.field
+        return kwargs
 
 
 class AlterField(Operation):
-    """Alter a column's type, nullable, default, etc.
+    """Alter a column's type, nullable, server default, etc.
 
-    Pass ``old_column_type`` and/or ``old_nullable`` to enable reversal.
+    ``None`` means "leave unchanged" for every argument. To drop a server
+    default, pass ``server_default=NO_DEFAULT``; for a column that had none,
+    ``old_server_default=NO_DEFAULT``. Pass the ``old_*`` values to enable
+    reversal. Further keyword arguments (``existing_nullable=...``) are handed
+    to Alembic's ``alter_column`` as they are.
     """
 
     def __init__(
@@ -460,7 +495,7 @@ class AlterField(Operation):
         if self.nullable is not None:
             alter_kwargs["nullable"] = self.nullable
         if self.server_default is not None:
-            alter_kwargs["server_default"] = self.server_default
+            alter_kwargs["server_default"] = _alembic_server_default(self.server_default)
         alter_kwargs.update(self.kwargs)
         self._apply_alter(connection, alter_kwargs)
 
@@ -473,36 +508,49 @@ class AlterField(Operation):
         if self.old_nullable is not None:
             alter_kwargs["nullable"] = self.old_nullable
         if self.old_server_default is not None:
-            alter_kwargs["server_default"] = self.old_server_default
+            alter_kwargs["server_default"] = _alembic_server_default(self.old_server_default)
+        if alter_kwargs:
+            alter_kwargs.update(
+                (key, value) for key, value in self.kwargs.items() if key.startswith("existing_")
+            )
         self._apply_alter(connection, alter_kwargs)
 
-    def __repr__(self) -> str:
-        parts = [
-            f"    operations.AlterField(\n"
-            f"        model_name={self.model_name!r},\n"
-            f"        table={self.table!r},\n"
-            f"        name={self.name!r},\n"
-        ]
-        if self.column_type is not None:
-            parts.append(f"        column_type={_repr_sa_type(self.column_type)},\n")
-        if self.nullable is not None:
-            parts.append(f"        nullable={self.nullable!r},\n")
-        if self.server_default is not None:
-            parts.append(f"        server_default={self.server_default!r},\n")
-        if self.old_column_type is not None:
-            parts.append(f"        old_column_type={_repr_sa_type(self.old_column_type)},\n")
-        if self.old_nullable is not None:
-            parts.append(f"        old_nullable={self.old_nullable!r},\n")
-        if self.old_server_default is not None:
-            parts.append(f"        old_server_default={self.old_server_default!r},\n")
-        parts.append(f"    )")
-        return "".join(parts)
+    def deconstruct(self) -> dict[str, Any]:
+        kwargs: dict[str, Any] = {
+            "model_name": self.model_name,
+            "table": self.table,
+            "name": self.name,
+        }
+        for key in (
+            "column_type",
+            "nullable",
+            "server_default",
+            "old_column_type",
+            "old_nullable",
+            "old_server_default",
+        ):
+            value = getattr(self, key)
+            if value is not None:
+                kwargs[key] = value
+        kwargs.update(self.kwargs)
+        return kwargs
+
+
+def _alembic_server_default(value: Any) -> Any:
+    """An ``AlterField`` server default as Alembic's ``alter_column`` takes it.
+
+    ``NO_DEFAULT`` becomes ``None`` (Alembic's "drop the default"); a string is
+    a literal value and anything else (``sa.text(...)``) SQL, as on a Column.
+    """
+    return None if value is NO_DEFAULT else value
 
 
 class AddIndex(Operation):
     """Create an index."""
 
-    def __init__(self, model_name: str, table: str, name: str, columns: list[str], unique: bool = False):
+    def __init__(
+        self, model_name: str, table: str, name: str, columns: list[str], unique: bool = False
+    ):
         self.model_name = model_name
         self.table = table
         self.name = name
@@ -526,18 +574,16 @@ class AddIndex(Operation):
         op = Operations(ctx)
         op.drop_index(self.name, table_name=self.table)
 
-    def __repr__(self) -> str:
-        parts = [
-            f"    operations.AddIndex(\n"
-            f"        model_name={self.model_name!r},\n"
-            f"        table={self.table!r},\n"
-            f"        name={self.name!r},\n"
-            f"        columns={self.columns!r},\n"
-        ]
+    def deconstruct(self) -> dict[str, Any]:
+        kwargs: dict[str, Any] = {
+            "model_name": self.model_name,
+            "table": self.table,
+            "name": self.name,
+            "columns": list(self.columns),
+        }
         if self.unique:
-            parts.append(f"        unique=True,\n")
-        parts.append(f"    )")
-        return "".join(parts)
+            kwargs["unique"] = True
+        return kwargs
 
 
 class RemoveIndex(Operation):
@@ -585,19 +631,17 @@ class RemoveIndex(Operation):
         op = Operations(ctx)
         op.create_index(self.name, self.table, self.columns, unique=self.unique)
 
-    def __repr__(self) -> str:
-        parts = [
-            f"    operations.RemoveIndex(\n"
-            f"        model_name={self.model_name!r},\n"
-            f"        table={self.table!r},\n"
-            f"        name={self.name!r},\n"
-        ]
+    def deconstruct(self) -> dict[str, Any]:
+        kwargs: dict[str, Any] = {
+            "model_name": self.model_name,
+            "table": self.table,
+            "name": self.name,
+        }
         if self.columns:
-            parts.append(f"        columns={self.columns!r},\n")
+            kwargs["columns"] = list(self.columns)
         if self.unique:
-            parts.append("        unique=True,\n")
-        parts.append("    )")
-        return "".join(parts)
+            kwargs["unique"] = True
+        return kwargs
 
 
 class RunSQL(Operation):
@@ -635,12 +679,19 @@ class RunSQL(Operation):
             from sqlalchemy import text
             connection.execute(text(self.reverse_sql))
 
-    def __repr__(self) -> str:
-        parts = [f"    operations.RunSQL(\n        sql={self.sql!r},\n"]
-        if self.reverse_sql:
-            parts.append(f"        reverse_sql={self.reverse_sql!r},\n")
-        parts.append(f"    )")
-        return "".join(parts)
+    def deconstruct(self) -> dict[str, Any]:
+        from zeeb_orm.migrations.serializer import Source
+
+        def spelled(sql: str) -> Any:
+            # ``RunSQL.noop`` reads better than ``''`` and says what it means.
+            return Source("operations.RunSQL.noop") if sql == self.noop else sql
+
+        kwargs: dict[str, Any] = {"sql": spelled(self.sql)}
+        # ``reverse_sql=RunSQL.noop`` is reversible and ``None`` is not: the
+        # distinction must survive into the file.
+        if self.reverse_sql is not None:
+            kwargs["reverse_sql"] = spelled(self.reverse_sql)
+        return kwargs
 
 
 class RunPython(Operation):
@@ -675,9 +726,11 @@ class RunPython(Operation):
             raise _irreversible(self, "no reverse_code was given (use RunPython.noop for none)")
         self.reverse_code(connection)
 
-    def __repr__(self) -> str:
-        name = getattr(self.code, '__name__', 'function')
-        return f"    operations.RunPython({name})"
+    def deconstruct(self) -> dict[str, Any]:
+        kwargs: dict[str, Any] = {"code": self.code}
+        if self.reverse_code is not None:
+            kwargs["reverse_code"] = self.reverse_code
+        return kwargs
 
 
 class RenameModel(Operation):
@@ -706,15 +759,13 @@ class RenameModel(Operation):
         op = Operations(ctx)
         op.rename_table(self.new_table, self.old_table)
 
-    def __repr__(self) -> str:
-        return (
-            f"    operations.RenameModel(\n"
-            f"        old_name={self.old_name!r},\n"
-            f"        new_name={self.new_name!r},\n"
-            f"        old_table={self.old_table!r},\n"
-            f"        new_table={self.new_table!r},\n"
-            f"    )"
-        )
+    def deconstruct(self) -> dict[str, Any]:
+        return {
+            "old_name": self.old_name,
+            "new_name": self.new_name,
+            "old_table": self.old_table,
+            "new_table": self.new_table,
+        }
 
 
 class RenameField(Operation):
@@ -743,15 +794,13 @@ class RenameField(Operation):
         op = Operations(ctx)
         op.alter_column(self.table, self.new_name, new_column_name=self.old_name)
 
-    def __repr__(self) -> str:
-        return (
-            f"    operations.RenameField(\n"
-            f"        model_name={self.model_name!r},\n"
-            f"        table={self.table!r},\n"
-            f"        old_name={self.old_name!r},\n"
-            f"        new_name={self.new_name!r},\n"
-            f"    )"
-        )
+    def deconstruct(self) -> dict[str, Any]:
+        return {
+            "model_name": self.model_name,
+            "table": self.table,
+            "old_name": self.old_name,
+            "new_name": self.new_name,
+        }
 
 
 class AddConstraint(Operation):
@@ -862,14 +911,12 @@ class AddConstraint(Operation):
         constraint = self._get_bound_constraint(connection)
         connection.execute(DropConstraint(constraint))
 
-    def __repr__(self) -> str:
-        return (
-            f"    operations.AddConstraint(\n"
-            f"        model_name={self.model_name!r},\n"
-            f"        table={self.table!r},\n"
-            f"        constraint={_repr_constraint(self.constraint)},\n"
-            f"    )"
-        )
+    def deconstruct(self) -> dict[str, Any]:
+        return {
+            "model_name": self.model_name,
+            "table": self.table,
+            "constraint": self.constraint,
+        }
 
 
 class RemoveConstraint(Operation):
@@ -909,74 +956,29 @@ class RemoveConstraint(Operation):
     def backward(self, connection) -> None:
         raise _irreversible(self, "the migration does not record the constraint's definition")
 
-    def __repr__(self) -> str:
-        return (
-            f"    operations.RemoveConstraint(\n"
-            f"        model_name={self.model_name!r},\n"
-            f"        table={self.table!r},\n"
-            f"        name={self.name!r},\n"
-            f"        constraint_type={self.constraint_type!r},\n"
-            f"    )"
-        )
+    def deconstruct(self) -> dict[str, Any]:
+        return {
+            "model_name": self.model_name,
+            "table": self.table,
+            "name": self.name,
+            "constraint_type": self.constraint_type,
+        }
 
 
-# --- Helpers for repr ---
+# --- Rendering helpers (kept for callers; the serializer does the work) ---
 
 def _repr_constraint(constraint) -> str:
-    """Render a UniqueConstraint/CheckConstraint as an ``sa.*`` constructor."""
-    from sqlalchemy import CheckConstraint, UniqueConstraint
+    """Render a table constraint as an ``sa.*`` constructor."""
+    from zeeb_orm.migrations.serializer import SourceWriter
 
-    if isinstance(constraint, UniqueConstraint):
-        cols = [
-            col.key if hasattr(col, "key") else str(col)
-            for col in constraint.columns
-        ]
-        if not cols:
-            pending = getattr(constraint, "_pending_colargs", ())
-            cols = [c.name if hasattr(c, "name") else str(c) for c in pending]
-        col_repr = ", ".join(repr(c) for c in cols)
-        return f"sa.UniqueConstraint({col_repr}, name={constraint.name!r})"
-    if isinstance(constraint, CheckConstraint):
-        return f"sa.CheckConstraint({str(constraint.sqltext)!r}, name={constraint.name!r})"
-    return repr(constraint)
+    return SourceWriter().constraint(constraint)
 
 
 def _repr_column(col) -> str:
-    """Generate repr for a SQLAlchemy Column."""
-    from sqlalchemy import Column
-    if not isinstance(col, Column):
-        return repr(col)
+    """Render a SQLAlchemy Column as an ``sa.Column(...)`` call."""
+    from zeeb_orm.migrations.serializer import SourceWriter
 
-    parts = [f"sa.Column({col.name!r}, {_repr_sa_type(col.type)}"]
-
-    for fk in col.foreign_keys:
-        fk_args = [f"{str(fk.target_fullname)!r}"]
-        if fk.ondelete:
-            fk_args.append(f"ondelete={fk.ondelete!r}")
-        if fk.onupdate:
-            fk_args.append(f"onupdate={fk.onupdate!r}")
-        parts.append(f", sa.ForeignKey({', '.join(fk_args)})")
-
-    if not col.nullable:
-        parts.append(", nullable=False")
-    if col.unique:
-        parts.append(", unique=True")
-    # The Python-side default must survive into the migration file: AddField reads
-    # it to backfill existing rows when adding a NOT NULL column. Without it the
-    # ALTER dies on NotNullViolation and the migration can never be applied.
-    default = _scalar_default(col)
-    if default is not None:
-        parts.append(f", default={default!r}")
-    if col.server_default is not None:
-        parts.append(f", server_default={col.server_default.arg!r}")
-    # SQLAlchemy's "auto" default declines whenever the PK is composite, bears
-    # a ForeignKey or has a server_default. An explicitly requested
-    # autoincrement must therefore survive into the migration file.
-    if col.autoincrement is True:
-        parts.append(", autoincrement=True")
-
-    parts.append(")")
-    return "".join(parts)
+    return SourceWriter().value(col)
 
 
 def _scalar_default(col):
@@ -999,43 +1001,14 @@ def _scalar_default(col):
 
 
 def _repr_sa_type(sa_type) -> str:
-    """Generate repr for a SQLAlchemy type.
+    """Render a SQLAlchemy type, dialect variants and arguments included.
 
     Dialect variants (``BigInteger().with_variant(Integer, "sqlite")``, which
-    ``BigAutoField`` uses) live in ``_variant_mapping``, not in the class name
-    — rendering only the base type would recreate the broken ``BIGINT``
-    primary key on SQLite.
+    ``BigAutoField`` uses) must survive, or the broken ``BIGINT`` primary key
+    comes back on SQLite; so must every argument (``DateTime(timezone=True)``).
+    Raises :class:`~zeeb_orm.migrations.serializer.MigrationSerializationError`
+    for a type that cannot be written faithfully.
     """
-    base = _repr_sa_base_type(sa_type)
-    for dialect, variant in (getattr(sa_type, "_variant_mapping", None) or {}).items():
-        base += f".with_variant({_repr_sa_base_type(variant)}, {dialect!r})"
-    return base
+    from zeeb_orm.migrations.serializer import SourceWriter
 
-
-def _repr_sa_base_type(sa_type) -> str:
-    """Generate repr for a SQLAlchemy type, ignoring any dialect variants."""
-    from sqlalchemy import types as satypes
-
-    type_name = type(sa_type).__name__
-    module = type(sa_type).__module__
-
-    # Common SQLAlchemy types
-    if module.startswith("sqlalchemy"):
-        prefix = "sa."
-    else:
-        prefix = f"{module}."
-
-    # Types with parameters
-    if isinstance(sa_type, satypes.String) and sa_type.length:
-        return f"{prefix}{type_name}({sa_type.length})"
-    if isinstance(sa_type, satypes.Numeric):
-        args = []
-        if sa_type.precision is not None:
-            args.append(str(sa_type.precision))
-        if sa_type.scale is not None:
-            args.append(str(sa_type.scale))
-        return f"{prefix}{type_name}({', '.join(args)})" if args else f"{prefix}{type_name}()"
-    if isinstance(sa_type, satypes.Float) and sa_type.precision is not None:
-        return f"{prefix}{type_name}({sa_type.precision})"
-
-    return f"{prefix}{type_name}()"
+    return SourceWriter().type_(sa_type)

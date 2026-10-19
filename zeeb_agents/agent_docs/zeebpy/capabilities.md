@@ -66,7 +66,7 @@ Start here. These are declarative and cover almost every task.
 | `{prefix}get_started()` | Return the canonical build recipe — the one call to make first. |
 | `{prefix}list_capabilities(include_docstrings=False, module=None, tier=None)` | Return a machine-readable inventory of every ``zeeb_agents`` tool. |
 | `{prefix}list_features(status=None)` | List the features this project is made of — the map for every other change. |
-| `{prefix}make_migrations(name=None)` | Detect model changes and write a new migration file. |
+| `{prefix}make_migrations(name=None, accept_renames=False)` | Detect model changes and write a new migration file. |
 | `{prefix}plan_feature(spec, tests=True)` | Validate a FeatureSpec and return the execution plan — writes NOTHING. |
 | `{prefix}regenerate_tests(feature)` | Rewrite a feature's generated test file from its stored spec. |
 | `{prefix}run_migrations(target=None, fake=False, fake_initial=False)` | Apply pending migrations — or move the schema to a named migration. |

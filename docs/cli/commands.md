@@ -177,13 +177,19 @@ python manage.py migrate --plan           # what would run, without running it
 
 | Option | Short | Description |
 |--------|-------|-------------|
-| `migration` | | Target migration name, or `zero` |
+| `migration` | | Target migration name, a unique prefix (`0003`), or `zero` |
 | `--rollback N` | `-r` | Roll back N migrations |
 | `--plan` | | List what would run; change nothing |
 | `--fake` | | Record as applied without executing |
 | `--fake-initial` | | Skip the initial migration when the tables already exist |
 | `--noinput` | | Accepted and ignored: migrate never prompts |
 | `--json` | | Print one JSON object on stdout instead of prose |
+
+An unknown or ambiguous target fails with `file_not_found` (and the available
+names) without running anything. Migrations run in dependency order, one
+`migrate` at a time per database (see [Migrations](../orm/migrations.md#migrate)).
+A squashed migration counts, for `--rollback`, as the migrations it replaces
+while their files are on disk.
 
 ### showmigrations
 
@@ -220,6 +226,10 @@ python manage.py squashmigrations 0001_initial 0005_add_views --no-optimize
 | `--name` | `-n` | Name for the squashed migration |
 | `--no-optimize` | | Keep every operation instead of collapsing them |
 
+`RunPython` code from the squashed files is copied into the new one. See
+[Migrations](../orm/migrations.md#squashmigrations) for how a database that has
+some, all or none of the originals meets the squash.
+
 ## Server Commands
 
 ### runserver
@@ -247,8 +257,10 @@ ASGI app: myproject.asgi:app
 Quit with CTRL+C
 ```
 
-The server refuses to start while migrations are unapplied
-(`ENFORCE_MIGRATIONS`, on by default; a warning instead under `DEBUG`).
+The server refuses to start while migrations are unapplied — any of them, not
+only the newest — or sit in a legacy `migrations/versions/` directory that
+`migrate` does not read (`ENFORCE_MIGRATIONS`, on by default; a warning instead
+under `DEBUG`).
 
 ### check
 

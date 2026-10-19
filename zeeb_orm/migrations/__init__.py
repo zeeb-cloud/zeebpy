@@ -1,6 +1,5 @@
 """Django-style migrations for Zeeb ORM."""
 
-from zeeb_orm.migrations.migration import Migration
 from zeeb_orm.migrations import operations
 from zeeb_orm.migrations.cli import (
     current,
@@ -11,11 +10,15 @@ from zeeb_orm.migrations.cli import (
     showmigrations,
     squashmigrations,
 )
+from zeeb_orm.migrations.migration import Migration
+from zeeb_orm.migrations.serializer import MigrationSerializationError
 from zeeb_orm.migrations.state import (
     IrreversibleError,
     MigrationError,
+    MigrationLayoutError,
     MigrationState,
     MigrationStateError,
+    UnknownMigrationError,
     check_migrations_applied,
     get_migration_state,
     require_migrations,
@@ -36,8 +39,11 @@ __all__ = [
     # State management
     "IrreversibleError",
     "MigrationError",
+    "MigrationLayoutError",
+    "MigrationSerializationError",
     "MigrationState",
     "MigrationStateError",
+    "UnknownMigrationError",
     "check_migrations_applied",
     "get_migration_state",
     "require_migrations",

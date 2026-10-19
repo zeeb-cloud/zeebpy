@@ -112,7 +112,7 @@ see `create_project`.)
 | `read_logs(level=...)` | `level` matches the level as a whole token (`[ERROR]`, ` ERROR `), not as a substring — so it won't match `NOTANERROR`; `min_level=` returns that severity or above, tracebacks included. |
 | `create_route(path=..., body=...)` | Generates a FastAPI `APIRouter` handler and auto-wires it into `urls.py`; pass logic via `body=`. `{name}` path segments (`/items/{item_id}`) become typed `str` handler params. |
 | `get_env()` | A missing `.env` is reported as `success=False` (with an empty `env` dict). |
-| `make_migrations()` | "No changes detected" is `success=True` with `data["created"] = None`. |
+| `make_migrations()` | "No changes detected" is `success=True` with `data["created"] = None`. A non-empty `data["possible_renames"]` means the migration drops a column that may have been renamed — see `accept_renames`. |
 | `manage_settings(key, value=...)` | Read mode = only `key`; write mode = `key` + `value`. Write only updates keys that already exist. |
 | `replace_model_fields(...)` | Destructive — replaces **all** fields. Use `add_field`/`remove_field` for incremental edits. |
 | `run_query(sql)` | Read-only: SELECT/WITH/EXPLAIN only, single statement, always rolled back. |
@@ -578,19 +578,27 @@ Return all `router.register(...)` calls found across all apps.
 
 ## Migrations
 
-### `make_migrations(name=None, project_id=None)`
-Detect model changes and write a migration file.
+### `make_migrations(name=None, project_id=None, accept_renames=False)`
+Detect model changes and write a migration file. A removed and an added field
+with the same definition on one model are reported in `data["possible_renames"]`
+(and in the message): written as RemoveField + AddField they **drop the old
+column's data**. If a pair is a rename, delete the migration just written and run
+again with `accept_renames=True`, which writes `RenameField` instead.
 
 ### `run_migrations(target=None, fake=False, fake_initial=False, project_id=None)`
 Apply all pending migrations — or move the schema to a named migration.
-`target="0003_x"` walks forward or backward to it (`"zero"` unapplies
-everything); `fake=True` records migrations as applied without running them.
+`target="0003_x"` (or a unique prefix, `"0003"`) walks forward or backward to it
+(`"zero"` unapplies everything); `fake=True` records migrations as applied
+without running them. An unknown target fails with `file_not_found` and applies
+nothing.
 
 ### `get_migration_status(project_id=None)`
 Return list of migrations with `applied: bool` for each.
 
 ### `rollback_migration(steps=1, project_id=None)`
-Roll back the last N migration(s).
+Roll back the last N migration(s). A squashed migration counts as the migrations
+it replaces while their files are on disk (one step back unapplies only the last
+of them), and as one migration once they have been deleted.
 
 ### `show_migration(name, project_id=None)`
 Read one migration — its source, parsed operations, dependencies, `replaces`

@@ -93,6 +93,46 @@ def run_init(directory: str) -> int:
     return 0
 
 
+def _migration_failure(exc: Exception, *, json_output: bool) -> int:
+    """The failure a migration command reports for an engine refusal."""
+    from zeeb_orm.migrations.state import (
+        IrreversibleError,
+        MigrationLayoutError,
+        UnknownMigrationError,
+    )
+
+    if isinstance(exc, UnknownMigrationError):
+        return fail(
+            str(exc),
+            code="file_not_found",
+            next_command="python manage.py showmigrations",
+            json_output=json_output,
+            suggestions=exc.candidates or exc.available[-3:],
+            available=exc.available,
+        )
+    if isinstance(exc, MigrationLayoutError):
+        return fail(
+            str(exc),
+            code="invalid_input",
+            next_command="mv migrations/versions/*.py migrations/",
+            json_output=json_output,
+        )
+    if isinstance(exc, IrreversibleError):
+        return fail(
+            str(exc),
+            code="invalid_input",
+            next_command="python manage.py showmigrations",
+            json_output=json_output,
+            recoverable=False,
+        )
+    return fail(
+        str(exc),
+        code="invalid_input",
+        next_command="python manage.py showmigrations",
+        json_output=json_output,
+    )
+
+
 def run_makemigrations(
     name: str | None,
     empty: bool,
@@ -108,12 +148,9 @@ def run_makemigrations(
     WARNING line): written as RemoveField + AddField they drop the column's
     data. ``accept_renames`` emits ``RenameField`` for them instead.
     """
-    from zeeb_orm.migrations.autodetector import (
-        MigrationReplayError,
-        detect_changes_with_report,
-    )
-    from zeeb_orm.migrations.executor import list_migration_files
-    from zeeb_orm.migrations.writer import write_migration
+    from zeeb_orm.migrations.autodetector import MigrationReplayError
+    from zeeb_orm.migrations.autogen import make_migration
+    from zeeb_orm.migrations.state import MigrationError
 
     project_root = find_project_root()
     if project_root is None:
@@ -132,33 +169,22 @@ def run_makemigrations(
     scanned = ["Checking for model changes in installed apps:"]
     scanned += [f"  - {app_name}" for app_name in installed_apps]
 
-    if empty:
-        if check or dry_run:
-            return ok(
-                "An empty migration would be created.",
-                json_output=json_output,
-                lines=(*scanned, "Empty migration would be created."),
-                would_create=True,
-                apps=installed_apps,
-            )
-        filepath = write_migration(migrations_dir, operations=[], name=name or "empty")
+    if empty and (check or dry_run):
         return ok(
-            f"Created empty migration {filepath.name}.",
+            "An empty migration would be created.",
             json_output=json_output,
-            lines=(
-                *scanned,
-                "\nMigrations for 'all apps':",
-                f"  {filepath.name}",
-                "\nEmpty migration created — edit it to add custom operations.",
-            ),
-            created=filepath.name,
-            operations=[],
+            lines=(*scanned, "Empty migration would be created."),
+            would_create=True,
             apps=installed_apps,
         )
 
     try:
-        operations, report = detect_changes_with_report(
-            migrations_dir=str(migrations_dir), accept_renames=accept_renames
+        draft = make_migration(
+            migrations_dir,
+            name=name,
+            empty=empty,
+            dry_run=check or dry_run,
+            accept_renames=accept_renames,
         )
     except MigrationReplayError as exc:
         return fail(
@@ -168,16 +194,36 @@ def run_makemigrations(
             json_output=json_output,
             recoverable=False,
         )
-    described = [op.describe() for op in operations]
-    warning_lines = tuple(f"WARNING: {line}" for line in report.warnings())
+    except MigrationError as exc:
+        return _migration_failure(exc, json_output=json_output)
+
+    if empty:
+        return ok(
+            f"Created empty migration {draft.name}.py.",
+            json_output=json_output,
+            lines=(
+                *scanned,
+                "\nMigrations for 'all apps':",
+                f"  {draft.name}.py",
+                "\nEmpty migration created — edit it to add custom operations.",
+            ),
+            created=f"{draft.name}.py",
+            operations=[],
+            apps=installed_apps,
+        )
+
+    described = [op.describe() for op in draft.operations]
+    report = draft.report
+    assert report is not None
+    warning_lines = tuple(f"WARNING: {line}" for line in draft.warnings())
     findings = {
         "possible_renames": [r.as_dict() for r in report.possible_renames],
         "renamed": [r.as_dict() for r in report.renamed],
         "skipped_during_replay": list(report.skipped),
-        "warnings": report.warnings(),
+        "warnings": draft.warnings(),
     }
 
-    if not operations:
+    if not draft.changed:
         return ok(
             "No changes detected.",
             json_output=json_output,
@@ -191,7 +237,7 @@ def run_makemigrations(
     # --check: the CI question "did someone change a model without migrating?"
     if check:
         return fail(
-            f"{len(operations)} model change(s) have no migration.",
+            f"{len(described)} model change(s) have no migration.",
             code="invalid_input",
             next_command="python manage.py makemigrations",
             json_output=json_output,
@@ -200,14 +246,10 @@ def run_makemigrations(
             **findings,
         )
 
+    filename = f"{draft.name}.py"
     if dry_run:
-        from zeeb_orm.migrations.writer import _auto_name, _slugify, next_migration_number
-
-        number = next_migration_number(migrations_dir) if migrations_dir.exists() else 1
-        slug = _slugify(name) if name else (_auto_name(operations) if number > 1 else "initial")
-        filename = f"{number:04d}_{slug}.py"
         return ok(
-            f"{filename} would be created ({len(operations)} operation(s)).",
+            f"{filename} would be created ({len(described)} operation(s)).",
             json_output=json_output,
             lines=(
                 *scanned,
@@ -222,22 +264,18 @@ def run_makemigrations(
             **findings,
         )
 
-    initial = len(list_migration_files(migrations_dir)) == 0
-    filepath = write_migration(
-        migrations_dir, operations=operations, name=name, initial=initial
-    )
     return ok(
-        f"Created {filepath.name} with {len(operations)} operation(s).",
+        f"Created {filename} with {len(described)} operation(s).",
         json_output=json_output,
         lines=(
             *scanned,
             "\nMigrations for 'all apps':",
-            f"  {filepath.name}",
+            f"  {filename}",
             *(f"    - {line}" for line in described),
             *warning_lines,
             "\nRun 'python manage.py migrate' to apply.",
         ),
-        created=filepath.name,
+        created=filename,
         operations=described,
         changes_detected=True,
         apps=installed_apps,
@@ -255,7 +293,7 @@ def run_migrate(
     json_output: bool = False,
 ) -> int:
     """Apply or rollback migrations."""
-    from zeeb_orm.migrations import executor
+    from zeeb_orm.migrations.state import MigrationError
 
     project_root = find_project_root()
     if project_root is None:
@@ -276,11 +314,33 @@ def run_migrate(
     except SettingsImportError as exc:
         return _settings_failure("migrate", exc, json_output=json_output)
 
-    if rollback_steps is not None:
-        status = executor.showmigrations(database_url=db_url, project_root=project_root)
-        applied = [name for name, is_applied in status if is_applied]
+    try:
+        return _run_migrate(
+            project_root, db_url, migration, rollback_steps, fake, fake_initial, plan,
+            json_output=json_output,
+        )
+    except MigrationError as exc:
+        return _migration_failure(exc, json_output=json_output)
 
-        if not applied:
+
+def _run_migrate(
+    project_root: Path,
+    db_url: str,
+    migration: str | None,
+    rollback_steps: int | None,
+    fake: bool,
+    fake_initial: bool,
+    plan: bool,
+    *,
+    json_output: bool,
+) -> int:
+    from zeeb_orm.migrations import executor
+
+    if rollback_steps is not None:
+        target = executor.rollback_target(
+            rollback_steps, database_url=db_url, project_root=project_root
+        )
+        if target is None:
             return ok(
                 "No migrations to roll back.",
                 json_output=json_output,
@@ -288,8 +348,6 @@ def run_migrate(
                        "  No migrations to roll back."),
                 unapplied=[],
             )
-
-        target = "zero" if rollback_steps >= len(applied) else applied[-(rollback_steps + 1)]
 
         if plan:
             planned = executor.migrate(
@@ -303,9 +361,9 @@ def run_migrate(
                 plan=planned, target=target,
             )
 
-        rolled_back = executor.migrate(
-            target=target, database_url=db_url, project_root=project_root
-        )
+        rolled_back = executor.migrate_with_result(
+            target=target, database_url=db_url, project_root=project_root, fake=fake,
+        ).unapplied
         return ok(
             f"Rolled back {len(rolled_back)} migration(s).",
             json_output=json_output,
@@ -315,29 +373,12 @@ def run_migrate(
         )
 
     if migration:
-        if migration == "zero":
-            target = "zero"
-        else:
-            known = [name for name, _ in executor.list_migration_files(migrations_dir)]
-            target = next(
-                (name for name in known if name == migration or name.startswith(migration)),
-                None,
-            )
-            if target is None:
-                return fail(
-                    f"Migration '{migration}' not found.",
-                    code="file_not_found",
-                    next_command="python manage.py showmigrations",
-                    json_output=json_output,
-                    suggestions=known[-3:],
-                    available=known,
-                )
-
         if plan:
-            planned = executor.migrate(
-                target=target, database_url=db_url, project_root=project_root,
+            planned_result = executor.migrate_with_result(
+                target=migration, database_url=db_url, project_root=project_root,
                 plan=True, fake_initial=fake_initial,
             )
+            planned, target = planned_result.names, planned_result.target
             return ok(
                 f"{len(planned)} migration(s) would run to reach {target}.",
                 json_output=json_output,
@@ -346,29 +387,33 @@ def run_migrate(
                 plan=planned, target=target,
             )
 
-        # Direction matters for the wording: a target that is already applied
-        # means this is a rollback, not a forward migration.
-        status = executor.showmigrations(database_url=db_url, project_root=project_root)
-        applied_set = {name for name, is_applied in status if is_applied}
-        is_rollback = target == "zero" or target in applied_set
-
-        result = executor.migrate(
-            target=target, database_url=db_url, project_root=project_root,
+        result = executor.migrate_with_result(
+            target=migration, database_url=db_url, project_root=project_root,
             fake=fake, fake_initial=fake_initial,
         )
-        verb = "Unapplying" if is_rollback else ("Faking" if fake else "Applying")
+        target = result.target
+        is_rollback = target == "zero" or (bool(result.unapplied) and not result.applied)
         lines = [f"Migrating to: {target}"]
-        lines += [f"  {verb} {name}... OK" for name in result]
-        if not result:
+        lines += [f"  Unapplying {name}... OK" for name in result.unapplied]
+        verb = "Faking" if fake else "Applying"
+        lines += [f"  {verb} {name}... OK" for name in result.applied]
+        if not result.names:
             lines.append("  No migrations to unapply." if is_rollback else
                          "  No migrations to apply.")
+        data: dict[str, Any] = {"unapplied": result.unapplied} if result.unapplied else {}
+        if result.applied or not result.unapplied:
+            data["applied"] = result.applied
+        summary = (
+            f"{len(result.unapplied)} migration(s) unapplied." if is_rollback
+            else f"{len(result.applied)} migration(s) applied."
+        )
         return ok(
-            f"{len(result)} migration(s) {'unapplied' if is_rollback else 'applied'}.",
+            summary,
             json_output=json_output,
             lines=tuple(lines),
             target=target,
             faked=fake,
-            **({"unapplied": result} if is_rollback else {"applied": result}),
+            **data,
         )
 
     if plan:

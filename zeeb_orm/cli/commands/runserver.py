@@ -38,7 +38,7 @@ def check_migrations_before_start(project_root: Path) -> bool:
     Check migration status before starting server.
     Returns True if OK to start, False if should abort.
     """
-    from zeeb_orm.migrations.executor import find_migration_files
+    from zeeb_orm.migrations.executor import find_migration_files, legacy_migration_files
     from zeeb_orm.migrations.state import get_migration_state
 
     migrations_dir = project_root / "migrations"
@@ -72,12 +72,29 @@ def check_migrations_before_start(project_root: Path) -> bool:
         print(f"\n{separator}\n")
         return False
 
-    # Check 3: Are all migrations applied?
+    # Check 3: Are they where migrate reads them? Files under the legacy
+    # migrations/versions/ are never applied, so "all applied" would be a lie.
+    legacy = legacy_migration_files(migrations_dir)
+    if legacy:
+        print(f"\n{separator}")
+        print("ERROR: Migrations in migrations/versions/!")
+        print(separator)
+        print(f"\n{len(legacy)} migration(s) are in migrations/versions/, which")
+        print("'migrate' does not read — they have never been applied.")
+        print("\nMove them up into migrations/ and apply them:")
+        print("  mv migrations/versions/*.py migrations/")
+        print("  python manage.py migrate")
+        print(f"\n{separator}\n")
+        return False
+
+    # Check 4: Are all migrations applied? Any unapplied one counts — not only
+    # a newest one: a migration that sorts before the last applied one (a
+    # merged branch) is just as missing from the database.
     try:
         state = get_migration_state(project_root)
 
-        if state.current_revision != state.head_revision:
-            pending = state.pending_migrations or "some"
+        if state.pending_migrations:
+            pending = state.pending_migrations
             print(f"\n{separator}")
             print("ERROR: Unapplied migrations!")
             print(separator)

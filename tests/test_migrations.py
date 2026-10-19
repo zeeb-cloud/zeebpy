@@ -1091,11 +1091,11 @@ class TestDependencyValidation:
     def _write_raw(self, mig_dir, filename, body):
         (mig_dir / filename).write_text(textwrap.dedent(body))
 
-    def test_unmet_known_dependency_raises(self, tmp_migrations_dir, tmp_path):
+    def test_out_of_order_files_follow_their_dependencies(self, tmp_migrations_dir, tmp_path):
         from zeeb_orm.migrations import executor
-        from zeeb_orm.migrations.state import MigrationError
 
-        # 0001 declares a dependency on the *later* 0002 — an impossible order.
+        # 0001 declares a dependency on the *later* 0002: dependencies, not file
+        # names, decide the order, so 0002 is applied first.
         self._write_raw(tmp_migrations_dir, "0001_first.py", """
             from zeeb_orm.migrations import Migration, operations
 
@@ -1113,8 +1113,8 @@ class TestDependencyValidation:
         """)
 
         db = f"sqlite:///{tmp_path / 'dep.sqlite3'}"
-        with pytest.raises(MigrationError, match="depends on '0002_second'"):
-            executor.migrate(database_url=db, project_root=tmp_migrations_dir.parent)
+        applied = executor.migrate(database_url=db, project_root=tmp_migrations_dir.parent)
+        assert applied == ["0002_second", "0001_first"]
 
     def test_normal_chain_passes(self, tmp_migrations_dir, tmp_path):
         from zeeb_orm.migrations import executor
