@@ -99,6 +99,28 @@ Article.objects.filter(views__lt=100)    # < 100
 Article.objects.filter(views__lte=100)   # <= 100
 ```
 
+#### Value types
+
+The value of an `exact`, `gt`, `gte`, `lt`, `lte`, `in` or `range` lookup is
+converted to the column's type before the query runs, so a string from a query
+string or a JSON body compares the same way on every database:
+
+| Column | Accepted | Refused |
+|---|---|---|
+| Integer | ints, floats, numeric strings (`"3"`, `"1.5"`) | `"abc"` |
+| Float / Decimal | numbers, numeric strings | `"x"` |
+| Boolean | `True`/`False`, `0`/`1`, `"true"`/`"false"`/`"1"`/`"0"`/`"yes"`/`"no"` | anything else |
+| UUID (incl. the default primary key and foreign keys to it) | `uuid.UUID`, UUID strings | other strings, numbers |
+| Char / Text | strings; numbers become their string | `True`/`False` |
+| Date / DateTime / Time | `date`/`datetime`/`time`, ISO-8601 strings | other strings |
+
+A refused value raises `ValidationError` (`zeeb_orm.exceptions`), keyed by
+the lookup (`{"views__gte": ["'abc' is not a valid integer."]}`); in a viewset
+that is a 400. Without the conversion SQLite would quietly compare `"3"` with
+an integer while asyncpg failed the query, and a UUID string could not be
+compared with a UUID column on SQLite at all. `F()` expressions, subqueries and
+`None` pass through unchanged.
+
 ### String Lookups
 
 ```python

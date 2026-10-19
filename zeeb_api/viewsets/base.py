@@ -473,8 +473,13 @@ class GenericViewSet(ViewSet):
         }
     
     async def get_object(self) -> Any:
-        """Get the object for detail views."""
-        queryset = self.get_queryset()
+        """Get the object for detail views.
+
+        The lookup runs on ``filter_queryset(get_queryset())``: a filter backend
+        that scopes rows (to the caller's own, to a tenant) scopes retrieve,
+        update and destroy too, not only the list.
+        """
+        queryset = self.filter_queryset(self.get_queryset())
         
         # Get lookup value
         lookup_url_kwarg = self.lookup_url_kwarg or self.lookup_field

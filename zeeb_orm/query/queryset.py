@@ -2979,6 +2979,93 @@ def _coerce_temporal_value(column: Any, transform: str | None, lookup: str, valu
     return _convert(value)
 
 
+_TRUE_STRINGS = frozenset({"true", "1", "yes"})
+_FALSE_STRINGS = frozenset({"false", "0", "no"})
+
+
+def _coerce_typed_value(column: Any, lookup: str, value: Any, lookup_string: str) -> Any:
+    """Convert a comparison value to the Python type of ``column``.
+
+    Drivers disagree on a mistyped bind: SQLite compares ``'3'`` with an
+    integer column, asyncpg refuses it at execute time, and SQLAlchemy's
+    ``Uuid`` bind processor rejects a UUID *string* on SQLite. Filter values
+    from a client (``POST /query``, query-string filters) are JSON or text, so
+    strings are converted to the column's type here — the same query works on
+    every database — and a value that cannot be converted raises
+    :class:`~zeeb_orm.exceptions.ValidationError` (a 400 in a view) instead of
+    a driver error. Values that are already of a compatible type, expressions
+    and unknown types pass through unchanged.
+    """
+    import decimal
+    import uuid
+
+    from sqlalchemy import Boolean, Float, Integer, Numeric, String, Uuid
+    from sqlalchemy.sql.elements import ClauseElement
+
+    from zeeb_orm.exceptions import ValidationError
+
+    if lookup not in _TEMPORAL_COERCE_LOOKUPS:
+        return value
+
+    col_type = getattr(column, "type", None)
+
+    def _invalid(v: Any, kind: str) -> ValidationError:
+        return ValidationError({lookup_string: [f"{v!r} is not a valid {kind}."]})
+
+    def _convert(v: Any) -> Any:
+        if v is None or isinstance(v, ClauseElement):
+            return v
+        if isinstance(col_type, Boolean):
+            if isinstance(v, bool):
+                return v
+            if isinstance(v, int) and v in (0, 1):
+                return bool(v)
+            if isinstance(v, str) and v.strip().lower() in _TRUE_STRINGS | _FALSE_STRINGS:
+                return v.strip().lower() in _TRUE_STRINGS
+            raise _invalid(v, "boolean")
+        if isinstance(col_type, Integer):
+            if not isinstance(v, str):
+                return v
+            try:
+                return int(v.strip())
+            except ValueError:
+                pass
+            try:
+                return float(v.strip())
+            except ValueError:
+                raise _invalid(v, "integer") from None
+        # Float is not a Numeric subclass from SQLAlchemy 2.1 on
+        if isinstance(col_type, (Numeric, Float)):
+            if not isinstance(v, str):
+                return v
+            try:
+                if isinstance(col_type, Float) or not getattr(col_type, "asdecimal", True):
+                    return float(v.strip())
+                return decimal.Decimal(v.strip())
+            except (ValueError, decimal.InvalidOperation):
+                raise _invalid(v, "number") from None
+        if isinstance(col_type, Uuid):
+            if isinstance(v, str):
+                try:
+                    return uuid.UUID(v.strip())
+                except ValueError:
+                    raise _invalid(v, "UUID") from None
+            if isinstance(v, (int, float, bool)):
+                raise _invalid(v, "UUID")
+            return v
+        if isinstance(col_type, String):
+            if isinstance(v, bool):
+                raise _invalid(v, "string")
+            if isinstance(v, (int, float, decimal.Decimal, uuid.UUID)):
+                return str(v)
+            return v
+        return v
+
+    if isinstance(value, (list, tuple, set, frozenset)):
+        return [_convert(v) for v in value]
+    return _convert(value)
+
+
 def lookup_to_condition(
     model: type,
     lookup_string: str,
@@ -3058,7 +3145,16 @@ def lookup_to_condition(
         value = _coerce(value)
 
     # Coerce ISO strings against temporal columns (asyncpg rejects str binds)
-    value = _coerce_temporal_value(column, transform, lookup, value)
+    try:
+        value = _coerce_temporal_value(column, transform, lookup, value)
+    except (ValueError, TypeError):
+        from zeeb_orm.exceptions import ValidationError
+
+        raise ValidationError(
+            {lookup_string: [f"{value!r} is not a valid date, time or datetime."]}
+        ) from None
+    # ...and every other value against its column's type (see the helper)
+    value = _coerce_typed_value(column, lookup, value, lookup_string)
 
     condition = _apply_lookup(column, lookup, value)
 

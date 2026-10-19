@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from fastapi import Request
 
 from zeeb_api.exceptions import ValidationError
@@ -86,6 +86,10 @@ class QueryModelMixin:
     #: crafted pattern (catastrophic backtracking) can pin a worker.
     query_allow_regex: bool = False
 
+    if TYPE_CHECKING:
+        # Provided by GenericViewSet, which every viewset using this mixin is.
+        def filter_queryset(self, queryset: Any) -> Any: ...
+
     def _allowed_query_fields(self) -> set[str] | None:
         """Field paths a client may filter or order by.
 
@@ -146,8 +150,7 @@ class QueryModelMixin:
             FieldPathError,
             QFilterError,
             check_field_path,
-            extract_q_paths,
-            parse_q_filter,
+            parse_q_filter_with_paths,
         )
 
         # Get query params from request body
@@ -156,8 +159,10 @@ class QueryModelMixin:
         else:
             query_params = await request.json()
 
-        # Start with base queryset - ensure it's a QuerySet not Manager
-        queryset = self.get_queryset()
+        # Start with base queryset - ensure it's a QuerySet not Manager. The
+        # filter backends apply here as on the list: one that scopes rows must
+        # scope /query as well. The body's order_by replaces their ordering.
+        queryset = self.filter_queryset(self.get_queryset())
         if hasattr(queryset, 'all'):
             queryset = queryset.all()
         model = getattr(queryset, "model", None)
@@ -169,8 +174,9 @@ class QueryModelMixin:
         # Apply Q filter
         filter_expr = query_params.get("filter")
         if filter_expr:
+            # Parsed once: the paths are checked before the Q is applied.
             try:
-                referenced = extract_q_paths(filter_expr)
+                q_filter, referenced = parse_q_filter_with_paths(filter_expr)
             except QFilterError as e:
                 raise ValidationError({"filter": [str(e)]})
             refused = []
@@ -181,11 +187,7 @@ class QueryModelMixin:
                     refused.append(str(e))
             if refused:
                 raise ValidationError({"filter": refused})
-            try:
-                q_filter = parse_q_filter(filter_expr)
-                queryset = queryset.filter(q_filter)
-            except QFilterError as e:
-                raise ValidationError({"filter": [str(e)]})
+            queryset = queryset.filter(q_filter)
 
         # Apply ordering
         order_by = query_params.get("order_by")
