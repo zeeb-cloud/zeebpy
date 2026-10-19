@@ -58,7 +58,7 @@ class QueryRequest(BaseModel):
         return v
 
 
-_query_request_models: dict[tuple[int, int], type[QueryRequest]] = {}
+_query_request_models: dict[tuple[int, int, int], type[QueryRequest]] = {}
 
 
 def query_request_model() -> type[QueryRequest]:
@@ -67,20 +67,34 @@ def query_request_model() -> type[QueryRequest]:
     The router types ``POST /query`` bodies with this, so ``limit`` defaults to
     ``DEFAULT_LIMIT`` and a value above ``MAX_LIMIT`` is a 422 that OpenAPI
     documents. (``QueryRequest`` itself used to hard-code ``le=100``, so a
-    larger ``MAX_LIMIT`` never took effect.)
+    larger ``MAX_LIMIT`` never took effect.) A ``filter`` longer than
+    ``QUERY_FILTER_MAX_LENGTH`` is a 422 too, before it is parsed.
     """
     from pydantic import create_model
 
     from zeeb_api.conf import settings
+    from zeeb_api.query.parser import DEFAULT_MAX_LENGTH
 
     default_limit = int(getattr(settings, "DEFAULT_LIMIT", 20))
     max_limit = int(getattr(settings, "MAX_LIMIT", 100))
-    key = (default_limit, max_limit)
+    max_filter = int(getattr(settings, "QUERY_FILTER_MAX_LENGTH", DEFAULT_MAX_LENGTH))
+    key = (default_limit, max_limit, max_filter)
     model = _query_request_models.get(key)
     if model is None:
         model = create_model(
             "QueryRequest",
             __base__=QueryRequest,
+            filter=(
+                str | None,
+                Field(
+                    default=None,
+                    max_length=max_filter,
+                    description=(
+                        "Q filter expression, e.g. \"Q(name__icontains='john')\" "
+                        f"(at most {max_filter} characters)"
+                    ),
+                ),
+            ),
             limit=(
                 int,
                 Field(

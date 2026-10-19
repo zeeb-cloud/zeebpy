@@ -293,7 +293,8 @@ class ArticleViewSet(ModelViewSet):
 ```
 
 `get_object()` reads the value from `self.kwargs[lookup_url_kwarg or
-lookup_field]` and filters the queryset by `lookup_field`.
+lookup_field]` and filters `filter_queryset(get_queryset())` by
+`lookup_field` — so the filter backends scope detail routes too.
 
 While building routes the router calls `get_serializer_class()` on a
 request-less instance to type each action's body and response for OpenAPI. An
@@ -798,7 +799,8 @@ Available mixins:
 
 `ModelViewSet` includes `QueryModelMixin`, which serves a `POST` endpoint
 accepting a serialized `Q` expression — for filters too complex to express in a
-query string.
+query string. It starts from `filter_queryset(get_queryset())`, so the
+viewset's filter backends apply to it as they do to the list.
 
 ```http
 POST /articles/query
@@ -812,7 +814,23 @@ POST /articles/query
 
 The string is parsed by `parse_q_filter()`, which is a **safe parser**, not
 `eval` — it accepts `Q(...)` calls combined with `&`, `|` and `~`, and rejects
-anything else with `QFilterError`.
+anything else with `QFilterError` (a 400 under the `filter` key). Values are
+literals — strings, numbers (negative ones too), `True`/`False`/`None` — and
+always reach the database as bound parameters, so a value such as
+`"x' OR '1'='1"` is just a string that matches nothing. Each value is converted
+to its column's type (`Q(id='<uuid>')`, `Q(views__gte='10')` work on every
+database; `Q(views='abc')` is a 400 — see
+[Value types](../orm/queries.md#value-types)). The parser also refuses:
+
+- a list or tuple anywhere but an `__in` lookup or a two-item `__range`
+  (`Q(id=[1])`, `Q(title__in='abc')`, `Q(views__range=[0])`);
+- arithmetic and other expressions (`Q(age=9**9**9**9)` is refused, never
+  computed);
+- nesting deeper than 32 levels of `~`, `Q(...)` and alternating `&`/`|`. A run
+  of one operator — `Q(id=1) | Q(id=2) | ...` — counts as one level however
+  long it is, and becomes one flat `OR`;
+- a filter longer than `QUERY_FILTER_MAX_LENGTH` characters (default 4096),
+  which is a 422 before it is parsed. See [Settings](../configuration/settings.md).
 
 ### Which fields a client may use
 
@@ -850,10 +868,12 @@ query_fields = ["title", "author", "author__name"]   # author__name, nothing els
 `query_allow_regex = True`: on SQLite they run Python's `re` inside the
 database, so a crafted pattern can pin a worker.
 
-Under the hood the endpoint collects every keyword path of the filter with
-`extract_q_paths()` and checks each one, and each `order_by` term, with
+Under the hood the endpoint parses the filter once with
+`parse_q_filter_with_paths()`, which returns the `Q` together with every keyword
+path it uses, and checks each path, and each `order_by` term, with
 `check_field_path()`; a refused path raises `FieldPathError`, which the
-endpoint turns into that 400. Both helpers are public, for a hand-written
+endpoint turns into that 400. An `order_by` term takes at most one leading `-`
+(`--id` is refused). Both helpers are public, for a hand-written
 endpoint that wants the same rules — see
 [Checking client-supplied field paths](filtering.md#checking-client-supplied-field-paths).
 

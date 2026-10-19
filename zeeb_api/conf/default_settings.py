@@ -112,6 +112,10 @@ API_PREFIX = ""
 # Pagination settings
 DEFAULT_LIMIT = 20
 MAX_LIMIT = 100
+# Longest `filter` string POST /query accepts (characters). Parsing runs on the
+# event loop, so an unbounded filter (a megabyte-long __in list) stalls the
+# worker; a longer one is a 422.
+QUERY_FILTER_MAX_LENGTH = 4096
 # Paginator for viewsets that declare no pagination_class, as a dotted path,
 # e.g. "zeeb_api.pagination.LimitOffsetPagination". None returns the whole
 # queryset from GET on a collection.

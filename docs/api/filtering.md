@@ -21,9 +21,12 @@ class ArticleViewSet(ModelViewSet):
 
 `GET /articles?search=async&ordering=-created_at` now works.
 
-> Filter backends apply to the `GET` collection endpoint. The
-> `POST /<prefix>/query/` endpoint is a separate mechanism with its own
-> allow-list — see [ViewSets](viewsets.md).
+> Filter backends apply to every route that reads rows: the `GET` collection,
+> the `POST /<prefix>/query` endpoint, and — through `get_object()` — retrieve,
+> update and destroy. A backend that scopes rows therefore scopes
+> them everywhere. `/query` takes its own filter and ordering on top, checked
+> against its own allow-list (see [ViewSets](viewsets.md)); its `order_by`
+> replaces the ordering a backend applied.
 
 A project-wide default is `DEFAULT_FILTER_BACKENDS` in settings (dotted paths,
 default `[]`); it applies to every viewset that does not declare
@@ -132,7 +135,10 @@ Supported lookups: `exact`, `iexact`, `contains`, `icontains`, `in`, `gt`,
 
 Values arrive as strings and are converted per lookup: `in` splits on commas,
 `isnull` accepts `true`/`1`/`yes`, and the comparison lookups (`gt`, `gte`,
-`lt`, `lte`) are coerced to `int`/`float` when they parse as numbers. The
+`lt`, `lte`) are coerced to `int`/`float` when they parse as numbers. The ORM
+then converts every comparison value to its column's type, and a value that
+does not fit (`?price__gte=cheap`) is a 400 — see
+[Value types](../orm/queries.md#value-types). The
 `exact` lookup uses the bare field name as the parameter (`?category=`, not
 `?category__exact=`).
 
@@ -157,6 +163,10 @@ class OwnedByCurrentUser(BaseFilter):
 class ArticleViewSet(ModelViewSet):
     filter_backends = [OwnedByCurrentUser, OrderingFilter]
 ```
+
+Because backends run on every route that reads rows, `OwnedByCurrentUser`
+also keeps `POST /articles/query` and `GET`/`PUT`/`PATCH`/`DELETE
+/articles/{id}` to the caller's rows — another user's article is a 404.
 
 `filter_queryset()` receives the request, the current queryset and the viewset,
 and returns a queryset. It is **synchronous** — it composes the query without
@@ -185,7 +195,7 @@ when it may not.
 | Parameter | Meaning |
 |---|---|
 | `model` | The model the path is resolved against (`queryset.model`). `None` — or an object without `_meta` — falls back to a purely syntactic check |
-| `path` | A filter keyword (`author__name__icontains`) or an ordering term (`-created_at`; a leading `-` is ignored) |
+| `path` | A filter keyword (`author__name__icontains`) or an ordering term (`-created_at`; one leading `-` is ignored, so `--created_at` is refused) |
 | `allowed` | The allow-list: a collection of names, `"__all__"` for every field of `model` itself, or `None` for unrestricted (only the regex rule applies) |
 | `allow_regex` | Whether `regex`/`iregex` lookups are accepted (keyword-only) |
 
@@ -250,24 +260,31 @@ extract_q_fields(expr)  # {"author", "title", "created_at"}
 ```
 
 An empty or blank string gives an empty set; a string that is not valid
-Python syntax raises `QFilterError`. Neither function validates the
-expression — only keywords of `Q(...)` calls are collected, and anything else
-in the string is ignored rather than refused; `parse_q_filter()` is the
-validating parser.
+Python syntax, or is longer than `QUERY_FILTER_MAX_LENGTH`, raises
+`QFilterError`. Neither function validates the expression — only keywords of
+`Q(...)` calls are collected, and anything else in the string is ignored
+rather than refused; `parse_q_filter()` is the validating parser.
 
-Validate allow-lists with `extract_q_paths()` and `check_field_path()`, never
-with `extract_q_fields()`: a root check lets `author__password__startswith`
-through wherever `author` is allowed. That is the order the `/query` endpoint
-uses:
+### `parse_q_filter_with_paths()`
+
+`parse_q_filter_with_paths(expr) -> tuple[Q, set[str]]` validates and parses
+the expression **once**, exactly like `parse_q_filter()`, and returns the `Q`
+together with the paths `extract_q_paths()` would. An empty string gives
+`(Q(), set())`.
+
+Validate allow-lists with these paths and `check_field_path()`, never with
+`extract_q_fields()`: a root check lets `author__password__startswith`
+through wherever `author` is allowed. That is what the `/query` endpoint does:
 
 ```python
-from zeeb_api.query import FieldPathError, check_field_path, extract_q_paths, parse_q_filter
+from zeeb_api.query import FieldPathError, check_field_path, parse_q_filter_with_paths
 
 
 def safe_filter(queryset, expr: str, allowed: list[str]):
-    for path in extract_q_paths(expr):
+    q, paths = parse_q_filter_with_paths(expr)  # QFilterError
+    for path in paths:
         check_field_path(queryset.model, path, allowed, allow_regex=False)  # FieldPathError
-    return queryset.filter(parse_q_filter(expr))
+    return queryset.filter(q)
 ```
 
 ## Related

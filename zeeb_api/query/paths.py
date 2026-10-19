@@ -50,12 +50,13 @@ def check_field_path(
         model: The queryset's model (``queryset.model``); None falls back to a
             syntactic check of the path.
         path: A filter keyword (``author__name__icontains``) or an ordering
-            term (``-created_at``; the sign is ignored).
+            term (``-created_at``; one leading ``-`` is ignored — ``--id`` is
+            refused, as ``order_by`` would fail on it).
         allowed: The allow-list. ``None`` means unrestricted (only the regex
             rule applies); ``"__all__"`` means any field of *model* itself.
         allow_regex: Whether ``regex``/``iregex`` lookups are permitted.
     """
-    path = path.lstrip("-")
+    path = path[1:] if path.startswith("-") else path
     if not path:
         raise FieldPathError("Empty field name")
 

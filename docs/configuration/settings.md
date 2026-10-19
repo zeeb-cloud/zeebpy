@@ -477,11 +477,17 @@ API_PREFIX = "/api"  # Prefix for all routes
 ```python
 DEFAULT_LIMIT = 20
 MAX_LIMIT = 100
+QUERY_FILTER_MAX_LENGTH = 4096
 DEFAULT_PAGINATION_CLASS = None   # e.g. "zeeb_api.pagination.LimitOffsetPagination"
 ```
 
 `DEFAULT_LIMIT`/`MAX_LIMIT` bound `POST /query` and `LimitOffsetPagination`
 (a `MAX_LIMIT` above 100 raises the `/query` cap too).
+
+`QUERY_FILTER_MAX_LENGTH` is the longest `filter` string `POST /query`
+accepts, in characters; a longer one is a 422 before it is parsed. Parsing runs
+on the event loop, so this bound is what keeps a megabyte-long `__in` list from
+stalling the worker. Raise it only if clients genuinely send longer filters.
 
 ## Viewset defaults
 
@@ -744,6 +750,7 @@ generated project sets most of them from the environment — see
 | `API_PREFIX` | `""` | URL prefix |
 | `DEFAULT_LIMIT` | `20` | Default pagination limit (query endpoint + LimitOffsetPagination) |
 | `MAX_LIMIT` | `100` | Maximum pagination limit (query endpoint + LimitOffsetPagination) |
+| `QUERY_FILTER_MAX_LENGTH` | `4096` | Longest `filter` string `POST /query` accepts, in characters (longer: 422) |
 | `DEFAULT_PAGINATION_CLASS` | `None` | Paginator for viewsets that declare no `pagination_class` (`None`: return the whole collection) |
 | `DEFAULT_PERMISSION_CLASSES` | `[]` | Permission classes for viewsets that declare no `permission_classes` (`[]`: allow every request) |
 | `DEFAULT_FILTER_BACKENDS` | `[]` | Filter backends for viewsets that declare no `filter_backends` |

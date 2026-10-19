@@ -13,7 +13,13 @@ from zeeb_api.query.request import (
     create_query_response_model,
     query_request_model,
 )
-from zeeb_api.query.parser import parse_q_filter, extract_q_fields, extract_q_paths, QFilterError
+from zeeb_api.query.parser import (
+    parse_q_filter,
+    parse_q_filter_with_paths,
+    extract_q_fields,
+    extract_q_paths,
+    QFilterError,
+)
 from zeeb_api.query.paths import FieldPathError, check_field_path
 
 __all__ = [
@@ -22,6 +28,7 @@ __all__ = [
     "create_query_response_model",
     "query_request_model",
     "parse_q_filter",
+    "parse_q_filter_with_paths",
     "extract_q_fields",
     "extract_q_paths",
     "QFilterError",
