@@ -1,8 +1,14 @@
 """
-Auto-detect model changes by comparing model metadata against database schema.
+Auto-detect model changes by comparing the models against the migration files.
 
-Uses Alembic's compare_metadata internally but converts results to
-Django-style Operation objects.
+The existing migrations are replayed — in the order the executor applies them
+to a fresh database — into an in-memory SQLite database, and Alembic's
+``compare_metadata`` diffs the models against it for tables, columns, indexes
+and constraints. A column the replay declared is compared against that
+*declaration* instead (type, nullability, server default): SQLite reflection
+cannot tell ``DateTime`` from ``DateTime(timezone=True)``, and a migration
+must be right on every database, not only the one it was generated against.
+The diffs are converted to Django-style Operation objects.
 """
 
 from __future__ import annotations
@@ -12,29 +18,27 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from zeeb_orm.migrations.operations import (
+    NO_DEFAULT,
     AddConstraint,
     AddField,
     AddIndex,
     AlterField,
     CreateModel,
     DeleteModel,
+    Operation,
     RemoveConstraint,
     RemoveField,
     RemoveIndex,
-    Operation,
     copy_column,
 )
 
 
-def _server_default_value(default) -> str | None:
-    """Extract a usable server-default value from an Alembic ``DefaultClause``."""
+def _default_clause_arg(default) -> Any:
+    """A ``DefaultClause``'s value as ``AlterField`` takes it (``NO_DEFAULT`` for none)."""
     if default is None:
-        return None
+        return NO_DEFAULT
     arg = getattr(default, "arg", default)
-    if arg is None:
-        return None
-    text = getattr(arg, "text", None)  # TextClause -> its SQL text
-    return text if text is not None else str(arg)
+    return NO_DEFAULT if arg is None else arg
 
 
 def _named_unique_constraint(table_name: str, constraint):
@@ -100,11 +104,14 @@ class ChangeReport:
             always; ``RunSQL`` that SQLite cannot execute), each with the
             migration it came from and why. Their effect is missing from the
             comparison state.
+        latest_migration: The migration a new one depends on — the last one
+            a fresh database applies — or ``None`` when there are none.
     """
 
     possible_renames: list[PossibleRename] = field(default_factory=list)
     renamed: list[PossibleRename] = field(default_factory=list)
     skipped: list[str] = field(default_factory=list)
+    latest_migration: str | None = None
 
     def warnings(self) -> list[str]:
         """Human-readable warnings, one per finding."""
@@ -169,8 +176,10 @@ def detect_changes_with_report(
 
     Instead of comparing against the live database (which would re-detect
     already-migrated changes if migrations haven't been applied yet), this
-    replays all existing migration files into an in-memory SQLite database
-    and compares the model metadata against that state.
+    replays the existing migration files into an in-memory SQLite database,
+    exactly as the executor would apply them to a fresh one (a squash in place
+    of the migrations it replaces), and compares the model metadata against
+    that state.
 
     Replay rules: a schema operation that fails raises
     :class:`MigrationReplayError`; ``RunPython`` is never executed (it is
@@ -191,7 +200,7 @@ def detect_changes_with_report(
     from alembic.runtime.migration import MigrationContext
     from sqlalchemy import create_engine
 
-    from zeeb_orm.migrations.executor import list_migration_files, load_migration
+    from zeeb_orm.migrations.executor import MigrationGraph, _load_all, check_layout
     from zeeb_orm.migrations.operations import RunPython, RunSQL
     from zeeb_orm.models.base import metadata
 
@@ -205,16 +214,20 @@ def detect_changes_with_report(
         project_root = find_project_root() or Path.cwd()
         mig_dir = project_root / "migrations"
 
-    # Build migration state in an in-memory SQLite database by replaying
-    # all existing migration files forward.
+    # Build migration state in an in-memory SQLite database by replaying the
+    # existing migrations the way the executor applies them to a fresh one.
+    check_layout(mig_dir)
+    loaded = _load_all(mig_dir)
+    paths = {name: path for name, path, _ in loaded}
+    graph = MigrationGraph(loaded)
+    report.latest_migration = graph.order[-1] if graph.order else None
     state = _TableState()
     mem_engine = create_engine("sqlite:///:memory:")
     try:
-        all_migrations = list_migration_files(mig_dir)
-        if all_migrations:
+        if loaded:
             with mem_engine.connect() as conn:
-                for _name, path in all_migrations:
-                    mig = load_migration(path)
+                for name in graph.order:
+                    mig, path = graph.migrations[name], paths[name]
                     for op in mig.operations:
                         if isinstance(op, RunPython):
                             report.skipped.append(
@@ -266,7 +279,13 @@ def detect_changes_with_report(
     finally:
         mem_engine.dispose()
 
+    tables = [
+        table
+        for name, table in sorted(metadata.tables.items())
+        if name not in unmanaged
+    ]
     operations = _convert_diffs(diffs, state)
+    operations += _declared_column_changes(tables, state, diffs)
     operations = _find_renames(operations, report, accept_renames)
     return operations, report
 
@@ -287,8 +306,13 @@ class _TableState:
         from zeeb_orm.migrations import operations as ops
 
         if isinstance(op, ops.CreateModel):
+            columns = {col.name: copy_column(col) for col in op.columns}
+            for name in op.primary_key:
+                # A primary key column is NOT NULL whatever the Column says.
+                if name in columns:
+                    columns[name].nullable = False
             self.tables[op.table] = {
-                "columns": {col.name: copy_column(col) for col in op.columns},
+                "columns": columns,
                 "primary_key": list(op.primary_key),
                 "constraints": list(op.constraints),
             }
@@ -313,11 +337,17 @@ class _TableState:
             column.name = column.key = op.new_name
             columns[op.new_name] = column
         elif isinstance(op, ops.AlterField) and op.name in columns:
+            from sqlalchemy.schema import DefaultClause
+
             column = copy_column(columns[op.name])
             if op.column_type is not None:
                 column.type = op.column_type
             if op.nullable is not None:
                 column.nullable = op.nullable
+            if op.server_default is ops.NO_DEFAULT:
+                column.server_default = None
+            elif op.server_default is not None:
+                column.server_default = DefaultClause(op.server_default)
             columns[op.name] = column
 
     def column(self, table_name: str, column_name: str) -> Any:
@@ -340,7 +370,7 @@ def _column_signature(column) -> tuple:
     """What a column *is*, minus its name — equal signatures suggest a rename."""
     from sqlalchemy.dialects import sqlite
 
-    from zeeb_orm.migrations.operations import _repr_sa_type, _scalar_default
+    from zeeb_orm.migrations.operations import _scalar_default
 
     # Compared as SQLite renders them: the removed column may come from
     # reflection of the replayed state (TEXT) and the added one from a model
@@ -348,7 +378,7 @@ def _column_signature(column) -> tuple:
     try:
         type_key = column.type.compile(dialect=sqlite.dialect())
     except Exception:
-        type_key = _repr_sa_type(column.type)
+        type_key = repr(column.type)
     server_default = getattr(column.server_default, "arg", column.server_default)
     return (
         type_key,
@@ -433,8 +463,92 @@ def _find_renames(
     return result
 
 
+def _server_default_key(column) -> tuple | None:
+    """What a column's server default renders as, comparable across sources."""
+    default = column.server_default
+    if default is None:
+        return None
+    arg = getattr(default, "arg", default)
+    if isinstance(arg, str):
+        return ("literal", arg)
+    text = getattr(arg, "text", None)
+    if text is not None:
+        return ("sql", text.strip())
+    try:
+        from sqlalchemy.dialects import sqlite
+
+        return ("sql", str(arg.compile(dialect=sqlite.dialect())))
+    except Exception:
+        return ("sql", str(arg))
+
+
+def _server_default_arg(column) -> Any:
+    """A column's server default as ``AlterField`` takes it (``NO_DEFAULT`` for none)."""
+    return _default_clause_arg(column.server_default)
+
+
+def _declared_column_changes(tables: list, state: _TableState, diffs: list) -> list[Operation]:
+    """``AlterField`` for model columns that differ from their declaration.
+
+    One operation per changed column, carrying every changed aspect (type,
+    nullability, server default) with its previous value — so it is
+    reversible — and the unchanged ones as Alembic ``existing_*`` arguments,
+    which MySQL needs to restate a column without losing them.
+
+    Types are compared by the DDL they produce on every supported dialect.
+    """
+    from zeeb_orm.migrations.serializer import type_ddl
+
+    new_tables = {diff[1].name for diff in diffs if not isinstance(diff, list)
+                  and diff[0] == "add_table"}
+    operations: list[Operation] = []
+    for table in tables:
+        if table.name in new_tables or state.definition(table.name) is None:
+            continue
+        for column in table.columns:
+            declared = state.column(table.name, column.name)
+            if declared is None:
+                continue  # added, or created outside the replayed operations
+            changes: dict[str, Any] = {}
+            existing: dict[str, Any] = {}
+            if type_ddl(declared.type) != type_ddl(column.type):
+                changes["column_type"] = column.type
+                changes["old_column_type"] = declared.type
+            else:
+                existing["existing_type"] = declared.type
+            if bool(declared.nullable) != bool(column.nullable):
+                changes["nullable"] = bool(column.nullable)
+                changes["old_nullable"] = bool(declared.nullable)
+            else:
+                existing["existing_nullable"] = bool(declared.nullable)
+            if _server_default_key(declared) != _server_default_key(column):
+                changes["server_default"] = _server_default_arg(column)
+                changes["old_server_default"] = _server_default_arg(declared)
+            elif declared.server_default is not None:
+                existing["existing_server_default"] = _server_default_arg(declared)
+            if not changes:
+                continue
+            operations.append(
+                AlterField(
+                    model_name=_table_name_to_model_name(table.name),
+                    table=table.name,
+                    name=column.name,
+                    **changes,
+                    **existing,
+                )
+            )
+    return operations
+
+
+_COLUMN_DIFFS = ("modify_type", "modify_nullable", "modify_default")
+
+
 def _convert_diffs(diffs: list, state: _TableState | None = None) -> list[Operation]:
-    """Convert Alembic diff tuples to Operation objects."""
+    """Convert Alembic diff tuples to Operation objects.
+
+    Column changes (``modify_*``) on a column the replay declared are left to
+    :func:`_declared_column_changes`, which compares the declaration instead.
+    """
     operations: list[Operation] = []
 
     for diff in diffs:
@@ -445,6 +559,12 @@ def _convert_diffs(diffs: list, state: _TableState | None = None) -> list[Operat
         # — otherwise list-wrapped diffs never match and are silently dropped.
         inner_diffs = diff if isinstance(diff, list) else [diff]
         for inner in inner_diffs:
+            if (
+                inner[0] in _COLUMN_DIFFS
+                and state is not None
+                and state.column(inner[2], inner[3]) is not None
+            ):
+                continue
             op = _convert_single_diff(inner, state)
             if op is not None:
                 if isinstance(op, list):
@@ -459,8 +579,6 @@ def _convert_single_diff(
     diff: tuple, state: _TableState | None = None
 ) -> Operation | list[Operation] | None:
     """Convert a single Alembic diff tuple to an Operation."""
-    from sqlalchemy import Column
-
     diff_type = diff[0]
 
     if diff_type == "add_table":
@@ -509,7 +627,7 @@ def _convert_single_diff(
         return DeleteModel(name=model_name, table=table.name, **definition)
 
     elif diff_type == "add_column":
-        schema, table_name, column = diff[1], diff[2], diff[3]
+        table_name, column = diff[2], diff[3]
         model_name = _table_name_to_model_name(table_name)
         return AddField(
             model_name=model_name,
@@ -519,7 +637,7 @@ def _convert_single_diff(
         )
 
     elif diff_type == "remove_column":
-        schema, table_name, column = diff[1], diff[2], diff[3]
+        table_name, column = diff[2], diff[3]
         model_name = _table_name_to_model_name(table_name)
         # Keep a copy of the dropped column so the operation is reversible —
         # as the migrations declared it when the replay saw it (reflection
@@ -533,8 +651,8 @@ def _convert_single_diff(
         )
 
     elif diff_type == "modify_type":
-        schema, table_name, col_name = diff[1], diff[2], diff[3]
-        kwargs, old_type, new_type = diff[4], diff[5], diff[6]
+        table_name, col_name = diff[2], diff[3]
+        old_type, new_type = diff[5], diff[6]
         model_name = _table_name_to_model_name(table_name)
         return AlterField(
             model_name=model_name,
@@ -545,8 +663,8 @@ def _convert_single_diff(
         )
 
     elif diff_type == "modify_nullable":
-        schema, table_name, col_name = diff[1], diff[2], diff[3]
-        kwargs, old_nullable, new_nullable = diff[4], diff[5], diff[6]
+        table_name, col_name = diff[2], diff[3]
+        old_nullable, new_nullable = diff[5], diff[6]
         model_name = _table_name_to_model_name(table_name)
         return AlterField(
             model_name=model_name,
@@ -557,15 +675,18 @@ def _convert_single_diff(
         )
 
     elif diff_type == "modify_default":
-        schema, table_name, col_name = diff[1], diff[2], diff[3]
+        # Only for a column the replay did not declare: the old default is
+        # reflected, so it is SQL text (``'0'`` with its quotes) — passed on
+        # as such, not as a string that would be quoted a second time.
+        table_name, col_name = diff[2], diff[3]
         old_default, new_default = diff[5], diff[6]
         model_name = _table_name_to_model_name(table_name)
         return AlterField(
             model_name=model_name,
             table=table_name,
             name=col_name,
-            server_default=_server_default_value(new_default),
-            old_server_default=_server_default_value(old_default),
+            server_default=_default_clause_arg(new_default),
+            old_server_default=_default_clause_arg(old_default),
         )
 
     elif diff_type in ("add_constraint", "remove_constraint"):

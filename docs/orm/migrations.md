@@ -110,11 +110,29 @@ python manage.py migrate --plan
 **Options:**
 | Option | Description |
 |--------|-------------|
-| `migration` | Target migration name (optional) |
+| `migration` | Target migration: a full name, or a unique prefix such as `0003` (optional) |
 | `--rollback N` | Roll back N migrations |
 | `--fake` | Mark as applied without executing |
 | `--fake-initial` | Skip the first migration if its tables already exist |
-| `--plan` | Print the list of migrations that would run, without executing them |
+| `--plan` | Print the list of migrations that would run, without executing them. It is checked like the real run (with `--fake` too) and refuses what the real run would refuse |
+
+A target that matches no migration — or more than one — is refused with
+`UnknownMigrationError` (`file_not_found` with `--json`), and nothing runs.
+Afterwards exactly the migrations up to and including the target are applied:
+later ones are unapplied (newest first), missing earlier ones applied.
+
+**Order.** Migrations are applied in **dependency order** — a topological sort of
+their `dependencies`, file names breaking ties — not merely by file name. A
+dependency cycle is refused. So is an *inconsistent history*: a migration that is
+recorded as applied while one of its dependencies is not. If the missing changes
+are already in the database, `migrate <that migration> --fake` repairs it: it
+records only the unapplied migrations up to that one, and the error lists them.
+
+**One at a time.** `migrate` holds a database-wide lock while it plans and
+applies — a PostgreSQL advisory lock, MySQL `GET_LOCK`, or on SQLite an OS lock on
+a `<database>-migrate.lock` file beside the database — so replicas that all run
+`migrate` on startup apply each migration once. Every one of these locks is
+released when the process exits.
 
 ### showmigrations
 
@@ -164,6 +182,29 @@ superseded — it skips them when applying and marks them applied automatically
 when the squashed migration runs — so the squashed file and the originals can
 coexist safely without applying any operation twice. After the squashed
 migration has been deployed everywhere, the original files may be deleted.
+
+How a database meets a squash depends on how many of the originals it has:
+
+- **None** (a fresh database): the squash runs, and records the originals too.
+- **All**: the squash only records itself; nothing re-runs.
+- **Some**: the squash cannot be used — its operations would re-run on top of a
+  half-built schema — so the **remaining originals** are applied one by one, and
+  the squash is recorded once they all are. Their files must still be on disk.
+
+While the original files exist, a database can also be moved *into* a squash:
+`migrate --rollback 1` after a squash unapplies only its last original, and any
+original is a valid `migrate` target. Once the originals are deleted the squash
+is one step. A dependency on a replaced migration means the squash, so the
+squashed file may sit anywhere in the directory listing; it is numbered after the
+range, or after the last migration when a later migration already holds the next
+number (numbers stay unique, so a prefix such as `0003` names one file).
+
+`RunPython` functions defined in the squashed files are copied into the new file,
+along with the module-level helpers, constants and imports they use — default
+argument values included — renamed when two files define the same name. Their
+type annotations are left out of the copy. A range containing a migration that overrides
+`pre_migrate`/`post_migrate` is refused — a squash cannot carry those hooks over
+— and a range containing a non-atomic migration produces a non-atomic squash.
 
 ## Migration File Format
 
@@ -244,7 +285,14 @@ class Migration(Migration):
 
 Set `atomic = False` to run outside a transaction — required for some DDL
 statements that cannot run inside a transaction, e.g.
-`CREATE INDEX CONCURRENTLY` on PostgreSQL:
+`CREATE INDEX CONCURRENTLY` on PostgreSQL. The operations then run with the
+connection in autocommit mode: each statement commits on its own, so a failure
+part-way leaves the earlier statements applied.
+
+On MySQL every migration behaves this way for its DDL: MySQL commits implicitly
+around each `CREATE`/`ALTER`/`DROP`, so a migration that fails part-way leaves its
+earlier schema changes in place (and unrecorded). Keep MySQL migrations small, or
+make them safe to re-run.
 
 ```python
 class Migration(Migration):
@@ -345,7 +393,8 @@ Without `field`, the operation is irreversible.
 
 #### AlterField (with reversal)
 
-Pass `old_column_type` and/or `old_nullable` to enable reversal:
+Pass `old_column_type`, `old_nullable` and/or `old_server_default` to enable
+reversal:
 
 ```python
 operations.AlterField(
@@ -356,6 +405,13 @@ operations.AlterField(
     old_column_type=sa.Integer(),  # needed for reversal
 )
 ```
+
+`None` means "unchanged" for every argument. To drop a server default pass
+`server_default=operations.NO_DEFAULT`; for a column that had none,
+`old_server_default=operations.NO_DEFAULT`. A string is a literal value
+(`server_default="0"`), `sa.text("now()")` is SQL. Any further keyword argument
+(`existing_nullable=False`, …) is handed to Alembic's `alter_column` — on MySQL,
+restating a column needs the parts that are not changing.
 
 #### AddConstraint / RemoveConstraint
 
@@ -389,7 +445,9 @@ fixture) do not create them either.
 - **Tables**: Create, drop
 - **Columns**: Add, drop, alter type
 - **Nullability**: Changes to nullable
-- **Server defaults**: Changes to a column's `server_default`
+- **Server defaults**: Changes to a column's `server_default` — removal included
+  (`server_default=operations.NO_DEFAULT`): a server default the models do not
+  declare is dropped
 - **Indexes**: Create, drop
 - **Unique constraints**: Add, drop — including unnamed ones (what `unique=True` on a column produces), which are given a deterministic `uq_{table}_{cols}` name
 
@@ -408,10 +466,31 @@ added on the same model looks like a rename, but it is written as
 `RenameField` for them instead, keeping the data.
 
 **State replay.** The state the models are compared against is rebuilt by
-replaying the migration files into an in-memory SQLite database. If a schema
-operation fails to replay, `makemigrations` stops with an error instead of
-comparing against a wrong state. `RunPython` is not run during replay and
-`RunSQL` that SQLite cannot execute is skipped — both are reported.
+replaying the migration files into an in-memory SQLite database, in the order
+`migrate` applies them to a fresh database (a squash in place of the migrations
+it replaces). If a schema operation fails to replay, `makemigrations` stops with
+an error instead of comparing against a wrong state. `RunPython` is not run
+during replay and `RunSQL` that SQLite cannot execute is skipped — both are
+reported.
+
+**Declared, not reflected.** A column's type, nullability and server default are
+compared against what the migration files *declare*, not against what SQLite
+reflects — SQLite cannot tell `DateTime` from `DateTime(timezone=True)`, but
+PostgreSQL can, and a migration has to be right on every database. Types are
+compared by the DDL they produce on SQLite, PostgreSQL and MySQL. So a project
+whose older migration files lost a type argument gets an `AlterField` that
+restores it, and the `old_column_type` an `AlterField` records for its rollback
+is the declared type (a `Uuid`, not SQLite's `CHAR(32)`).
+
+**Lossless files.** Operations are written from their constructor arguments —
+every type argument (`timezone=True`, `Enum` values, `ARRAY` item types), dialect
+types with their import (`from sqlalchemy.dialects import postgresql`),
+`reverse_sql=RunSQL.noop`, `reverse_code=` — and each file is checked before it
+is written: it must compile, import and load back into the same operations, and
+each type must evaluate to one with the same DDL. A value that cannot be written
+faithfully (a type defined inside a function, a lambda, a computed column) raises
+`MigrationSerializationError` and **no file is written**: a broken migration file
+would break every later `migrate` and `makemigrations`, which import them all.
 
 **Tracking table.** Applied migrations are recorded in `zeeb_migrations`,
 created through SQLAlchemy so its auto-increment key is right on every
@@ -458,9 +537,12 @@ time:
 
 - **The field has a scalar `default`.** The default is emitted as a SQL
   `DEFAULT` on the `ADD COLUMN`, so the database backfills existing rows in the
-  same statement (this is also what makes it work on SQLite, which cannot alter
-  a column afterwards). The `DEFAULT` **stays on the column** — it mirrors the
-  model's default, so schema and model stay in agreement.
+  same statement. The backfill `DEFAULT` is a means of adding the column, not
+  part of the schema the migration declares: on PostgreSQL and MySQL it is
+  dropped again straight away, so the database matches the migration files.
+  SQLite cannot drop a default without rebuilding the table, so there it stays —
+  unused by the ORM, which always writes the column, and invisible to
+  `makemigrations`, which compares against the declared schema.
 - **The field has no scalar default.** `migrate` raises `MigrationError`:
 
   ```
@@ -570,7 +652,7 @@ on the same table become a single `CreateModel`), resulting in a compact file.
 
 ## Migration Tracking
 
-Applied migrations are tracked in the `zeeb_migrations` table in your database. This table is automatically created when you first run `migrate`.
+Applied migrations are tracked in the `zeeb_migrations` table in your database. This table is automatically created when you first run `migrate`. `showmigrations` reports a squash as applied when every migration it replaces is, even before `migrate` has recorded it.
 
 ```sql
 -- The tracking table
@@ -782,6 +864,35 @@ showmigrations()
 squashmigrations(start='0001_initial', end='0005_add_views', squashed_name='initial_squashed')
 ```
 
+The engine underneath, for tools that want results rather than printed output:
+
+```python
+from zeeb_orm.migrations import executor
+from zeeb_orm.migrations.autogen import make_migration
+
+draft = make_migration("migrations", name="add_slug", accept_renames=False)
+draft.name, draft.path, draft.operations   # path is None for dry_run=True
+draft.report.possible_renames              # likely renames written as remove + add
+
+result = executor.migrate_with_result(target="0003")   # a unique prefix works
+result.applied, result.unapplied, result.target       # target: the full name
+
+executor.rollback(1)          # names unapplied; executor.rollback_target(1) only plans
+executor.rollback_with_result(1).target   # the target, worked out under the migrate lock
+```
+
+### Errors
+
+All are `MigrationError` subclasses, importable from `zeeb_orm.migrations`:
+
+| Error | Raised when |
+|---|---|
+| `UnknownMigrationError` | A `migrate` target matches no migration, or several (`.available`, `.candidates`). |
+| `MigrationLayoutError` | Migrations sit in `migrations/versions/`, which the engine does not read. |
+| `MigrationSerializationError` | An operation cannot be written to a file faithfully; nothing is written. |
+| `IrreversibleError` | A rollback would need an irreversible operation; nothing is unapplied. |
+| `MigrationStateError` | The applied migrations cannot be read from the database. |
+
 ### Where migration files live
 
 Migration files live **flat** in `migrations/`, not under a `versions/`
@@ -795,9 +906,14 @@ myproject/
     └── 0002_add_article.py
 ```
 
-`find_migration_files()` resolves them, and still reads a legacy
+`find_migration_files()` resolves them, and still finds a legacy
 `migrations/versions/` directory if one exists — a flat file wins when both are
-present. `MIGRATIONS_DIR` overrides the location.
+present. `migrate` and `makemigrations` never read `versions/`, so they refuse to
+run while it holds migrations that `migrations/` does not, with
+`MigrationLayoutError` — move the files up
+(`mv migrations/versions/*.py migrations/`). `runserver` and `check` report the
+same instead of calling the database up to date. Every programmatic command
+takes `migrations_dir=` to work on a directory other than `migrations/`.
 
 `init_migrations(directory="migrations")` creates the directory
 programmatically:

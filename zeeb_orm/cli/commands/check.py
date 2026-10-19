@@ -200,10 +200,19 @@ def check_migrations(project_root: Path) -> tuple[list[dict], dict]:
                 "python manage.py makemigrations",
             )
         ], summary
-    if legacy:
-        # Applied-state tracking does not reach migrations/versions/; say so
-        # rather than implying the database is up to date.
-        return [], summary
+    from zeeb_orm.migrations.executor import legacy_migration_files
+
+    if legacy_migration_files(project_root / "migrations"):
+        # migrate never reads migrations/versions/, so these were never applied
+        # — and would not be, however often migrate runs.
+        return [
+            _issue(
+                "invalid_input",
+                "Migrations are in migrations/versions/, which migrate does not "
+                "read; move them up into migrations/.",
+                "mv migrations/versions/*.py migrations/",
+            )
+        ], summary
     if state.pending_migrations:
         return [
             _issue(

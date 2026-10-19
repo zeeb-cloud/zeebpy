@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import re
+from collections.abc import Callable
 from pathlib import Path
+from typing import TypeVar
 
 from zeeb_agents._utils import AgentResult, agent_function
 from zeeb_agents._utils.errors import AgentError, close_matches
@@ -16,6 +18,8 @@ from zeeb_agents._utils.project import (
     project_database_url,
     require_project_root,
 )
+
+T = TypeVar("T")
 
 # A non-commented ``class Foo(... Model ...):`` line — a real model definition
 # (as opposed to the commented example in the scaffolded models.py).
@@ -45,6 +49,26 @@ def _unregistered_apps_with_models(root: Path) -> list[str]:
         if _MODEL_CLASS_RE.search(text):
             unregistered.append(app)
     return unregistered
+
+
+def _engine_errors(func: Callable[[], T]) -> Callable[[], T]:
+    """Translate the migration engine's refusals into agent errors."""
+
+    def run() -> T:
+        from zeeb_orm.migrations.state import MigrationLayoutError, UnknownMigrationError
+
+        try:
+            return func()
+        except UnknownMigrationError as exc:
+            raise AgentError(
+                str(exc),
+                code="file_not_found",
+                suggestions=exc.candidates or close_matches(exc.name, exc.available),
+            ) from exc
+        except MigrationLayoutError as exc:
+            raise AgentError(str(exc), code="invalid_input") from exc
+
+    return run
 
 
 @agent_function
@@ -82,8 +106,11 @@ async def run_migrations(
     Notes:
         - "Nothing to apply" is reported as ``success=True`` with
           ``applied=[]``, not as a failure.
-        - An unknown ``target`` fails with ``file_not_found`` and close-match
+        - ``target`` may also be a unique prefix (``"0003"``). An unknown or
+          ambiguous ``target`` fails with ``file_not_found`` and close-match
           ``suggestions``.
+        - Applying a squashed migration reports the squash in ``applied``, not
+          the originals it replaces.
     """
     root = project_root
 
@@ -91,33 +118,21 @@ async def run_migrations(
         from zeeb_orm.migrations import executor
 
         db_url = project_database_url(root)
-        status = executor.showmigrations(database_url=db_url, project_root=root)
-        names = [name for name, _ in status]
-        if target not in (None, "zero") and target not in names:
-            raise AgentError(
-                f"No migration named '{target}'.",
-                code="file_not_found",
-                suggestions=close_matches(target, names),
-            )
-        before = {name for name, is_applied in status if is_applied}
-        executor.migrate(
+        result = executor.migrate_with_result(
             target=target,
             database_url=db_url,
             project_root=root,
             fake=fake,
             fake_initial=fake_initial,
         )
-        status = executor.showmigrations(database_url=db_url, project_root=root)
-        after = {name for name, is_applied in status if is_applied}
-        order = [name for name, _ in status]
         return {
-            "applied": [name for name in order if name in after - before],
-            "unapplied": [name for name in reversed(order) if name in before - after],
+            "applied": result.applied,
+            "unapplied": result.unapplied,
             "target": target,
             "fake": fake,
         }
 
-    result = await asyncio.to_thread(_run)
+    result = await asyncio.to_thread(_engine_errors(_run))
     if result["applied"]:
         verb = "Faked" if fake else "Applied"
         message = f"{verb} {len(result['applied'])} migration(s)"
@@ -132,20 +147,33 @@ async def run_migrations(
 async def make_migrations(
     name: str | None = None,
     project_root: Path | None = None,
+    accept_renames: bool = False,
 ) -> AgentResult:
     """Detect model changes and write a new migration file.
 
-    Equivalent to ``python manage.py makemigrations``.
+    Equivalent to ``python manage.py makemigrations [--accept-renames]``.
 
     Args:
         name: Optional human-readable suffix for the migration file name.
         project_id: The host-assigned project id (required).
+        accept_renames: Write ``RenameField`` for each likely rename (see
+            ``possible_renames``) instead of RemoveField + AddField, keeping
+            the column's data (default false).
 
     Returns data (always):
         created (str | None): the new migration file name, or ``None`` when
             no model changes were detected.
         operations (list[str]): human-readable descriptions of the schema
             operations in the migration (empty when ``created`` is ``None``).
+        possible_renames (list[dict]): removed/added field pairs with the same
+            definition on one model, as ``{"model", "table", "old", "new"}``.
+            **Written as RemoveField + AddField, which drops the old column's
+            data** — if a pair is a rename, re-run with ``accept_renames=True``
+            (after deleting the migration just written) before migrating.
+        renamed (list[dict]): the pairs written as ``RenameField`` (with
+            ``accept_renames``), same shape.
+        warnings (list[str]): human-readable findings — likely renames and
+            replay steps change detection skipped.
 
     Notes:
         - "No changes detected" is reported as ``success=True`` with
@@ -160,20 +188,25 @@ async def make_migrations(
     root = require_project_root(project_root)
 
     def _run() -> dict:
-        from zeeb_orm.migrations.autodetector import detect_changes
+        from zeeb_orm.migrations.autogen import make_migration
         from zeeb_orm.migrations.cli import _register_models
-        from zeeb_orm.migrations.executor import list_migration_files
-        from zeeb_orm.migrations.writer import write_migration
 
         migrations_dir = root / "migrations"
         migrations_dir.mkdir(parents=True, exist_ok=True)
         _register_models(root)
-        operations = detect_changes(migrations_dir=str(migrations_dir))
+        draft = make_migration(migrations_dir, name=name, accept_renames=accept_renames)
+        report = draft.report
 
+        result: dict = {
+            "created": draft.path.name if draft.path is not None else None,
+            "operations": [op.describe() for op in draft.operations],
+            "possible_renames": [r.as_dict() for r in report.possible_renames] if report else [],
+            "renamed": [r.as_dict() for r in report.renamed] if report else [],
+            "warnings": draft.warnings(),
+        }
         # An unregistered app's models are never inspected regardless of what
         # else changed, so surface it whether or not a migration was written.
         unregistered = _unregistered_apps_with_models(root)
-        result: dict = {"created": None, "operations": []}
         if unregistered:
             joined = ", ".join(unregistered)
             result["unregistered_apps"] = unregistered
@@ -182,25 +215,23 @@ async def make_migrations(
                 f"Their models were not inspected — run install_app then "
                 f"make_migrations again."
             )
-        if not operations:
-            return result
-
-        existing = list_migration_files(migrations_dir)
-        filepath = write_migration(
-            migrations_dir,
-            operations=operations,
-            name=name,
-            initial=len(existing) == 0,
-        )
-        result["created"] = filepath.name
-        result["operations"] = [op.describe() for op in operations]
         return result
 
-    result = await asyncio.to_thread(_run)
+    result = await asyncio.to_thread(_engine_errors(_run))
     if result["created"]:
         message = f"Created migration '{result['created']}'"
     else:
         message = "No changes detected — no migration created"
+    if result["possible_renames"]:
+        pairs = ", ".join(
+            f"{r['model']}.{r['old']} -> {r['model']}.{r['new']}"
+            for r in result["possible_renames"]
+        )
+        message = (
+            f"{message}. WARNING: likely rename(s) written as remove + add, which "
+            f"drops the column data: {pairs}. If these are renames, delete the "
+            f"migration and run make_migrations with accept_renames=True"
+        )
     if result.get("warning"):
         message = f"{message}. {result['warning']}"
     return AgentResult(success=True, message=message, data=result)
@@ -260,22 +291,25 @@ async def rollback_migration(
     Returns data (on success):
         rolled_back (list[str]): names of the migrations that were rolled
             back (empty list when nothing was applied).
+
+    Notes:
+        - Steps are counted in apply order. A squashed migration counts as the
+          migrations it replaces while their files are still on disk (one step
+          back unapplies only the last of them), and as one migration once they
+          have been deleted.
     """
     root = project_root
 
     def _run() -> list[str]:
         from zeeb_orm.migrations import executor
         db_url = project_database_url(root)
-        status = executor.showmigrations(database_url=db_url, project_root=root)
-        applied = [name for name, is_applied in status if is_applied]
-        if not applied:
-            return []
-        target = "zero" if steps >= len(applied) else applied[-(steps + 1)]
-        return executor.migrate(target=target, database_url=db_url, project_root=root)
+        return executor.rollback(steps, database_url=db_url, project_root=root)
 
-    rolled_back = await asyncio.to_thread(_run)
+    rolled_back = await asyncio.to_thread(_engine_errors(_run))
     if not rolled_back:
-        return AgentResult(success=True, message="No migrations to roll back", data={"rolled_back": []})
+        return AgentResult(
+            success=True, message="No migrations to roll back", data={"rolled_back": []}
+        )
     return AgentResult(
         success=True,
         message=f"Rolled back {len(rolled_back)} migration(s)",

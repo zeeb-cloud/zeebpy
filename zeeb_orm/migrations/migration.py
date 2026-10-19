@@ -40,8 +40,9 @@ class Migration:
     # Immutable default — subclasses assign their own list.
     dependencies: Sequence[str] = ()
 
-    # List of migration names this squashed migration replaces (e.g. ['0001_initial', '0002_add_field']).
-    # Used by squashmigrations to indicate which migrations are superseded by this one.
+    # Names of the migrations this squashed migration replaces
+    # (e.g. ['0001_initial', '0002_add_field']). Set by squashmigrations to mark
+    # the migrations it supersedes.
     replaces: Sequence[str] = ()
 
     # List of Operation instances

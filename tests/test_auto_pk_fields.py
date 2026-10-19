@@ -151,12 +151,12 @@ class TestMigrationWriterRoundTrip:
         assert "sa.BigInteger().with_variant(sa.Integer(), 'sqlite')" in rendered
         assert "sa.ForeignKey('ap_big.id'" in rendered
 
-    def test_plain_types_are_unchanged(self):
+    def test_plain_types_keep_their_arguments(self):
         from sqlalchemy import Integer, Numeric, String
 
         assert _repr_sa_type(Integer()) == "sa.Integer()"
-        assert _repr_sa_type(String(20)) == "sa.String(20)"
-        assert _repr_sa_type(Numeric(10, 2)) == "sa.Numeric(10, 2)"
+        assert _repr_sa_type(String(20)) == "sa.String(length=20)"
+        assert _repr_sa_type(Numeric(10, 2)) == "sa.Numeric(precision=10, scale=2)"
 
     def test_rendered_column_is_executable_python(self, tables):
         import sqlalchemy as sa

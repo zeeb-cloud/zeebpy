@@ -250,8 +250,7 @@ def makemigrations(
     Returns:
         The migration name (e.g. ``"0001_initial"``) or None.
     """
-    from zeeb_orm.migrations.writer import write_migration
-    from zeeb_orm.migrations.autodetector import detect_changes_with_report
+    from zeeb_orm.migrations.autogen import make_migration
 
     project_root = _find_project_root() or Path.cwd()
     mig_dir = _get_migrations_dir(migrations_dir)
@@ -263,68 +262,46 @@ def makemigrations(
     # Register all models so metadata is populated
     _register_models(project_root)
 
-    if empty:
-        if check or dry_run:
-            print("Empty migration would be created.")
-            return None
-        filepath = write_migration(mig_dir, operations=[], name=message or "empty")
-        migration_name = filepath.stem
-        print(f"Migrations for 'all apps':")
-        print(f"  {filepath.name}")
-        print(f"\nEmpty migration created — edit it to add custom operations.")
-        return migration_name
+    if empty and (check or dry_run):
+        print("Empty migration would be created.")
+        return None
 
-    # Detect changes against existing migration state
-    operations, report = detect_changes_with_report(
-        migrations_dir=str(mig_dir), accept_renames=accept_renames
+    draft = make_migration(
+        mig_dir,
+        name=message,
+        empty=empty,
+        dry_run=check or dry_run,
+        accept_renames=accept_renames,
     )
-    for warning in report.warnings():
+    for warning in draft.warnings():
         print(f"WARNING: {warning}", file=sys.stderr)
 
-    if not operations:
+    if not draft.changed:
         print("No changes detected.")
         return None
 
     # --check: report and signal with a non-zero exit
     if check:
         print("Pending model changes detected:")
-        for op in operations:
+        for op in draft.operations:
             print(f"    - {op.describe()}")
         raise SystemExit(1)
 
-    # --dry-run: show what would be written without actually writing
     if dry_run:
-        from zeeb_orm.migrations.executor import list_migration_files
-        from zeeb_orm.migrations.writer import next_migration_number, _auto_name, _slugify
-
-        number = next_migration_number(mig_dir) if mig_dir.exists() else 1
-        slug = _slugify(message) if message else (_auto_name(operations) if number > 1 else "initial")
-        filename = f"{number:04d}_{slug}.py"
-        print(f"Migrations for 'all apps' (dry run — no files written):")
-        print(f"  {filename}")
-        for op in operations:
+        print("Migrations for 'all apps' (dry run — no files written):")
+        print(f"  {draft.name}.py")
+        for op in draft.operations:
             print(f"    - {op.describe()}")
         return None
 
-    # Determine if this is the initial migration
-    from zeeb_orm.migrations.executor import list_migration_files
-    existing = list_migration_files(mig_dir)
-    initial = len(existing) == 0
-
-    filepath = write_migration(
-        mig_dir,
-        operations=operations,
-        name=message,
-        initial=initial,
-    )
-    migration_name = filepath.stem
-
-    print(f"Migrations for 'all apps':")
-    print(f"  {filepath.name}")
-    for op in operations:
+    print("Migrations for 'all apps':")
+    print(f"  {draft.name}.py")
+    if empty:
+        print("\nEmpty migration created — edit it to add custom operations.")
+    for op in draft.operations:
         print(f"    - {op.describe()}")
 
-    return migration_name
+    return draft.name
 
 
 def migrate(
@@ -340,13 +317,16 @@ def migrate(
     Like Django's ``python manage.py migrate``.
 
     Args:
-        target: Target migration name, ``"zero"`` to rollback all,
-                or None to apply all pending.
+        target: Target migration name (or a unique prefix such as ``"0003"``),
+                ``"zero"`` to rollback all, or None to apply all pending.
         migrations_dir: Override migrations directory.
         fake: Mark as applied without running.
         fake_initial: If True, skip the first migration when tables already
                       exist (for adopting migrations in an existing project).
         plan: If True, print what would happen without applying anything.
+
+    Raises:
+        UnknownMigrationError: *target* matches no migration, or several.
     """
     from zeeb_orm.migrations import executor
 
@@ -366,6 +346,7 @@ def migrate(
             project_root=project_root,
             plan=True,
             fake_initial=fake_initial,
+            migrations_dir=mig_dir,
         )
         if not planned:
             print("Planned migrations: (none)")
@@ -375,27 +356,24 @@ def migrate(
                 print(f"  {name}")
         return
 
-    applied = executor.migrate(
+    result = executor.migrate_with_result(
         target=target,
         database_url=db_url,
         project_root=project_root,
         fake=fake,
         fake_initial=fake_initial,
+        migrations_dir=mig_dir,
     )
 
-    if target == "zero":
-        if applied:
-            for name in applied:
-                print(f"  Unapplying {name}... OK")
-        else:
-            print("  No migrations to unapply.")
-    elif applied:
+    for name in result.unapplied:
+        print(f"  Unapplying {name}... OK")
+    if result.applied:
         print("Running migrations:")
-        for name in applied:
+        for name in result.applied:
             prefix = "  Faking" if fake else "  Applying"
             print(f"{prefix} {name}... OK")
-    else:
-        print("  No migrations to apply.")
+    if not result.names:
+        print("  No migrations to unapply." if target == "zero" else "  No migrations to apply.")
 
 
 def rollback(
@@ -406,7 +384,8 @@ def rollback(
     Rollback the last N migrations.
 
     Args:
-        steps: Number of migrations to roll back.
+        steps: Number of migrations to roll back (a squash counts as the
+               migrations it replaces while their files exist, else as one).
         migrations_dir: Override migrations directory.
     """
     from zeeb_orm.migrations import executor
@@ -419,26 +398,9 @@ def rollback(
     project_root = _find_project_root() or Path.cwd()
     db_url = _get_database_url(project_root)
 
-    # Get current state and determine target
-    status = executor.showmigrations(database_url=db_url, project_root=project_root)
-    applied = [name for name, is_applied in status if is_applied]
-
-    if not applied:
-        print("No migrations to roll back.")
-        return
-
-    # Determine target: roll back `steps` from the end
-    if steps >= len(applied):
-        target = "zero"
-    else:
-        target = applied[-(steps + 1)]
-
-    rolled_back = executor.migrate(
-        target=target,
-        database_url=db_url,
-        project_root=project_root,
+    rolled_back = executor.rollback(
+        steps, database_url=db_url, project_root=project_root, migrations_dir=mig_dir
     )
-
     if rolled_back:
         for name in rolled_back:
             print(f"  Unapplying {name}... OK")
@@ -462,7 +424,9 @@ def showmigrations(migrations_dir: str | None = None) -> None:
     project_root = _find_project_root() or Path.cwd()
     db_url = _get_database_url(project_root)
 
-    status = executor.showmigrations(database_url=db_url, project_root=project_root)
+    status = executor.showmigrations(
+        database_url=db_url, project_root=project_root, migrations_dir=mig_dir
+    )
 
     if not status:
         print("No migrations.")
@@ -485,7 +449,9 @@ def current(migrations_dir: str | None = None) -> str | None:
     project_root = _find_project_root() or Path.cwd()
     db_url = _get_database_url(project_root)
 
-    status = executor.showmigrations(database_url=db_url, project_root=project_root)
+    status = executor.showmigrations(
+        database_url=db_url, project_root=project_root, migrations_dir=mig_dir
+    )
     applied = [name for name, is_applied in status if is_applied]
 
     if applied:
@@ -511,10 +477,17 @@ def squashmigrations(
     records the squashed migrations in its ``replaces`` attribute, so the
     executor treats the originals as superseded: it skips them when applying
     and marks them applied automatically when the squashed migration runs.
+    A database that has only some of them applied finishes them one by one
+    instead, and records the squash once they all are.
 
     The squashed file and the original files can therefore coexist safely —
     operations are not applied twice. Once the squashed migration has been
     deployed everywhere, the original migration files may be deleted.
+
+    ``RunPython`` functions defined in the squashed files are copied into the
+    new file. A range containing a migration that overrides
+    ``pre_migrate``/``post_migrate`` is refused: those hooks cannot be carried
+    into a squash.
 
     Args:
         start: Name of the first migration in the range (inclusive).
@@ -526,17 +499,20 @@ def squashmigrations(
     Returns:
         The squashed migration name, or None on error.
     """
-    from zeeb_orm.migrations.executor import list_migration_files, load_migration
+    from zeeb_orm.migrations.executor import MigrationGraph, _load_all
+    from zeeb_orm.migrations.migration import Migration
     from zeeb_orm.migrations.optimizer import optimize
-    from zeeb_orm.migrations.writer import _slugify
+    from zeeb_orm.migrations.serializer import MigrationSerializationError
+    from zeeb_orm.migrations.writer import _render, _slugify, save_migration
 
     mig_dir = _get_migrations_dir(migrations_dir)
     if not mig_dir.exists():
         print("No migrations directory found.")
         return None
 
-    all_migrations = list_migration_files(mig_dir)
-    all_names = [name for name, _ in all_migrations]
+    loaded = _load_all(mig_dir)
+    all_names = [name for name, _, _ in loaded]
+    migrations = {name: mig for name, _, mig in loaded}
 
     if start not in all_names:
         print(f"Error: Migration '{start}' not found.")
@@ -552,28 +528,66 @@ def squashmigrations(
         print(f"Error: '{start}' comes after '{end}'.")
         return None
 
-    squash_range = all_migrations[start_idx: end_idx + 1]
+    in_range = all_names[start_idx: end_idx + 1]
+    graph = MigrationGraph(loaded)
 
-    # Collect all operations in order
+    # A migration already squashed into one outside the range would be applied
+    # twice (once by each squash).
+    for name in in_range:
+        owner = graph.resolve(name)
+        if owner != name and owner not in in_range:
+            print(f"Error: '{name}' is already squashed into '{owner}'; squash that instead.")
+            return None
+    for name in in_range:
+        mig = migrations[name]
+        hooks = [
+            hook for hook in ("pre_migrate", "post_migrate")
+            if getattr(type(mig), hook) is not getattr(Migration, hook)
+        ]
+        if hooks:
+            print(
+                f"Error: '{name}' overrides {' and '.join(hooks)}, which a squashed "
+                f"migration cannot carry over. Squash a range without it."
+            )
+            return None
+
+    # Operations in the order a fresh database runs them; a squash inside the
+    # range stands in for the originals it replaces.
+    members = [name for name in graph.order if name in in_range]
     all_ops: list[Any] = []
-    for _name, path in squash_range:
-        mig = load_migration(path)
-        all_ops.extend(mig.operations)
+    for name in members:
+        all_ops.extend(migrations[name].operations)
 
     # Optionally optimize
     if not no_optimize:
         optimized_ops = optimize(all_ops)
         saved = len(all_ops) - len(optimized_ops)
         if saved:
-            print(f"Optimized {len(all_ops)} operations down to {len(optimized_ops)} ({saved} removed).")
+            print(
+                f"Optimized {len(all_ops)} operations down to {len(optimized_ops)} "
+                f"({saved} removed)."
+            )
     else:
         optimized_ops = all_ops
 
-    # Dependencies: the squashed migration depends on everything *before* start
-    if start_idx > 0:
-        dependencies = [all_names[start_idx - 1]]
-    else:
-        dependencies = []
+    # Everything the squash replaces: the range, plus what squashes in it replace.
+    replaced: list[str] = []
+    for name in in_range:
+        for covered in [*migrations[name].replaces, name]:
+            if covered not in replaced:
+                replaced.append(covered)
+
+    # Dependencies: whatever the squashed migrations depend on outside the
+    # range — normally just the migration before start.
+    dependencies: list[str] = []
+    for name in members:
+        for dep in graph.dependencies(name):
+            if dep not in replaced and dep not in dependencies:
+                dependencies.append(dep)
+    if not dependencies and start_idx > 0:
+        before = graph.resolve(all_names[start_idx - 1])
+        if before not in replaced:
+            dependencies = [before]
 
     # Name for the squashed file
     if squashed_name:
@@ -581,9 +595,14 @@ def squashmigrations(
     else:
         slug = f"squashed_{_slugify(start)}_to_{_slugify(end)}"
 
-    # Use the next number after the end migration so the squashed migration
-    # sorts after all the migrations it replaces
-    squash_number = int(end[:4]) + 1 if end[:4].isdigit() else (end_idx + 2)
+    # Numbered right after the end migration — or, when a later migration
+    # already holds that number, after the last migration: every number stays
+    # unique, so "0003" names one file. Apply order follows the dependency
+    # graph, so a squash numbered after migrations that depend on it still
+    # runs before them.
+    end_number = int(end[:4]) if end[:4].isdigit() else end_idx + 1
+    taken = {int(n[:4]) for n in all_names if n[:4].isdigit()}
+    squash_number = end_number + 1 if end_number + 1 not in taken else max(taken) + 1
     filename = f"{squash_number:04d}_{slug}.py"
     filepath = mig_dir / filename
 
@@ -592,37 +611,31 @@ def squashmigrations(
         return None
 
     migration_name = filepath.stem
-    
-    # List of migrations being replaced
-    replaced = [name for name, _ in squash_range]
-    
-    from zeeb_orm.migrations.writer import _render_migration
-    content = _render_migration(
-        migration_name=migration_name,
-        operations=optimized_ops,
-        dependencies=dependencies,
-        initial=(start_idx == 0),
-        replaces=replaced,
+    comment = "\n".join(
+        [
+            "This squashed migration replaces the following migrations:",
+            *(f"  - {n}" for n in replaced),
+            "",
+            "The 'replaces' attribute ensures that when this migration is applied,",
+            "the replaced migrations are automatically marked as applied.",
+            "Once this migration has been deployed everywhere, the original",
+            "migration files can be safely deleted.",
+        ]
     )
-
-    # Add a header comment listing which migrations are replaced
-    replaced_comment = (
-        "# This squashed migration replaces the following migrations:\n"
-        + "".join(f"#   - {n}\n" for n in replaced)
-        + "#\n"
-        + "# The 'replaces' attribute ensures that when this migration is applied,\n"
-        + "# the replaced migrations are automatically marked as applied.\n"
-        + "# Once this migration has been deployed everywhere, the original\n"
-        + "# migration files can be safely deleted.\n"
-    )
-    # Insert after the docstring closing '''
-    content = content.replace(
-        'from zeeb_orm.migrations import Migration, operations',
-        replaced_comment + 'from zeeb_orm.migrations import Migration, operations',
-        1,
-    )
-
-    filepath.write_text(content)
+    try:
+        content, renames = _render(
+            migration_name=migration_name,
+            operations=optimized_ops,
+            dependencies=dependencies,
+            initial=any(migrations[name].initial for name in members),
+            replaces=replaced,
+            comment=comment,
+            atomic=all(migrations[name].atomic for name in members),
+        )
+        save_migration(filepath, content, optimized_ops, renames)
+    except MigrationSerializationError as exc:
+        print(f"Error: {exc}")
+        return None
 
     print(f"Squashed migration created: {filename}")
     print(f"  Replaces: {', '.join(replaced)}")

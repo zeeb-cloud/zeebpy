@@ -55,7 +55,7 @@ Demo project: `cd demo_blog && python manage.py runserver`. Runnable examples li
 - `exceptions.py` — `ValidationError`, `FieldError`, `ProtectedError`, `NotSupportedError`, … (canonical; `DoesNotExist` also re-exported here).
 - `db/connection.py` — `Database` wrapper around AsyncEngine/AsyncSession; configured via `configure(database={...})` or `DATABASE_URL` env var (asyncpg / aiomysql / aiosqlite).
 - `signals.py` — Django-style signals (`pre_save`, `post_save`, `pre_delete`, `post_delete`); `pre_*` fires before flush and can abort, `post_*` fires after commit; `on_commit()` hook available.
-- `migrations/` — Alembic-based: `autodetector.py` diffs models vs. schema state, `writer.py` emits migration files, `executor.py` applies them, `optimizer.py` collapses operations. Driven by the `zeeb-manage` CLI in `cli/commands/`.
+- `migrations/` — Alembic-based: `autodetector.py` diffs models vs. the state the migration files *declare* (replayed in the executor's order), `writer.py` emits migration files through `serializer.py` (operations render from `Operation.deconstruct()`; every file must load back into the same operations or nothing is written — never hand-build migration source), `executor.py` applies them via `MigrationGraph` (dependency order, squash-aware, one `migrate` at a time), `optimizer.py` collapses operations. `autogen.make_migration` is the one makemigrations implementation and `executor.rollback`/`migrate_with_result` the one migrate/rollback — the CLI (`cli/commands/migrate.py`), `migrations/cli.py` and `zeeb_agents/migrations.py` only report.
 - Feature-parity status vs. Django (incl. deliberate omissions): `docs/orm/feature-reference.md`.
 
 ### zeeb_api

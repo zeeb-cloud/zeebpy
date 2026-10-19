@@ -10,6 +10,11 @@ Rules implemented
 * ``AddField`` + ``RemoveField`` (same table, same column) → nothing (cancel out)
 * ``AddField`` + ``AlterField`` (same table, same column) → ``AddField`` with updated type
 * ``AddIndex`` + ``RemoveIndex`` (same name) → nothing (cancel out)
+
+A reduction moves an operation past the ones between the pair, so it is only
+made when they commute: they touch disjoint tables, a foreign key counting as a
+touch of the table it references. ``RunSQL``, ``RunPython`` and any operation
+whose tables are unknown commute with nothing.
 """
 
 from __future__ import annotations
@@ -39,7 +44,10 @@ def _one_pass(ops: list[Operation]) -> tuple[list[Operation], bool]:
     Returns ``(new_ops, changed)`` where *changed* is True if any reduction
     was made.
     """
+    from sqlalchemy.schema import DefaultClause
+
     from zeeb_orm.migrations.operations import (
+        NO_DEFAULT,
         AddField,
         AddIndex,
         AlterField,
@@ -67,6 +75,7 @@ def _one_pass(ops: list[Operation]) -> tuple[list[Operation], bool]:
                 isinstance(current, CreateModel)
                 and isinstance(later, AddField)
                 and current.table == later.table
+                and _can_move_back(later, ops[i + 1:j])
             ):
                 new_columns = list(current.columns) + [later.column]
                 fused = CreateModel(
@@ -111,6 +120,8 @@ def _one_pass(ops: list[Operation]) -> tuple[list[Operation], bool]:
                 and isinstance(later, AlterField)
                 and current.table == later.table
                 and current.name == later.name
+                and all(key.startswith("existing_") for key in later.kwargs)
+                and _can_move_back(later, ops[i + 1:j])
             ):
                 col = current.column
                 # Copy the column to preserve all attributes (server_default,
@@ -121,6 +132,10 @@ def _one_pass(ops: list[Operation]) -> tuple[list[Operation], bool]:
                     new_col.type = later.column_type
                 if later.nullable is not None:
                     new_col.nullable = later.nullable
+                if later.server_default is NO_DEFAULT:
+                    new_col.server_default = None
+                elif later.server_default is not None:
+                    new_col.server_default = DefaultClause(later.server_default)
                 fused = AddField(
                     model_name=current.model_name,
                     table=current.table,
@@ -160,11 +175,51 @@ def _one_pass(ops: list[Operation]) -> tuple[list[Operation], bool]:
 def _blocks(a: Operation, b: Operation) -> bool:
     """Return True if operation *b* cannot be reordered past *a*.
 
-    A conservative check: if both operations touch the same table we assume
-    they don't commute.
+    Conservative: two operations commute only when both touch a known set of
+    tables and those sets are disjoint.
     """
-    table_a = getattr(a, "table", None)
-    table_b = getattr(b, "table", None)
-    if table_a and table_b and table_a == table_b:
+    tables_a, tables_b = _tables(a), _tables(b)
+    if tables_a is None or tables_b is None:
         return True
-    return False
+    return bool(tables_a & tables_b)
+
+
+def _can_move_back(op: Operation, between: list[Operation]) -> bool:
+    """Whether *op* can run before every operation in *between*."""
+    return not any(_blocks(other, op) for other in between)
+
+
+def _tables(op: Operation) -> set[str] | None:
+    """The tables *op* reads or changes — ``None`` when that is unknowable.
+
+    Includes the tables its foreign keys reference: creating a table that
+    points at another must stay after that table's creation and before its
+    deletion.
+    """
+    from zeeb_orm.migrations import operations as ops
+
+    if isinstance(op, (ops.RunSQL, ops.RunPython)):
+        return None
+    if isinstance(op, ops.RenameModel):
+        return {op.old_table, op.new_table}
+    table = getattr(op, "table", None)
+    if not table:
+        return None
+    tables = {table}
+    columns: list = []
+    if isinstance(op, (ops.CreateModel, ops.DeleteModel)):
+        columns = list(op.columns)
+    elif isinstance(op, ops.AddField):
+        columns = [op.column]
+    elif isinstance(op, ops.RemoveField) and op.field is not None:
+        columns = [op.field]
+    for column in columns:
+        for fk in getattr(column, "foreign_keys", ()):
+            tables.add(str(fk.target_fullname).rpartition(".")[0])
+    for constraint in getattr(op, "constraints", None) or []:
+        for element in getattr(constraint, "elements", ()):
+            tables.add(str(element.target_fullname).rpartition(".")[0])
+    constraint = getattr(op, "constraint", None)
+    for element in getattr(constraint, "elements", ()) if constraint is not None else ():
+        tables.add(str(element.target_fullname).rpartition(".")[0])
+    return tables

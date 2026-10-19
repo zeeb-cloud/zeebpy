@@ -40,6 +40,38 @@ class MigrationStateError(MigrationError):
     """
 
 
+class UnknownMigrationError(MigrationError):
+    """A migration name (a ``migrate`` target) matches no migration, or several.
+
+    Attributes:
+        name: The name that was asked for.
+        available: Every migration name in the directory, in order.
+        candidates: The names it matched when it was ambiguous (else empty).
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        name: str,
+        available: list[str],
+        candidates: list[str] | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.name = name
+        self.available = list(available)
+        self.candidates = list(candidates or [])
+
+
+class MigrationLayoutError(MigrationError):
+    """Migration files sit where ``migrate`` does not read them.
+
+    Projects scaffolded by old versions may keep migrations under
+    ``migrations/versions/``; the engine reads ``migrations/`` only, so they
+    would be silently ignored.
+    """
+
+
 def find_project_root() -> Path | None:
     """Find the project root: the nearest ``manage.py``, else ``migrations/``.
 
@@ -51,7 +83,9 @@ def find_project_root() -> Path | None:
     return _find(allow_migrations_dir=True)
 
 
-def get_migration_state(project_root: Path | None = None, db_url: str | None = None) -> MigrationState:
+def get_migration_state(
+    project_root: Path | None = None, db_url: str | None = None
+) -> MigrationState:
     """
     Get the current migration state.
 
@@ -110,6 +144,8 @@ def get_migration_state(project_root: Path | None = None, db_url: str | None = N
         ) from exc
 
     total = len(status)
+    # "Applied" is the executor's view: a squash whose replaced migrations are
+    # all applied counts as applied before it is recorded.
     applied_count = sum(1 for _, is_applied in status if is_applied)
     pending_count = total - applied_count
     applied_names = [name for name, is_applied in status if is_applied]
@@ -188,8 +224,8 @@ def require_migrations(func):
         async def startup():
             ...
     """
-    import functools
     import asyncio
+    import functools
 
     @functools.wraps(func)
     def sync_wrapper(*args, **kwargs):
