@@ -21,7 +21,7 @@ from httpx import ASGITransport, AsyncClient
 from zeeb_api.exception_handlers import install_exception_handlers
 from zeeb_api.filters import OrderingFilter
 from zeeb_api.query import QFilterError, check_field_path, parse_q_filter, parse_q_filter_with_paths
-from zeeb_api.query.parser import MAX_FILTER_DEPTH
+from zeeb_api.query.parser import DEFAULT_MAX_LENGTH, MAX_FILTER_DEPTH
 from zeeb_api.query.paths import FieldPathError
 from zeeb_api.routers.default import SimpleRouter
 from zeeb_api.serializers import ModelSerializer
@@ -196,6 +196,15 @@ async def test_an_oversized_filter_body_is_a_422(db):
         response = await client.post("/posts/query", json={"filter": expr})
     assert response.status_code == 422
     assert response.json()["error"]["code"] == "VALIDATION_ERROR"
+
+
+async def test_surrounding_whitespace_does_not_count_against_the_limit(db):
+    await _seed()
+    expr = "Q(title__in=[" + ",".join(["'x'"] * 1000) + "])"
+    assert len(expr) <= DEFAULT_MAX_LENGTH < len(expr) + 200
+    async with _client() as client:
+        response = await client.post("/posts/query", json={"filter": f"\n{expr}" + " " * 200})
+    assert response.status_code == 200, response.text
 
 
 @pytest.mark.parametrize(

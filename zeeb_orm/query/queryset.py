@@ -2982,6 +2982,20 @@ def _coerce_temporal_value(column: Any, transform: str | None, lookup: str, valu
 _TRUE_STRINGS = frozenset({"true", "1", "yes"})
 _FALSE_STRINGS = frozenset({"false", "0", "no"})
 
+#: How a fractional bound becomes an integer without changing which integers
+#: it admits: ``views > 3.5`` is ``views > 3``, ``views >= 3.5`` is
+#: ``views >= 4``. (asyncpg would truncate 3.5 to 3, matching wrong rows.)
+_INTEGER_ROUNDING = {
+    "gt": "ROUND_FLOOR",
+    "lte": "ROUND_FLOOR",
+    "gte": "ROUND_CEILING",
+    "lt": "ROUND_CEILING",
+}
+
+#: No integer column holds more than 64 bits; a larger value is refused before
+#: ``int()`` turns a short ``"1e999999999"`` into a billion-digit integer.
+_INTEGER_LIMIT = 2**63
+
 
 def _coerce_typed_value(column: Any, lookup: str, value: Any, lookup_string: str) -> Any:
     """Convert a comparison value to the Python type of ``column``.
@@ -2995,6 +3009,12 @@ def _coerce_typed_value(column: Any, lookup: str, value: Any, lookup_string: str
     :class:`~zeeb_orm.exceptions.ValidationError` (a 400 in a view) instead of
     a driver error. Values that are already of a compatible type, expressions
     and unknown types pass through unchanged.
+
+    Against an integer column a non-integral number is never sent as is
+    (asyncpg truncates it): a bound of ``gt``/``gte``/``lt``/``lte``/``range``
+    is rounded to the integer that admits the same rows (see
+    :data:`_INTEGER_ROUNDING`), and an ``exact``/``in`` value, NaN or infinity
+    is refused.
     """
     import decimal
     import uuid
@@ -3012,7 +3032,24 @@ def _coerce_typed_value(column: Any, lookup: str, value: Any, lookup_string: str
     def _invalid(v: Any, kind: str) -> ValidationError:
         return ValidationError({lookup_string: [f"{v!r} is not a valid {kind}."]})
 
-    def _convert(v: Any) -> Any:
+    def _integer(v: Any, rounding: str | None) -> Any:
+        if isinstance(v, int) or not isinstance(v, (str, float, decimal.Decimal)):
+            return v
+        try:
+            d = decimal.Decimal(v.strip() if isinstance(v, str) else v)
+            # abs() applies the context: a huge exponent overflows here
+            out_of_range = not d.is_finite() or abs(d) >= _INTEGER_LIMIT
+        except decimal.DecimalException:
+            raise _invalid(v, "integer") from None
+        if out_of_range:
+            raise _invalid(v, "integer")
+        if d == d.to_integral_value():
+            return int(d)
+        if rounding is None:
+            raise _invalid(v, "integer")
+        return int(d.to_integral_value(rounding=rounding))
+
+    def _convert(v: Any, rounding: str | None = None) -> Any:
         if v is None or isinstance(v, ClauseElement):
             return v
         if isinstance(col_type, Boolean):
@@ -3024,16 +3061,7 @@ def _coerce_typed_value(column: Any, lookup: str, value: Any, lookup_string: str
                 return v.strip().lower() in _TRUE_STRINGS
             raise _invalid(v, "boolean")
         if isinstance(col_type, Integer):
-            if not isinstance(v, str):
-                return v
-            try:
-                return int(v.strip())
-            except ValueError:
-                pass
-            try:
-                return float(v.strip())
-            except ValueError:
-                raise _invalid(v, "integer") from None
+            return _integer(v, rounding)
         # Float is not a Numeric subclass from SQLAlchemy 2.1 on
         if isinstance(col_type, (Numeric, Float)):
             if not isinstance(v, str):
@@ -3061,9 +3089,12 @@ def _coerce_typed_value(column: Any, lookup: str, value: Any, lookup_string: str
             return v
         return v
 
+    if lookup == "range" and isinstance(value, (list, tuple)) and len(value) == 2:
+        # Narrow inwards: range(1.5, 9.5) on integers is range(2, 9)
+        return [_convert(value[0], "ROUND_CEILING"), _convert(value[1], "ROUND_FLOOR")]
     if isinstance(value, (list, tuple, set, frozenset)):
         return [_convert(v) for v in value]
-    return _convert(value)
+    return _convert(value, _INTEGER_ROUNDING.get(lookup))
 
 
 def lookup_to_condition(
@@ -3144,10 +3175,12 @@ def lookup_to_condition(
     else:
         value = _coerce(value)
 
-    # Coerce ISO strings against temporal columns (asyncpg rejects str binds)
+    # Coerce ISO strings against temporal columns (asyncpg rejects str binds).
+    # Only strings are parsed and fromisoformat raises ValueError alone, so a
+    # TypeError here is a bug, not bad input — let it surface.
     try:
         value = _coerce_temporal_value(column, transform, lookup, value)
-    except (ValueError, TypeError):
+    except ValueError:
         from zeeb_orm.exceptions import ValidationError
 
         raise ValidationError(

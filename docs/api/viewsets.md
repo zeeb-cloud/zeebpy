@@ -823,7 +823,10 @@ database; `Q(views='abc')` is a 400 — see
 [Value types](../orm/queries.md#value-types)). The parser also refuses:
 
 - a list or tuple anywhere but an `__in` lookup or a two-item `__range`
-  (`Q(id=[1])`, `Q(title__in='abc')`, `Q(views__range=[0])`);
+  (`Q(id=[1])`, `Q(title__in='abc')`, `Q(views__range=[0])`). The lookup is
+  read off the last `__` segment, so a JSON field cannot be compared with a
+  list, and a related field that is itself named `in` or `range` needs an
+  explicit `__exact` (`Q(spec__range__exact=5)`);
 - arithmetic and other expressions (`Q(age=9**9**9**9)` is refused, never
   computed);
 - nesting deeper than 32 levels of `~`, `Q(...)` and alternating `&`/`|`. A run

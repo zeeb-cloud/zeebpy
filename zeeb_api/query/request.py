@@ -47,6 +47,16 @@ class QueryRequest(BaseModel):
         description="Number of items to skip"
     )
     
+    @field_validator("filter", mode="before")
+    @classmethod
+    def strip_filter(cls, v: Any) -> Any:
+        """Strip surrounding whitespace before ``max_length`` is checked.
+
+        The parser strips too, so the limit counts the same characters in both
+        places: a filter that fits is not a 422 for trailing newlines.
+        """
+        return v.strip() if isinstance(v, str) else v
+
     @field_validator("order_by", mode="before")
     @classmethod
     def validate_order_by(cls, v: Any) -> list[str] | None:
