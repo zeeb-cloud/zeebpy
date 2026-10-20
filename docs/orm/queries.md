@@ -107,12 +107,17 @@ string or a JSON body compares the same way on every database:
 
 | Column | Accepted | Refused |
 |---|---|---|
-| Integer | ints, floats, numeric strings (`"3"`, `"1.5"`) | `"abc"` |
+| Integer | ints, whole floats and numeric strings (`"3"`, `"3.0"`); a fractional bound of `gt`/`gte`/`lt`/`lte`/`range` (rounded, see below) | `"abc"`, a fractional `exact`/`in` value, NaN, infinity, beyond 64 bits |
 | Float / Decimal | numbers, numeric strings | `"x"` |
 | Boolean | `True`/`False`, `0`/`1`, `"true"`/`"false"`/`"1"`/`"0"`/`"yes"`/`"no"` | anything else |
 | UUID (incl. the default primary key and foreign keys to it) | `uuid.UUID`, UUID strings | other strings, numbers |
 | Char / Text | strings; numbers become their string | `True`/`False` |
 | Date / DateTime / Time | `date`/`datetime`/`time`, ISO-8601 strings | other strings |
+
+The conversion is part of every `filter()`/`exclude()`/`Q`, not only of
+client input: `filter(title=5)` matches the title `"5"`, `filter(active="no")`
+matches `active=False`, and `filter(id=123)` on a UUID column raises instead of
+reaching the driver.
 
 A refused value raises `ValidationError` (`zeeb_orm.exceptions`), keyed by
 the lookup (`{"views__gte": ["'abc' is not a valid integer."]}`); in a viewset
@@ -120,6 +125,12 @@ that is a 400. Without the conversion SQLite would quietly compare `"3"` with
 an integer while asyncpg failed the query, and a UUID string could not be
 compared with a UUID column on SQLite at all. `F()` expressions, subqueries and
 `None` pass through unchanged.
+
+A fractional bound on an integer column is rounded to the integer that admits
+the same rows, so the result does not depend on the driver (asyncpg would
+truncate `3.5` to `3`): `views__gt=3.5` and `views__lte=3.5` round down,
+`views__gte=3.5` and `views__lt=3.5` round up, and `views__range=(1.5, 9.5)`
+narrows to `(2, 9)`. `views=3.5` can match no integer and is refused.
 
 ### String Lookups
 

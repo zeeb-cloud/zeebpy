@@ -26,7 +26,9 @@ class ArticleViewSet(ModelViewSet):
 > update and destroy. A backend that scopes rows therefore scopes
 > them everywhere. `/query` takes its own filter and ordering on top, checked
 > against its own allow-list (see [ViewSets](viewsets.md)); its `order_by`
-> replaces the ordering a backend applied.
+> replaces the ordering a backend applied. A backend that reads the query
+> string applies on detail routes too: `GET /articles/{id}?search=zzz`
+> is a 404 when that article does not match the search.
 
 A project-wide default is `DEFAULT_FILTER_BACKENDS` in settings (dotted paths,
 default `[]`); it applies to every viewset that does not declare

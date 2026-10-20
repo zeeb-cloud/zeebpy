@@ -233,7 +233,15 @@ def _validate_ast(tree: ast.Expression) -> set[str]:
 
 
 def _check_value(path: str, node: ast.AST) -> None:
-    """A lookup value is a literal; a list or tuple exactly where the lookup takes one."""
+    """A lookup value is a literal; a list or tuple exactly where the lookup takes one.
+
+    The parser has no model, so the lookup is read off the path's last ``__``
+    segment. Two consequences, both deliberate: a field that is itself named
+    ``in`` or ``range`` cannot be filtered through a related path
+    (``Q(spec__range=5)`` reads as a ``range`` lookup — spell it
+    ``spec__range__exact``), and a JSON field cannot be compared with a list
+    (``Q(data=[1, 2])``) — only ``__in``/``__range`` take one.
+    """
     lookup = path.rsplit("__", 1)[-1] if "__" in path else "exact"
     if not isinstance(node, (ast.List, ast.Tuple)):
         if not _is_literal(node):

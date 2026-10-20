@@ -118,6 +118,30 @@ async def test_strings_and_numbers_are_converted(item, lookups):
     assert await TypedItem.objects.filter(**lookups).count() == 1
 
 
+@pytest.mark.parametrize(
+    ("lookups", "expected"),
+    [
+        # views == 3. A fractional bound is rounded so it admits the same
+        # integers on every database (asyncpg would truncate it to 3).
+        ({"views__gt": "2.5"}, 1),
+        ({"views__gt": 3.5}, 0),
+        ({"views__gte": "3.5"}, 0),
+        ({"views__gte": decimal.Decimal("2.5")}, 1),
+        ({"views__lt": 3.5}, 1),
+        ({"views__lt": "2.5"}, 0),
+        ({"views__lte": "3.5"}, 1),
+        ({"views__lte": "2.5"}, 0),
+        ({"views__gt": "-0.5"}, 1),
+        ({"views__range": ["2.5", "3.5"]}, 1),
+        ({"views__range": [3.2, 3.8]}, 0),
+        ({"views": "3.0"}, 1),
+        ({"views": "3e0"}, 1),
+    ],
+)
+async def test_fractional_bounds_on_an_integer_column_are_rounded(item, lookups, expected):
+    assert await TypedItem.objects.filter(**lookups).count() == expected
+
+
 async def test_uuid_strings_match_the_primary_and_foreign_key(item):
     assert await TypedItem.objects.filter(id=str(item.id)).count() == 1
     assert await TypedItem.objects.filter(id__in=[str(item.id)]).count() == 1
@@ -130,6 +154,12 @@ async def test_uuid_strings_match_the_primary_and_foreign_key(item):
     [
         ({"views": "abc"}, "'abc' is not a valid integer."),
         ({"views__in": ["1", "two"]}, "'two' is not a valid integer."),
+        ({"views": "3.5"}, "'3.5' is not a valid integer."),
+        ({"views": 3.5}, "3.5 is not a valid integer."),
+        ({"views__in": [3, 3.5]}, "3.5 is not a valid integer."),
+        ({"views__gt": "nan"}, "'nan' is not a valid integer."),
+        ({"views__lt": float("inf")}, "inf is not a valid integer."),
+        ({"views__gte": "1e999999999"}, "'1e999999999' is not a valid integer."),
         ({"score": "x"}, "'x' is not a valid number."),
         ({"price__gt": "cheap"}, "'cheap' is not a valid number."),
         ({"active": "nope"}, "'nope' is not a valid boolean."),
