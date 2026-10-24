@@ -11,12 +11,13 @@ from typing import TypeVar
 from zeeb_agents._utils import AgentResult, agent_function
 from zeeb_agents._utils.errors import AgentError, close_matches
 from zeeb_agents._utils.project import (
-    list_apps as list_apps_util,
-)
-from zeeb_agents._utils.project import (
+    forget_loaded_project_code,
     load_project_settings,
     project_database_url,
     require_project_root,
+)
+from zeeb_agents._utils.project import (
+    list_apps as list_apps_util,
 )
 
 T = TypeVar("T")
@@ -184,6 +185,10 @@ async def make_migrations(
           ``data["warning"]`` and ``data["unregistered_apps"]`` are populated —
           register them with ``install_app`` (``create_app`` does this
           automatically) and re-run.
+        - Detection always reads the model files as they are now: project
+          modules this process imported earlier (and the models they
+          registered) are dropped first, so a long-running process sees an
+          edit — a deleted model yields its ``DeleteModel``.
     """
     root = require_project_root(project_root)
 
@@ -193,6 +198,10 @@ async def make_migrations(
 
         migrations_dir = root / "migrations"
         migrations_dir.mkdir(parents=True, exist_ok=True)
+        # Detect against the files as they are *now*: a process that imported
+        # the project before (an MCP server, build then delete in one run)
+        # would otherwise diff the cached, pre-edit models.
+        forget_loaded_project_code(root)
         _register_models(root)
         draft = make_migration(migrations_dir, name=name, accept_renames=accept_renames)
         report = draft.report

@@ -55,7 +55,19 @@ class SmTag(Model):
         table_name = "sm_tags"
 
 
-MODELS = (SmAuthor, SmPost, SmTag)
+def _settings_default() -> dict:
+    return {"k": 1}
+
+
+class SmConfig(Model):
+    data = fields.JSONField(null=True, default=_settings_default)
+    required = fields.JSONField(default=_settings_default)
+
+    class Meta:
+        table_name = "sm_configs"
+
+
+MODELS = (SmAuthor, SmPost, SmTag, SmConfig)
 
 
 @pytest.fixture
@@ -127,6 +139,34 @@ class TestNullIsNotTheDefault:
 # ---------------------------------------------------------------------------
 # 2. await obj.fk works whether or not the relation is cached
 # ---------------------------------------------------------------------------
+
+
+class TestExplicitNoneIsNotTheCallableDefault:
+    """``create(data=None)`` on ``JSONField(null=True, default=gen)`` stored
+    ``gen()``: the INSERT replaced every None with the default."""
+
+    async def test_create_with_none_stores_null(self, db):
+        obj = await SmConfig.objects.create(data=None)
+        assert obj.data is None
+        assert (await SmConfig.objects.get(pk=obj.pk)).data is None
+        assert obj.required == {"k": 1}  # non-null field: default applies
+
+    async def test_omitted_field_gets_the_default(self, db):
+        obj = await SmConfig.objects.create()
+        assert (await SmConfig.objects.get(pk=obj.pk)).data == {"k": 1}
+
+    async def test_assigning_none_after_construction_stores_null(self, db):
+        obj = SmConfig()
+        obj.data = None
+        await obj.save()
+        assert (await SmConfig.objects.get(pk=obj.pk)).data is None
+
+    async def test_bulk_create_keeps_explicit_none(self, db):
+        await SmConfig.objects.bulk_create([SmConfig(data=None), SmConfig()])
+        stored = sorted(
+            (o.data is None for o in await SmConfig.objects.all()), key=bool
+        )
+        assert stored == [False, True]
 
 
 class TestAwaitingARelation:

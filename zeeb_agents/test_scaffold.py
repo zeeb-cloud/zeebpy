@@ -607,14 +607,14 @@ def _render_workflow_test(app: str, entity: dict) -> str | None:
     field = workflow.get("field", "status")
     return "\n".join(
         [
-            f"async def test_{name.lower()}_{candidate['name']}_transition_conflict(client, api_prefix, db):",
+            f"async def test_{name.lower()}_{candidate['name']}_transition_conflict(client, api_prefix, db):",  # noqa: E501
             f"    from apps.{app}.models import {name}",
             "",
             f"    obj = await {name}.objects.create({', '.join(kwargs)})",
-            f'    first = await client.post(f"{{api_prefix}}/{entity["prefix"]}/{{obj.id}}/{candidate["name"]}")',
+            f'    first = await client.post(f"{{api_prefix}}/{entity["prefix"]}/{{obj.id}}/{candidate["name"]}")',  # noqa: E501
             "    assert first.status_code == 200",
             f'    assert first.json()["{field}"] == {render_py_literal(candidate["to"])}',
-            f'    again = await client.post(f"{{api_prefix}}/{entity["prefix"]}/{{obj.id}}/{candidate["name"]}")',
+            f'    again = await client.post(f"{{api_prefix}}/{entity["prefix"]}/{{obj.id}}/{candidate["name"]}")',  # noqa: E501
             "    assert again.status_code == 409",
         ]
     )

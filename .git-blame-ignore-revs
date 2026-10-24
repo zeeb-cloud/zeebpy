@@ -1,6 +1,6 @@
-# Commits that changed line endings and nothing else. `git blame` on any file
-# they touched would otherwise point here instead of at the change that last
-# touched the content.
+# Commits that changed formatting (line endings, lint) and nothing else.
+# `git blame` on any file they touched would otherwise point here instead of
+# at the change that last touched the content.
 #
 # GitHub applies this file automatically in its blame view. Locally it is
 # opt-in, once per clone:
@@ -17,3 +17,7 @@ c03159980296bef809571041450fde617d666d82
 # feat(orm): add zeeb_orm.testing (#15) — carried a CRLF re-commit of 346 files
 # alongside the feature, before .gitattributes existed to prevent it.
 df952999a95103c22477ceed26b70c78b4932563
+
+# style: make the repository pass its own ruff configuration — 1199 lint
+# findings fixed mechanically (whitespace, import order, wrapped lines).
+1853026306462959729a2c1f891fcd63b7303491

@@ -345,6 +345,11 @@ await tag.articles.add(article)
 existing pairs first and inserting only the missing ones — portable across
 SQLite, PostgreSQL and MySQL.
 
+Raw primary-key values are converted to the related model's key type first,
+as filter values are: `add(str(tag.pk))` works for a UUID key, and `"5"` and
+`5` are the same integer key (no duplicate link). A value that does not
+convert raises `ValidationError`.
+
 The instance must be saved before the relation can be used; accessing the
 manager on an unsaved instance raises
 `ValueError: "..." needs to have a value for field "id" before this

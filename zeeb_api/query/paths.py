@@ -16,6 +16,15 @@ resolved against the model, and every hop must be allowed:
   behind an allowed relation (``author__id``, ``tags__in=[...]``): that value
   is what the relation field already exposes.
 
+The allow-list may also be a mapping ``{client name: model path}`` - what
+:func:`serializer_field_paths` builds from a serializer's output. A client then
+names fields by the names the API returns, and :func:`check_field_path` hands
+back the path to apply to the queryset (``nick__icontains`` ->
+``nickname__icontains`` for ``nick = CharField(source="nickname")``). A column
+that is not returned under its own name - one shadowed by a
+``SerializerMethodField``, or only returned through another field's
+``source`` - is not reachable under that name.
+
 ``regex``/``iregex`` lookups are refused unless explicitly allowed: on SQLite
 they run Python's ``re`` inside the database, where a crafted pattern
 (catastrophic backtracking) ties up the worker.
@@ -23,7 +32,7 @@ they run Python's ``re`` inside the database, where a crafted pattern
 
 from __future__ import annotations
 
-from collections.abc import Collection
+from collections.abc import Collection, Mapping
 from typing import Any
 
 REGEX_LOOKUPS = frozenset({"regex", "iregex"})
@@ -40,11 +49,15 @@ class FieldPathError(ValueError):
 def check_field_path(
     model: Any,
     path: str,
-    allowed: Collection[str] | str | None,
+    allowed: Mapping[str, str] | Collection[str] | str | None,
     *,
     allow_regex: bool = True,
-) -> None:
+) -> str:
     """Raise :class:`FieldPathError` unless *path* may be used on *model*.
+
+    Returns the path to apply to the queryset: *path* itself, or - when
+    *allowed* is a mapping - *path* with its client-facing root replaced by
+    the model path it stands for (a leading ``-`` is kept).
 
     Args:
         model: The queryset's model (``queryset.model``); None falls back to a
@@ -53,13 +66,97 @@ def check_field_path(
             term (``-created_at``; one leading ``-`` is ignored — ``--id`` is
             refused, as ``order_by`` would fail on it).
         allowed: The allow-list. ``None`` means unrestricted (only the regex
-            rule applies); ``"__all__"`` means any field of *model* itself.
+            rule applies); ``"__all__"`` means any field of *model* itself; a
+            mapping ``{client name: model path}`` admits exactly its keys (and,
+            for a key that maps to itself, the field's other names: a foreign
+            key's ``author_id``, ``pk``) and translates them.
         allow_regex: Whether ``regex``/``iregex`` lookups are permitted.
     """
-    path = path[1:] if path.startswith("-") else path
-    if not path:
+    sign = "-" if path.startswith("-") else ""
+    bare = path[1:] if sign else path
+    if not bare:
         raise FieldPathError("Empty field name")
+    if isinstance(allowed, Mapping):
+        translated, targets = _translate(model, bare, allowed)
+        try:
+            _check_path(model, translated, targets, allow_regex=allow_regex)
+        except FieldPathError as exc:
+            if translated == bare:
+                raise
+            # Name the path the client sent, not the column behind it.
+            raise FieldPathError(str(exc).replace(translated, bare)) from None
+        return sign + translated
+    _check_path(model, bare, allowed, allow_regex=allow_regex)
+    return path
 
+
+def serializer_field_paths(serializer_class: Any) -> dict[str, str] | None:
+    """``{client name: model path}`` a serializer's output makes queryable.
+
+    Built from what the serializer *returns*, never from the model behind it:
+    a ``SerializerMethodField`` (or any other computed output) is left out,
+    so a method field named like a column does not make that column
+    filterable; a declared field with ``source=`` maps its output name to the
+    source path; write-only and unlisted fields are absent. Returns None when
+    the serializer has no response schema.
+    """
+    builder = getattr(serializer_class, "_query_field_map", None)
+    if callable(builder):
+        return builder()
+    schema = getattr(serializer_class, "ResponseSchema", None) or getattr(
+        serializer_class, "Schema", None
+    )
+    names = getattr(schema, "model_fields", None)
+    if names:
+        return {name: name for name in names}
+    return None
+
+
+def rename_q_paths(q: Any, renames: Mapping[str, str]) -> Any:
+    """Rewrite the keyword paths of *q* (in place) through *renames*."""
+    if not renames:
+        return q
+    stack = [q]
+    while stack:
+        node = stack.pop()
+        children = getattr(node, "children", None)
+        if not children:
+            continue
+        for index, child in enumerate(children):
+            if isinstance(child, tuple):
+                key, value = child
+                if key in renames:
+                    children[index] = (renames[key], value)
+            else:
+                stack.append(child)
+    return q
+
+
+def _translate(model: Any, path: str, mapping: Mapping[str, str]) -> tuple[str, set[str]]:
+    """``(model path, allow-list)`` for a client *path* under a name mapping."""
+    root, sep, rest = path.partition("__")
+    target = mapping.get(root)
+    if target is not None:
+        return target + sep + rest, {target}
+    # Another name of a field returned under its own name (``author_id`` for
+    # ``author``, ``pk`` for ``id``) - never a column only reachable through
+    # some other field's ``source`` or hidden behind a method field.
+    if getattr(model, "_meta", None) is not None:
+        names = _field_names(model, root)
+        for key, value in mapping.items():
+            if key == value and key in names:
+                return path, {key}
+    raise FieldPathError(f"Field '{path}' is not allowed")
+
+
+def _check_path(
+    model: Any,
+    path: str,
+    allowed: Collection[str] | str | None,
+    *,
+    allow_regex: bool,
+) -> None:
+    """:func:`check_field_path` on a model path without a leading ``-``."""
     if model is None or getattr(model, "_meta", None) is None:
         _check_syntactically(path, allowed, allow_regex=allow_regex)
         return

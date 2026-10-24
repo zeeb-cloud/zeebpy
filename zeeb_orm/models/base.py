@@ -347,7 +347,7 @@ class Model(metaclass=ModelBase):
     _sa_table: ClassVar[Table | None]
     _fk_fields: ClassVar[list[ForeignKeyField[Any]]]
     _m2m_fields: ClassVar[list[ManyToManyField[Any]]]
-    _permission_rules: ClassVar[dict[str, "Rule"]]
+    _permission_rules: ClassVar[dict[str, Rule]]
 
     # Exception classes bound to model
     DoesNotExist: ClassVar[type[DoesNotExist]] = DoesNotExist
@@ -381,8 +381,11 @@ class Model(metaclass=ModelBase):
                 value = kwargs.pop(field.name, _MISSING)
 
             if value is _MISSING:
-                # Callable defaults are deferred to the INSERT.
+                # Callable defaults are deferred to the INSERT, and only for
+                # fields that were not passed: an explicit None is stored.
                 default = field.default
+                if default is not None and callable(default):
+                    self._state.pending_defaults.add(field.name)
                 value = default if default is not None and not callable(default) else None
 
             # Use the field's __set__ for proper handling (especially FK)
@@ -496,7 +499,10 @@ class Model(metaclass=ModelBase):
 
         - FK fields: reads the raw id via the ``{name}_id`` property.
         - Callable defaults (e.g. ``UUIDAutoField``): called and stored on the
-          instance so it reflects what will be written.
+          instance so it reflects what will be written — for a field that was
+          not passed to the constructor (nor assigned since). A ``None``
+          passed explicitly to a nullable field is stored as NULL, as in
+          Django; a primary key or a non-null field still gets its default.
         - Auto timestamps (``auto_now_add`` / ``auto_now``): generated here and
           stored on the instance.
         - Auto-increment PKs with no value yet: omitted so the DB generates them.
@@ -511,10 +517,20 @@ class Model(metaclass=ModelBase):
             else:
                 value = getattr(self, field.name, None)
 
-            # Callable defaults
-            if value is None and field.default is not None and callable(field.default):
+            # Callable defaults: not over an explicit None on a nullable field
+            if (
+                value is None
+                and field.default is not None
+                and callable(field.default)
+                and (
+                    field.name in self._state.pending_defaults
+                    or field.primary_key
+                    or not field.null
+                )
+            ):
                 value = field.default()
                 setattr(self, field.name, value)
+            self._state.pending_defaults.discard(field.name)
 
             # Auto timestamps
             if isinstance(field, DateTimeField):
@@ -954,3 +970,6 @@ class ModelState:
         self.db_alias: str | None = None
         #: Field names not loaded from the database (``only()``/``defer()``).
         self.deferred: set[str] = set()
+        #: Fields left out of the constructor whose callable default is
+        #: still to be applied at INSERT time (an explicit None is not).
+        self.pending_defaults: set[str] = set()

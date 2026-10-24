@@ -90,9 +90,15 @@ so a request never fails because of an unknown ordering field — it just does
 not take effect.
 
 When `ordering_fields` is not set, the filter does **not** allow everything. It
-defaults to the field names the serializer actually exposes, so a client cannot
-order by a column the API does not surface. Only when those fields cannot be
-resolved does it fall back to permissive.
+defaults to what the serializer actually **returns**, by the names it returns
+them under (`serializer_field_paths()`, below), so a client cannot order by a
+column the API does not surface. A `SerializerMethodField` is never orderable —
+not even when it is named like a column (`email = SerializerMethodField()`
+masking the address): sorting by the column would reveal the value it hides. A
+declared field with `source=` is ordered by its output name and sorts by its
+source (`nick = CharField(source="nickname")`: `?ordering=nick` sorts by
+`nickname`; `?ordering=nickname` is dropped). Only when the serializer's
+fields cannot be resolved does it fall back to permissive.
 
 Set `ordering_fields = "__all__"` to allow every field **of the model
 itself**.
@@ -188,17 +194,22 @@ route.
 ### `check_field_path()`
 
 ```text
-check_field_path(model, path, allowed, *, allow_regex=True) -> None
+check_field_path(model, path, allowed, *, allow_regex=True) -> str
 ```
 
-Returns `None` when `path` may be used on `model`, and raises `FieldPathError`
-when it may not.
+Returns the path to apply to the queryset when `path` may be used on `model`,
+and raises `FieldPathError` when it may not. With a collection allow-list that
+is `path` itself; with a mapping it is `path` with its root translated
+(`-nick__icontains` -> `-nickname__icontains`, the leading `-` kept). A mapping
+admits exactly its keys, plus — for a key that maps to itself — the field's
+other names (`author_id` for `author`, `pk` for the primary key); a column
+reachable only through another key's `source` is refused under its own name.
 
 | Parameter | Meaning |
 |---|---|
 | `model` | The model the path is resolved against (`queryset.model`). `None` — or an object without `_meta` — falls back to a purely syntactic check |
 | `path` | A filter keyword (`author__name__icontains`) or an ordering term (`-created_at`; one leading `-` is ignored, so `--created_at` is refused) |
-| `allowed` | The allow-list: a collection of names, `"__all__"` for every field of `model` itself, or `None` for unrestricted (only the regex rule applies) |
+| `allowed` | The allow-list: a collection of names, a mapping `{client name: model path}` (what `serializer_field_paths()` returns), `"__all__"` for every field of `model` itself, or `None` for unrestricted (only the regex rule applies) |
 | `allow_regex` | Whether `regex`/`iregex` lookups are accepted (keyword-only) |
 
 The **whole** path is resolved against the model, transforms and lookups
@@ -242,6 +253,28 @@ relation; list the full path in the allow-list to permit it`).
 `OrderingFilter` calls it with `allow_regex=False` and drops a refused term;
 the `/query` endpoint refuses the request with a 400 instead. Neither ever
 admits a regex lookup in ordering.
+
+### `serializer_field_paths()` and `rename_q_paths()`
+
+`serializer_field_paths(serializer_class) -> dict[str, str] | None` is the
+mapping the `/query` endpoint and `OrderingFilter` default to: every field the
+serializer **returns**, keyed by its output name, mapped to the model path
+behind it.
+
+| Output field | Mapping |
+|---|---|
+| A model field (`title`, a FK `author`, an M2M) | `title -> title` |
+| `CharField(source="nickname")` as `nick` | `nick -> nickname` |
+| `CharField(source="author.name")` as `author_name` | `author_name -> author__name` |
+| `SlugRelatedField(slug_field="name")` as `author` | `author -> author__name` |
+| `NestedSerializer(...)` as `author` | `author -> author` when the nested serializer returns the pk, else absent |
+| `SerializerMethodField` | absent — computed output is never queryable |
+| `write_only` / unlisted fields | absent |
+
+`None` when the serializer has no response schema.
+`rename_q_paths(q, renames)` rewrites the keyword paths of a parsed `Q` in
+place (`{"nick": "nickname"}`) — what the endpoint applies after
+`check_field_path()` translated each path.
 
 ### `extract_q_paths()` and `extract_q_fields()`
 

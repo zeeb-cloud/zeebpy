@@ -13,6 +13,14 @@ have to create and apply its migrations.
 zeeb startproject myproject
 ```
 
+The name becomes the project's package, first on `sys.path`, so it must be a
+Python identifier that is not a keyword, and must not shadow a standard-library
+module (`json`, `email`, …), one of zeebpy's packages (`zeeb_orm`, …) or a
+dependency's import name (`sqlalchemy`, `fastapi`, `jwt`, …), nor be one of the
+project's own directories (`apps`, `tests`, `migrations`, `logs`). Anything else
+is refused with `invalid_identifier` before a file is written
+(`zeeb_orm.scaffold.project_name_problem` is the one check).
+
 Creates:
 ```
 myproject/
@@ -65,6 +73,12 @@ Create a new application within a project, and register it.
 cd myproject
 python manage.py startapp blog
 ```
+
+The name must be a Python identifier that is not a keyword (`class` would make
+`from apps.class.urls import …` a syntax error); soft keywords such as `match`
+are fine. Wiring never writes a `settings.py` or `urls.py` that would not
+parse: the edit is checked first and written atomically, or refused and the
+file left as it was.
 
 Creates:
 ```
@@ -160,6 +174,13 @@ wrong state writes wrong migrations. `RunPython` is never run for this, and
 `RunSQL` that SQLite cannot execute is skipped; both are listed as warnings
 and in `data.skipped_during_replay`. Models with `Meta.managed = False` are
 left out entirely.
+
+**NOT NULL fields.** A new `null=False` field on an existing table needs a value
+for the rows already there. `auto_now`/`auto_now_add` fields are backfilled
+with the current time and a scalar `default` fills them; for anything else
+`makemigrations` refuses before writing a file (`data.fields` lists them,
+`next_command` says to add `null=True` or a default). See
+[Adding a NOT NULL column](../orm/migrations.md#adding-a-not-null-column).
 
 ### migrate
 
@@ -439,6 +460,13 @@ The shape is the same one the agent tools return, and `error_code` uses the same
 vocabulary, so a caller that knows one knows both. Every failure carries a
 `next_command`. In human mode that same line is printed to stderr as
 `Next: python manage.py …`.
+
+That holds for errors no command anticipates too — a database error during
+`migrate`, a migration file that does not import (`next_command` is
+`python -m py_compile <file>`), a model that does not register: stdout still
+carries one failure envelope, with `data.exception_type`, and the traceback goes
+to stderr. A `migrate` that applied some migrations before one failed reports
+`state_changed: true` and `error_code: partial_failure`.
 
 `error_code` is a **closed set** (`zeeb_orm.cli.output.CLI_ERROR_CODES`),
 validated at call time so a typo cannot reach a caller that branches on it:

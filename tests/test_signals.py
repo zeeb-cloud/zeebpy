@@ -2,15 +2,13 @@
 
 from __future__ import annotations
 
-import asyncio
-
 import pytest
 
 from zeeb_orm import (
     Model,
     Signal,
-    configure,
     close_all_connections,
+    configure,
     fields,
     post_delete,
     post_save,
@@ -483,3 +481,101 @@ class TestQuerySetDeleteSignals:
 
         assert pre_delete.has_listeners(Article) is True
         assert pre_delete.has_listeners(str) is False
+
+
+# ---------------------------------------------------------------------------
+# Dead weak references and awaitable responses
+# ---------------------------------------------------------------------------
+
+
+class TestDeadReceiversAndAwaitables:
+    """``connect()`` deduplicated against dead weak refs whose ``id()`` the
+    new receiver could reuse (so it was silently not connected), and a
+    receiver object with ``async def __call__`` was never awaited."""
+
+    async def test_reused_key_of_a_dead_receiver_does_not_block_connect(self, monkeypatch):
+        import gc
+
+        import zeeb_orm.signals as signals_module
+
+        # Every receiver gets the same key: what CPython does when a new
+        # object lands at a collected one's address.
+        monkeypatch.setattr(signals_module, "_make_id", lambda target: 1)
+        sig = Signal()
+        calls = []
+
+        def old(sender, **kwargs):
+            calls.append("old")
+
+        sig.connect(old, sender=Article)
+        del old
+        gc.collect()
+
+        def new(sender, **kwargs):
+            calls.append("new")
+
+        sig.connect(new, sender=Article)
+        await sig.send(Article)
+        assert calls == ["new"]
+        assert len(sig._receivers) == 1
+
+    async def test_has_listeners_ignores_and_prunes_dead_receivers(self):
+        import gc
+
+        sig = Signal()
+
+        def handler(sender, **kwargs):
+            pass
+
+        sig.connect(handler, sender=Article)
+        assert sig.has_listeners(Article)
+        del handler
+        gc.collect()
+        assert not sig.has_listeners(Article)
+        assert sig._receivers == []
+
+    async def test_bound_methods_connect_and_disconnect_by_instance(self):
+        sig = Signal()
+        calls = []
+
+        class Listener:
+            def on(self, sender, **kwargs):
+                calls.append(self)
+
+        listener = Listener()
+        sig.connect(listener.on, sender=Article)
+        sig.connect(listener.on, sender=Article)  # a new bound-method object
+        assert len(sig._receivers) == 1
+        await sig.send(Article)
+        assert calls == [listener]
+        assert sig.disconnect(listener.on, sender=Article)
+        assert sig._receivers == []
+
+    async def test_async_callable_object_is_awaited(self):
+        sig = Signal()
+        calls = []
+
+        class AsyncReceiver:
+            async def __call__(self, sender, **kwargs):
+                calls.append("ran")
+                return "done"
+
+        recv = AsyncReceiver()
+        sig.connect(recv, sender=Article, weak=False)
+        responses = await sig.send(Article)
+        assert calls == ["ran"]
+        assert responses[0][1] == "done"
+        robust = await sig.send_robust(Article)
+        assert calls == ["ran", "ran"]
+        assert robust[0][1] == "done"
+
+    async def test_send_robust_returns_an_async_callables_exception(self):
+        sig = Signal()
+
+        class Failing:
+            async def __call__(self, sender, **kwargs):
+                raise RuntimeError("boom")
+
+        sig.connect(Failing(), weak=False)
+        [(_recv, response)] = await sig.send_robust(Article)
+        assert isinstance(response, RuntimeError)

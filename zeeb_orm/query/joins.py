@@ -17,6 +17,15 @@ filter scope to reach it claims it.
 Aliases follow the ``_sr_{path_with_underscores}_{last_part}`` naming scheme
 used by ``select_related`` column labelling; a second join of the same path
 gets a numeric suffix.
+
+Join types follow Django: a forward FK/O2O hop through a non-nullable column
+is an ``INNER JOIN`` (every row has exactly one match, so no row is lost) —
+as long as every earlier hop of its chain is inner too. A nullable FK, a
+reverse or a many-to-many hop is a ``LEFT OUTER JOIN``, and so is every hop
+after it: an inner join behind an outer one would drop the rows the outer
+join kept. PostgreSQL refuses ``FOR UPDATE`` on the nullable side of an outer
+join, so this is also what lets ``select_for_update()`` lock a
+``select_related()`` chain of required relations.
 """
 
 from __future__ import annotations
@@ -25,7 +34,7 @@ from collections.abc import Hashable, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
-from sqlalchemy import outerjoin
+from sqlalchemy import join
 
 from zeeb_orm.exceptions import FieldError
 from zeeb_orm.models.relations import RelationInfo, resolve_relation
@@ -66,6 +75,8 @@ class JoinInfo:
         part: The relation accessor of this hop.
         scope: The filter scope that owns a multi-valued join (``None`` =
             unclaimed).
+        outer: Whether the hop is a LEFT OUTER JOIN (see the module
+            docstring); ``False`` = INNER JOIN.
     """
 
     path: str
@@ -78,6 +89,7 @@ class JoinInfo:
     parent_key: str = ""
     part: str = ""
     scope: Hashable | None = None
+    outer: bool = True
 
 
 class JoinContext:
@@ -199,6 +211,13 @@ class JoinContext:
         alias = target_table.alias(self._unique_alias(f"{alias_stem}_{part}"))
 
         meta = target_model._meta  # type: ignore[attr-defined]
+        parent = self.joins.get(parent_key) if parent_key else None
+        # Inner only for a required forward FK/O2O behind inner hops.
+        outer = True
+        if relation.kind in ("fk", "o2o"):
+            outer = bool(getattr(relation.fk_field, "null", True)) or (
+                parent is not None and parent.outer
+            )
         if relation.kind in ("fk", "o2o"):
             # src.fk_column -> alias.pk
             src_col = current_table.c[relation.fk_column]
@@ -262,6 +281,7 @@ class JoinContext:
             parent_key=parent_key,
             part=part,
             scope=scope,
+            outer=outer,
         )
         self.joins[key] = info
         return info
@@ -299,14 +319,15 @@ class JoinContext:
         return column
 
     def apply(self, base_table: Any) -> Any:
-        """Build the FROM clause: ``base_table`` outer-joined to all aliases.
+        """Build the FROM clause: ``base_table`` joined to all aliases.
 
         Parents are guaranteed to be registered before children (insertion
         order of ``ensure_join``), so a simple left-to-right chain works.
+        Each hop is inner or outer per :attr:`JoinInfo.outer`.
         """
         join_target = base_table
         for info in self.joins.values():
-            join_target = outerjoin(join_target, info.alias, info.onclause)
+            join_target = join(join_target, info.alias, info.onclause, isouter=info.outer)
         return join_target
 
 

@@ -868,14 +868,14 @@ class TestFrontEnds:
         monkeypatch.setattr(cli, "_register_models", lambda root=None: None)
         write_migration(
             mig,
-            [_create("ag_articles", _id(), sa.Column("body", sa.Text(), nullable=False))],
+            [_create("ag_articles", _id(), sa.Column("body", sa.Text()))],
             initial=True,
         )
-        _model("ag_articles", _id(), sa.Column("content", sa.Text(), nullable=False))
+        _model("ag_articles", _id(), sa.Column("content", sa.Text()))
 
         res = await agents.make_migrations(project_id=root)
         assert res.success, res.message
-        assert {"model": "AgArticles", "table": "ag_articles", "old": "body", "new": "content"} in (
+        assert {"model": "T", "table": "ag_articles", "old": "body", "new": "content"} in (
             res.data["possible_renames"]
         )
         assert "accept_renames=True" in res.message
@@ -883,7 +883,7 @@ class TestFrontEnds:
 
         res = await agents.make_migrations(project_id=root, accept_renames=True)
         assert res.success, res.message
-        assert "Rename field body to content on AgArticles" in res.data["operations"]
+        assert "Rename field body to content on T" in res.data["operations"]
         assert res.data["possible_renames"] == []
 
 

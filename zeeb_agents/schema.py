@@ -54,8 +54,8 @@ _DEFAULT_SCHEMA_TYPE: dict[str, Any] = {"type": "string"}
 # as a real registration — a phantom prefix the served contract can never contain,
 # which fails the verification chain's `openapi` check forever. These patterns are
 # the fallback for a file that does not parse.
-_VIEWSET_RE = re.compile(r'^[ \t]*router\.register\(\s*["\']([^"\']+)["\']\s*,\s*(\w+)', re.MULTILINE)
-_ROUTE_RE = re.compile(r'^[ \t]*@router\.(get|post|put|patch|delete)\(\s*["\']([^"\']+)["\']', re.MULTILINE)
+_VIEWSET_RE = re.compile(r'^[ \t]*router\.register\(\s*["\']([^"\']+)["\']\s*,\s*(\w+)', re.MULTILINE)  # noqa: E501
+_ROUTE_RE = re.compile(r'^[ \t]*@router\.(get|post|put|patch|delete)\(\s*["\']([^"\']+)["\']', re.MULTILINE)  # noqa: E501
 _ROUTE_METHODS = frozenset({"get", "post", "put", "patch", "delete"})
 # Field lines are single-line in generated code — capture params to EOL so
 # nested parens/brackets (choices, validators) don't truncate the match.
@@ -445,5 +445,9 @@ async def export_openapi(
     return AgentResult(
         success=True,
         message=f"OpenAPI spec saved to {rel} ({paths_count} path(s)).",
-        data={"path": rel, "paths_count": paths_count, "title": spec.get("info", {}).get("title", "")},
+        data={
+            "path": rel,
+            "paths_count": paths_count,
+            "title": spec.get("info", {}).get("title", ""),
+        },
     )

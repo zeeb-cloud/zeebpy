@@ -103,7 +103,9 @@ async def configure_cors(
             "CORS_ALLOW_ORIGINS": _render_list(origins),
             "CORS_ALLOW_METHODS": _render_list(methods if methods is not None else ["*"]),
             "CORS_ALLOW_CREDENTIALS": render_py_literal(bool(allow_credentials)),
-            "CORS_ALLOW_HEADERS": _render_list(allow_headers if allow_headers is not None else ["*"]),
+            "CORS_ALLOW_HEADERS": _render_list(
+                allow_headers if allow_headers is not None else ["*"]
+            ),
         }
         if expose_headers is not None:
             updates["CORS_EXPOSE_HEADERS"] = _render_list(expose_headers)

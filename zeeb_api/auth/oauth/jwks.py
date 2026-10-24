@@ -7,7 +7,9 @@ key sets are fetched through the async :class:`~zeeb_api.auth.oauth.client.OAuth
 
 from __future__ import annotations
 
+import asyncio
 import time
+from collections import OrderedDict
 from collections.abc import Callable
 from typing import Any
 
@@ -24,8 +26,22 @@ class JWKSCache:
     """
     TTL cache for a provider's JSON Web Key Set.
 
-    Unknown ``kid`` values trigger exactly one forced refetch (the standard
-    behaviour for key rollover) before failing.
+    An unknown ``kid`` triggers one forced refetch (the standard behaviour for
+    key rollover) before failing, but forced refetches are rate-limited: the
+    ``kid`` is read from an *unverified* token header, so without a limit any
+    anonymous client could make the server fetch the JWKS once per request.
+
+    - At most one forced refetch per ``refetch_cooldown_seconds`` (default
+      60). An unknown ``kid`` arriving inside the cooldown fails without a
+      fetch; the first one after it refetches, so real key rotation is still
+      picked up.
+    - A ``kid`` that a fetch confirmed absent is remembered for
+      ``unknown_kid_ttl_seconds`` (default 300) in a bounded negative cache
+      (``max_unknown_kids`` entries, oldest evicted first) and fails without
+      a fetch until it expires.
+    - Concurrent fetches are coalesced into one (an ``asyncio.Lock``).
+
+    ``clock`` is a test seam (defaults to :func:`time.monotonic`).
     """
 
     def __init__(
@@ -33,12 +49,24 @@ class JWKSCache:
         client: OAuth2Client,
         jwks_uri: str,
         ttl_seconds: int = 3600,
+        *,
+        refetch_cooldown_seconds: float = 60.0,
+        unknown_kid_ttl_seconds: float = 300.0,
+        max_unknown_kids: int = 1024,
+        clock: Callable[[], float] | None = None,
     ) -> None:
         self.client = client
         self.jwks_uri = jwks_uri
         self.ttl_seconds = ttl_seconds
+        self.refetch_cooldown_seconds = refetch_cooldown_seconds
+        self.unknown_kid_ttl_seconds = unknown_kid_ttl_seconds
+        self.max_unknown_kids = max_unknown_kids
+        self._clock = clock or time.monotonic
         self._key_set: jwt.PyJWKSet | None = None
         self._fetched_at: float = 0.0
+        self._last_forced_at: float | None = None
+        self._unknown_kids: OrderedDict[str, float] = OrderedDict()
+        self._lock = asyncio.Lock()
 
     async def _refetch(self) -> None:
         data = await self.client.fetch_jwks(self.jwks_uri)
@@ -46,7 +74,7 @@ class JWKSCache:
             self._key_set = jwt.PyJWKSet.from_dict(data)
         except Exception as e:
             raise OAuthValidationError(f"Invalid JWKS from {self.jwks_uri}: {e}") from e
-        self._fetched_at = time.monotonic()
+        self._fetched_at = self._clock()
 
     def _find_key(self, kid: str) -> jwt.PyJWK | None:
         if self._key_set is None:
@@ -56,22 +84,64 @@ class JWKSCache:
                 return key
         return None
 
+    def _is_stale(self) -> bool:
+        return self._key_set is None or (
+            self._clock() - self._fetched_at
+        ) > self.ttl_seconds
+
+    def _in_cooldown(self) -> bool:
+        return self._last_forced_at is not None and (
+            self._clock() - self._last_forced_at
+        ) < self.refetch_cooldown_seconds
+
+    def _known_unknown(self, kid: str) -> bool:
+        seen_at = self._unknown_kids.get(kid)
+        if seen_at is None:
+            return False
+        if (self._clock() - seen_at) < self.unknown_kid_ttl_seconds:
+            return True
+        del self._unknown_kids[kid]
+        return False
+
+    def _remember_unknown(self, kid: str) -> None:
+        self._unknown_kids.pop(kid, None)
+        self._unknown_kids[kid] = self._clock()
+        while len(self._unknown_kids) > self.max_unknown_kids:
+            self._unknown_kids.popitem(last=False)
+
+    @staticmethod
+    def _not_found(kid: str) -> OAuthValidationError:
+        return OAuthValidationError(f"Signing key with kid={kid!r} not found in JWKS")
+
     async def get_signing_key(self, kid: str) -> jwt.PyJWK:
         """Return the signing key for ``kid``, refetching if stale or unknown."""
-        expired = (time.monotonic() - self._fetched_at) > self.ttl_seconds
-        if self._key_set is None or expired:
-            await self._refetch()
+        if self._is_stale():
+            async with self._lock:
+                if self._is_stale():  # another request may have refreshed it
+                    await self._refetch()
 
         key = self._find_key(kid)
         if key is not None:
             return key
 
-        # Unknown kid: force exactly one refetch (key rollover), then fail.
-        await self._refetch()
-        key = self._find_key(kid)
-        if key is None:
-            raise OAuthValidationError(f"Signing key with kid={kid!r} not found in JWKS")
-        return key
+        # Unknown kid: at most one forced refetch (key rollover) per cooldown.
+        if self._known_unknown(kid) or self._in_cooldown():
+            raise self._not_found(kid)
+        async with self._lock:
+            key = self._find_key(kid)  # a coalesced fetch may have brought it
+            if key is not None:
+                return key
+            if self._known_unknown(kid) or self._in_cooldown():
+                raise self._not_found(kid)
+            # Start the cooldown before fetching, so a failing fetch is
+            # rate-limited too.
+            self._last_forced_at = self._clock()
+            await self._refetch()
+            key = self._find_key(kid)
+            if key is None:
+                self._remember_unknown(kid)
+                raise self._not_found(kid)
+            return key
 
 
 async def validate_id_token(

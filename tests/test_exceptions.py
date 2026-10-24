@@ -5,9 +5,8 @@ import warnings
 import pytest
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
-from starlette.exceptions import HTTPException as StarletteHTTPException
-
 from pydantic import BaseModel
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from zeeb_api.exception_handlers import (
     install_error_response_schema,

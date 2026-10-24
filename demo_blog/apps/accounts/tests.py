@@ -1,6 +1,5 @@
 """accounts tests."""
 
-import pytest
 
 from .models import User
 

@@ -104,7 +104,21 @@ class ManyRelatedManager(Manager[Any]):
         return obj
 
     def _coerce_pks(self, objs: tuple[Any, ...] | list[Any]) -> list[Any]:
-        """Coerce to unique pk values, rejecting unsaved instances."""
+        """Coerce to unique pk values of the related model's key type.
+
+        Raw values are converted to the type of the join-table column the
+        way a filter value is (``"5"`` -> ``5`` for an integer key, a UUID
+        string -> ``uuid.UUID``), so ``add(str(tag.pk))`` works and cannot
+        slip past the existing-pair check as a duplicate. A value that does
+        not convert raises :class:`~zeeb_orm.exceptions.ValidationError`;
+        an unsaved instance raises ``ValueError``.
+        """
+        from zeeb_orm.query.queryset import _coerce_typed_value
+
+        assert self._field is not None
+        through = self._field.get_through_table()
+        _my_col, other_col = self._columns()
+        column = through.c[other_col]
         pks: list[Any] = []
         for obj in objs:
             pk = self._coerce_pk(obj)
@@ -113,6 +127,7 @@ class ManyRelatedManager(Manager[Any]):
                     "Cannot use an unsaved object in a many-to-many relation: "
                     f"{obj!r} has no primary key."
                 )
+            pk = _coerce_typed_value(column, "exact", pk, self._field.name)
             if pk not in pks:
                 pks.append(pk)
         return pks

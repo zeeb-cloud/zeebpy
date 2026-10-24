@@ -6,7 +6,8 @@ Moved from zeeb_api.auth.middleware for better organization.
 
 from __future__ import annotations
 
-from typing import Any, Callable, Awaitable
+from collections.abc import Awaitable, Callable
+from typing import Any
 
 from fastapi import Depends, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -14,13 +15,12 @@ from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoin
 from starlette.responses import Response
 
 from zeeb_api.auth.jwt import (
-    TokenPayload,
-    decode_token,
     TokenError,
     TokenExpiredError,
+    TokenPayload,
+    decode_token,
 )
 from zeeb_api.exceptions import AuthenticationException, ErrorCode, PermissionException
-
 
 # Type for user loader function
 UserLoaderFunc = Callable[[TokenPayload], Awaitable[Any]]
@@ -29,30 +29,30 @@ UserLoaderFunc = Callable[[TokenPayload], Awaitable[Any]]
 class AuthenticatedUser:
     """
     User object attached to request.state.user after authentication.
-    
+
     This is a fallback when no user_loader is configured.
     When using database-backed auth, the actual User model instance is used instead.
     """
-    
+
     def __init__(self, token_payload: TokenPayload):
         self.id = token_payload.sub
         self.token_payload = token_payload
         self.claims = token_payload.claims
         self.is_authenticated = True
-    
+
     def __repr__(self) -> str:
         return f"<AuthenticatedUser id={self.id}>"
-    
+
     @property
     def is_staff(self) -> bool:
         """Check if user has staff role (from claims)."""
         return self.claims.get("is_staff", False)
-    
+
     @property
     def is_admin(self) -> bool:
         """Check if user has admin role (from claims)."""
         return self.claims.get("is_admin", False)
-    
+
     @property
     def is_superuser(self) -> bool:
         """Check if user is superuser (from claims)."""
@@ -77,9 +77,10 @@ async def default_user_loader(payload: TokenPayload) -> Any:
     """
     import logging
     from uuid import UUID
+
     from zeeb_api.auth.backends import get_user_model
 
-    User = get_user_model()
+    User = get_user_model()  # noqa: N806
 
     # Convert string UUID to UUID object for proper comparison
     user_id = payload.sub
@@ -114,20 +115,20 @@ async def default_user_loader(payload: TokenPayload) -> Any:
 class JWTAuthMiddleware(BaseHTTPMiddleware):
     """
     Middleware that extracts and validates JWT Bearer tokens.
-    
+
     Sets request.state.user to the User model instance if token is valid.
     Does NOT raise errors for missing/invalid tokens - use dependencies for that.
-    
+
     Configuration via settings.py:
         MIDDLEWARE = [
             "zeeb_api.middleware.JWTAuthMiddleware",
         ]
         AUTH_LOAD_USER_FROM_DB = True  # Load user from database
-    
+
     Direct usage:
         app.add_middleware(JWTAuthMiddleware, load_user_from_db=True)
     """
-    
+
     def __init__(
         self,
         app: Any,
@@ -332,10 +333,10 @@ async def get_current_user_optional(
 ) -> AuthenticatedUser | None:
     """
     FastAPI dependency that returns the current user or None.
-    
+
     Does not raise an error if not authenticated.
     Use this for endpoints that work with or without auth.
-    
+
     Usage:
         @app.get("/items/")
         async def list_items(user: AuthenticatedUser | None = Depends(get_current_user_optional)):
@@ -354,9 +355,9 @@ async def get_current_user(
 ) -> AuthenticatedUser:
     """
     FastAPI dependency that requires authentication.
-    
+
     Raises AuthenticationException if not authenticated.
-    
+
     Usage:
         @app.get("/me")
         async def get_me(user: AuthenticatedUser = Depends(get_current_user)):
@@ -381,6 +382,21 @@ async def get_current_user(
     )
 
 
+def _roles_from_token_claims(user: Any) -> bool:
+    """Whether *user*'s token ``roles`` claim may count towards its roles.
+
+    Never for a database-backed user (an ORM model instance, or anything
+    ``default_user_loader`` attached a token payload to) — its roles are
+    whatever the database says now — and never for a user that declares
+    ``trusts_token_roles = False`` (an untrusted external IdP token).
+    """
+    from zeeb_orm.models.base import Model
+
+    if isinstance(user, Model) or hasattr(user, "_token_payload"):
+        return False
+    return getattr(user, "trusts_token_roles", True) is not False
+
+
 def get_user_roles(user: Any) -> set[str]:
     """The roles ``require_auth(roles=...)`` checks a user against.
 
@@ -388,11 +404,19 @@ def get_user_roles(user: Any) -> set[str]:
 
     - ``user.get_roles()`` when the user model defines it (override this on a
       custom user model to source roles from anywhere, e.g. group membership);
-    - a ``roles`` attribute on the user, or a ``roles`` claim in its token
-      (``claims["roles"]``, which is also where Azure AD puts app roles);
+    - a ``roles`` attribute on the user;
+    - for a **token-only** user (``AuthenticatedUser``, built when
+      ``AUTH_LOAD_USER_FROM_DB`` is off), the ``roles`` claim of its token;
     - the account flags: ``"staff"`` for ``is_staff``, ``"superuser"`` for
       ``is_superuser``, and ``"admin"`` for anyone ``IsAdminUser`` admits
       (``is_staff``, ``is_admin`` or ``is_superuser``).
+
+    A user loaded from the database gets its roles from the database alone:
+    the ``roles`` claim baked into its token at login is ignored, so demoting
+    an account takes effect on its next request, not when the token expires.
+    An ``ExternalAuthenticatedUser`` (an IdP token with no linked account)
+    exposes the token's roles through its ``roles`` attribute only when its
+    provider trusts them (``trust_token_roles``; off by default).
 
     ``AbstractUser.get_roles()`` returns exactly the flag-derived set, and
     ``AbstractUser.get_claims()`` emits it as the ``roles`` claim, so a
@@ -406,10 +430,7 @@ def get_user_roles(user: Any) -> set[str]:
     declared = getattr(user, "roles", None)
     if isinstance(declared, (list, tuple, set, frozenset)):
         roles.update(str(r) for r in declared)
-    claims = getattr(user, "claims", None)
-    if not isinstance(claims, dict):
-        payload = getattr(user, "_token_payload", None)
-        claims = getattr(payload, "claims", None)
+    claims = getattr(user, "claims", None) if _roles_from_token_claims(user) else None
     if isinstance(claims, dict):
         claimed = claims.get("roles")
         if isinstance(claimed, str):
@@ -434,14 +455,14 @@ def require_auth(
 ) -> Callable:
     """
     Dependency factory for role-based authentication.
-    
+
     Args:
         roles: Required roles, as :func:`get_user_roles` reports them.
         any_role: If True, user needs any one of the roles. If False, needs all.
 
     An unauthenticated request is refused with 401; an authenticated user
     lacking a role with 403 ``PERM_INSUFFICIENT_ROLE``.
-    
+
     Usage:
         @app.get("/admin/")
         async def admin_only(user: AuthenticatedUser = Depends(require_auth(roles=["admin"]))):
@@ -452,7 +473,7 @@ def require_auth(
     ) -> AuthenticatedUser:
         if roles:
             user_roles = get_user_roles(user)
-            
+
             if any_role:
                 # User needs at least one of the roles
                 if not any(role in user_roles for role in roles):
@@ -468,7 +489,7 @@ def require_auth(
                         code=ErrorCode.PERM_INSUFFICIENT_ROLE,
                         message=f"Missing required roles: {', '.join(missing)}",
                     )
-        
+
         return user
-    
+
     return dependency

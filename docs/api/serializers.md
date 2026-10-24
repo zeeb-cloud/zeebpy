@@ -580,6 +580,15 @@ model:
 
 Any other key is ignored with a `UserWarning` naming it.
 
+`read_only_fields` and `extra_kwargs` accept a foreign key under either
+spelling: with `fields = [..., "author"]`, `read_only_fields = ["author_id"]`
+(the request key) and `read_only_fields = ["author"]` both take `author_id`
+out of the request schema. A name that is neither a serializer field (in any
+spelling) nor a field or relation of the model raises `ImproperlyConfigured`
+when the class is defined — a typo used to leave the field silently
+writable. A real model field that `Meta.fields` leaves out is accepted (it is
+neither read nor written).
+
 ### Declared fields on a ModelSerializer
 
 A field declared on a `ModelSerializer` (`CharField(write_only=True)`,
@@ -624,10 +633,38 @@ and may override one by redeclaring it.
 from zeeb_api.serializers import PrimaryKeyRelatedField, SlugRelatedField
 
 
-class ArticleSerializer(Serializer):
-    author = PrimaryKeyRelatedField(queryset=User.objects.all())
+class ArticleSerializer(ModelSerializer):
+    author = PrimaryKeyRelatedField(queryset=User.objects.filter(is_active=True))
+    editor = PrimaryKeyRelatedField(read_only=True)
     tags = SlugRelatedField(slug_field="name", queryset=Tag.objects.all(), many=True)
+
+    class Meta:
+        model = Article
+        fields = ["id", "title", "author", "editor", "tags"]
 ```
+
+On a `ModelSerializer` a declared related field must name a `ForeignKey` /
+`OneToOneField` of the model — or, with `many=True`, a `ManyToManyField`
+(auto-through only, unless `read_only=True`); anything else raises
+`ImproperlyConfigured` at class definition. It is returned under its own name
+(the pk, or the `slug_field` value) and, unless read-only, accepted as
+`<name>_id` or `<name>` (a list for `many=True`):
+
+| Option | Effect |
+|---|---|
+| `read_only=True` | Not in the request schema — `<name>_id` cannot be written either |
+| `queryset=` | On write the pk (or slug) must match a row **of this queryset**, else a 400 `VALIDATION_ERROR` under `<name>_id`; defaults to every row of the related model. A slug must match exactly one row and is saved as that row's pk |
+| `allow_null=True` | Accept `null` (otherwise `null` is a 400) |
+| `required=False` | The key may be omitted on create |
+
+The queryset check queries the database, so it runs in `await
+serializer.ais_valid()` (what the viewsets call); the synchronous
+`is_valid()` raises `TypeError` for input that carries such a field.
+`NestedSerializer` is read-only: declaring one with `read_only=False` raises
+`ImproperlyConfigured` rather than silently ignoring writes. The
+`zeeb_api.serializers.fields` variants of `SerializerMethodField` and
+`PrimaryKeyRelatedField` behave exactly like the ones above on a
+`ModelSerializer`.
 
 ### Response Schema Helpers
 

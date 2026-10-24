@@ -21,6 +21,7 @@ from zeeb_orm.scaffold.harness import (
     SMOKE_TEST_PY,
     render_conftest,
 )
+from zeeb_orm.scaffold.naming import project_name_problem
 from zeeb_orm.scaffold.project import (
     APPS_INIT_PY,
     ASGI_PY,
@@ -57,9 +58,10 @@ __all__ = [
 
 def run_startproject(name: str, directory: str, json_output: bool = False) -> int:
     """Create a new Zeeb project."""
-    if not name.isidentifier():
+    problem = project_name_problem(name)
+    if problem:
         return fail(
-            f"'{name}' is not a valid Python identifier, so it cannot be a package name.",
+            problem,
             code="invalid_identifier",
             next_command="python -m zeeb_orm.cli.main startproject <valid_name>",
             json_output=json_output,

@@ -2,14 +2,15 @@
 
 from __future__ import annotations
 
-from typing import Any, Callable, Sequence, TYPE_CHECKING
-
+from collections.abc import Callable, Sequence
 from functools import wraps
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from pydantic import BaseModel
-    from zeeb_api.serializers import Serializer
+
     from zeeb_api.permissions.base import BasePermission
+    from zeeb_api.serializers import Serializer
 
 
 def action(
@@ -29,7 +30,7 @@ def action(
 ) -> Callable:
     """
     Mark a ViewSet method as a routable action.
-    
+
     Args:
         methods: HTTP methods to respond to (default: ["get"])
         detail: If True, action operates on a single object (requires pk)
@@ -55,25 +56,25 @@ def action(
                 error responses, e.g.
                 ``{409: error_response_doc(409, "Already published")}``; a
                 status mapped to ``None`` withdraws one the router documents.
-    
+
     Usage:
         class UserViewSet(ModelViewSet):
             queryset = User.objects.all()
             serializer_class = UserSerializer
-            
+
             @action(detail=True, methods=["post"])
             async def activate(self, request, pk=None):
                 user = await self.get_object()
                 user.is_active = True
                 await user.save()
                 return {"status": "activated"}
-            
+
             @action(detail=False, methods=["get"])
             async def recent(self, request):
                 users = await self.get_queryset().order_by("-created_at")[:10]
                 serializer = self.get_serializer(users, many=True)
                 return serializer.data
-            
+
             # With request/response schemas
             @action(
                 detail=False,
@@ -84,7 +85,7 @@ def action(
             async def send_email(self, request):
                 data = self._request_body  # Pre-validated
                 return {"queued": True, "job_id": "abc123"}
-            
+
             # With action-specific permissions
             @action(
                 detail=True,
@@ -101,7 +102,7 @@ def action(
             f"@action(permission_type={permission_type!r}): expected 'read', "
             "'change' or 'delete'"
         )
-    
+
     def decorator(func: Callable) -> Callable:
         func._action_config = {
             "methods": methods,
@@ -118,15 +119,15 @@ def action(
             "responses": responses,
             "kwargs": kwargs,
         }
-        
+
         @wraps(func)
         async def wrapper(*args: Any, **kw: Any) -> Any:
             return await func(*args, **kw)
-        
+
         # Preserve action config on wrapper
         wrapper._action_config = func._action_config
         return wrapper
-    
+
     return decorator
 
 

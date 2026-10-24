@@ -208,6 +208,14 @@ Registering a second viewset at a prefix that is already taken (compared with
 slashes stripped) raises `ValueError` — FastAPI matches the first route, so the
 later registration would otherwise be silently shadowed.
 
+A prefix nested under another one is fine in either registration order:
+with `register("posts", PostViewSet)` and `register("posts/archive",
+ArchiveViewSet)`, `GET /posts/archive` is the archive's list, not
+`/posts/{id}` with `id="archive"`. The routers come back from `get_urls()` in
+registration order except that a nested prefix (`posts/archive`, or
+`users/me/posts` under `users/{user_id}`) is placed before the prefix it lies
+under — also for registrations merged with `include()`.
+
 `router.routes` (or `router.get_urls()`, which builds a fresh list each call)
 returns one `APIRouter` per registration, prefixed `/{prefix}` and tagged with
 the basename. Only the actions the viewset implements get a route. They are
@@ -838,8 +846,14 @@ database; `Q(views='abc')` is a 400 — see
 ### Which fields a client may use
 
 Filtering and ordering are restricted to the fields the serializer actually
-exposes in its **response** schema. A `write_only` field, or any column the API
-does not surface, cannot be filtered on.
+**returns**, by the names it returns them under. A `write_only` field, or any
+column the API does not surface, cannot be filtered on. Neither can a
+`SerializerMethodField` — not even one named like a column, which would
+otherwise let `Q(email__startswith='a')` read the address it masks. A declared
+field with `source=` is filtered by its output name and the filter is applied
+to its source (`Q(nick='x')` filters `nickname`); the source column is not
+reachable under its own name. See
+[`serializer_field_paths()`](filtering.md#serializer_field_paths-and-rename_q_paths).
 
 Override that with `query_fields` on the viewset:
 
@@ -882,7 +896,9 @@ endpoint that wants the same rules — see
 
 `limit` defaults to `DEFAULT_LIMIT` and may not exceed `MAX_LIMIT` (a larger
 value is a 422); both are settings, so raising `MAX_LIMIT` above 100 lets
-clients ask for bigger pages.
+clients ask for bigger pages. `offset` is at most `2**63 - 1` (a larger value
+is a 422 — it used to overflow the database driver as a 500); an offset past
+the last row returns an empty `results` without querying the rows.
 
 The request and response bodies are modelled by `QueryRequest` and
 `QueryResponse` (`count`, `limit`, `offset`, `results`);

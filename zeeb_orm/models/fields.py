@@ -5,7 +5,8 @@ from __future__ import annotations
 import datetime
 import decimal
 import uuid
-from typing import TYPE_CHECKING, Any, Callable, Generic, TypeVar, overload
+from collections.abc import Callable
+from typing import TYPE_CHECKING, Any, Generic, TypeVar, overload
 
 from sqlalchemy import (
     JSON,
@@ -14,7 +15,6 @@ from sqlalchemy import (
     Date,
     DateTime,
     Float,
-    ForeignKey as SAForeignKey,
     Integer,
     Interval,
     LargeBinary,
@@ -25,13 +25,12 @@ from sqlalchemy import (
     Time,
     Uuid,
 )
-from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy.orm import Mapped, mapped_column
 
 from zeeb_orm import validators as orm_validators
 from zeeb_orm.models import deletion
 
 if TYPE_CHECKING:
-    from sqlalchemy.orm import RelationshipProperty
 
     from zeeb_orm.models.base import Model
 
@@ -40,10 +39,18 @@ ModelT = TypeVar("ModelT", bound="Model")
 
 
 def _mark_loaded(obj: object, name: str) -> None:
-    """Assigning a deferred field makes it part of the next ``save()``."""
+    """Assigning a deferred field makes it part of the next ``save()``.
+
+    It also settles the field's value: a callable default left pending by
+    the constructor no longer applies (``obj.data = None`` stores NULL).
+    """
     state = obj.__dict__.get("_state")
-    if state is not None and state.deferred:
-        state.deferred.discard(name)
+    if state is not None:
+        if state.deferred:
+            state.deferred.discard(name)
+        pending = getattr(state, "pending_defaults", None)
+        if pending:
+            pending.discard(name)
 
 
 def _set_fk_id(obj: object, field_name: str, value: Any) -> None:
@@ -249,7 +256,7 @@ class UUIDField(Field[uuid.UUID]):
 
 class UUIDAutoField(Field[uuid.UUID]):
     """Auto-generating UUID primary key field.
-    
+
     This is the default primary key type for models.
     Use AutoField or BigAutoField if you need integer IDs.
     """
@@ -397,7 +404,9 @@ class DateField(Field[datetime.date]):
     _column_type = Date
     _python_type = datetime.date
 
-    def __init__(self, *, auto_now: bool = False, auto_now_add: bool = False, **kwargs: Any) -> None:
+    def __init__(
+        self, *, auto_now: bool = False, auto_now_add: bool = False, **kwargs: Any
+    ) -> None:
         self.auto_now = auto_now
         self.auto_now_add = auto_now_add
         super().__init__(**kwargs)

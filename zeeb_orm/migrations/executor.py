@@ -131,15 +131,32 @@ def check_layout(migrations_dir: Path) -> None:
 
 
 def load_migration(path: Path) -> Migration:
-    """Import a migration file and return its ``Migration`` instance."""
+    """Import a migration file and return its ``Migration`` instance.
+
+    Raises:
+        MigrationLoadError: the file does not load (a syntax error, an
+            exception at import) or defines no ``Migration`` class.
+    """
     from zeeb_orm.migrations.serializer import MIGRATION_MODULE_PREFIX
+    from zeeb_orm.migrations.state import MigrationLoadError
 
     spec = importlib.util.spec_from_file_location(f"{MIGRATION_MODULE_PREFIX}{path.stem}", path)
     if spec is None or spec.loader is None:
-        raise ImportError(f"Cannot load migration: {path}")
+        raise MigrationLoadError(f"Cannot load migration: {path}", path=path)
 
     module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    try:
+        spec.loader.exec_module(module)
+    except SyntaxError as exc:
+        raise MigrationLoadError(
+            f"Migration {path.name} is not valid Python ({exc.msg}, line {exc.lineno}).",
+            path=path,
+        ) from exc
+    except Exception as exc:
+        raise MigrationLoadError(
+            f"Migration {path.name} failed to load ({type(exc).__name__}: {exc}).",
+            path=path,
+        ) from exc
 
     # Find the Migration subclass in the module
     for name in dir(module):
@@ -151,7 +168,7 @@ def load_migration(path: Path) -> Migration:
         ):
             return obj()
 
-    raise ImportError(f"No Migration class found in {path}")
+    raise MigrationLoadError(f"No Migration class found in {path}", path=path)
 
 
 def _load_all(migrations_dir: Path) -> list[tuple[str, Path, Migration]]:

@@ -17,7 +17,7 @@ if TYPE_CHECKING:
 def import_string(dotted_path: str):
     """
     Import a class/function from a dotted path string.
-    
+
     Example: "zeeb_api.middleware.JWTAuthMiddleware" -> JWTAuthMiddleware class
     """
     try:
@@ -36,14 +36,14 @@ def import_string(dotted_path: str):
 def install_middleware(app: "FastAPI", settings: "Settings" = None):
     """
     Install middleware from settings.MIDDLEWARE.
-    
+
     Middleware is installed in reverse order so that the first middleware
     in the list is the outermost (processes requests first, responses last).
-    
+
     Args:
         app: FastAPI application
         settings: Settings object (uses global settings if not provided)
-    
+
     Example settings.py:
         MIDDLEWARE = [
             "zeeb_api.middleware.CORSMiddleware",

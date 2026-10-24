@@ -15,44 +15,44 @@ Run: python example_api.py
 Then visit: http://127.0.0.1:9000/docs
 """
 
-import asyncio
-import uvicorn
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, Request, Depends
 
-# Zeeb ORM imports
-from zeeb_orm import (
-    Model, fields, Q,
-    configure, setup_database, close_all_connections,
-)
-from zeeb_orm.models.base import metadata
+import uvicorn
+from fastapi import Depends, FastAPI, Request
 
 # Zeeb API imports
 from zeeb_api import (
-    ModelSerializer, SerializerMethodField,
-    ModelViewSet, ReadOnlyModelViewSet, action,
     DefaultRouter,
-    permissions,
-    # Exception handling
-    install_exception_handlers,
-    get_error_responses,
-    ZeebException,
-    ValidationException,
-    ResourceNotFoundException,
     ErrorCode,
-    field_error,
+    JWTAuthMiddleware,
+    ModelSerializer,
+    ModelViewSet,
+    ResourceNotFoundException,
+    SerializerMethodField,
+    # User model
+    User,
+    ValidationException,
+    ZeebException,
+    action,
     # Authentication
     configure_jwt,
     create_auth_router,
-    JWTAuthMiddleware,
+    create_user,
+    field_error,
     get_current_user,
     get_current_user_optional,
-    # User model
-    User,
-    create_user,
+    install_exception_handlers,
 )
-from zeeb_api.serializers import CharField, IntegerField, EmailField
 
+# Zeeb ORM imports
+from zeeb_orm import (
+    Model,
+    close_all_connections,
+    configure,
+    fields,
+    setup_database,
+)
+from zeeb_orm.models.base import metadata
 
 # =============================================================================
 # MODELS
@@ -63,10 +63,10 @@ class Author(Model):
     name = fields.CharField(max_length=100)
     email = fields.EmailField(unique=True)
     bio = fields.TextField(null=True)
-    
+
     class Meta:
         table_name = "api_authors"
-    
+
     def __str__(self) -> str:
         return self.name
 
@@ -79,10 +79,10 @@ class Book(Model):
     genre = fields.CharField(max_length=50)
     price = fields.DecimalField(max_digits=6, decimal_places=2)
     in_stock = fields.BooleanField(default=True)
-    
+
     class Meta:
         table_name = "api_books"
-    
+
     def __str__(self) -> str:
         return self.title
 
@@ -94,12 +94,12 @@ class Book(Model):
 class AuthorSerializer(ModelSerializer):
     """Serializer for Author model."""
     book_count = SerializerMethodField(return_type=int)
-    
+
     class Meta:
         model = Author
         fields = ["id", "name", "email", "bio", "book_count"]
         read_only_fields = ["id"]
-    
+
     def get_book_count(self, obj):
         # Note: In real app, would use annotation/aggregation
         return 0  # Simplified
@@ -108,13 +108,13 @@ class AuthorSerializer(ModelSerializer):
 class BookSerializer(ModelSerializer):
     """Serializer for Book model."""
     author_name = SerializerMethodField()
-    
+
     class Meta:
         model = Book
-        fields = ["id", "title", "author_id", "author_name", "published_year", 
+        fields = ["id", "title", "author_id", "author_name", "published_year",
                   "genre", "price", "in_stock"]
         read_only_fields = ["id"]
-    
+
     def get_author_name(self, obj):
         # Would need async in real app
         return f"Author #{obj.author_id}"
@@ -122,7 +122,7 @@ class BookSerializer(ModelSerializer):
 
 class BookCreateSerializer(ModelSerializer):
     """Serializer for creating books."""
-    
+
     class Meta:
         model = Book
         fields = ["title", "author_id", "published_year", "genre", "price", "in_stock"]
@@ -135,7 +135,7 @@ class BookCreateSerializer(ModelSerializer):
 class AuthorViewSet(ModelViewSet):
     """
     ViewSet for Author CRUD operations.
-    
+
     Endpoints:
     - POST /authors/query/ - Query authors with Q filters
     - POST /authors/ - Create author
@@ -147,19 +147,19 @@ class AuthorViewSet(ModelViewSet):
     """
     queryset = Author.objects
     serializer_class = AuthorSerializer
-    
+
     @action(detail=True, methods=["get"])
     async def books(self, request: Request, id: int = None):
         """Get all books by this author."""
         author = await self.get_object()
         books = await Book.objects.filter(author_id=author.id)
-        
+
         # Serialize manually for simplicity
         return [
             {"id": b.id, "title": b.title, "published_year": b.published_year}
             for b in books
         ]
-    
+
     @action(detail=False, methods=["get"])
     async def popular(self, request: Request):
         """Get popular authors (example custom list action)."""
@@ -172,24 +172,24 @@ class AuthorViewSet(ModelViewSet):
 class BookViewSet(ModelViewSet):
     """
     ViewSet for Book CRUD operations.
-    
+
     Query with Q filters via POST /books/query/
     """
     queryset = Book.objects
     serializer_class = BookSerializer
-    
+
     def get_serializer_class(self):
         if self.action == "create":
             return BookCreateSerializer
         return BookSerializer
-    
+
     @action(detail=False, methods=["get"])
     async def in_stock(self, request: Request):
         """Get only in-stock books."""
         books = await self.get_queryset().filter(in_stock=True)
         serializer = self.get_serializer(instance=books, many=True)
         return serializer.data
-    
+
     @action(detail=True, methods=["post"])
     async def toggle_stock(self, request: Request, id: int = None):
         """Toggle book stock status."""
@@ -217,11 +217,11 @@ async def lifespan(app: FastAPI):
     """Application lifespan - setup and teardown."""
     # Startup
     print("Starting up...")
-    
+
     # Configure database
     configure(database={"url": "sqlite+aiosqlite:///example_api.db"})
     db = await setup_database("sqlite+aiosqlite:///example_api.db")
-    
+
     # Reset tables for demo (including User)
     Author._sa_table = None
     Book._sa_table = None
@@ -231,16 +231,16 @@ async def lifespan(app: FastAPI):
     Book._get_table()
     User._get_table()
     await db.create_all()
-    
+
     # Create sample data
     await create_sample_data()
-    
+
     # Create demo user
     await create_demo_user()
-    
+
     print("Ready!")
     yield
-    
+
     # Shutdown
     print("Shutting down...")
     await close_all_connections()
@@ -252,7 +252,7 @@ async def create_demo_user():
     existing = await User.objects.filter(email="demo@example.com").first()
     if existing:
         return
-    
+
     # Create demo user
     user = await create_user(
         email="demo@example.com",
@@ -270,7 +270,7 @@ async def create_sample_data():
     count = await Author.objects.count()
     if count > 0:
         return
-    
+
     # Create authors
     tolkien = await Author.objects.create(
         name="J.R.R. Tolkien",
@@ -287,7 +287,7 @@ async def create_sample_data():
         email="martin@example.com",
         bio="American novelist"
     )
-    
+
     # Create books
     await Book.objects.create(
         title="The Lord of the Rings",
@@ -318,7 +318,7 @@ async def create_sample_data():
         price=34.99,
         in_stock=False
     )
-    
+
     print("Sample data created!")
 
 
@@ -330,20 +330,20 @@ def create_app() -> FastAPI:
         version="1.0.0",
         lifespan=lifespan,
     )
-    
+
     # Configure JWT (use a proper secret in production!)
     configure_jwt(
         secret_key="your-super-secret-key-change-in-production",
         access_token_expire_minutes=15,
         refresh_token_expire_days=7,
     )
-    
+
     # Add JWT middleware - loads user from database
     app.add_middleware(JWTAuthMiddleware, load_user_from_db=True)
-    
+
     # Install standardized exception handlers
     install_exception_handlers(app)
-    
+
     # Create auth router with database-backed authentication
     # No need to provide authenticate function - uses database by default
     auth_router = create_auth_router(
@@ -351,19 +351,19 @@ def create_app() -> FastAPI:
         enable_registration=True,  # Enables POST /auth/register
     )
     app.include_router(auth_router)
-    
+
     # Include model routers
     for route in router.routes:
         app.include_router(route, prefix="/api")
-    
+
     # Protected endpoint demo - now receives full User model from DB
     @app.get("/api/protected/")
     async def protected_endpoint(user = Depends(get_current_user)):
         """
         Protected endpoint - requires valid JWT token.
-        
+
         The user object is the full User model from the database.
-        
+
         Use the access_token from /auth/login in the Authorization header:
         Authorization: Bearer <access_token>
         """
@@ -376,7 +376,7 @@ def create_app() -> FastAPI:
             "is_staff": user.is_staff,
             "is_superuser": user.is_superuser,
         }
-    
+
     # Optional auth endpoint demo
     @app.get("/api/maybe-protected/")
     async def maybe_protected(user = Depends(get_current_user_optional)):
@@ -387,13 +387,13 @@ def create_app() -> FastAPI:
             email = getattr(user, "email", None) or user.claims.get("email", "user")
             return {"message": f"Hello, {email}!"}
         return {"message": "Hello, anonymous user!"}
-    
+
     # Demo endpoint showing exception handling
     @app.get("/api/demo/error/{error_type}")
     async def demo_error(error_type: str):
         """
         Demo endpoint to show standardized error responses.
-        
+
         Try:
         - /api/demo/error/validation - Validation error
         - /api/demo/error/not_found - Not found error
@@ -405,7 +405,9 @@ def create_app() -> FastAPI:
                 message="Validation failed",
                 details=[
                     field_error("email", ErrorCode.FIELD_REQUIRED, "This field is required"),
-                    field_error("age", ErrorCode.FIELD_MIN_VALUE, "Must be at least 18", {"min": 18}),
+                    field_error(
+                        "age", ErrorCode.FIELD_MIN_VALUE, "Must be at least 18", {"min": 18}
+                    ),
                 ]
             )
         elif error_type == "not_found":
@@ -419,7 +421,7 @@ def create_app() -> FastAPI:
                 code=ErrorCode.RESOURCE_CONFLICT,
                 message="Email already registered",
                 details=[
-                    field_error("email", ErrorCode.FIELD_UNIQUE_CONSTRAINT, 
+                    field_error("email", ErrorCode.FIELD_UNIQUE_CONSTRAINT,
                                "This email is already in use")
                 ],
                 status_code=409
@@ -427,9 +429,9 @@ def create_app() -> FastAPI:
         elif error_type == "server":
             # This will be caught by generic handler
             raise RuntimeError("Simulated server error")
-        
+
         return {"message": f"No error for type: {error_type}"}
-    
+
     # Root endpoint
     @app.get("/")
     async def root():
@@ -465,7 +467,7 @@ def create_app() -> FastAPI:
                 "note": "Or register a new account at /auth/register"
             }
         }
-    
+
     return app
 
 
@@ -494,5 +496,5 @@ if __name__ == "__main__":
     print("  POST /api/books/query/       - Query books with Q filters")
     print("\nPress Ctrl+C to stop")
     print("=" * 60)
-    
+
     uvicorn.run(app, host="127.0.0.1", port=9000)

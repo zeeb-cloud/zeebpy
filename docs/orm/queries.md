@@ -280,9 +280,15 @@ await Post.objects.filter(author__name="Bob").delete()
 A path that is used by both `select_related()` and a filter shares one JOIN:
 
 ```python
-# Single LEFT OUTER JOIN, author objects hydrated on the results
+# One JOIN, author objects hydrated on the results
 posts = await Post.objects.select_related("author").filter(author__name="Alice")
 ```
+
+A forward ForeignKey/OneToOne hop over a **non-null** column is
+an `INNER JOIN` (every row has its one match, so no row is lost); a nullable
+FK, a reverse or a many-to-many hop is a `LEFT OUTER JOIN`, and so is every
+hop after one, so `select_related("editor__publisher")` with a nullable
+`editor` keeps the posts without an editor.
 
 Invalid paths raise `zeeb_orm.FieldError` with the available choices:
 
@@ -400,11 +406,28 @@ articles = await Article.objects.all()[:10]
 # Skip and limit (offset, limit)
 articles = await Article.objects.all()[20:30]  # Skip 20, get 10
 
-# Single item by index
+# Single item by index (a one-row queryset)
 article = await Article.objects.order_by("-views")[0]  # Most viewed
+
+# Slices compose: a slice of a slice stays inside the first
+await Article.objects.order_by("id")[5:10][2:4]  # rows 7 and 8
+await Article.objects.order_by("id")[5:3]        # [] (empty range)
+
+# A step is applied to the fetched rows
+await Article.objects.order_by("id")[:10:2]
 ```
 
-> **Note:** Negative indexing is not supported.
+- Negative indexes and bounds raise `ValueError("Negative indexing is not supported.")`.
+- A queryset sliced with a step can be evaluated (`await`, `async for`,
+  `count()`, `exists()`, `iterator()`) but not chained further (`TypeError`).
+- `update()` and `delete()` on a sliced queryset raise `TypeError`: an
+  UPDATE/DELETE has no LIMIT, so it would otherwise write every
+  matching row. Select the primary keys instead:
+  `Article.objects.filter(pk__in=[a.pk for a in await qs[:10]]).delete()`.
+- `first()` and `get()` stay within the slice (`qs[:1].get()` is that one
+  row); `last()` on a sliced queryset raises `TypeError` (the ordering cannot
+  be reversed without changing which rows the slice holds), and so do
+  `first()` on an unordered slice and `get(**lookups)` on any slice.
 
 ## Single Object Retrieval
 
@@ -876,7 +899,14 @@ await Article.objects.filter(pk=article_id).update(views=F("views") + 1)
 
 # ForeignKeys accept an instance, a primary key, or the <name>_id key
 await Article.objects.filter(author=None).update(author=user)
+
+# A filter on an aggregate annotation selects the rows through
+# pk IN (SELECT pk ... GROUP BY pk HAVING ...)
+await Author.objects.annotate(n=Count("articles")).filter(n__gte=10).update(prolific=True)
 ```
+
+A sliced queryset raises `TypeError` (see *Slicing*). `delete()` applies the
+same aggregate rule.
 
 ### delete()
 
@@ -1030,7 +1060,16 @@ Account.objects.select_for_update(skip_locked=True)
 
 # Lock only specific tables of the query ("self" = the queryset's model)
 Account.objects.select_related("owner").select_for_update(of=("self",))
+Account.objects.select_related("owner").select_for_update(of=("self", "owner"))
 ```
+
+`of=` names `"self"` or relations the query joins (`select_related()` or a
+`__` filter); the lock clause names the JOIN's alias
+(`FOR UPDATE OF accounts, _sr_owner_owner`). A relation the query does not
+join raises `FieldError`. `iterator()` takes the same locks.
+PostgreSQL refuses `FOR UPDATE` on the nullable side of an outer join, so
+without `of=` a `select_related()` of a nullable relation cannot be locked —
+name the tables to lock with `of=`.
 
 Requirements and limitations:
 
@@ -1074,6 +1113,15 @@ Values are bound parameters. Placeholders inside string literals, quoted
 identifiers and comments are not placeholders (`title != 'why?'` stays as
 written), and a mismatch between `?` placeholders and values raises
 `ValueError`.
+
+The SQL defines the rows. A raw queryset can be awaited, iterated, indexed
+and sliced (applied to the fetched rows), and supports `count()`, `exists()`
+(both evaluate it), `prefetch_related()` and `using()`. Every method that
+would build its own query — `filter()`, `exclude()`, `order_by()`,
+`values()`, `annotate()`, `aggregate()`, `get()`, `first()`, `last()`,
+`iterator()`, `in_bulk()`, `update()`, `delete()`, `select_for_update()`,
+the combinators, `create()` and the bulk methods — raises
+`NotSupportedError` instead of silently running against the whole table.
 
 ## Using Different Databases
 

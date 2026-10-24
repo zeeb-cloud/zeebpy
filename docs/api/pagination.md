@@ -59,7 +59,9 @@ GET /articles?page=3&page_size=50
 
 Extra keys in the envelope: `page`, `total_pages`, `page_size`. Out-of-range
 values are clamped rather than rejected — `?page=0` reads as page 1, and a
-`page_size` above `max_page_size` is capped.
+`page_size` above `max_page_size` is capped. A page past the last one is an
+empty `results` however far out it is (`?page=99999999999999999999` used to
+overflow the database driver as a 500); no row query is sent for it.
 
 ## LimitOffsetPagination
 
@@ -74,7 +76,8 @@ GET /articles?limit=50&offset=100
 | `limit_query_param` | `"limit"` | |
 | `offset_query_param` | `"offset"` | |
 
-Extra keys in the envelope: `limit`, `offset`.
+Extra keys in the envelope: `limit`, `offset`. An `?offset` past the last row
+is an empty `results` (however large — it never reaches the database).
 
 ### Settings vs. subclass
 

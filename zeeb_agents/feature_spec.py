@@ -1011,7 +1011,11 @@ def _validate_workflow(
         if permission is not None:
             if not isinstance(permission, str) or not permission:
                 problems.append(
-                    _problem(f"{tpath}.permission", "invalid_permission", "'permission' must be a class name")
+                    _problem(
+                        f"{tpath}.permission",
+                        "invalid_permission",
+                        "'permission' must be a class name",
+                    )
                 )
             elif "." in permission:
                 warnings.append(
@@ -1432,6 +1436,19 @@ def _reconcile_existing_entity(
     return extra_ops, drift, suggested
 
 
+def generated_tests_filename(app: str, feature: str) -> str:
+    """The generated test file of *feature* in *app*.
+
+    A feature named after its app keeps the app-level
+    ``tests/test_<app>_generated.py``; any other feature in that app gets
+    ``tests/test_<app>_feature_<feature>_generated.py``, so no two features
+    ever own the same test file.
+    """
+    if feature == app:
+        return f"tests/test_{app}_generated.py"
+    return f"tests/test_{app}_feature_{feature}_generated.py"
+
+
 def compile_feature_spec(
     spec: dict,
     existing_models: list[dict],
@@ -1712,7 +1729,13 @@ def compile_feature_spec(
         )
 
     if tests:
-        operations.append({"op": "generate_tests", "app": app, "entities": test_entities})
+        test_op: dict = {"op": "generate_tests", "app": app, "entities": test_entities}
+        if name != app:
+            # A feature sharing its app gets a test file of its own: the
+            # lifecycle tools archive and delete test files by ownership, and
+            # one app-wide file would make each feature own the others' tests.
+            test_op["filename"] = generated_tests_filename(app, name)
+        operations.append(test_op)
     operations.append({"op": "make_migrations", "name": name})
     operations.append({"op": "run_migrations"})
 
@@ -2161,7 +2184,9 @@ def compile_changes(
             _validate_workflow(pseudo, f"{path}.workflow", set(model_fields), problems, warnings)
             if workflow is None:
                 problems.append(
-                    _problem(path, "invalid_input", "add_workflow needs 'workflow': a workflow dict")
+                    _problem(
+                        path, "invalid_input", "add_workflow needs 'workflow': a workflow dict"
+                    )
                 )
             if len(problems) > before or workflow is None:
                 continue
@@ -2207,7 +2232,11 @@ def compile_changes(
             status_field = change.get("field", "status")
             if not _is_identifier(status_field):
                 problems.append(
-                    _problem(path, "invalid_identifier", f"'field' must be an identifier, got {status_field!r}")
+                    _problem(
+                        path,
+                        "invalid_identifier",
+                        f"'field' must be an identifier, got {status_field!r}",
+                    )
                 )
                 continue
             from_states = _transition_from_states(transition)
@@ -2223,7 +2252,9 @@ def compile_changes(
                 continue
             if transition.get("actor") and transition.get("permission"):
                 problems.append(
-                    _problem(path, "invalid_input", "'actor' and 'permission' are mutually exclusive")
+                    _problem(
+                        path, "invalid_input", "'actor' and 'permission' are mutually exclusive"
+                    )
                 )
                 continue
             actor = transition.get("actor")

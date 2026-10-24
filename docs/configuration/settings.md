@@ -111,6 +111,7 @@ Every variable read by the generated `settings.py`:
 | `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | unset | adds `google` to `OAUTH_PROVIDERS` |
 | `GITHUB_CLIENT_ID` / `GITHUB_CLIENT_SECRET` | unset | adds `github` to `OAUTH_PROVIDERS` |
 | `AZURE_CLIENT_ID` / `AZURE_CLIENT_SECRET` / `AZURE_TENANT_ID` | unset / `common` | adds `azure` to `OAUTH_PROVIDERS` |
+| `AZURE_ALLOWED_TENANTS` / `AZURE_ALLOW_ANY_TENANT` | unset / `false` | the azure provider's `allowed_tenants` (comma-separated tenant GUIDs) / `allow_any_tenant`. A multi-tenant tenant (`common`, `organizations`, `consumers`) refuses every token until one is set — see [OAuth](../api/oauth.md#multi-tenant-azure-ad) |
 | `OAUTH_AUTO_CREATE_USERS` / `OAUTH_REQUIRE_VERIFIED_EMAIL` | `true` | the matching `OAUTH_*` |
 | `OAUTH_LINK_BY_EMAIL` | `false` | `OAUTH_LINK_BY_EMAIL` (links only to a local account that verified the address, even when `true`) |
 | `OAUTH_STATE_TTL_SECONDS` | `600` | `OAUTH_STATE_TTL_SECONDS` |
@@ -572,6 +573,8 @@ OAUTH_REDIRECT_URI = None
 OAUTH_SUCCESS_REDIRECT = None
 OAUTH_ALLOWED_REDIRECT_HOSTS = []
 OAUTH_ACCEPT_EXTERNAL_TOKENS = []   # e.g. ["azure"] to accept its bearer tokens
+OAUTH_TRUST_TOKEN_ROLES = False     # unlinked external users get no roles/staff flags
+OAUTH_JWKS_REFETCH_COOLDOWN_SECONDS = 60
 ```
 
 Or write the dict yourself:
@@ -737,6 +740,8 @@ generated project sets most of them from the environment — see
 | `OAUTH_SUCCESS_REDIRECT` | `None` | Where to send the browser after a successful login |
 | `OAUTH_ALLOWED_REDIRECT_HOSTS` | `[]` | Hosts a caller may request a redirect to |
 | `OAUTH_ACCEPT_EXTERNAL_TOKENS` | `[]` | Providers whose bearer tokens are accepted directly |
+| `OAUTH_TRUST_TOKEN_ROLES` | `False` | Let an accepted external token with no linked local account carry its `roles` / `is_staff` / `is_superuser` claims. Never honoured for a multi-tenant Azure provider without `allowed_tenants`; per provider: `trust_token_roles=` (see [OAuth](../api/oauth.md#roles-from-external-tokens)) |
+| `OAUTH_JWKS_REFETCH_COOLDOWN_SECONDS` | `60` | Minimum interval between JWKS refetches forced by an unknown `kid`; per provider: `jwks_refetch_cooldown_seconds=` |
 | `CORS_ALLOW_ORIGINS` | `[]` | Allowed CORS origins (the middleware is skipped when this and the regex are both empty) |
 | `CORS_ALLOW_ORIGIN_REGEX` | `None` | Origin pattern for preview deployments whose hostname changes per build |
 | `CORS_ALLOW_CREDENTIALS` | `True` | Allow credentials (refused with a `"*"` origin outside `DEBUG`) |

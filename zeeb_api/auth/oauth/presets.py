@@ -4,23 +4,39 @@ Provider presets: Azure AD (Microsoft Entra ID), Google, GitHub.
 
 from __future__ import annotations
 
+import logging
 import re
+from collections.abc import Iterable
 from typing import Any
 
-from zeeb_api.auth.oauth.client import OAuthError
+from zeeb_api.auth.oauth.client import OAuthError, OAuthValidationError
 from zeeb_api.auth.oauth.provider import ExternalClaims, OAuthProvider, parse_email_verified
+from zeeb_api.exceptions import ImproperlyConfigured
 
 AZURE_AUTHORITY_TEMPLATE = (
     "https://login.microsoftonline.com/{tenant}/v2.0/.well-known/openid-configuration"
 )
 # Issuer for multi-tenant apps: a concrete tenant GUID is substituted into
-# the {tenantid} placeholder, so any GUID tenant issuer is acceptable.
+# the {tenantid} placeholder; the GUID is captured so it can be checked
+# against the provider's tenant allow-list.
 AZURE_MULTI_TENANT_ISSUER_RE = re.compile(
-    r"^https://login\.microsoftonline\.com/[0-9a-f-]{36}/v2\.0$"
+    r"^https://login\.microsoftonline\.com/([0-9a-f-]{36})/v2\.0$"
 )
 _GUID_RE = re.compile(
     r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
 )
+#: Pseudo-tenants whose sign-in endpoint accepts users from many tenants.
+AZURE_MULTI_TENANT_PSEUDO_TENANTS = frozenset({"common", "organizations", "consumers"})
+
+logger = logging.getLogger(__name__)
+
+
+def azure_issuer_tenant(iss: Any) -> str | None:
+    """The tenant GUID in an Azure AD v2.0 issuer, or None if it is not one."""
+    if not isinstance(iss, str):
+        return None
+    match = AZURE_MULTI_TENANT_ISSUER_RE.match(iss)
+    return match.group(1) if match else None
 
 
 class AzureADProvider(OAuthProvider):
@@ -32,12 +48,25 @@ class AzureADProvider(OAuthProvider):
             ``common`` / ``organizations`` / ``consumers``.
         client_id: Application (client) ID from the app registration.
         client_secret: Client secret (None for public clients using PKCE).
+        allowed_tenants: Tenant GUIDs (``tid``) whose tokens are accepted.
+            Required for a multi-tenant provider unless ``allow_any_tenant``
+            is set; when given it also narrows a single-tenant provider.
+        allow_any_tenant: Accept a token from **any** Azure AD tenant on a
+            multi-tenant provider. Tokens accepted this way never carry roles
+            or staff flags for an unlinked user, even with
+            ``trust_token_roles`` on: any tenant's admin can assign
+            themselves your app's roles.
 
     Issuer validation:
+        - ``issuer=`` override: exact match.
         - Concrete tenant GUID: exact issuer match
           (``https://login.microsoftonline.com/{tenant}/v2.0``).
-        - common/organizations/consumers: any GUID-tenant issuer on
-          ``login.microsoftonline.com`` is accepted (multi-tenant apps).
+        - Verified domain: exact match against the discovered issuer (it
+          carries the domain's tenant GUID).
+        - common/organizations/consumers: the issuer's tenant GUID must be in
+          ``allowed_tenants``, or ``allow_any_tenant=True``. With neither,
+          every token is refused (fail closed) with an error naming the two
+          options.
 
     Claim mapping:
         - subject: ``oid`` (stable per user across apps in a tenant) when
@@ -51,9 +80,24 @@ class AzureADProvider(OAuthProvider):
         *,
         client_id: str,
         client_secret: str | None = None,
+        allowed_tenants: Iterable[str] | None = None,
+        allow_any_tenant: bool = False,
         **kwargs: Any,
     ) -> None:
         self.tenant = tenant
+        if isinstance(allowed_tenants, str):
+            allowed_tenants = [allowed_tenants]
+        self.allowed_tenants: frozenset[str] | None = None
+        if allowed_tenants is not None:
+            tenants = [str(t).strip() for t in allowed_tenants]
+            bad = [t for t in tenants if not _GUID_RE.match(t)]
+            if bad:
+                raise ImproperlyConfigured(
+                    f"AzureADProvider allowed_tenants must be tenant GUIDs (the "
+                    f"'tid' claim), got {bad!r}"
+                )
+            self.allowed_tenants = frozenset(t.lower() for t in tenants)
+        self.allow_any_tenant = bool(allow_any_tenant)
         kwargs.setdefault("name", "azure")
         kwargs.setdefault(
             "server_metadata_url", AZURE_AUTHORITY_TEMPLATE.format(tenant=tenant)
@@ -61,14 +105,57 @@ class AzureADProvider(OAuthProvider):
         kwargs.setdefault("scopes", ["openid", "profile", "email", "offline_access"])
         super().__init__(client_id=client_id, client_secret=client_secret, **kwargs)
 
+    @property
+    def is_multi_tenant(self) -> bool:
+        """Whether ``tenant`` is a pseudo-tenant (common/organizations/consumers)."""
+        return self.tenant.lower() in AZURE_MULTI_TENANT_PSEUDO_TENANTS
+
+    def _tenant_allowed(self, iss: str) -> bool:
+        if self.allowed_tenants is None:
+            return True
+        tid = azure_issuer_tenant(iss)
+        return tid is not None and tid.lower() in self.allowed_tenants
+
     def _issuer_validator(self, iss: str) -> bool:
         if self.issuer:  # explicit override wins
-            return iss == self.issuer
+            return iss == self.issuer and self._tenant_allowed(iss)
         if _GUID_RE.match(self.tenant):
-            return iss == f"https://login.microsoftonline.com/{self.tenant}/v2.0"
-        # common / organizations / consumers (or a verified domain): the
-        # issuer carries the concrete tenant GUID.
-        return AZURE_MULTI_TENANT_ISSUER_RE.match(iss) is not None
+            expected = f"https://login.microsoftonline.com/{self.tenant.lower()}/v2.0"
+            return iss == expected and self._tenant_allowed(iss)
+        if not self.is_multi_tenant:
+            # Verified domain: discovery resolves it to one concrete tenant.
+            discovered = self._metadata.issuer if self._metadata is not None else ""
+            if discovered and "{" not in discovered:
+                return iss == discovered and self._tenant_allowed(iss)
+        # common / organizations / consumers: the issuer carries the concrete
+        # tenant GUID, which must be one this app accepts.
+        if azure_issuer_tenant(iss) is None:
+            return False
+        if self.allowed_tenants is not None:
+            return self._tenant_allowed(iss)
+        if self.allow_any_tenant:
+            return True
+        raise OAuthValidationError(
+            f"Azure AD provider {self.name!r} uses the multi-tenant endpoint "
+            f"{self.tenant!r} but accepts no tenant: set allowed_tenants=[<tenant "
+            "GUID>, ...] or, to accept every Azure AD tenant, allow_any_tenant=True"
+        )
+
+    def trusts_token_roles(self, claims: ExternalClaims) -> bool:
+        """Never for a tenant outside ``allowed_tenants`` or an any-tenant provider."""
+        if not super().trusts_token_roles(claims):
+            return False
+        iss = claims.raw.get("iss", "")
+        if self.allowed_tenants is not None:
+            return self._tenant_allowed(iss)
+        if self.is_multi_tenant:
+            logger.warning(
+                "Azure AD provider %r accepts any tenant; ignoring roles and staff "
+                "flags in its tokens despite trust_token_roles (set allowed_tenants)",
+                self.name,
+            )
+            return False
+        return True
 
     def map_claims(self, raw: dict[str, Any]) -> ExternalClaims:
         subject = raw.get("oid") or raw.get("sub")

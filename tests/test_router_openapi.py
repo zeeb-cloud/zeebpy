@@ -318,7 +318,8 @@ def test_extend_schema_status_and_responses_on_destroy():
 
     responses = _plain_app(Plain).openapi()["paths"]["/posts/{id}"]["delete"]["responses"]
     assert "202" in responses and "204" not in responses
-    assert responses["409"]["content"]["application/json"]["example"]["error"]["code"] == "POST_BUSY"
+    example = responses["409"]["content"]["application/json"]["example"]
+    assert example["error"]["code"] == "POST_BUSY"
 
 
 def test_action_status_code_and_responses():
@@ -374,7 +375,10 @@ def test_an_all_optional_body_may_be_left_out():
     target = "/posts/3fa85f64-5717-4562-b3fc-2c963f66afa6/suspend"
     assert client.post(target).status_code == 200
     assert client.post(target, json={"billing_action": "none"}).status_code == 200
-    assert seen == [(set(), {"billing_action": None}), ({"billing_action"}, {"billing_action": "none"})]
+    assert seen == [
+        (set(), {"billing_action": None}),
+        ({"billing_action"}, {"billing_action": "none"}),
+    ]
 
     spec = app.openapi()
     assert spec["paths"]["/posts/{id}/suspend"]["post"]["requestBody"].get("required") is not True

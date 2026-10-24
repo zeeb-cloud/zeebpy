@@ -102,7 +102,8 @@ async def _build_project_context(project_root: Path) -> str:
         if apps_result.success and apps_result.data:
             apps = apps_result.data.get("apps", [])
             if apps:
-                lines.append(f"**Apps ({len(apps)}):** " + ", ".join(f"`{a}`" for a in apps) + "\n\n")
+                app_list = ", ".join(f"`{a}`" for a in apps)
+                lines.append(f"**Apps ({len(apps)}):** {app_list}\n\n")
     except Exception:
         pass
 

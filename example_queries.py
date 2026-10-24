@@ -14,20 +14,29 @@ Run: python example_queries.py
 """
 
 import asyncio
+
 from zeeb_orm import (
-    Model, fields, Q, F,
-    # Aggregates
-    Count, Sum, Avg, Min, Max,
-    # Expressions
-    Value, Case, When, Coalesce,
+    Avg,
+    Case,
+    Coalesce,
     # String functions
-    Concat, Lower, Upper, Length,
+    Count,
+    F,
+    Lower,
+    Max,
+    Min,
+    Model,
+    Q,
     # Math functions
-    Round, Abs, Greatest, Least,
-    configure, setup_database, close_all_connections,
+    Sum,
+    Value,
+    When,
+    close_all_connections,
+    configure,
+    fields,
+    setup_database,
 )
 from zeeb_orm.models.base import metadata
-
 
 # Define Models
 
@@ -54,16 +63,46 @@ async def setup_data(db):
     await db.create_all()
 
     products = [
-        {"name": "Laptop", "category": "Electronics", "price": 999.99, "cost": 600, "stock": 50, "rating": 4.5},
-        {"name": "Phone", "category": "Electronics", "price": 699.99, "cost": 400, "stock": 100, "rating": 4.2},
-        {"name": "Tablet", "category": "Electronics", "price": 449.99, "cost": 250, "stock": 30, "rating": 4.0},
-        {"name": "Headphones", "category": "Electronics", "price": 199.99, "cost": 80, "stock": 200, "rating": 4.8},
-        {"name": "T-Shirt", "category": "Clothing", "price": 29.99, "cost": 10, "stock": 500, "rating": 4.1},
-        {"name": "Jeans", "category": "Clothing", "price": 59.99, "cost": 25, "stock": 300, "rating": 4.3},
-        {"name": "Sneakers", "category": "Clothing", "price": 89.99, "cost": 40, "stock": 150, "rating": 4.6},
-        {"name": "Book", "category": "Books", "price": 14.99, "cost": 5, "stock": 1000, "rating": 4.9},
-        {"name": "Notebook", "category": "Books", "price": 9.99, "cost": 3, "stock": 2000, "rating": 4.0},
-        {"name": "Pen Set", "category": "Office", "price": 19.99, "cost": 8, "stock": 500, "is_available": False, "rating": 3.5},
+        {
+            "name": "Laptop", "category": "Electronics",
+            "price": 999.99, "cost": 600, "stock": 50, "rating": 4.5,
+        },
+        {
+            "name": "Phone", "category": "Electronics",
+            "price": 699.99, "cost": 400, "stock": 100, "rating": 4.2,
+        },
+        {
+            "name": "Tablet", "category": "Electronics",
+            "price": 449.99, "cost": 250, "stock": 30, "rating": 4.0,
+        },
+        {
+            "name": "Headphones", "category": "Electronics",
+            "price": 199.99, "cost": 80, "stock": 200, "rating": 4.8,
+        },
+        {
+            "name": "T-Shirt", "category": "Clothing",
+            "price": 29.99, "cost": 10, "stock": 500, "rating": 4.1,
+        },
+        {
+            "name": "Jeans", "category": "Clothing",
+            "price": 59.99, "cost": 25, "stock": 300, "rating": 4.3,
+        },
+        {
+            "name": "Sneakers", "category": "Clothing",
+            "price": 89.99, "cost": 40, "stock": 150, "rating": 4.6,
+        },
+        {
+            "name": "Book", "category": "Books",
+            "price": 14.99, "cost": 5, "stock": 1000, "rating": 4.9,
+        },
+        {
+            "name": "Notebook", "category": "Books",
+            "price": 9.99, "cost": 3, "stock": 2000, "rating": 4.0,
+        },
+        {
+            "name": "Pen Set", "category": "Office",
+            "price": 19.99, "cost": 8, "stock": 500, "is_available": False, "rating": 3.5,
+        },
     ]
 
     for p in products:
@@ -148,7 +187,7 @@ async def main():
     products_with_margin = await Product.objects.annotate(
         profit=F("price") - F("cost")
     ).order_by("-profit")[:5]
-    
+
     print("Top 5 products by profit:")
     for p in products_with_margin:
         print(f"  - {p.name}: profit=${p.profit:.2f}")
@@ -157,7 +196,7 @@ async def main():
     products_with_lower = await Product.objects.annotate(
         name_lower=Lower("name")
     ).values("name", "name_lower")[:3]
-    
+
     print("\nLowercase names:")
     for p in products_with_lower:
         print(f"  - {p['name']} -> {p['name_lower']}")
@@ -170,7 +209,7 @@ async def main():
             default=Value("Budget")
         )
     ).values("name", "price", "price_tier")[:6]
-    
+
     print("\nPrice tiers:")
     for p in products_with_tier:
         print(f"  - {p['name']}: ${p['price']} ({p['price_tier']})")
@@ -179,7 +218,7 @@ async def main():
     products_with_rating = await Product.objects.annotate(
         safe_rating=Coalesce("rating", Value(0.0))
     ).values("name", "rating", "safe_rating")[:3]
-    
+
     print("\nCoalesce rating (null -> 0):")
     for p in products_with_rating:
         print(f"  - {p['name']}: rating={p['rating']} -> safe={p['safe_rating']}")
@@ -188,7 +227,7 @@ async def main():
     by_profit = await Product.objects.annotate(
         profit=F("price") - F("cost")
     ).order_by("-profit").values("name", "profit")[:3]
-    
+
     print("\nOrder by computed profit:")
     for p in by_profit:
         print(f"  - {p['name']}: ${p['profit']:.2f}")
@@ -274,7 +313,7 @@ async def main():
     ).filter(
         margin__gt=100
     ).order_by("-margin").values("name", "price", "cost", "margin")
-    
+
     print("\nHigh margin products (margin > $100):")
     for p in high_margin:
         print(f"  - {p['name']}: price=${p['price']}, cost=${p['cost']}, margin=${p['margin']:.2f}")

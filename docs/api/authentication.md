@@ -227,6 +227,13 @@ raise `zeeb_api.exceptions.PasswordTooLongError` — a 400 field error in a
 request, and still a `ValueError` for code that sets passwords elsewhere.
 `check_password()` simply returns `False` for such input.
 
+`check_password()` against an empty or unusable hash (an account created by
+OAuth sign-in has no password) still runs one bcrypt verification against a
+throwaway hash before returning `False`, as `authenticate()` does for an
+unknown email — so a failed login costs the same whether the account is
+missing, passwordless or given the wrong password, and its timing does not
+reveal which.
+
 ### Password Validation
 
 The framework ships no password-strength validators and has no
@@ -549,12 +556,26 @@ A user's roles (`zeeb_api.auth.middleware.get_user_roles`) are the union of:
 | Source | Roles |
 |---|---|
 | `user.get_roles()` | whatever it returns — override it on a custom user model (groups, a column, …) |
-| `user.roles` or the token's `roles` claim | as listed (Azure AD app roles arrive in `roles`) |
+| `user.roles` | as listed |
+| the token's `roles` claim | **token-only users only** (`AuthenticatedUser`, i.e. `AUTH_LOAD_USER_FROM_DB = False`) |
 | account flags | `"staff"` for `is_staff`, `"superuser"` for `is_superuser`, `"admin"` for anyone `IsAdminUser` admits |
+
+A user loaded from the database gets its roles from the database alone: the
+`roles` claim written into its token at login is ignored, so demoting an
+account (`is_staff = False`) takes effect on its next request rather than when
+the token expires — `require_auth` and `IsAdminUser` agree. An external IdP
+token with no linked account (`ExternalAuthenticatedUser`) carries the IdP's
+`roles` (Azure AD app roles) and staff flags only when its provider trusts
+them — off by default, see
+[Roles from external tokens](oauth.md#roles-from-external-tokens).
 
 `AbstractUser.get_roles()` returns the flag-derived roles and
 `get_claims()` emits them as the `roles` claim, so a token-only
 `AuthenticatedUser` (`AUTH_LOAD_USER_FROM_DB = False`) sees the same set.
+
+**Upgrading:** roles used to be the union of the database and the token's
+`roles` claim for every user. If a custom user model relied on extra roles
+arriving only in the token, return them from `get_roles()` instead.
 
 #### bearer_scheme
 

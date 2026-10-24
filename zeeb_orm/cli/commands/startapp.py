@@ -24,6 +24,7 @@ from zeeb_orm.scaffold.app import (
 from zeeb_orm.scaffold.errors import ScaffoldError
 from zeeb_orm.scaffold.harness import ensure_test_scaffold
 from zeeb_orm.scaffold.naming import (
+    app_name_problem,
     find_project_root,
     to_class_name,
     to_title,
@@ -71,9 +72,10 @@ def run_startapp(
             passes. Without it the files carry the canonical example in their
             module docstring and no live code beyond one import.
     """
-    if not name.isidentifier():
+    problem = app_name_problem(name)
+    if problem:
         return fail(
-            f"'{name}' is not a valid Python identifier, so it cannot be a package name.",
+            problem,
             code="invalid_identifier",
             next_command="python manage.py startapp <valid_name>",
             json_output=json_output,

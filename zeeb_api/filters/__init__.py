@@ -5,8 +5,8 @@ Filters - DRF-like filtering classes.
 from zeeb_api.filters.base import (
     BaseFilter,
     FilterSet,
-    SearchFilter,
     OrderingFilter,
+    SearchFilter,
 )
 
 __all__ = [

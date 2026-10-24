@@ -62,7 +62,8 @@ vocabulary: `app_not_found`, `model_not_found`, `already_exists`,
 `invalid_regex`, `table_not_found`, `user_not_found`, `no_user_table`,
 `setting_not_found`, `settings_error`, `syntax_error`, `env_key_not_found`, `field_not_found`,
 `function_not_found`, `file_not_found`, `log_file_not_found`,
-`manifest_version_unsupported`,
+`manifest_version_unsupported`, `feature_in_use`, `model_referenced`,
+`delete_pending`, `delete_migration_missing`, `verification_failed`,
 `outside_project_root`, `query_timeout`, `server_not_running`, `server_not_reachable`,
 `dependency_missing`, `permission_denied`, `no_project_root`,
 `no_project_id`, `project_not_found`, `runtime_not_configured`) plus
@@ -258,15 +259,44 @@ serializers, routes, functions and generated tests are archived verbatim under
 no migration is generated and nothing is lost. Reversible with
 `activate_feature`.
 
+Features may share an app, so the app-mates must keep importing: imports
+other modules hold of an archived class (`from .serializers import
+PostSerializer` in `views.py`) are removed with it and recorded in the archive,
+and the call refuses with `feature_in_use` — before changing anything — when
+code that stays would still use something the feature owns
+(`data["dependents"]`). A generated test file another *active* feature also
+owns is left in place. With `verify=True`, a failed verification makes the
+call `success=False` with `error_code="verification_failed"` (the feature is
+archived; every data key is still present); an OpenAPI check that only found
+no server running does not count.
+
 ### `activate_feature(feature, migrate=True, verify=True, project_id=None)`
 Restore an archived feature — code, routes and tests exactly as they were,
-including edits made after generation. Falls back to rebuilding from the
-stored spec when an archived fragment is missing (`data["rebuilt"]`).
+including edits made after generation and every import statement
+`deactivate_feature` took out, in its original place. Falls back to rebuilding
+from the stored spec when an archived fragment is missing (`data["rebuilt"]`).
+Verification failures are reported as for `deactivate_feature`.
 
 ### `delete_feature(feature, confirm=False, migrate=True, verify=True, project_id=None)`
 Remove a feature **and its data**: the models go and a migration drops their
 tables. Requires `confirm=True`; without it the call refuses and reports the
 exact scope under `data["would_delete"]`.
+
+It refuses, before changing anything, with `model_referenced` when a model the
+feature does not own still has a relation to one it would drop
+(`data["references"]`). Migration detection reads the files as they are now,
+even in a process that imported the project's models earlier. Fail-safe: when
+no migration file drops the tables after the run, the archive and the manifest
+entry are kept (`delete_pending`) and the call fails with
+`delete_migration_missing` — run `make_migrations()` and `run_migrations()`,
+then `delete_feature(..., confirm=True)` again; `activate_feature` refuses a
+`delete_pending` feature.
+
+Generated test files are per feature: a feature named after its app writes
+`tests/test_<app>_generated.py`, any other feature in that app
+`tests/test_<app>_feature_<feature>_generated.py`, so no two features own one
+file. Archive records store POSIX paths (records written with backslashes
+still restore).
 
 ### `bootstrap_project(auth=True, registration=True, health_endpoint=True, user_model=None, migrate=True, project_id=None)`
 Bootstrap the bound project into a production-ready baseline: auth wired,
@@ -294,7 +324,9 @@ correlates settings, wiring, migrations and recent logs against the reported
 
 ### `regenerate_tests(feature, project_id=None)`
 Rewrite a feature's generated test file from its stored spec. `build_feature`
-writes `tests/test_<app>_generated.py` once and never overwrites it, so after
+writes the feature's test file (`tests/test_<app>_generated.py`, or
+`tests/test_<app>_feature_<feature>_generated.py` for a feature not named after
+its app) once and never overwrites it, so after
 the feature's fields change the suite can fail on assertions that were true
 when it was written; this is the refresh. Only the generated test file is
 rewritten. An `inferred` feature has no stored spec and is refused.
@@ -825,11 +857,14 @@ result = await run_query("SELECT id, title FROM post_post LIMIT 5")
 >
 > - The check runs on the statement's *code*: comments (`--`, `/* */`, MySQL
 >   `#`) are removed and string literals blanked, under every quoting
->   convention of the supported databases (backslash escapes, `E''` strings,
->   `$$` dollar quoting) — a literal that ends earlier in one dialect cannot
->   hide a second statement. An unterminated literal and a MySQL `/*! */`
->   (executed) comment are rejected outright. Keywords inside string literals
->   no longer false-positive.
+>   convention of the supported databases (backslash escapes everywhere or
+>   only in PostgreSQL `E''` strings, `$$` dollar quoting, SQLite `[…]`
+>   identifiers, nested PostgreSQL comments, MySQL's rule that `--` starts a
+>   comment only before whitespace so `1--1` is code) — a literal that ends
+>   earlier in one dialect cannot hide a second statement. An unterminated
+>   literal, a MySQL `/*! */` or MariaDB `/*M! */` (executed) comment and a
+>   bare carriage return inside a `--` comment are rejected outright.
+>   Keywords inside string literals no longer false-positive.
 > - Exactly **one** statement is allowed (a single trailing `;` is tolerated;
 >   `SELECT 1; DROP TABLE x` is rejected).
 > - The first keyword must be `SELECT`, `WITH`, or `EXPLAIN`.
@@ -846,9 +881,13 @@ result = await run_query("SELECT id, title FROM post_post LIMIT 5")
 >   boundaries, so column names like `created_at` / `updated_at` are fine —
 >   but a bare `REPLACE(...)` string function call will be rejected; rename or
 >   avoid it in ad-hoc queries.
-> - Defense in depth: the query runs inside an explicit transaction that is
->   **always rolled back**, so even a statement that slipped through could
->   never be committed.
+> - Defense in depth: the *database* enforces read-only — SQLite
+>   `PRAGMA query_only = ON` plus an explicit `BEGIN` (pysqlite opens no
+>   transaction of its own before a `WITH`/`SELECT`), PostgreSQL
+>   `SET TRANSACTION READ ONLY`, MySQL/MariaDB `START TRANSACTION READ ONLY` —
+>   and the transaction is **always rolled back**, so even a statement that
+>   slipped through the gate writes nothing. A write the database refuses
+>   fails with `invalid_sql`.
 
 ---
 
@@ -1396,7 +1435,10 @@ Add, update or remove one requirement line — the fix for a
 `dependency_missing` failure or an `import_error` root cause.
 `generate_requirements` snapshots what is installed; this declares what the
 generated code needs, and the runtime installs it on the next deploy. A line
-for the same package (any spelling) is replaced.
+for the same package (any spelling) is replaced. `requirements_file` is
+confined to the project like every other path argument: an absolute path or
+`..` fails with `invalid_input`, a symlink pointing out of the project with
+`outside_project_root`.
 
 ---
 

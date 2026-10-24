@@ -1,22 +1,17 @@
 """Tests for Zeeb ORM core functionality."""
 
+
 import pytest
-import asyncio
-from datetime import datetime
 
 from zeeb_orm import (
-    Model,
-    fields,
-    Q,
     F,
-    Count,
-    Sum,
-    Avg,
-    configure,
-    setup_database,
+    Model,
+    Q,
     close_all_connections,
+    configure,
+    fields,
+    setup_database,
 )
-
 
 # Test Models
 
@@ -268,23 +263,23 @@ async def db():
     """Set up test database."""
     from zeeb_orm.conf.settings import Settings
     from zeeb_orm.models.base import metadata
-    
+
     Settings.reset()  # Clear any previous settings
-    
+
     # Reset tables for fresh tests
     User._sa_table = None
     User._sa_model = None
     Post._sa_table = None
     Post._sa_model = None
     metadata.clear()
-    
+
     configure(database={"url": "sqlite+aiosqlite:///:memory:"})
     db = await setup_database("sqlite+aiosqlite:///:memory:")
-    
+
     # Trigger table creation for our models
     User._get_table()
     Post._get_table()
-    
+
     await db.create_all()
     yield db
     await db.drop_all()

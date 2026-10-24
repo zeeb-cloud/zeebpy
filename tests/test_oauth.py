@@ -443,7 +443,7 @@ class TestAzureADProvider:
         )
 
     def test_multi_tenant_issuer_regex(self):
-        p = AzureADProvider(tenant="common", client_id=CLIENT_ID)
+        p = AzureADProvider(tenant="common", client_id=CLIENT_ID, allow_any_tenant=True)
         assert p._issuer_validator(
             f"https://login.microsoftonline.com/{self.GUID}/v2.0"
         )
@@ -1003,7 +1003,7 @@ class TestSPATokenFlow:
         from zeeb_api.auth.backends import create_user
         from zeeb_api.auth.oauth.models import ExternalIdentity
 
-        existing = await create_user(email="alice@example.com", password="local-pass-123")
+        await create_user(email="alice@example.com", password="local-pass-123")
         settings.OAUTH_AUTO_CREATE_USERS = False  # force the linking path
         idp.id_token_claims = {"email_verified": False}
 

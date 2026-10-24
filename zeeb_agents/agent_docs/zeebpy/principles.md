@@ -59,20 +59,22 @@ Rules you can rely on:
 
 `data["error_code"]` (when present) is one of:
 
-`already_exists`, `app_not_found`, `archive_missing`, `dependency_missing`,
-`env_key_not_found`, `feature_active`, `feature_archived`, `feature_not_found`,
+`already_exists`, `app_not_found`, `archive_missing`, `delete_migration_missing`,
+`delete_pending`, `dependency_missing`,
+`env_key_not_found`, `feature_active`, `feature_archived`, `feature_in_use`,
+`feature_not_found`,
 `manifest_version_unsupported`,
 `field_not_found`, `file_not_found`, `function_not_found`,
 `invalid_authentication`, `invalid_field_spec`,
 `invalid_field_type`, `invalid_identifier`, `invalid_input`, `invalid_meta`,
 `invalid_permission`, `invalid_regex`, `invalid_sql`, `log_file_not_found`,
-`model_not_found`, `no_project_id`, `no_user_table`,
+`model_not_found`, `model_referenced`, `no_project_id`, `no_user_table`,
 `outside_project_root`, `partial_failure`, `permission_denied`, `prefix_conflict`,
 `query_timeout`,
 `project_not_found`,
 `runtime_not_configured`, `server_not_reachable`, `setting_not_found`, `settings_error`,
 `syntax_error`, `table_not_found`,
-`user_not_found`.
+`user_not_found`, `verification_failed`.
 
 ### Two error layers — don't confuse them
 
@@ -214,8 +216,11 @@ Two tools are deliberately sandboxed:
   `dblink`, `set_config`, `nextval`, `load_extension`, …) are refused. Results
   are capped at `max_rows` (default 1000, `truncated` tells) and the statement
   is cancelled after `timeout` seconds (default 30, `query_timeout`). As
-  defense-in-depth the query runs inside a transaction that is **always rolled
-  back** — nothing can be committed. To mutate data, use the model/ORM tools or
+  defense-in-depth the *database* holds the query read-only (SQLite
+  `PRAGMA query_only` inside an explicit `BEGIN`, PostgreSQL
+  `SET TRANSACTION READ ONLY`, MySQL/MariaDB `START TRANSACTION READ ONLY`) in
+  a transaction that is **always rolled back** — nothing can be written, even
+  past the gate. To mutate data, use the model/ORM tools or
   `{prefix}run_management_command`, not raw SQL.
 - **Generated code never executes your values.** Every name that becomes
   code — app, model, field, kwarg key, action, handler, workflow field and

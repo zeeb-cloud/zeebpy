@@ -16,30 +16,25 @@ Covers:
 - migrate --plan / --fake-initial
 """
 
-import shutil
 import textwrap
-import warnings
-from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 import sqlalchemy as sa
 
-from zeeb_orm.models.base import metadata, _model_registry, Model
-from zeeb_orm.models.fields import CharField, TextField, IntegerField
 from zeeb_orm.migrations.autodetector import detect_changes
-from zeeb_orm.migrations.writer import write_migration
 from zeeb_orm.migrations.executor import list_migration_files
 from zeeb_orm.migrations.operations import (
     AddConstraint,
     AddField,
     AlterField,
     CreateModel,
-    RemoveField,
     RemoveConstraint,
+    RemoveField,
     RenameField,
     RenameModel,
 )
+from zeeb_orm.migrations.writer import write_migration
+from zeeb_orm.models.base import metadata
 
 
 @pytest.fixture()
@@ -277,7 +272,8 @@ class TestAutodetectorAlterField:
 
     def test_alter_field_forward_changes_type_on_sqlite(self, tmp_path):
         """AlterField.forward actually alters the column type via batch mode."""
-        from sqlalchemy import create_engine, inspect as sa_inspect
+        from sqlalchemy import create_engine
+        from sqlalchemy import inspect as sa_inspect
 
         db = tmp_path / "alter.sqlite3"
         engine = create_engine(f"sqlite:///{db}")
@@ -435,7 +431,8 @@ class TestOperationsCleanup:
 
     def test_create_model_roundtrip_reserved_word_table(self, tmp_path):
         """A table named like a reserved word survives create + drop via quoting."""
-        from sqlalchemy import create_engine, inspect as sa_inspect
+        from sqlalchemy import create_engine
+        from sqlalchemy import inspect as sa_inspect
 
         db = tmp_path / "reserved.sqlite3"
         engine = create_engine(f"sqlite:///{db}")
@@ -572,7 +569,8 @@ class TestNewOperations:
 
     def test_add_constraint_forward_unique_real_sqlite(self, tmp_path):
         """AddConstraint.forward actually creates the constraint via batch mode."""
-        from sqlalchemy import create_engine, inspect as sa_inspect
+        from sqlalchemy import create_engine
+        from sqlalchemy import inspect as sa_inspect
 
         engine = create_engine(f"sqlite:///{tmp_path / 'ac.sqlite3'}")
         with engine.begin() as conn:
@@ -592,7 +590,8 @@ class TestNewOperations:
 
     def test_add_constraint_roundtrip_real_sqlite(self, tmp_path):
         """forward then backward leaves the table without the constraint."""
-        from sqlalchemy import create_engine, inspect as sa_inspect
+        from sqlalchemy import create_engine
+        from sqlalchemy import inspect as sa_inspect
 
         engine = create_engine(f"sqlite:///{tmp_path / 'acr.sqlite3'}")
         op = AddConstraint(
@@ -613,7 +612,8 @@ class TestNewOperations:
 
     def test_remove_constraint_forward_real_sqlite(self, tmp_path):
         """RemoveConstraint.forward drops an existing unique constraint."""
-        from sqlalchemy import create_engine, inspect as sa_inspect
+        from sqlalchemy import create_engine
+        from sqlalchemy import inspect as sa_inspect
 
         engine = create_engine(f"sqlite:///{tmp_path / 'rc.sqlite3'}")
         with engine.begin() as conn:
@@ -708,8 +708,8 @@ class TestMigrationOptimizer:
         assert "title" in col_names
 
     def test_create_then_delete_same_table_eliminated(self):
-        from zeeb_orm.migrations.optimizer import optimize
         from zeeb_orm.migrations.operations import DeleteModel
+        from zeeb_orm.migrations.optimizer import optimize
 
         create_op = CreateModel(
             name="Temp",
@@ -755,8 +755,8 @@ class TestMigrationOptimizer:
 
     def test_no_optimization_across_blocking_op(self):
         """Operations on same table must not be reordered past each other."""
-        from zeeb_orm.migrations.optimizer import optimize
         from zeeb_orm.migrations.operations import DeleteModel
+        from zeeb_orm.migrations.optimizer import optimize
 
         create_op = CreateModel(
             name="Post",
@@ -961,9 +961,9 @@ class TestSquashMigrations:
 
     def test_squash_replaces_mechanism(self, tmp_migrations_dir):
         """Test that squashed migrations properly replace original migrations."""
-        from zeeb_orm.migrations.cli import squashmigrations
         from zeeb_orm.migrations import executor
-        
+        from zeeb_orm.migrations.cli import squashmigrations
+
         # Create two migrations
         write_migration(
             tmp_migrations_dir,
@@ -990,11 +990,11 @@ class TestSquashMigrations:
             ],
             name="add_name",
         )
-        
+
         all_migs = list_migration_files(tmp_migrations_dir)
         start = all_migs[0][0]
         end = all_migs[1][0]
-        
+
         # Create squashed migration
         result = squashmigrations(
             start=start,
@@ -1002,44 +1002,45 @@ class TestSquashMigrations:
             migrations_dir=str(tmp_migrations_dir),
         )
         assert result is not None
-        
+
         # Verify the squashed migration has replaces attribute
         squash_file = next(tmp_migrations_dir.glob("0003*squashed*.py"), None)
         assert squash_file is not None
-        
+
         # Load the squashed migration and verify replaces
         from zeeb_orm.migrations.executor import load_migration
         squashed_mig = load_migration(squash_file)
         assert hasattr(squashed_mig, 'replaces')
         assert squashed_mig.replaces == ['0001_initial', '0002_add_name']
-        
+
         # Verify that when we apply the squashed migration, the replaced ones
         # are skipped and marked as applied
         import tempfile
         with tempfile.NamedTemporaryFile(suffix='.db', delete=False) as f:
             db_path = f.name
-        
+
         try:
             applied = executor.migrate(
                 target=None,
                 database_url=f"sqlite:///{db_path}",
                 project_root=tmp_migrations_dir.parent,
             )
-            
+
             # Only the squashed migration should be in the applied list
             # (the replaced migrations are skipped)
             assert '0003_squashed_0001_initial_to_0002_add_name' in applied
             assert '0001_initial' not in applied
             assert '0002_add_name' not in applied
-            
+
             # Check what's in the database - all three should be marked as applied
             from sqlalchemy import create_engine
+
             from zeeb_orm.migrations.executor import get_applied_migrations
             engine = create_engine(f"sqlite:///{db_path}")
             with engine.connect() as conn:
                 applied_in_db = get_applied_migrations(conn)
             engine.dispose()
-            
+
             # All three should be marked as applied in the database
             assert '0001_initial' in applied_in_db
             assert '0002_add_name' in applied_in_db
@@ -1061,8 +1062,11 @@ class TestSettingsDiscovery:
 
     def test_loads_module_and_restores_sys_path(self, tmp_path):
         import sys
+
         from zeeb_orm.migrations._settings import (
-            load_settings_module, get_database_url, get_installed_apps,
+            get_database_url,
+            get_installed_apps,
+            load_settings_module,
         )
         root = self._make_project(tmp_path, """
             DATABASE = {"url": "sqlite:///custom.db"}
@@ -1078,7 +1082,9 @@ class TestSettingsDiscovery:
 
     def test_missing_settings_returns_defaults(self, tmp_path):
         from zeeb_orm.migrations._settings import (
-            load_settings_module, get_database_url, get_installed_apps,
+            get_database_url,
+            get_installed_apps,
+            load_settings_module,
         )
         assert load_settings_module(tmp_path) is None
         assert get_installed_apps(tmp_path) == []
@@ -1162,9 +1168,10 @@ class TestSquashTrackingConsistency:
         )
 
     def test_rollback_squash_unrecords_replaced(self, tmp_migrations_dir, tmp_path):
-        from zeeb_orm.migrations.cli import squashmigrations
-        from zeeb_orm.migrations import executor
         from sqlalchemy import create_engine
+
+        from zeeb_orm.migrations import executor
+        from zeeb_orm.migrations.cli import squashmigrations
         from zeeb_orm.migrations.executor import get_applied_migrations
 
         self._write_squash_pair(tmp_migrations_dir)
@@ -1185,10 +1192,12 @@ class TestSquashTrackingConsistency:
         # Neither the squash nor the replaced originals stay marked applied.
         assert remaining == set()
 
-    def test_squash_added_after_originals_applied_does_not_rerun(self, tmp_migrations_dir, tmp_path):
+    def test_squash_added_after_originals_applied_does_not_rerun(
+        self, tmp_migrations_dir, tmp_path
+    ):
         """If originals are already applied, a later squash only records itself."""
-        from zeeb_orm.migrations.cli import squashmigrations
         from zeeb_orm.migrations import executor
+        from zeeb_orm.migrations.cli import squashmigrations
 
         self._write_squash_pair(tmp_migrations_dir)
         names = [n for n, _ in list_migration_files(tmp_migrations_dir)]
@@ -1290,7 +1299,8 @@ def _write_chain(mig_dir, n):
 
 
 def _table_names(db_url):
-    from sqlalchemy import create_engine, inspect as sa_inspect
+    from sqlalchemy import create_engine
+    from sqlalchemy import inspect as sa_inspect
     engine = create_engine(db_url)
     try:
         with engine.connect() as conn:
@@ -1346,8 +1356,9 @@ class TestExecutorMigrate:
         assert "exec_rows" not in _table_names(db)  # nothing actually ran
 
     def test_fake_initial_with_existing_tables(self, tmp_migrations_dir, tmp_path):
-        from zeeb_orm.migrations import executor
         from sqlalchemy import create_engine, text
+
+        from zeeb_orm.migrations import executor
         names = _write_chain(tmp_migrations_dir, 2)
         db = self._db(tmp_path)
         root = tmp_migrations_dir.parent
@@ -1367,8 +1378,9 @@ class TestExecutorMigrate:
         assert all(ok for _, ok in status)
 
     def test_plan_leaves_db_untouched(self, tmp_migrations_dir, tmp_path):
-        from zeeb_orm.migrations import executor
         from sqlalchemy import create_engine
+
+        from zeeb_orm.migrations import executor
         from zeeb_orm.migrations.executor import get_applied_migrations
         names = _write_chain(tmp_migrations_dir, 2)
         db = self._db(tmp_path)
@@ -1433,7 +1445,7 @@ class TestSchemaIntegrityRegressions:
         from its Table, so every generated table came out with plain columns and no
         referential integrity — a nonexistent id was accepted happily.
         """
-        from zeeb_orm.migrations.operations import copy_column, _repr_column
+        from zeeb_orm.migrations.operations import _repr_column, copy_column
 
         meta = sa.MetaData()
         sa.Table("customers", meta, sa.Column("id", sa.Uuid(), primary_key=True))

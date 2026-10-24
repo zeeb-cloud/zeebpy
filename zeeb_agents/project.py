@@ -487,7 +487,7 @@ async def get_project_structure(
           empty ``children`` — an empty list does not mean the directory is
           empty.
     """
-    _SKIP_DIRS = frozenset({
+    _SKIP_DIRS = frozenset({  # noqa: N806
         "__pycache__", ".git", "node_modules", ".mypy_cache",
         ".ruff_cache", ".pytest_cache", ".venv", "venv", ".tox",
     })

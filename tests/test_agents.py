@@ -2207,7 +2207,8 @@ def test_fail_derives_recoverable_from_code():
     assert fail("denied", code="permission_denied").data["recoverable"] is False
     # Explicit override wins over the code-derived default.
     assert fail("terminal", code="invalid_input", recoverable=False).data["recoverable"] is False
-    assert AgentError("x", code="no_project_id", recoverable=True).result.data["recoverable"] is True
+    error = AgentError("x", code="no_project_id", recoverable=True)
+    assert error.result.data["recoverable"] is True
 
 
 async def test_add_viewset_action_duplicate_errors_then_skips(project):

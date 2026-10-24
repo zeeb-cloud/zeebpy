@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import re
+from dataclasses import dataclass
 from pathlib import Path
 
 from zeeb_agents._utils import AgentResult, agent_function
@@ -48,16 +49,50 @@ _FORBIDDEN_FUNCTION_RE = re.compile(
 
 _DOLLAR_TAG_RE = re.compile(r"\$(?:[A-Za-z_][A-Za-z0-9_]*)?\$")
 
-# Every lexing a supported database might apply: backslash escapes inside
-# quotes (MySQL, PostgreSQL E'' strings), ``#`` line comments (MySQL) and
-# dollar quoting (PostgreSQL). A statement has to pass the gate under all of
-# them — a string that ends earlier under one dialect than under another is
-# exactly how code hides inside what looks like a literal.
+#: An identifier or keyword: it continues with letters, digits, ``_``, ``$``
+#: and anything beyond ASCII. Lexed as one token, so a ``$`` inside it never
+#: opens a PostgreSQL dollar quote (``a$x$`` is one name) and an ``E`` only
+#: prefixes an escape string when it stands alone.
+_IDENT_RE = re.compile(r"[A-Za-z_\u0080-\U0010ffff][A-Za-z0-9_$\u0080-\U0010ffff]*")
+
+#: Where backslash escapes apply inside ``'…'`` strings: nowhere (SQLite,
+#: PostgreSQL ``standard_conforming_strings``, MySQL ``NO_BACKSLASH_ESCAPES``),
+#: everywhere (MySQL, PostgreSQL with ``standard_conforming_strings=off``), or
+#: only in PostgreSQL ``E'…'`` escape strings (the PostgreSQL default).
+_BACKSLASH_NONE, _BACKSLASH_ALL, _BACKSLASH_E_STRINGS = "none", "all", "e_strings"
+
+
+@dataclass(frozen=True)
+class _Lexing:
+    """One way a supported database might split a statement into tokens."""
+
+    backslash: str = _BACKSLASH_NONE
+    #: ``#`` starts a line comment (MySQL).
+    hash_comments: bool = False
+    #: ``$tag$ … $tag$`` is a string (PostgreSQL).
+    dollar: bool = False
+    #: ``--`` is a comment only when followed by whitespace / a control
+    #: character (MySQL: ``1--1`` is ``1 - -1``); otherwise always.
+    mysql_dashdash: bool = False
+    #: ``[…]`` quotes an identifier (SQLite, for MS SQL compatibility).
+    brackets: bool = False
+    #: ``/* … */`` comments nest (PostgreSQL).
+    nested_comments: bool = False
+
+
+# Every lexing a supported database might apply — the cross product of the
+# conventions, so each real dialect (and each server-mode variant of it) is
+# among them. A statement has to pass the gate under all of them: a string
+# that ends earlier under one dialect than under another is exactly how code
+# hides inside what looks like a literal.
 _LEXING_MODES = tuple(
-    (backslash, hash_comments, dollar)
-    for backslash in (False, True)
+    _Lexing(backslash, hash_comments, dollar, mysql_dashdash, brackets, nested)
+    for backslash in (_BACKSLASH_NONE, _BACKSLASH_ALL, _BACKSLASH_E_STRINGS)
     for hash_comments in (False, True)
     for dollar in (False, True)
+    for mysql_dashdash in (False, True)
+    for brackets in (False, True)
+    for nested in (False, True)
 )
 
 
@@ -65,34 +100,129 @@ class _UnlexableSQLError(ValueError):
     """The statement cannot be split into code and literals unambiguously."""
 
 
-def _code_only(sql: str, *, backslash: bool, hash_comments: bool, dollar: bool) -> str:
+def _is_line_comment(sql: str, i: int, lexing: _Lexing) -> bool:
+    if lexing.hash_comments and sql[i] == "#":
+        return True
+    if not sql.startswith("--", i):
+        return False
+    if not lexing.mysql_dashdash:
+        return True
+    # MySQL: the second dash must be followed by whitespace or a control
+    # character (end of input counts as one).
+    follow = sql[i + 2] if i + 2 < len(sql) else "\0"
+    return follow.isspace() or ord(follow) < 32 or ord(follow) == 127
+
+
+def _skip_block_comment(sql: str, i: int, lexing: _Lexing) -> int:
+    """Index just past the ``/* … */`` comment that starts at *i*."""
+    depth, j, n = 0, i, len(sql)
+    while j < n:
+        if sql.startswith("/*", j):
+            # MySQL ``/*! … */`` and MariaDB ``/*M! … */`` comments are
+            # *executed* — their contents cannot be treated as a comment.
+            if sql.startswith("/*!", j) or sql[j + 2 : j + 4].upper() == "M!":
+                raise _UnlexableSQLError(
+                    "MySQL/MariaDB executable comments (/*! … */, /*M! … */) are not allowed"
+                )
+            if depth and not lexing.nested_comments:
+                j += 2
+                continue
+            depth += 1
+            j += 2
+            continue
+        if sql.startswith("*/", j):
+            depth -= 1
+            j += 2
+            if depth == 0:
+                return j
+            continue
+        j += 1
+    raise _UnlexableSQLError("Unterminated /* comment")
+
+
+def _string_continues(sql: str, j: int) -> int | None:
+    """PostgreSQL string continuation after a closing quote at ``j - 1``.
+
+    ``'a'`` followed by whitespace that contains a newline (and possibly
+    ``--`` comment lines) and another ``'`` continues the *same* literal — for
+    an ``E'…'`` string, in escape mode. Returns the index of the reopening
+    quote, or ``None``.
+    """
+    n = len(sql)
+    while j < n and sql[j] in " \t\f":
+        j += 1
+    if j >= n or sql[j] not in "\r\n":
+        return None
+    while j < n:
+        if sql[j] in " \t\f\r\n\v":
+            j += 1
+        elif sql.startswith("--", j):
+            end = sql.find("\n", j)
+            if end < 0:
+                return None
+            j = end + 1
+        else:
+            break
+    return j if j < n and sql[j] == "'" else None
+
+
+def _code_only(sql: str, lexing: _Lexing = _Lexing()) -> str:
     """*sql* with comments removed and quoted literals blanked, under one lexing.
 
     Single-quoted and dollar-quoted strings become ``''`` (their contents are
-    data); double-quoted and backtick-quoted names keep their text, because a
-    quoted identifier can still name a function (``"pg_sleep"(10)``).
-    Raises :class:`_UnlexableSQLError` for an unterminated literal/comment or a MySQL
-    ``/*! … */`` comment, whose contents MySQL *executes*.
+    data); double-quoted, backtick-quoted and (with ``brackets``) ``[…]``
+    names keep their text, because a quoted identifier can still name a
+    function (``"pg_sleep"(10)``). Raises :class:`_UnlexableSQLError` for an
+    unterminated literal/comment or a MySQL ``/*! … */`` / MariaDB
+    ``/*M! … */`` comment, whose contents the server *executes*.
     """
     out: list[str] = []
     i, n = 0, len(sql)
     while i < n:
         ch = sql[i]
-        if sql.startswith("--", i) or (hash_comments and ch == "#"):
+        if _is_line_comment(sql, i, lexing):
             end = sql.find("\n", i)
-            i = n if end < 0 else end
+            end = n if end < 0 else end
+            # PostgreSQL also ends a line comment at a bare carriage return,
+            # SQLite and MySQL do not: whatever follows one is ambiguous.
+            if "\r" in sql[i:end].rstrip("\r"):
+                raise _UnlexableSQLError("A carriage return inside a -- comment is ambiguous")
+            i = end
             out.append(" ")
             continue
         if sql.startswith("/*", i):
-            if sql.startswith("/*!", i):
-                raise _UnlexableSQLError("MySQL executable comments (/*! … */) are not allowed")
-            end = sql.find("*/", i + 2)
-            if end < 0:
-                raise _UnlexableSQLError("Unterminated /* comment")
+            i = _skip_block_comment(sql, i, lexing)
             out.append(" ")
-            i = end + 2
+            continue
+        word = _IDENT_RE.match(sql, i)
+        if word:
+            # A whole identifier/keyword at once, so a ``$`` or an ``E``
+            # inside it is never mistaken for the start of a literal.
+            escape_string = (
+                lexing.backslash == _BACKSLASH_E_STRINGS
+                and word.group(0) in ("E", "e")
+                and word.end() < n
+                and sql[word.end()] == "'"
+            )
+            if not escape_string:
+                out.append(word.group(0))
+                i = word.end()
+                continue
+            i = word.end()  # lex the ``'…'`` that follows as an escape string
+            ch = "'"
+        else:
+            escape_string = False
+        if ch == "[" and lexing.brackets:
+            end = sql.find("]", i + 1)
+            if end < 0:
+                raise _UnlexableSQLError("Unterminated [ quoted identifier")
+            out.append(sql[i + 1 : end])
+            i = end + 1
             continue
         if ch in "'\"`":
+            backslash = lexing.backslash == _BACKSLASH_ALL or (
+                ch == "'" and escape_string
+            )
             j = i + 1
             while True:
                 if j >= n:
@@ -104,12 +234,17 @@ def _code_only(sql: str, *, backslash: bool, hash_comments: bool, dollar: bool) 
                     if j + 1 < n and sql[j + 1] == ch:
                         j += 2
                         continue
+                    if escape_string:
+                        reopened = _string_continues(sql, j + 1)
+                        if reopened is not None:
+                            j = reopened + 1
+                            continue
                     break
                 j += 1
             out.append("''" if ch == "'" else sql[i + 1 : j])
             i = j + 1
             continue
-        if dollar and ch == "$":
+        if lexing.dollar and ch == "$":
             tag = _DOLLAR_TAG_RE.match(sql, i)
             if tag:
                 end = sql.find(tag.group(0), tag.end())
@@ -126,7 +261,7 @@ def _code_only(sql: str, *, backslash: bool, hash_comments: bool, dollar: bool) 
 def _strip_sql_comments(sql: str) -> str:
     """Remove ``--`` line comments and ``/* */`` block comments (standard lexing)."""
     try:
-        return _code_only(sql, backslash=False, hash_comments=False, dollar=False).strip()
+        return _code_only(sql).strip()
     except _UnlexableSQLError:
         return sql.strip()
 
@@ -165,7 +300,9 @@ def _validate_read_only_sql(sql: str) -> str | None:
     Rules, applied to the statement's code under every lexing in
     :data:`_LEXING_MODES` (comments removed, string literals blanked):
 
-    - no unterminated literal or comment, no MySQL ``/*! … */``;
+    - no unterminated literal or comment, no MySQL ``/*! … */`` or MariaDB
+      ``/*M! … */`` executable comment, no bare carriage return inside a
+      ``--`` comment;
     - exactly one statement (a single trailing ``;`` is tolerated);
     - the first keyword must be ``SELECT`` / ``WITH`` / ``EXPLAIN``;
     - no mutating / data-moving / transaction-control keyword anywhere
@@ -175,11 +312,9 @@ def _validate_read_only_sql(sql: str) -> str | None:
     """
     if not isinstance(sql, str):
         return "sql must be a string"
-    for backslash, hash_comments, dollar in _LEXING_MODES:
+    for lexing in _LEXING_MODES:
         try:
-            code = _code_only(
-                sql, backslash=backslash, hash_comments=hash_comments, dollar=dollar
-            )
+            code = _code_only(sql, lexing)
         except _UnlexableSQLError as exc:
             return f"{exc} — the statement cannot be checked unambiguously"
         error = _check_code(code)
@@ -298,6 +433,29 @@ DEFAULT_MAX_ROWS = 1000
 DEFAULT_QUERY_TIMEOUT = 30.0
 
 
+def _begin_read_only(conn, dialect: str) -> None:  # noqa: ANN001
+    """Open the query's transaction so the *database* refuses every write.
+
+    The gate is the first line; this is the one that holds even if a
+    statement slipped past it.
+
+    - SQLite: ``PRAGMA query_only = ON`` on the connection, then an explicit
+      ``BEGIN``. pysqlite emits no ``BEGIN`` of its own before a ``SELECT`` /
+      ``WITH`` statement, so without it a ``WITH … DELETE`` would autocommit
+      and the closing rollback would have nothing to undo.
+    - PostgreSQL: ``SET TRANSACTION READ ONLY`` as the transaction's first
+      statement.
+    - MySQL / MariaDB: ``START TRANSACTION READ ONLY``.
+    """
+    if dialect == "sqlite":
+        conn.exec_driver_sql("PRAGMA query_only = ON")
+        conn.exec_driver_sql("BEGIN")
+    elif dialect == "postgresql":
+        conn.exec_driver_sql("SET TRANSACTION READ ONLY")
+    elif dialect in ("mysql", "mariadb"):
+        conn.exec_driver_sql("START TRANSACTION READ ONLY")
+
+
 def _apply_statement_timeout(conn, dialect: str, seconds: float):  # noqa: ANN001
     """Bound the statement's run time where the database can; return a cleanup.
 
@@ -345,6 +503,18 @@ def _is_timeout(exc: Exception) -> bool:
     )
 
 
+def _is_read_only_refusal(exc: Exception) -> bool:
+    text = str(exc).lower()
+    return any(
+        marker in text
+        for marker in (
+            "readonly database",  # SQLite query_only
+            "read-only transaction",  # PostgreSQL
+            "read only transaction",  # MySQL / MariaDB
+        )
+    )
+
+
 @agent_function
 async def run_query(
     sql: str,
@@ -383,10 +553,18 @@ async def run_query(
           control, and calls with side effects outside the query
           (``pg_sleep``, ``pg_read_file``, ``lo_import``/``lo_export``,
           ``dblink``, ``set_config``, ``nextval``, ``load_extension``, …).
+          The lexings include SQLite ``[…]`` identifiers, PostgreSQL
+          ``E'…'`` escape strings (backslashes escape only there), nested
+          comments and dollar quotes, and MySQL's ``--`` rule (a comment only
+          when followed by whitespace, so ``1--1`` is code) and ``#`` comments.
         - A statement that exceeds *timeout* is cancelled and fails with
           ``error_code="query_timeout"``.
-        - Execution always runs inside a transaction that is rolled back, so
-          nothing is ever committed even if a mutation slipped past the gate.
+        - Execution always runs inside a transaction the *database* holds
+          read-only (SQLite ``PRAGMA query_only`` plus an explicit ``BEGIN``,
+          PostgreSQL ``SET TRANSACTION READ ONLY``, MySQL/MariaDB
+          ``START TRANSACTION READ ONLY``) and that is always rolled back, so
+          nothing is ever written even if a mutation slipped past the gate. A
+          write the database refuses fails with ``error_code="invalid_sql"``.
     """
     error = _validate_read_only_sql(sql)
     if error:
@@ -401,12 +579,13 @@ async def run_query(
         engine = create_engine(_sync_db_url(root))
         try:
             with engine.connect() as conn:
-                # Defense in depth: run inside an explicit transaction that is
-                # ALWAYS rolled back, so nothing that slips past the keyword
-                # gate can ever be committed.
+                # Defense in depth: run inside a read-only transaction that is
+                # ALWAYS rolled back, so the database itself refuses anything
+                # that slips past the keyword gate, and nothing is committed.
                 trans = conn.begin()
                 cleanup = lambda: None  # noqa: E731
                 try:
+                    _begin_read_only(conn, engine.dialect.name)
                     if deadline is not None:
                         cleanup = _apply_statement_timeout(
                             conn, engine.dialect.name, deadline
@@ -423,6 +602,11 @@ async def run_query(
                                 f"Query cancelled after {deadline:g}s (timeout).",
                                 code="query_timeout",
                                 timeout=deadline,
+                            ) from exc
+                        if _is_read_only_refusal(exc):
+                            raise AgentError(
+                                "The database refused a write: run_query is read-only.",
+                                code="invalid_sql",
                             ) from exc
                         raise
                     finally:

@@ -67,8 +67,15 @@ def make_migration(
         MigrationReplayError: an existing migration could not be replayed.
         MigrationLayoutError: the migrations sit in ``migrations/versions/``.
         MigrationSerializationError: a change cannot be written faithfully.
+        NotNullFieldError: a new NOT NULL field has no default to fill the
+            rows already in its table (``auto_now``/``auto_now_add`` fields
+            are backfilled with the current time instead); nothing is written.
     """
-    from zeeb_orm.migrations.autodetector import ChangeReport, detect_changes_with_report
+    from zeeb_orm.migrations.autodetector import (
+        ChangeReport,
+        check_not_null_additions,
+        detect_changes_with_report,
+    )
     from zeeb_orm.migrations.executor import (
         check_layout,
         latest_migration,
@@ -88,6 +95,9 @@ def make_migration(
         )
         if not operations:
             return MigrationDraft(operations=[], report=report)
+        # A NOT NULL field nothing can backfill would write a migration that
+        # never applies (and wedges every later makemigrations): refuse first.
+        check_not_null_additions(operations, report)
 
     initial = not list_migration_files(migrations_dir)
     planned = migration_name(migrations_dir, operations, name=name, initial=initial)

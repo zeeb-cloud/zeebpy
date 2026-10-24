@@ -2,7 +2,86 @@
 
 from __future__ import annotations
 
+import keyword
+import sys
 from pathlib import Path
+
+#: zeebpy's own top-level packages.
+FRAMEWORK_PACKAGES = frozenset({"zeeb_orm", "zeeb_api", "zeeb_agents"})
+
+#: Import names of zeebpy's runtime dependencies (and theirs, and the database
+#: drivers and test tools a generated project uses). A project package with
+#: one of these names sits first on ``sys.path`` and shadows the real module,
+#: so the project fails its own first import.
+DEPENDENCY_IMPORT_NAMES = frozenset(
+    {
+        # direct dependencies
+        "sqlalchemy", "alembic", "greenlet", "fastapi", "pydantic", "uvicorn",
+        "jwt", "bcrypt", "email_validator",
+        # what those pull in
+        "starlette", "anyio", "sniffio", "idna", "typing_extensions",
+        "typing_inspection", "annotated_types", "pydantic_core", "mako", "markupsafe",
+        "h11", "click", "httptools", "uvloop", "watchfiles", "websockets", "dotenv",
+        "yaml", "dns",
+        # optional extras: database drivers, OAuth
+        "asyncpg", "psycopg2", "aiomysql", "pymysql", "aiosqlite", "httpx", "httpcore",
+        "certifi", "multipart", "python_multipart", "cryptography", "cffi",
+        # what a generated project's tests run on
+        "pytest", "_pytest", "pluggy", "pytest_asyncio", "iniconfig", "packaging",
+    }
+)
+
+#: Top-level names a generated project already uses for its own directories.
+PROJECT_LAYOUT_NAMES = frozenset({"apps", "tests", "migrations", "logs"})
+
+
+def identifier_problem(name: str, kind: str = "name") -> str | None:
+    """Why *name* cannot be a Python package/module name, or ``None`` if it can.
+
+    A keyword (``class``) passes ``str.isidentifier()`` but makes every
+    ``import`` that names it a syntax error. Soft keywords (``match``,
+    ``type``) are fine in imports and are allowed.
+    """
+    if not isinstance(name, str) or not name.isidentifier():
+        return f"'{name}' is not a valid Python identifier, so it cannot be a {kind}."
+    if keyword.iskeyword(name):
+        return (
+            f"'{name}' is a Python keyword, so it cannot be a {kind} "
+            f"(`import {name}` is a syntax error)."
+        )
+    return None
+
+
+def app_name_problem(name: str) -> str | None:
+    """Why *name* cannot be an app (``apps/<name>/``), or ``None`` if it can."""
+    return identifier_problem(name, "package name")
+
+
+def project_name_problem(name: str) -> str | None:
+    """Why *name* cannot be a project, or ``None`` if it can.
+
+    The project package lands first on ``sys.path``, so besides being an
+    identifier that is not a keyword it must not shadow a standard-library
+    module, one of zeebpy's packages or a dependency, nor collide with the
+    directories every project has (``apps``, ``tests``, …).
+    """
+    problem = identifier_problem(name, "package name")
+    if problem:
+        return problem
+    lowered = name.lower()
+    if lowered in sys.stdlib_module_names:
+        return (
+            f"'{name}' is the name of a Python standard-library module; a project "
+            f"package called that would shadow it."
+        )
+    if lowered in FRAMEWORK_PACKAGES or lowered in DEPENDENCY_IMPORT_NAMES:
+        return (
+            f"'{name}' is the import name of a package zeebpy depends on; a project "
+            f"package called that would shadow it and the project could not import it."
+        )
+    if lowered in PROJECT_LAYOUT_NAMES:
+        return f"'{name}' is a directory every Zeeb project already has."
+    return None
 
 
 def find_project_root() -> Path | None:

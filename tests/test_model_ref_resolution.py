@@ -27,8 +27,8 @@ import pytest
 import zeeb_agents as agents
 from zeeb_orm import Model, fields
 from zeeb_orm.exceptions import ModelRegistrationError
-from zeeb_orm.models.base import _model_registry, metadata, resolve_model_ref
 from zeeb_orm.migrations.cli import _register_models
+from zeeb_orm.models.base import _model_registry, metadata, resolve_model_ref
 
 # ---------------------------------------------------------------------------
 # Test models (module-level, unique names to avoid registry collisions)

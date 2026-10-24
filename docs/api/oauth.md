@@ -84,6 +84,7 @@ provider = AzureADProvider(
     tenant="common",
     client_id="YOUR-APP-CLIENT-ID",
     client_secret="YOUR-CLIENT-SECRET",
+    allowed_tenants=["YOUR-TENANT-GUID"],   # required for common/organizations
 )
 app.include_router(create_oauth_router(providers={"azure": provider}))
 ```
@@ -121,6 +122,7 @@ OAUTH_PROVIDERS = {
         "tenant": "common",          # tenant mode, see below
         "client_id": "11111111-....",
         "client_secret": "...",
+        "allowed_tenants": ["22222222-...."],   # multi-tenant: who may sign in
     },
 }
 ```
@@ -133,19 +135,38 @@ The `tenant` value selects the authority
 | `tenant` | Who can sign in |
 |----------|-----------------|
 | a tenant GUID (or verified domain) | Only users of that tenant |
-| `common` | Any work/school or personal Microsoft account |
-| `organizations` | Any work/school account |
-| `consumers` | Personal Microsoft accounts only |
+| `common` | Work/school or personal Microsoft accounts from `allowed_tenants` |
+| `organizations` | Work/school accounts from `allowed_tenants` |
+| `consumers` | Personal Microsoft accounts (tenant `9188040d-6c67-4c5b-b112-36a304b66dad`) |
 
-### Multi-tenant issuer note
+### Multi-tenant Azure AD
 
-With `common`/`organizations`/`consumers` the ID token's `iss` claim contains
-the *concrete* tenant GUID of the signing tenant, so simple issuer equality
-cannot work. `AzureADProvider` therefore validates the issuer against
-`^https://login\.microsoftonline\.com/[0-9a-f-]{36}/v2\.0$` in multi-tenant
-mode and uses an exact match when you configure a concrete tenant GUID. If you
-need to restrict a multi-tenant app to an allow-list of tenants, subclass
-`AzureADProvider` and override `_issuer_validator`.
+With `common`/`organizations`/`consumers` *any* Azure AD tenant can obtain a
+validly signed token for your app — including one an attacker creates, whose
+admin can assign themselves any of your app roles. So a multi-tenant provider
+must say which tenants it accepts, and **refuses every token until it does**:
+
+| Option | Effect |
+|---|---|
+| `allowed_tenants=["<tenant GUID>", ...]` | Accept tokens only from these tenants (the `tid`, carried in `iss`) |
+| `allow_any_tenant=True` | Accept every tenant — a true multi-tenant SaaS. Such tokens never carry roles or staff flags for an unlinked user (see below) |
+
+Without either, sign-in and external bearer tokens fail with
+`OAuthValidationError` naming the two options. In a generated project set
+`AZURE_ALLOWED_TENANTS` (comma-separated GUIDs) or `AZURE_ALLOW_ANY_TENANT=true`.
+
+The ID token's `iss` contains the concrete tenant GUID
+(`https://login.microsoftonline.com/<tid>/v2.0`); the provider takes the
+tenant from it and checks it against `allowed_tenants`. A concrete tenant GUID
+is an exact issuer match, and a verified domain matches the issuer its
+discovery document names. `allowed_tenants` must be GUIDs
+(`ImproperlyConfigured` otherwise); when given with a single-tenant provider
+it narrows that too.
+
+**Upgrading:** a provider on `common`/`organizations`/`consumers` used to
+accept every tenant. To keep that behaviour pass `allow_any_tenant=True`, but
+prefer `allowed_tenants` — and note that roles in those tokens are no longer
+honoured for users without a linked account.
 
 Azure claims are mapped as: subject = `oid` (stable object id; falls back to
 `sub`), email = `email` (falls back to `preferred_username`).
@@ -432,7 +453,8 @@ validator (first non-None wins): the token is validated against the
 provider's JWKS (signature, `aud` = your client id, issuer, expiry), then
 resolved to the linked database user via `ExternalIdentity`. Only a token with
 **no** linked identity falls back to a lightweight `ExternalAuthenticatedUser`
-built from the token claims. Invalid tokens never raise —
+built from the token claims (without roles, unless you opt in — see below).
+Invalid tokens never raise —
 `request.state.user` simply stays `None`. There is zero overhead when nothing is
 configured.
 
@@ -441,6 +463,49 @@ deactivated authenticates nobody, and neither does one whose identity lookup
 errors (database down, or the `auth_external_identities` table never
 migrated) — an error is logged and the request proceeds unauthenticated
 rather than as a claims-only user.
+
+### Roles from external tokens
+
+A linked user (an `ExternalIdentity` points at a local account) gets its
+roles, `is_staff` and `is_superuser` from the database alone, exactly like a
+local login. An `ExternalAuthenticatedUser` — a valid IdP token with **no**
+linked account — is authenticated but by default has **no roles and no staff
+flags**: the token's `roles`, `is_staff` and `is_superuser` claims say
+whatever the IdP's admins put there, so `require_auth(roles=[...])`,
+`IsAdminUser` and friends ignore them.
+
+Opt in when every principal the IdP can issue a token for is one you would let
+choose those roles (e.g. a single-tenant Azure app whose app roles your own
+admins assign):
+
+```python
+OAUTH_TRUST_TOKEN_ROLES = True                 # every provider
+# or per provider
+AzureADProvider(tenant="<tenant GUID>", client_id="...", trust_token_roles=True)
+```
+
+The opt-in never applies to a multi-tenant `AzureADProvider` accepting any
+tenant (`allow_any_tenant=True`), and with `allowed_tenants` only to tokens
+from those tenants. Subclasses can narrow it further by overriding
+`OAuthProvider.trusts_token_roles(claims)`; `ExternalAuthenticatedUser`
+exposes the outcome as `trusts_token_roles` and the trusted roles as `roles`.
+
+**Upgrading:** an unlinked external user used to receive the token's
+`roles`/`is_staff`/`is_superuser` unconditionally. If you relied on that, set
+`OAUTH_TRUST_TOKEN_ROLES = True` (and, for multi-tenant Azure,
+`allowed_tenants`), or link the identities to local accounts and manage their
+roles there.
+
+### JWKS refetch limits
+
+The signing key is looked up by the token's `kid` header *before* the
+signature can be checked, so an unknown `kid` must not cost an outbound
+request every time. An unknown `kid` forces at most one JWKS refetch per
+`OAUTH_JWKS_REFETCH_COOLDOWN_SECONDS` (default `60`; per provider
+`jwks_refetch_cooldown_seconds=`), concurrent fetches share one request, and a
+`kid` a fetch confirmed absent is remembered for five minutes. Real key
+rotation still works: the first token with the new `kid` after the cooldown
+triggers the refetch.
 
 To accept IdP tokens on some viewsets only, leave
 `OAUTH_ACCEPT_EXTERNAL_TOKENS` empty and list `OAuth2BearerAuthentication` in
@@ -511,18 +576,26 @@ metadata.id_token_signing_alg_values_supported  # e.g. ["RS256"]
 
 ### JWKSCache and validate_id_token()
 
-`JWKSCache(client, jwks_uri, ttl_seconds=3600)` caches an IdP's JSON Web Key
+`JWKSCache(client, jwks_uri, ttl_seconds=3600, *, refetch_cooldown_seconds=60.0,
+unknown_kid_ttl_seconds=300.0, max_unknown_kids=1024)` caches an IdP's JSON Web Key
 Set, fetched asynchronously through an `OAuth2Client`. Its one method,
 `await cache.get_signing_key(kid)`, returns the `jwt.PyJWK` for a key id:
 
 - the key set is fetched on first use and refetched once it is older than
-  `ttl_seconds`;
-- an unknown `kid` forces exactly **one** extra refetch (the usual key
-  rollover case) before failing with `OAuthValidationError`;
+  `ttl_seconds`; concurrent fetches are coalesced into one;
+- an unknown `kid` forces **one** extra refetch (the usual key rollover case)
+  before failing with `OAuthValidationError` — but at most one forced refetch
+  per `refetch_cooldown_seconds` (default `60`): inside the cooldown an unknown
+  `kid` fails without fetching;
+- a `kid` a fetch confirmed absent fails without fetching for
+  `unknown_kid_ttl_seconds` (default `300`), in a negative cache bounded to
+  `max_unknown_kids` (default `1024`) entries;
 - a JWKS document PyJWT cannot parse raises `OAuthValidationError`; a failed
   fetch raises `OAuthExchangeError`.
 
-Each provider creates one lazily from its metadata's `jwks_uri`.
+Each provider creates one lazily from its metadata's `jwks_uri`, with the
+cooldown from `jwks_refetch_cooldown_seconds=` or
+`OAUTH_JWKS_REFETCH_COOLDOWN_SECONDS`.
 
 `validate_id_token()` verifies a JWT against such a cache and returns its
 claims as a `dict`:
@@ -636,6 +709,8 @@ identity_claims = await provider.get_claims(tokens, nonce=claims["nonce"])
 | `OAUTH_ALLOWED_REDIRECT_HOSTS` | `[]` | Hosts allowed as absolute `next` redirect targets (relative paths are always allowed) |
 | `OAUTH_ACCEPT_EXTERNAL_TOKENS` | `[]` | Provider names whose IdP-issued JWTs are accepted as Bearer tokens |
 | `OAUTH_REQUIRE_VERIFIED_EMAIL` | `True` | Refuse to link or provision when the provider reports the email as unverified (or reports no flag). Override per provider with `require_verified_email=` |
+| `OAUTH_TRUST_TOKEN_ROLES` | `False` | Let an external bearer token with no linked account carry its `roles`/`is_staff`/`is_superuser` claims. Override per provider with `trust_token_roles=`; never for a multi-tenant Azure provider without `allowed_tenants` |
+| `OAUTH_JWKS_REFETCH_COOLDOWN_SECONDS` | `60` | Minimum interval between JWKS refetches forced by an unknown `kid`. Override per provider with `jwks_refetch_cooldown_seconds=` |
 
 ## Security Notes
 
@@ -657,6 +732,14 @@ identity_claims = await provider.get_claims(tokens, nonce=claims["nonce"])
   custom IdPs), or disable it per provider with `link_by_email=False`.
   `email_verified` is read strictly: `true`/`false` booleans or strings; any
   other value counts as unverified.
+- **Multi-tenant Azure AD**: a provider on `common`/`organizations`/`consumers`
+  refuses every token until you set `allowed_tenants` or
+  `allow_any_tenant=True` — see [Multi-tenant Azure AD](#multi-tenant-azure-ad).
+- **IdP-asserted roles**: an external token without a linked account carries
+  no roles or staff flags unless `OAUTH_TRUST_TOKEN_ROLES` / `trust_token_roles`
+  is on — see [Roles from external tokens](#roles-from-external-tokens).
+- **JWKS amplification**: unknown `kid` values trigger at most one refetch per
+  cooldown — see [JWKS refetch limits](#jwks-refetch-limits).
 - **Pre-registration hijack**: the local side must prove ownership too — see
   [Why linking by email is off by default](#why-linking-by-email-is-off-by-default).
 - **Tokens in fragments**: the browser success redirect carries tokens in the

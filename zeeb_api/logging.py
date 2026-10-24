@@ -6,11 +6,11 @@ and integration with FastAPI/uvicorn.
 
 Usage:
     from zeeb_api.logging import get_logger, configure_logging
-    
+
     # Get a logger
     logger = get_logger(__name__)
     logger.info("User logged in", user_id=123, ip="192.168.1.1")
-    
+
     # Configure logging (typically in app startup)
     configure_logging(level="INFO", json_logs=True)
 """
@@ -20,14 +20,14 @@ import logging
 import logging.handlers
 import sys
 from datetime import datetime, timezone
-from typing import Any
 from pathlib import Path
+from typing import Any
 
 
 class JsonFormatter(logging.Formatter):
     """
     JSON log formatter for structured logging.
-    
+
     Outputs logs as JSON objects with consistent fields:
     - timestamp: ISO 8601 timestamp
     - level: Log level (INFO, ERROR, etc.)
@@ -35,7 +35,7 @@ class JsonFormatter(logging.Formatter):
     - message: Log message
     - ...extra: Any additional fields passed to the log call
     """
-    
+
     def __init__(
         self,
         include_timestamp: bool = True,
@@ -52,11 +52,11 @@ class JsonFormatter(logging.Formatter):
         self.include_pathname = include_pathname
         self.include_lineno = include_lineno
         self.timestamp_format = timestamp_format
-    
+
     def format(self, record: logging.LogRecord) -> str:
         """Format log record as JSON."""
         log_data: dict[str, Any] = {}
-        
+
         # Timestamp
         if self.include_timestamp:
             if self.timestamp_format:
@@ -67,32 +67,32 @@ class JsonFormatter(logging.Formatter):
                 log_data["timestamp"] = datetime.fromtimestamp(
                     record.created, tz=timezone.utc
                 ).isoformat()
-        
+
         # Level
         if self.include_level:
             log_data["level"] = record.levelname
-        
+
         # Logger name
         if self.include_logger:
             log_data["logger"] = record.name
-        
+
         # Message - safely get formatted message
         try:
             log_data["message"] = record.getMessage()
         # Broad except: guards %-style log message formatting against bad user-supplied args
         except Exception:
             log_data["message"] = str(record.msg)
-        
+
         # Source location (optional)
         if self.include_pathname:
             log_data["pathname"] = record.pathname
         if self.include_lineno:
             log_data["lineno"] = record.lineno
-        
+
         # Exception info
         if record.exc_info:
             log_data["exception"] = self.formatException(record.exc_info)
-        
+
         # Extra fields (passed via extra={} or logger adapter)
         # Filter out internal/uvicorn fields
         extra_keys = set(record.__dict__.keys()) - {
@@ -106,17 +106,17 @@ class JsonFormatter(logging.Formatter):
         }
         for key in extra_keys:
             log_data[key] = getattr(record, key)
-        
+
         return json.dumps(log_data, default=str, ensure_ascii=False)
 
 
 class ConsoleFormatter(logging.Formatter):
     """
     Colored console formatter for development.
-    
+
     Outputs human-readable logs with colors for different levels.
     """
-    
+
     COLORS = {
         'DEBUG': '\033[36m',     # Cyan
         'INFO': '\033[32m',      # Green
@@ -125,14 +125,14 @@ class ConsoleFormatter(logging.Formatter):
         'CRITICAL': '\033[35m',  # Magenta
     }
     RESET = '\033[0m'
-    
+
     def __init__(self, use_colors: bool = True):
         super().__init__(
             fmt="%(asctime)s | %(levelname)-8s | %(name)s | %(message)s",
             datefmt="%Y-%m-%d %H:%M:%S"
         )
         self.use_colors = use_colors
-    
+
     def format(self, record: logging.LogRecord) -> str:
         """Format with optional colors."""
         # Get the formatted message first (handles %-style formatting)
@@ -141,7 +141,7 @@ class ConsoleFormatter(logging.Formatter):
         # Broad except: guards %-style log message formatting against bad user-supplied args
         except Exception:
             message = str(record.msg)
-        
+
         # Add extra fields to message (filter out internal/uvicorn fields)
         extra_keys = set(record.__dict__.keys()) - {
             'name', 'msg', 'args', 'created', 'filename', 'funcName',
@@ -152,49 +152,49 @@ class ConsoleFormatter(logging.Formatter):
             # Uvicorn internal fields
             'color_message',
         }
-        
+
         if extra_keys:
             extras = " | ".join(f"{k}={getattr(record, k)}" for k in sorted(extra_keys))
             message = f"{message} | {extras}"
-        
+
         # Create a copy of the record with the modified message
         record = logging.makeLogRecord(record.__dict__)
         record.msg = message
         record.args = ()
-        
+
         formatted = super().format(record)
-        
+
         if self.use_colors and record.levelname in self.COLORS:
             color = self.COLORS[record.levelname]
             formatted = f"{color}{formatted}{self.RESET}"
-        
+
         return formatted
 
 
 class ZeebLogger(logging.LoggerAdapter):
     """
     Logger adapter that makes it easy to pass extra fields.
-    
+
     Usage:
         logger = get_logger(__name__)
         logger.info("Request processed", user_id=123, duration_ms=45)
     """
-    
+
     def process(self, msg: str, kwargs: dict[str, Any]) -> tuple[str, dict[str, Any]]:
         """Process log call to handle extra fields."""
         # Extract extra fields from kwargs
         extra = kwargs.get('extra', {})
-        
+
         # Move non-standard kwargs to extra
         standard_kwargs = {'exc_info', 'stack_info', 'stacklevel', 'extra'}
         for key in list(kwargs.keys()):
             if key not in standard_kwargs:
                 extra[key] = kwargs.pop(key)
-        
+
         # Merge with adapter's extra
         if self.extra:
             extra = {**self.extra, **extra}
-        
+
         kwargs['extra'] = extra
         return msg, kwargs
 
@@ -217,7 +217,7 @@ def configure_logging(
 ) -> None:
     """
     Configure logging for the application.
-    
+
     Args:
         level: Log level (DEBUG, INFO, WARNING, ERROR, CRITICAL)
         json_logs: If True, output logs as JSON (recommended for production)
@@ -226,34 +226,34 @@ def configure_logging(
         log_retention_days: Number of days to keep old log files (default: 30)
         include_uvicorn: Configure uvicorn loggers too
         include_sqlalchemy: Include SQLAlchemy engine logs (verbose)
-    
+
     Example:
         # Development
         configure_logging(level="DEBUG", json_logs=False)
-        
+
         # Production with rotation
         configure_logging(
-            level="INFO", 
-            json_logs=True, 
+            level="INFO",
+            json_logs=True,
             log_file="logs/app.log",
             log_rotation=True,
             log_retention_days=30
         )
     """
     global _logging_configured, _log_level, _json_logs, _log_file
-    
+
     # Parse level
     if isinstance(level, str):
         _log_level = getattr(logging, level.upper(), logging.INFO)
     else:
         _log_level = level
-    
+
     _json_logs = json_logs
     _log_file = log_file
-    
+
     # Create handlers
     handlers: list[logging.Handler] = []
-    
+
     # Console handler
     console_handler = logging.StreamHandler(sys.stdout)
     if json_logs:
@@ -262,14 +262,14 @@ def configure_logging(
         console_handler.setFormatter(ConsoleFormatter())
     console_handler.setLevel(_log_level)
     handlers.append(console_handler)
-    
+
     # File handler with rotation (always JSON for easier parsing)
     if log_file:
         # Auto-create logs directory
         log_path = Path(log_file)
         if log_path.parent and not log_path.parent.exists():
             log_path.parent.mkdir(parents=True, exist_ok=True)
-        
+
         if log_rotation:
             # TimedRotatingFileHandler - rotates at midnight
             file_handler = logging.handlers.TimedRotatingFileHandler(
@@ -283,59 +283,59 @@ def configure_logging(
             file_handler.suffix = "%Y-%m-%d"
         else:
             file_handler = logging.FileHandler(log_file, encoding="utf-8")
-        
+
         file_handler.setFormatter(JsonFormatter())
         file_handler.setLevel(_log_level)
         handlers.append(file_handler)
-    
+
     # Configure root logger
     root_logger = logging.getLogger()
     root_logger.setLevel(_log_level)
-    
+
     # Remove existing handlers
     for handler in root_logger.handlers[:]:
         root_logger.removeHandler(handler)
-    
+
     # Add new handlers
     for handler in handlers:
         root_logger.addHandler(handler)
-    
+
     # Configure zeeb loggers
     logging.getLogger("zeeb").setLevel(_log_level)
     logging.getLogger("zeeb_orm").setLevel(_log_level)
     logging.getLogger("zeeb_api").setLevel(_log_level)
-    
+
     # Configure uvicorn loggers
     if include_uvicorn:
         for name in ["uvicorn", "uvicorn.error", "uvicorn.access"]:
             uvicorn_logger = logging.getLogger(name)
             uvicorn_logger.handlers = []
             uvicorn_logger.propagate = True
-    
+
     # Configure SQLAlchemy logger
     if include_sqlalchemy:
         logging.getLogger("sqlalchemy.engine").setLevel(_log_level)
     else:
         logging.getLogger("sqlalchemy.engine").setLevel(logging.WARNING)
-    
+
     _logging_configured = True
 
 
 def get_logger(name: str | None = None, **extra: Any) -> ZeebLogger:
     """
     Get a logger instance.
-    
+
     Args:
         name: Logger name (typically __name__)
         **extra: Default extra fields to include in all log messages
-    
+
     Returns:
         ZeebLogger instance
-    
+
     Example:
         logger = get_logger(__name__)
         logger.info("Starting server", port=8000)
-        
+
         # With default extra fields
         logger = get_logger(__name__, service="auth")
         logger.info("User login")  # Includes service="auth"
@@ -343,7 +343,7 @@ def get_logger(name: str | None = None, **extra: Any) -> ZeebLogger:
     # Auto-configure if not done
     if not _logging_configured:
         configure_logging()
-    
+
     base_logger = logging.getLogger(name or "zeeb")
     return ZeebLogger(base_logger, extra or {})
 
@@ -351,13 +351,13 @@ def get_logger(name: str | None = None, **extra: Any) -> ZeebLogger:
 def get_request_logger(request_id: str, **extra: Any) -> ZeebLogger:
     """
     Get a logger with request context.
-    
+
     Useful for tracing logs across a single request.
-    
+
     Args:
         request_id: Unique request identifier
         **extra: Additional context fields
-    
+
     Example:
         logger = get_request_logger("req-123", user_id=456)
         logger.info("Processing request")
@@ -447,7 +447,7 @@ __all__ = [
     "ZeebLogger",
     # Quick logging
     "debug",
-    "info", 
+    "info",
     "warning",
     "error",
     "critical",

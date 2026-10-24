@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from typing import Any, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
+
 from fastapi import Request
 
 if TYPE_CHECKING:
@@ -15,21 +16,21 @@ SAFE_METHODS = ("GET", "HEAD", "OPTIONS")
 class BasePermission:
     """
     Base permission class.
-    
+
     Override `has_permission` and/or `has_object_permission` to implement
     custom permission logic.
     """
-    
+
     message: str = "Permission denied."
-    
+
     async def has_permission(self, request: Request, view: ViewSet) -> bool:
         """
         Return True if permission is granted for the request.
-        
+
         This is called before any action is executed.
         """
         return True
-    
+
     async def has_object_permission(
         self,
         request: Request,
@@ -38,7 +39,7 @@ class BasePermission:
     ) -> bool:
         """
         Return True if permission is granted for the specific object.
-        
+
         This is called after has_permission(), for detail views.
         """
         return True
@@ -47,11 +48,11 @@ class BasePermission:
 class AllowAny(BasePermission):
     """
     Allow any access.
-    
+
     This permission class will allow unrestricted access,
     regardless of authentication status.
     """
-    
+
     async def has_permission(self, request: Request, view: ViewSet) -> bool:
         return True
 
@@ -59,12 +60,12 @@ class AllowAny(BasePermission):
 class IsAuthenticated(BasePermission):
     """
     Require authentication.
-    
+
     Access is allowed only to authenticated users.
     """
-    
+
     message = "Authentication required."
-    
+
     async def has_permission(self, request: Request, view: ViewSet) -> bool:
         # Check if user is authenticated
         # FastAPI stores user in request.state after authentication
@@ -75,17 +76,17 @@ class IsAuthenticated(BasePermission):
 class IsAdminUser(BasePermission):
     """
     Require admin/staff status.
-    
+
     Access is allowed only to admin/staff users.
     """
-    
+
     message = "Admin access required."
-    
+
     async def has_permission(self, request: Request, view: ViewSet) -> bool:
         user = getattr(request.state, "user", None)
         if user is None:
             return False
-        
+
         return (
             getattr(user, "is_staff", False) or
             getattr(user, "is_admin", False) or
@@ -96,17 +97,17 @@ class IsAdminUser(BasePermission):
 class IsAuthenticatedOrReadOnly(BasePermission):
     """
     Allow read-only access for unauthenticated users.
-    
+
     Write operations (POST, PUT, PATCH, DELETE) require authentication.
     """
-    
+
     message = "Authentication required for write operations."
-    
+
     async def has_permission(self, request: Request, view: ViewSet) -> bool:
         # Safe methods (GET, HEAD, OPTIONS) are always allowed
         if request.method in SAFE_METHODS:
             return True
-        
+
         # Write methods require authentication
         user = getattr(request.state, "user", None)
         return user is not None and getattr(user, "is_authenticated", True)
@@ -115,13 +116,13 @@ class IsAuthenticatedOrReadOnly(BasePermission):
 class IsOwner(BasePermission):
     """
     Object-level permission to only allow owners of an object.
-    
+
     Assumes the model has an `owner` or `user` attribute.
     """
-    
+
     message = "You do not have permission to access this object."
     owner_field = "owner"  # Can be overridden
-    
+
     async def has_object_permission(
         self,
         request: Request,
@@ -178,7 +179,7 @@ class IsOwnerOrReadOnly(IsOwner):
     """
     Object-level permission allowing read-only for non-owners.
     """
-    
+
     async def has_object_permission(
         self,
         request: Request,
@@ -188,7 +189,7 @@ class IsOwnerOrReadOnly(IsOwner):
         # Safe methods allowed for everyone
         if request.method in SAFE_METHODS:
             return True
-        
+
         # Write methods require ownership
         return await super().has_object_permission(request, view, obj)
 
@@ -207,7 +208,7 @@ class ModelPermissions(BasePermission):
     the ``add_<model>`` its HTTP method would suggest (``action_perms_map``).
     A method missing from ``perms_map`` is denied rather than let through.
     """
-    
+
     # Permission codenames follow the standard add_/change_/delete_/view_<model>
     # convention. They are matched against ``Permission.codename`` (which carries
     # no app-label prefix in this ORM), via the user's ``has_perm_async``.

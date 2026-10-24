@@ -160,6 +160,8 @@ def _auto_name(operations: Sequence[Operation]) -> str:
             descriptions.append(f"alter_{op.name}_on_{op.table}")
         elif isinstance(op, ops_module.RenameField):
             descriptions.append(f"rename_{op.old_name}_to_{op.new_name}_on_{op.table}")
+        elif isinstance(op, ops_module.AlterModelTable):
+            descriptions.append(f"rename_{op.old_table}_to_{op.new_table}")
         else:
             descriptions.append("auto")
 
