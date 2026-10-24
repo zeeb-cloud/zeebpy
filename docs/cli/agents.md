@@ -63,7 +63,7 @@ vocabulary: `app_not_found`, `model_not_found`, `already_exists`,
 `setting_not_found`, `settings_error`, `syntax_error`, `env_key_not_found`, `field_not_found`, `field_in_use`,
 `function_not_found`, `file_not_found`, `log_file_not_found`,
 `manifest_version_unsupported`, `feature_in_use`, `model_referenced`,
-`delete_pending`, `delete_migration_missing`, `verification_failed`,
+`delete_pending`, `delete_migration_missing`, `delete_incomplete`, `verification_failed`,
 `outside_project_root`, `query_timeout`, `server_not_running`, `server_not_reachable`,
 `dependency_missing`, `permission_denied`, `no_project_root`,
 `no_project_id`, `project_not_found`, `runtime_not_configured`) plus
@@ -290,7 +290,9 @@ no migration file drops the tables after the run, the archive and the manifest
 entry are kept (`delete_pending`) and the call fails with
 `delete_migration_missing` — run `make_migrations()` and `run_migrations()`,
 then `delete_feature(..., confirm=True)` again; `activate_feature` refuses a
-`delete_pending` feature.
+`delete_pending` feature. A model that cannot be removed from `models.py` keeps
+the archive the same way and fails with `delete_incomplete`
+(`data["models_not_removed"]`), before any migration runs.
 
 Generated test files are per feature: a feature named after its app writes
 `tests/test_<app>_generated.py`, any other feature in that app

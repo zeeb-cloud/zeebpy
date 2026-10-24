@@ -225,7 +225,7 @@ def artifacts_from_plan(plan: dict) -> dict:
             owned["viewsets"].append(f"{app}.{model}ViewSet")
         elif kind == "register_route" and app and model:
             owned["routes"].append(
-                {"app": app, "model": model, "prefix": op.get("url_prefix")}
+                {"app": app, "model": model, "prefix": op.get("prefix")}
             )
         elif kind == "add_viewset_action" and app and model:
             owned["functions"].append(

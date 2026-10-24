@@ -2019,6 +2019,9 @@ async def delete_feature(
         models_not_dropped (list[str]): only on the
             ``delete_migration_missing`` failure (``success=False``, with the
             keys above) — the models no migration file drops; see Notes.
+        models_not_removed (list[str]): only on the ``delete_incomplete``
+            failure (``success=False``, with the keys above) — the models that
+            could not be taken out of ``models.py``; see Notes.
 
     Returns data (when refused):
         confirm_required (bool): always ``True``.
@@ -2049,6 +2052,10 @@ async def delete_feature(
           and ``run_migrations()``, then call ``delete_feature`` again to
           finish; :func:`activate_feature` refuses such a feature with
           ``delete_pending``.
+        - Fail-safe: if a model cannot be removed from ``models.py``, the
+          archive and the manifest entry are likewise kept (``delete_pending``)
+          and the call fails with ``delete_incomplete`` — whatever ``migrate``
+          is, and before any migration runs. Repair the file and call again.
         - A generated test file another feature also owns (manifests recorded
           before test files were named per feature) is left in place.
         - The app directory itself is left in place: other features may live in
@@ -2156,6 +2163,55 @@ async def delete_feature(
     warnings.extend(outcome.get("warnings", []))
     if outcome["errors"]:
         warnings.extend(outcome["errors"])
+
+    not_removed = [
+        f"{failed['op'].get('app')}.{failed['op'].get('model')}"
+        for failed in outcome["failed_operations"]
+        if failed["op"].get("op") == "delete_model"
+    ]
+    if not_removed:
+        # A model is still in models.py: purging the archive now would forget a
+        # feature whose code is half gone and whose schema is untouched. Keep
+        # the archive and the manifest entry so the re-run can finish.
+        await asyncio.to_thread(
+            set_status,
+            root,
+            feature,
+            STATUS_ARCHIVED,
+            artifacts=artifacts,
+            app=entry.get("app"),
+            delete_pending=True,
+            delete_tables=tables,
+        )
+        return AgentResult(
+            success=False,
+            message=(
+                f"delete_feature('{feature}') could not remove "
+                f"{', '.join(not_removed)} from models.py — the archive and the "
+                "manifest entry were kept. Fix the error, then run "
+                f"delete_feature('{feature}', confirm=True) again to finish."
+            ),
+            data={
+                "error_code": "delete_incomplete",
+                "recoverable": True,
+                "feature": feature,
+                "deleted": deleted,
+                "models_deleted": [ref for ref in models if ref not in not_removed],
+                "models_not_removed": not_removed,
+                "routes_unregistered": unregistered,
+                "risk": risk,
+                "migrations_created": outcome["changes"]["migrations_created"],
+                "verification": None,
+                "verified": False,
+                "warnings": warnings,
+                "next_actions": [
+                    f"Repair apps/<app>/models.py ({outcome['errors'][0]})",
+                    f"delete_feature('{feature}', confirm=True) to finish",
+                ],
+                "state_changed": True,
+                "affected": _feature_scope(entry),
+            },
+        )
 
     undropped = (
         await asyncio.to_thread(_models_without_delete_migration, root, tables)

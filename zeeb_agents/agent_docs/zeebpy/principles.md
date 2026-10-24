@@ -59,7 +59,7 @@ Rules you can rely on:
 
 `data["error_code"]` (when present) is one of:
 
-`already_exists`, `app_not_found`, `archive_missing`, `delete_migration_missing`,
+`already_exists`, `app_not_found`, `archive_missing`, `delete_incomplete`, `delete_migration_missing`,
 `delete_pending`, `dependency_missing`,
 `env_key_not_found`, `feature_active`, `feature_archived`, `feature_in_use`,
 `feature_not_found`,

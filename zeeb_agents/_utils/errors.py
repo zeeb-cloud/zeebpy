@@ -36,6 +36,7 @@ ERROR_CODES = frozenset(
         "feature_in_use",
         "model_referenced",
         "delete_pending",
+        "delete_incomplete",
         "delete_migration_missing",
         "verification_failed",
         "manifest_version_unsupported",

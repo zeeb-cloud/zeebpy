@@ -16,6 +16,7 @@ from zeeb_agents._utils.code_gen import (
     extract_field_names,
     extract_field_types,
     extract_model_names,
+    remove_class_block,
     remove_field_from_class,
     rename_field_in_class,
     render_model_class,
@@ -167,13 +168,11 @@ async def delete_model(
     def _remove() -> None:
         content = path.read_text(encoding="utf-8")
         ensure_model_exists(content, model_name, str(path))
-        import re
-        pattern = re.compile(
-            rf"^(class {re.escape(model_name)}\b.*?)(?=\nclass |\Z)",
-            re.MULTILINE | re.DOTALL,
-        )
-        new_content = pattern.sub("", content).rstrip("\n") + "\n"
-        write_source(path, new_content)
+        # AST-located: a text span up to the next ``class`` would also take any
+        # module-level code (functions, signal receivers) that follows the model.
+        new_content = remove_class_block(content, model_name)
+        if new_content is not None:
+            write_source(path, new_content)
 
     await asyncio.to_thread(_remove)
     return AgentResult(
