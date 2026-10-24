@@ -85,7 +85,7 @@ async def test_f_expression_values_still_work(db):
 
 
 @pytest.mark.parametrize(
-    "dialect", [sqlite.dialect(), postgresql.dialect(), mysql.dialect()], ids=str
+    "dialect", [sqlite.dialect(), postgresql.dialect(), mysql.dialect()], ids=lambda d: d.name
 )
 @pytest.mark.parametrize(
     "lookup",

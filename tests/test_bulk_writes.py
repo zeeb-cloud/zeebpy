@@ -274,7 +274,7 @@ def test_ignore_conflicts_statement_per_dialect(dialect, expected):
 
 
 @pytest.mark.parametrize(
-    "dialect", [sqlite.dialect(), postgresql.dialect(), mysql.dialect()], ids=str
+    "dialect", [sqlite.dialect(), postgresql.dialect(), mysql.dialect()], ids=lambda d: d.name
 )
 def test_bulk_update_case_statement_compiles(dialect):
     from sqlalchemy import case, literal, update
