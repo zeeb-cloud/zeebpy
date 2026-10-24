@@ -545,7 +545,11 @@ created lazily from the old settings, so the next query uses the new one.
 Relations stay on the instance's database: `await post.author`, reverse
 managers (`author.posts`) and many-to-many managers all query the alias the
 instance was loaded from. An `atomic()` block is per database — a write to
-another alias inside it runs in its own transaction.
+another alias inside it runs in its own transaction. Blocks on different
+databases nest independently: inside `atomic()` → `atomic("other")`, writes to
+the default database still join the outer block, and
+`on_commit(func, using="other")` waits for that database's commit (`using`
+omitted means the innermost block's database).
 
 An alias that was never registered raises `ConnectionDoesNotExist` rather than
 silently falling back to the default database:

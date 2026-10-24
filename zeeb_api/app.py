@@ -106,6 +106,14 @@ def create_app(
             "Set a strong unique secret or enable DEBUG for local development."
         )
 
+    # The ORM follows the project's DATABASE from here on, not only inside the
+    # default lifespan: a custom lifespan, or ORM use before startup, would
+    # otherwise run on zeeb_orm's own default (DATABASE_URL or ./db.sqlite3).
+    if settings.is_overridden('DATABASE') or settings.is_overridden('MIGRATIONS_DIR'):
+        from zeeb_api.conf.orm import apply_orm_settings
+
+        apply_orm_settings(settings)
+
     # Create lifespan if not provided
     if lifespan is None:
         lifespan = _create_default_lifespan(settings, check_migrations=True)
@@ -249,8 +257,16 @@ def _check_migrations_on_startup(settings: Settings) -> None:
     enforce = getattr(settings, 'ENFORCE_MIGRATIONS', True)
     debug = getattr(settings, 'DEBUG', False)
 
+    # The database this app serves, not the one settings.py on disk names: a
+    # create_app("x.settings") or extra_settings may point elsewhere.
+    database = getattr(settings, 'DATABASE', None)
+    db_url = (
+        database.get('url')
+        if settings.is_overridden('DATABASE') and isinstance(database, dict)
+        else None
+    )
     try:
-        check_migrations_applied(raise_on_pending=True)
+        check_migrations_applied(db_url=db_url, raise_on_pending=True)
     except MigrationError as e:
         separator = "=" * 60
         commands = (

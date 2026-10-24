@@ -47,6 +47,31 @@ _active_session_alias: ContextVar[str | None] = ContextVar(
 )
 
 
+class _Block:
+    """The outermost ``atomic()`` block open on one database."""
+
+    __slots__ = ("session", "callbacks", "open")
+
+    def __init__(self, session: AsyncSession, callbacks: list[Any]) -> None:
+        self.session = session
+        self.callbacks = callbacks
+        self.open = True
+
+
+#: Every database with an ``atomic()`` block open in this context, by alias.
+#: ``_active_session`` is only the innermost of them: a block on another
+#: database nested inside must not hide this one from writes to its alias.
+#: Never mutated in place — each block sets a copy — so a task started inside a
+#: block sees the blocks of its creator, and ``_Block.open`` tells it when the
+#: block it inherited has closed.
+_open_blocks: ContextVar[dict[str, _Block] | None] = ContextVar("open_blocks", default=None)
+
+
+def _open_block(alias: str) -> _Block | None:
+    block = (_open_blocks.get() or {}).get(alias)
+    return block if block is not None and block.open else None
+
+
 class Database:
     """
     Database connection wrapper supporting both async and sync operations.
@@ -671,6 +696,10 @@ async def atomic(using: str | None = None) -> AsyncGenerator[AsyncSession, None]
     outer transaction, and an inner block's success only releases the
     savepoint - nothing is durable until the outermost block commits.
 
+    Each database has its own transaction: ``atomic("other")`` nested inside
+    ``atomic()`` opens a second one, and writes to the default database inside
+    it still join the outer block (they do not autocommit on the side).
+
     ``on_commit`` callbacks run once, after the outermost commit and after
     the transaction's session is released — so a callback that queries or
     writes gets its own autocommitting session. Callbacks registered inside
@@ -690,24 +719,32 @@ async def atomic(using: str | None = None) -> AsyncGenerator[AsyncSession, None]
     from zeeb_orm.db.transaction import _on_commit_callbacks, _run_on_commit_callbacks
 
     alias = using or _default_alias
-    active = _active_session.get()
+    outer = _open_block(alias)
 
-    if active is not None and _active_session_alias.get() == alias:
-        # Nested block on the same database -> SAVEPOINT on the same session
-        callbacks = _on_commit_callbacks.get()
-        cb_mark = len(callbacks) if callbacks is not None else 0
+    if outer is not None:
+        # Nested block on the same database -> SAVEPOINT on the same session,
+        # even with a block on another database open in between.
+        active = outer.session
+        callbacks = outer.callbacks
+        cb_mark = len(callbacks)
         if isinstance(active, _SerializedSession):
             await _begin_sqlite_transaction(active)
         nested = await active.begin_nested()
+        token = _active_session.set(active)
+        alias_token = _active_session_alias.set(alias)
+        cb_token = _on_commit_callbacks.set(callbacks)
         try:
             yield active
             await nested.commit()
         except Exception:
             await nested.rollback()
             # Discard callbacks registered inside the rolled-back block
-            if callbacks is not None:
-                del callbacks[cb_mark:]
+            del callbacks[cb_mark:]
             raise
+        finally:
+            _on_commit_callbacks.reset(cb_token)
+            _active_session_alias.reset(alias_token)
+            _active_session.reset(token)
         return
 
     db = await get_connection(alias)
@@ -715,6 +752,8 @@ async def atomic(using: str | None = None) -> AsyncGenerator[AsyncSession, None]
 
     async with db.session() as raw_session:
         session = _SerializedSession(raw_session)
+        block = _Block(session, callbacks)
+        blocks_token = _open_blocks.set({**(_open_blocks.get() or {}), alias: block})
         token = _active_session.set(session)
         alias_token = _active_session_alias.set(alias)
         cb_token = _on_commit_callbacks.set(callbacks)
@@ -730,9 +769,11 @@ async def atomic(using: str | None = None) -> AsyncGenerator[AsyncSession, None]
             await session.rollback()
             raise
         finally:
+            block.open = False
             _on_commit_callbacks.reset(cb_token)
             _active_session_alias.reset(alias_token)
             _active_session.reset(token)
+            _open_blocks.reset(blocks_token)
 
     # Committed, and the session is closed: nothing below can roll it back.
     await _run_on_commit_callbacks(callbacks)
@@ -754,10 +795,12 @@ def get_active_session(using: str | None = _ANY_ALIAS) -> AsyncSession | None:
     alias), only a session on that database — a transaction open on another
     database is not one a write to ``using`` may join.
     """
-    session = _active_session.get()
-    if session is None or using is _ANY_ALIAS:
-        return session
-    return session if _active_session_alias.get() == (using or _default_alias) else None
+    if using is _ANY_ALIAS:
+        session = _active_session.get()
+        alias = _active_session_alias.get()
+        return session if alias is not None and _open_block(alias) is not None else None
+    block = _open_block(using or _default_alias)
+    return block.session if block is not None else None
 
 
 @asynccontextmanager
@@ -783,11 +826,11 @@ async def get_session(
                 await session.commit()
     """
     alias = db_alias or _default_alias
-    active = _active_session.get()
+    block = _open_block(alias)
     try:
-        if active is not None and _active_session_alias.get() == alias:
+        if block is not None:
             # Reuse existing transaction session - don't commit
-            yield active, False
+            yield block.session, False
         else:
             # Create a new session - caller should commit
             db = await get_connection(alias)

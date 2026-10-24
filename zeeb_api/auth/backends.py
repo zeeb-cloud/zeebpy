@@ -150,6 +150,10 @@ def get_user_model() -> type:
     Like Django, this returns the custom user model if configured,
     otherwise returns the default User model.
 
+    Raises:
+        ImproperlyConfigured: ``AUTH_USER_MODEL`` is set but names a model
+            that cannot be imported (it is never replaced by the default).
+
     Settings example:
         AUTH_USER_MODEL = 'apps.accounts.CustomUser'
 
@@ -170,12 +174,14 @@ def get_user_model() -> type:
             _user_model_cache = _resolve_model_string(auth_user_model)
             return _user_model_cache
         except (ImportError, ValueError) as e:
-            # Don't cache fallback — the model may become resolvable
-            # once sys.path is fully set up (e.g. inside _register_models)
-            import warnings
-            warnings.warn(str(e), stacklevel=2)
-            from zeeb_api.auth.models import User
-            return User
+            # Never the built-in User in its place: logins and permission
+            # checks would silently run against a different table. Nothing is
+            # cached, so a later call (sys.path set up) can still resolve it.
+            from zeeb_api.exceptions import ImproperlyConfigured
+
+            raise ImproperlyConfigured(
+                f"AUTH_USER_MODEL = {auth_user_model!r} could not be resolved: {e}"
+            ) from e
 
     # Fall back to default User model
     from zeeb_api.auth.models import User

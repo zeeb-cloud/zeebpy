@@ -292,6 +292,10 @@ class GenericViewSet(ViewSet):
     pagination_class: type[BasePagination] | None = None
     filter_backends: list[type[BaseFilter]] = []
 
+    # create/update/destroy run their perform_* hook and the save in one
+    # atomic() on the queryset's database (see mixins._write_block).
+    atomic_writes: bool = True
+
     # Object permission configuration
     use_object_permissions: bool = False
 

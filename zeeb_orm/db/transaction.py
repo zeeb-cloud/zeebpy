@@ -123,6 +123,10 @@ def on_commit(func: Any, using: str | None = None, robust: bool = False) -> None
     A callback may be a coroutine function (or return an awaitable); it is
     awaited before ``atomic()`` returns — never scheduled and forgotten.
 
+    ``using`` names the database whose commit the callback waits for; it
+    must have an ``atomic()`` block open. ``None`` means the database of the
+    innermost open block.
+
     The transaction is already committed when callbacks run, so a failing
     callback cannot roll anything back:
 
@@ -140,10 +144,18 @@ def on_commit(func: Any, using: str | None = None, robust: bool = False) -> None
             await User.objects.create(name='John')
             on_commit(send_email)
     """
-    callbacks = _on_commit_callbacks.get()
+    from zeeb_orm.db.connection import _active_session_alias, _open_block
+
+    # ``using=None`` is the database of the innermost block. Resolved through
+    # the open block, never a bare callback list: a task that outlived its
+    # block would otherwise append to a list that has already run.
+    alias = using if using is not None else _active_session_alias.get()
+    block = _open_block(alias) if alias is not None else None
+    callbacks = block.callbacks if block is not None else None
     if callbacks is None:
+        where = f" on database '{using}'" if using is not None else ""
         raise RuntimeError(
-            "on_commit() can only be called inside an atomic() block."
+            f"on_commit() can only be called inside an atomic() block{where}."
         )
     callbacks.append((func, robust))
 

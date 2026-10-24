@@ -262,3 +262,36 @@ def test_check_field_path_regex_rule_applies_even_unrestricted():
     with pytest.raises(FieldPathError):
         check_field_path(PathPost, "title__regex", None, allow_regex=False)
     check_field_path(PathPost, "title__regex", None, allow_regex=True)
+
+
+class AllOwnFieldsViewSet(PostViewSet):
+    query_fields = "__all__"
+
+
+async def test_query_fails_closed_when_the_output_fields_are_unknown(db, monkeypatch):
+    import zeeb_api.query as query_module
+
+    await _seed()
+    # A custom serializer without a generated response schema: nothing says
+    # which fields the API returns.
+    monkeypatch.setattr(query_module, "serializer_field_paths", lambda _cls: None)
+    async with _client(PostViewSet) as client:
+        filtered = await client.post("/posts/query", json={"filter": "Q(title='a-post')"})
+        ordered = await client.post("/posts/query", json={"order_by": ["title"]})
+        plain = await client.post("/posts/query", json={})
+    assert filtered.status_code == 400, filtered.text
+    assert "query_fields" in filtered.json()["error"]["details"][0]["message"]
+    assert ordered.status_code == 400, ordered.text
+    assert plain.status_code == 200, plain.text
+
+
+async def test_query_fields_all_means_the_models_own_fields(db):
+    await _seed()
+    async with _client(AllOwnFieldsViewSet) as client:
+        allowed = await client.post("/posts/query", json={"filter": "Q(title='a-post')"})
+        refused = await client.post(
+            "/posts/query", json={"filter": "Q(author__password__startswith='$2b$')"}
+        )
+    assert allowed.status_code == 200, allowed.text
+    assert [row["title"] for row in allowed.json()["results"]] == ["a-post"]
+    assert refused.status_code == 400, refused.text

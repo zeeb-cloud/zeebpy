@@ -157,3 +157,18 @@ def test_auto_detect_from_inside_the_project(tmp_path, monkeypatch):
     monkeypatch.setattr(sys, "path", list(sys.path))
     assert Settings()._auto_detect_settings() == "deep.settings"
     assert str(project) in sys.path
+
+
+def test_an_unresolvable_auth_user_model_is_an_error_not_the_default_user():
+    saved = (settings._wrapped, settings._configured, set(settings._explicit_settings))
+    try:
+        settings._configured = False
+        settings._explicit_settings = set()
+        settings.configure(AUTH_USER_MODEL="nosuchapp.Ghost")
+        with pytest.raises(ImproperlyConfigured, match="nosuchapp.Ghost"):
+            backends.get_user_model()
+        # Nothing was cached: once the setting is fixed, it resolves.
+        settings.AUTH_USER_MODEL = None
+        assert backends.get_user_model().__name__ == "User"
+    finally:
+        settings._wrapped, settings._configured, settings._explicit_settings = saved

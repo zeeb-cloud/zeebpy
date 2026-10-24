@@ -2843,14 +2843,9 @@ def _active_session_on(alias: str | None) -> Any:
     A transaction open on another database is not one a statement against
     ``alias`` may join (``None`` means the default alias).
     """
-    from zeeb_orm.db import connection
+    from zeeb_orm.db.connection import get_active_session
 
-    session = connection.get_active_session()
-    if session is None:
-        return None
-    if connection._active_session_alias.get() != (alias or connection._default_alias):
-        return None
-    return session
+    return get_active_session(alias)
 
 
 @asynccontextmanager
