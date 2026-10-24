@@ -1,0 +1,3284 @@
+{
+ "AgentResult": {},
+ "RESOURCE_URIS": {},
+ "activate_feature": {
+  "data_keys": [
+   "affected",
+   "changes",
+   "errors",
+   "feature",
+   "missing",
+   "next_actions",
+   "rebuilt",
+   "restored",
+   "routes_registered",
+   "state_changed",
+   "status",
+   "steps",
+   "summary",
+   "tests_restored",
+   "verification",
+   "verified",
+   "warnings"
+  ],
+  "params": [
+   [
+    "feature",
+    false
+   ],
+   [
+    "migrate",
+    true
+   ],
+   [
+    "verify",
+    true
+   ],
+   [
+    "project_id",
+    true
+   ]
+  ]
+ },
+ "add_dependency": {
+  "data_keys": [
+   "action",
+   "name",
+   "path",
+   "requirement",
+   "restart_required"
+  ],
+  "params": [
+   [
+    "requirement",
+    false
+   ],
+   [
+    "remove",
+    true
+   ],
+   [
+    "requirements_file",
+    true
+   ],
+   [
+    "project_id",
+    true
+   ]
+  ]
+ },
+ "add_field": {
+  "data_keys": [
+   "app",
+   "field",
+   "model"
+  ],
+  "params": [
+   [
+    "app",
+    false
+   ],
+   [
+    "model_name",
+    false
+   ],
+   [
+    "field",
+    false
+   ],
+   [
+    "project_id",
+    true
+   ]
+  ]
+ },
+ "add_relationship": {
+  "data_keys": [
+   "app",
+   "field",
+   "model"
+  ],
+  "params": [
+   [
+    "app",
+    false
+   ],
+   [
+    "model_name",
+    false
+   ],
+   [
+    "rel",
+    false
+   ],
+   [
+    "project_id",
+    true
+   ]
+  ]
+ },
+ "add_viewset_action": {
+  "data_keys": [
+   "action",
+   "app",
+   "replaced",
+   "skipped",
+   "url_path",
+   "viewset",
+   "wiring"
+  ],
+  "params": [
+   [
+    "app",
+    false
+   ],
+   [
+    "model_name",
+    false
+   ],
+   [
+    "action_name",
+    false
+   ],
+   [
+    "detail",
+    true
+   ],
+   [
+    "methods",
+    true
+   ],
+   [
+    "body",
+    true
+   ],
+   [
+    "url_path",
+    true
+   ],
+   [
+    "request_serializer",
+    true
+   ],
+   [
+    "response_serializer",
+    true
+   ],
+   [
+    "request_schema",
+    true
+   ],
+   [
+    "response_schema",
+    true
+   ],
+   [
+    "permission",
+    true
+   ],
+   [
+    "imports",
+    true
+   ],
+   [
+    "if_exists",
+    true
+   ],
+   [
+    "project_id",
+    true
+   ]
+  ]
+ },
+ "alter_field": {
+  "data_keys": [
+   "app",
+   "field",
+   "model"
+  ],
+  "params": [
+   [
+    "app",
+    false
+   ],
+   [
+    "model_name",
+    false
+   ],
+   [
+    "field",
+    false
+   ],
+   [
+    "project_id",
+    true
+   ]
+  ]
+ },
+ "apply_plan": {
+  "data_keys": [
+   "affected",
+   "changes",
+   "errors",
+   "next_actions",
+   "state_changed",
+   "steps",
+   "summary",
+   "verification",
+   "verified",
+   "warnings"
+  ],
+  "params": [
+   [
+    "plan",
+    false
+   ],
+   [
+    "migrate",
+    true
+   ],
+   [
+    "verify",
+    true
+   ],
+   [
+    "project_id",
+    true
+   ]
+  ]
+ },
+ "bootstrap_project": {
+  "data_keys": [
+   "affected",
+   "changes",
+   "errors",
+   "next_actions",
+   "state_changed",
+   "steps",
+   "summary",
+   "verification",
+   "verified",
+   "warnings"
+  ],
+  "params": [
+   [
+    "auth",
+    true
+   ],
+   [
+    "registration",
+    true
+   ],
+   [
+    "health_endpoint",
+    true
+   ],
+   [
+    "user_model",
+    true
+   ],
+   [
+    "migrate",
+    true
+   ],
+   [
+    "project_id",
+    true
+   ]
+  ]
+ },
+ "build_feature": {
+  "data_keys": [
+   "affected",
+   "changes",
+   "drift",
+   "errors",
+   "next_actions",
+   "state_changed",
+   "steps",
+   "summary",
+   "verification",
+   "verified",
+   "warnings"
+  ],
+  "params": [
+   [
+    "spec",
+    false
+   ],
+   [
+    "migrate",
+    true
+   ],
+   [
+    "verify",
+    true
+   ],
+   [
+    "tests",
+    true
+   ],
+   [
+    "project_id",
+    true
+   ]
+  ]
+ },
+ "change_feature": {
+  "data_keys": [
+   "affected",
+   "changes",
+   "errors",
+   "next_actions",
+   "state_changed",
+   "steps",
+   "summary",
+   "verification",
+   "verified",
+   "warnings"
+  ],
+  "params": [
+   [
+    "changes",
+    false
+   ],
+   [
+    "app",
+    true
+   ],
+   [
+    "migrate",
+    true
+   ],
+   [
+    "verify",
+    true
+   ],
+   [
+    "tests",
+    true
+   ],
+   [
+    "feature",
+    true
+   ],
+   [
+    "project_id",
+    true
+   ]
+  ]
+ },
+ "check_code": {
+  "data_keys": [
+   "checked",
+   "errors",
+   "imports_checked",
+   "ok"
+  ],
+  "params": [
+   [
+    "paths",
+    true
+   ],
+   [
+    "imports",
+    true
+   ],
+   [
+    "project_id",
+    true
+   ]
+  ]
+ },
+ "check_production_readiness": {
+  "data_keys": [
+   "issues",
+   "passed",
+   "ready"
+  ],
+  "params": [
+   [
+    "project_id",
+    true
+   ]
+  ]
+ },
+ "check_system_health": {
+  "data_keys": [
+   "checks",
+   "db",
+   "db_driver",
+   "overall",
+   "settings",
+   "table_count",
+   "tables"
+  ],
+  "params": [
+   [
+    "project_id",
+    true
+   ]
+  ]
+ },
+ "clear_logs": {
+  "data_keys": [
+   "cleared"
+  ],
+  "params": [
+   [
+    "log_file",
+    true
+   ],
+   [
+    "project_id",
+    true
+   ]
+  ]
+ },
+ "configure": {
+  "data_keys": [],
+  "params": [
+   [
+    "project_resolver",
+    true
+   ]
+  ]
+ },
+ "configure_auth": {
+  "data_keys": [
+   "affected",
+   "changes",
+   "errors",
+   "next_actions",
+   "state_changed",
+   "steps",
+   "summary",
+   "verification",
+   "verified",
+   "warnings"
+  ],
+  "params": [
+   [
+    "providers",
+    true
+   ],
+   [
+    "registration",
+    true
+   ],
+   [
+    "user_model",
+    true
+   ],
+   [
+    "migrate",
+    true
+   ],
+   [
+    "project_id",
+    true
+   ]
+  ]
+ },
+ "configure_cors": {
+  "data_keys": [
+   "keys_written",
+   "middleware_added",
+   "settings_file",
+   "warnings"
+  ],
+  "params": [
+   [
+    "origins",
+    false
+   ],
+   [
+    "methods",
+    true
+   ],
+   [
+    "allow_credentials",
+    true
+   ],
+   [
+    "allow_headers",
+    true
+   ],
+   [
+    "expose_headers",
+    true
+   ],
+   [
+    "project_id",
+    true
+   ]
+  ]
+ },
+ "configure_throttling": {
+  "data_keys": [
+   "default_classes",
+   "keys_written",
+   "rates"
+  ],
+  "params": [
+   [
+    "default_classes",
+    true
+   ],
+   [
+    "rates",
+    true
+   ],
+   [
+    "project_id",
+    true
+   ]
+  ]
+ },
+ "configure_versioning": {
+  "data_keys": [
+   "keys_written",
+   "scheme",
+   "versioning_class"
+  ],
+  "params": [
+   [
+    "scheme",
+    true
+   ],
+   [
+    "default_version",
+    true
+   ],
+   [
+    "allowed_versions",
+    true
+   ],
+   [
+    "project_id",
+    true
+   ]
+  ]
+ },
+ "create_app": {
+  "data_keys": [
+   "created",
+   "installed_apps_updated",
+   "name",
+   "path",
+   "urls_wired"
+  ],
+  "params": [
+   [
+    "name",
+    false
+   ],
+   [
+    "wire",
+    true
+   ],
+   [
+    "project_id",
+    true
+   ]
+  ]
+ },
+ "create_filterset": {
+  "data_keys": [
+   "app",
+   "fields",
+   "filterset",
+   "model",
+   "skipped"
+  ],
+  "params": [
+   [
+    "app",
+    false
+   ],
+   [
+    "model_name",
+    false
+   ],
+   [
+    "filter_fields",
+    false
+   ],
+   [
+    "project_id",
+    true
+   ],
+   [
+    "if_exists",
+    true
+   ]
+  ]
+ },
+ "create_health_endpoint": {
+  "data_keys": [
+   "endpoints",
+   "path"
+  ],
+  "params": [
+   [
+    "project_id",
+    true
+   ]
+  ]
+ },
+ "create_model": {
+  "data_keys": [
+   "app",
+   "fields",
+   "model"
+  ],
+  "params": [
+   [
+    "app",
+    false
+   ],
+   [
+    "model_name",
+    false
+   ],
+   [
+    "fields",
+    false
+   ],
+   [
+    "meta",
+    true
+   ],
+   [
+    "if_exists",
+    true
+   ],
+   [
+    "project_id",
+    true
+   ]
+  ]
+ },
+ "create_permission_class": {
+  "data_keys": [
+   "app",
+   "class_name",
+   "file_created",
+   "logic",
+   "path",
+   "skipped"
+  ],
+  "params": [
+   [
+    "app",
+    false
+   ],
+   [
+    "class_name",
+    false
+   ],
+   [
+    "logic",
+    true
+   ],
+   [
+    "project_id",
+    true
+   ],
+   [
+    "if_exists",
+    true
+   ]
+  ]
+ },
+ "create_project": {
+  "data_keys": [
+   "framework",
+   "name",
+   "path",
+   "project_id"
+  ],
+  "params": [
+   [
+    "name",
+    false
+   ],
+   [
+    "project_id",
+    true
+   ],
+   [
+    "framework",
+    true
+   ],
+   [
+    "directory",
+    true
+   ]
+  ]
+ },
+ "create_route": {
+  "data_keys": [
+   "app",
+   "function_name",
+   "method",
+   "path",
+   "response_model",
+   "wired"
+  ],
+  "params": [
+   [
+    "app",
+    false
+   ],
+   [
+    "path",
+    false
+   ],
+   [
+    "method",
+    false
+   ],
+   [
+    "function_name",
+    false
+   ],
+   [
+    "response_model",
+    true
+   ],
+   [
+    "body",
+    true
+   ],
+   [
+    "imports",
+    true
+   ],
+   [
+    "if_exists",
+    true
+   ],
+   [
+    "project_id",
+    true
+   ]
+  ]
+ },
+ "create_serializer": {
+  "data_keys": [
+   "app",
+   "extra_fields",
+   "model",
+   "serializer"
+  ],
+  "params": [
+   [
+    "app",
+    false
+   ],
+   [
+    "model_name",
+    false
+   ],
+   [
+    "fields",
+    true
+   ],
+   [
+    "read_only_fields",
+    true
+   ],
+   [
+    "extra_fields",
+    true
+   ],
+   [
+    "validate_fields",
+    true
+   ],
+   [
+    "if_exists",
+    true
+   ],
+   [
+    "project_id",
+    true
+   ]
+  ]
+ },
+ "create_signal_receiver": {
+  "data_keys": [
+   "action",
+   "app",
+   "function",
+   "loaded_at_startup",
+   "model",
+   "path",
+   "signal",
+   "skipped",
+   "warnings"
+  ],
+  "params": [
+   [
+    "app",
+    false
+   ],
+   [
+    "signal_name",
+    false
+   ],
+   [
+    "model_name",
+    false
+   ],
+   [
+    "function_name",
+    false
+   ],
+   [
+    "project_id",
+    true
+   ],
+   [
+    "if_exists",
+    true
+   ]
+  ]
+ },
+ "create_task": {
+  "data_keys": [
+   "app",
+   "file_created",
+   "function_name",
+   "path",
+   "schedule",
+   "skipped"
+  ],
+  "params": [
+   [
+    "app",
+    false
+   ],
+   [
+    "function_name",
+    false
+   ],
+   [
+    "schedule",
+    true
+   ],
+   [
+    "project_id",
+    true
+   ],
+   [
+    "if_exists",
+    true
+   ]
+  ]
+ },
+ "create_user": {
+  "data_keys": [
+   "table"
+  ],
+  "params": [
+   [
+    "email",
+    false
+   ],
+   [
+    "password",
+    false
+   ],
+   [
+    "is_staff",
+    true
+   ],
+   [
+    "is_superuser",
+    true
+   ],
+   [
+    "project_id",
+    true
+   ]
+  ]
+ },
+ "create_user_model": {
+  "data_keys": [
+   "app",
+   "auth_user_model",
+   "model",
+   "skipped"
+  ],
+  "params": [
+   [
+    "app",
+    false
+   ],
+   [
+    "model_name",
+    true
+   ],
+   [
+    "extra_fields",
+    true
+   ],
+   [
+    "set_auth_user_model",
+    true
+   ],
+   [
+    "project_id",
+    true
+   ],
+   [
+    "if_exists",
+    true
+   ]
+  ]
+ },
+ "create_viewset": {
+  "data_keys": [
+   "app",
+   "base_class",
+   "model",
+   "operations",
+   "options",
+   "prefix",
+   "read_only",
+   "registered",
+   "registration_error",
+   "skipped",
+   "viewset",
+   "viewset_created"
+  ],
+  "params": [
+   [
+    "app",
+    false
+   ],
+   [
+    "model_name",
+    false
+   ],
+   [
+    "serializer_class",
+    true
+   ],
+   [
+    "permission",
+    true
+   ],
+   [
+    "read_only",
+    true
+   ],
+   [
+    "lookup_field",
+    true
+   ],
+   [
+    "pagination",
+    true
+   ],
+   [
+    "throttles",
+    true
+   ],
+   [
+    "search_fields",
+    true
+   ],
+   [
+    "ordering_fields",
+    true
+   ],
+   [
+    "filterset",
+    true
+   ],
+   [
+    "authentication",
+    true
+   ],
+   [
+    "operations",
+    true
+   ],
+   [
+    "owner_field",
+    true
+   ],
+   [
+    "owner_scoped_reads",
+    true
+   ],
+   [
+    "if_exists",
+    true
+   ],
+   [
+    "register",
+    true
+   ],
+   [
+    "url_prefix",
+    true
+   ],
+   [
+    "project_id",
+    true
+   ]
+  ]
+ },
+ "deactivate_feature": {
+  "data_keys": [
+   "affected",
+   "archive_path",
+   "archived",
+   "feature",
+   "models_retained",
+   "next_actions",
+   "routes_unregistered",
+   "state_changed",
+   "status",
+   "tests_archived",
+   "verification",
+   "verified",
+   "warnings"
+  ],
+  "params": [
+   [
+    "feature",
+    false
+   ],
+   [
+    "verify",
+    true
+   ],
+   [
+    "project_id",
+    true
+   ]
+  ]
+ },
+ "delete_app": {
+  "data_keys": [
+   "kept",
+   "name",
+   "path",
+   "removed",
+   "unwired",
+   "warnings"
+  ],
+  "params": [
+   [
+    "name",
+    false
+   ],
+   [
+    "project_id",
+    true
+   ]
+  ]
+ },
+ "delete_env": {
+  "data_keys": [
+   "key"
+  ],
+  "params": [
+   [
+    "key",
+    false
+   ],
+   [
+    "project_id",
+    true
+   ]
+  ]
+ },
+ "delete_feature": {
+  "data_keys": [
+   "affected",
+   "deleted",
+   "feature",
+   "migrations_created",
+   "models_deleted",
+   "models_not_dropped",
+   "models_not_removed",
+   "next_actions",
+   "risk",
+   "routes_unregistered",
+   "state_changed",
+   "verification",
+   "verified",
+   "warnings"
+  ],
+  "params": [
+   [
+    "feature",
+    false
+   ],
+   [
+    "confirm",
+    true
+   ],
+   [
+    "migrate",
+    true
+   ],
+   [
+    "verify",
+    true
+   ],
+   [
+    "project_id",
+    true
+   ]
+  ]
+ },
+ "delete_field": {
+  "data_keys": [
+   "app",
+   "field",
+   "model"
+  ],
+  "params": [
+   [
+    "app",
+    false
+   ],
+   [
+    "model_name",
+    false
+   ],
+   [
+    "field_name",
+    false
+   ],
+   [
+    "project_id",
+    true
+   ]
+  ]
+ },
+ "delete_file": {
+  "data_keys": [
+   "deleted",
+   "path"
+  ],
+  "params": [
+   [
+    "path",
+    false
+   ],
+   [
+    "project_id",
+    true
+   ]
+  ]
+ },
+ "delete_function": {
+  "data_keys": [
+   "app",
+   "file",
+   "kind",
+   "name",
+   "reason",
+   "removed",
+   "skipped"
+  ],
+  "params": [
+   [
+    "app",
+    false
+   ],
+   [
+    "name",
+    false
+   ],
+   [
+    "kind",
+    true
+   ],
+   [
+    "entity",
+    true
+   ],
+   [
+    "project_id",
+    true
+   ]
+  ]
+ },
+ "delete_model": {
+  "data_keys": [
+   "app",
+   "model"
+  ],
+  "params": [
+   [
+    "app",
+    false
+   ],
+   [
+    "model_name",
+    false
+   ],
+   [
+    "project_id",
+    true
+   ]
+  ]
+ },
+ "delete_serializer": {
+  "data_keys": [
+   "app",
+   "fields",
+   "serializer",
+   "skipped"
+  ],
+  "params": [
+   [
+    "app",
+    false
+   ],
+   [
+    "model_name",
+    false
+   ],
+   [
+    "project_id",
+    true
+   ]
+  ]
+ },
+ "delete_signal_receiver": {
+  "data_keys": [
+   "func_name",
+   "path"
+  ],
+  "params": [
+   [
+    "app",
+    false
+   ],
+   [
+    "function_name",
+    false
+   ],
+   [
+    "project_id",
+    true
+   ]
+  ]
+ },
+ "delete_task": {
+  "data_keys": [
+   "app",
+   "function_name"
+  ],
+  "params": [
+   [
+    "app",
+    false
+   ],
+   [
+    "function_name",
+    false
+   ],
+   [
+    "project_id",
+    true
+   ]
+  ]
+ },
+ "delete_user": {
+  "data_keys": [
+   "deleted"
+  ],
+  "params": [
+   [
+    "email_or_id",
+    false
+   ],
+   [
+    "project_id",
+    true
+   ]
+  ]
+ },
+ "delete_viewset": {
+  "data_keys": [
+   "app",
+   "prefix",
+   "skipped",
+   "viewset"
+  ],
+  "params": [
+   [
+    "app",
+    false
+   ],
+   [
+    "model_name",
+    false
+   ],
+   [
+    "project_id",
+    true
+   ]
+  ]
+ },
+ "describe_project": {
+  "data_keys": [
+   "apps",
+   "endpoints",
+   "middleware",
+   "migrations",
+   "models",
+   "runtime",
+   "served",
+   "warnings"
+  ],
+  "params": [
+   [
+    "project_id",
+    true
+   ]
+  ]
+ },
+ "describe_table": {
+  "data_keys": [
+   "columns",
+   "table"
+  ],
+  "params": [
+   [
+    "table_name",
+    false
+   ],
+   [
+    "project_id",
+    true
+   ]
+  ]
+ },
+ "diagnose_problem": {
+  "data_keys": [
+   "findings",
+   "next_actions",
+   "recommended_fix",
+   "root_cause",
+   "state_changed",
+   "symptom"
+  ],
+  "params": [
+   [
+    "symptom",
+    true
+   ],
+   [
+    "endpoint",
+    true
+   ],
+   [
+    "lines",
+    true
+   ],
+   [
+    "project_id",
+    true
+   ]
+  ]
+ },
+ "edit_feature": {
+  "data_keys": [
+   "affected",
+   "changes",
+   "errors",
+   "next_actions",
+   "state_changed",
+   "steps",
+   "summary",
+   "verification",
+   "verified",
+   "warnings"
+  ],
+  "params": [
+   [
+    "changes",
+    false
+   ],
+   [
+    "app",
+    true
+   ],
+   [
+    "migrate",
+    true
+   ],
+   [
+    "verify",
+    true
+   ],
+   [
+    "tests",
+    true
+   ],
+   [
+    "feature",
+    true
+   ],
+   [
+    "project_id",
+    true
+   ]
+  ]
+ },
+ "edit_file": {
+  "data_keys": [
+   "path",
+   "replacements",
+   "size"
+  ],
+  "params": [
+   [
+    "path",
+    false
+   ],
+   [
+    "find",
+    false
+   ],
+   [
+    "replace",
+    false
+   ],
+   [
+    "count",
+    true
+   ],
+   [
+    "project_id",
+    true
+   ]
+  ]
+ },
+ "edit_function": {
+  "data_keys": [
+   "app",
+   "file",
+   "imports_added",
+   "kind",
+   "name",
+   "replaced"
+  ],
+  "params": [
+   [
+    "app",
+    false
+   ],
+   [
+    "name",
+    false
+   ],
+   [
+    "body",
+    false
+   ],
+   [
+    "kind",
+    true
+   ],
+   [
+    "entity",
+    true
+   ],
+   [
+    "imports",
+    true
+   ],
+   [
+    "project_id",
+    true
+   ]
+  ]
+ },
+ "edit_signal_receiver": {
+  "data_keys": [
+   "func_name",
+   "path"
+  ],
+  "params": [
+   [
+    "app",
+    false
+   ],
+   [
+    "function_name",
+    false
+   ],
+   [
+    "new_body",
+    false
+   ],
+   [
+    "project_id",
+    true
+   ]
+  ]
+ },
+ "export_openapi": {
+  "data_keys": [
+   "path",
+   "paths_count",
+   "title"
+  ],
+  "params": [
+   [
+    "output_path",
+    true
+   ],
+   [
+    "port",
+    true
+   ],
+   [
+    "project_id",
+    true
+   ]
+  ]
+ },
+ "generate_crud": {
+  "data_keys": [
+   "errors",
+   "migrated",
+   "steps"
+  ],
+  "params": [
+   [
+    "app",
+    false
+   ],
+   [
+    "model_name",
+    false
+   ],
+   [
+    "fields",
+    false
+   ],
+   [
+    "serializer_fields",
+    true
+   ],
+   [
+    "read_only_fields",
+    true
+   ],
+   [
+    "permission",
+    true
+   ],
+   [
+    "meta",
+    true
+   ],
+   [
+    "extra_fields",
+    true
+   ],
+   [
+    "validate_fields",
+    true
+   ],
+   [
+    "read_only",
+    true
+   ],
+   [
+    "lookup_field",
+    true
+   ],
+   [
+    "pagination",
+    true
+   ],
+   [
+    "throttles",
+    true
+   ],
+   [
+    "search_fields",
+    true
+   ],
+   [
+    "ordering_fields",
+    true
+   ],
+   [
+    "filterset",
+    true
+   ],
+   [
+    "authentication",
+    true
+   ],
+   [
+    "url_prefix",
+    true
+   ],
+   [
+    "migrate",
+    true
+   ],
+   [
+    "project_id",
+    true
+   ]
+  ]
+ },
+ "generate_dockerfile": {
+  "data_keys": [
+   "files_written",
+   "path",
+   "port",
+   "python_version",
+   "skipped"
+  ],
+  "params": [
+   [
+    "python_version",
+    true
+   ],
+   [
+    "port",
+    true
+   ],
+   [
+    "project_id",
+    true
+   ],
+   [
+    "if_exists",
+    true
+   ]
+  ]
+ },
+ "generate_requirements": {
+  "data_keys": [
+   "package_count",
+   "path"
+  ],
+  "params": [
+   [
+    "output_path",
+    true
+   ],
+   [
+    "project_id",
+    true
+   ]
+  ]
+ },
+ "generate_seed_script": {
+  "data_keys": [
+   "app",
+   "count",
+   "models_seeded",
+   "path"
+  ],
+  "params": [
+   [
+    "app",
+    false
+   ],
+   [
+    "models",
+    true
+   ],
+   [
+    "count",
+    true
+   ],
+   [
+    "output_path",
+    true
+   ],
+   [
+    "project_id",
+    true
+   ]
+  ]
+ },
+ "generate_tests": {
+  "data_keys": [
+   "created",
+   "overwritten",
+   "skipped",
+   "tests"
+  ],
+  "params": [
+   [
+    "app",
+    false
+   ],
+   [
+    "entities",
+    false
+   ],
+   [
+    "filename",
+    true
+   ],
+   [
+    "overwrite",
+    true
+   ],
+   [
+    "project_id",
+    true
+   ]
+  ]
+ },
+ "get_backend_generation_doc": {
+  "data_keys": [
+   "content",
+   "mime_type",
+   "uri"
+  ],
+  "params": [
+   [
+    "project_id",
+    true
+   ],
+   [
+    "tool_prefix",
+    true
+   ],
+   [
+    "framework",
+    true
+   ]
+  ]
+ },
+ "get_capabilities_doc": {
+  "data_keys": [
+   "content",
+   "mime_type",
+   "uri"
+  ],
+  "params": [
+   [
+    "project_id",
+    true
+   ],
+   [
+    "tool_prefix",
+    true
+   ],
+   [
+    "framework",
+    true
+   ]
+  ]
+ },
+ "get_cors_config": {
+  "data_keys": [
+   "cors"
+  ],
+  "params": [
+   [
+    "project_id",
+    true
+   ]
+  ]
+ },
+ "get_deployment_doc": {
+  "data_keys": [
+   "content",
+   "mime_type",
+   "uri"
+  ],
+  "params": [
+   [
+    "project_id",
+    true
+   ],
+   [
+    "tool_prefix",
+    true
+   ],
+   [
+    "framework",
+    true
+   ]
+  ]
+ },
+ "get_env": {
+  "data_keys": [
+   "env",
+   "path"
+  ],
+  "params": [
+   [
+    "project_id",
+    true
+   ]
+  ]
+ },
+ "get_error_recovery_doc": {
+  "data_keys": [
+   "content",
+   "mime_type",
+   "uri"
+  ],
+  "params": [
+   [
+    "project_id",
+    true
+   ],
+   [
+    "tool_prefix",
+    true
+   ],
+   [
+    "framework",
+    true
+   ]
+  ]
+ },
+ "get_frontend_generation_doc": {
+  "data_keys": [
+   "content",
+   "mime_type",
+   "uri"
+  ],
+  "params": [
+   [
+    "project_id",
+    true
+   ],
+   [
+    "tool_prefix",
+    true
+   ],
+   [
+    "framework",
+    true
+   ]
+  ]
+ },
+ "get_migration_status": {
+  "data_keys": [
+   "applied",
+   "migrations",
+   "pending",
+   "pending_count"
+  ],
+  "params": [
+   [
+    "project_id",
+    true
+   ]
+  ]
+ },
+ "get_model_json_schema": {
+  "data_keys": [
+   "app",
+   "model",
+   "schema"
+  ],
+  "params": [
+   [
+    "app",
+    false
+   ],
+   [
+    "model_name",
+    false
+   ],
+   [
+    "project_id",
+    true
+   ]
+  ]
+ },
+ "get_openapi_url": {
+  "data_keys": [
+   "openapi_url"
+  ],
+  "params": [
+   [
+    "project_id",
+    true
+   ]
+  ]
+ },
+ "get_principles_doc": {
+  "data_keys": [
+   "content",
+   "mime_type",
+   "uri"
+  ],
+  "params": [
+   [
+    "project_id",
+    true
+   ],
+   [
+    "tool_prefix",
+    true
+   ],
+   [
+    "framework",
+    true
+   ]
+  ]
+ },
+ "get_project_info": {
+  "data_keys": [
+   "apps",
+   "auth_user_model",
+   "database_url",
+   "installed_apps",
+   "project_package",
+   "root",
+   "settings_error"
+  ],
+  "params": [
+   [
+    "project_id",
+    true
+   ]
+  ]
+ },
+ "get_project_lifecycle_doc": {
+  "data_keys": [
+   "content",
+   "mime_type",
+   "uri"
+  ],
+  "params": [
+   [
+    "project_id",
+    true
+   ],
+   [
+    "tool_prefix",
+    true
+   ],
+   [
+    "framework",
+    true
+   ]
+  ]
+ },
+ "get_project_reference": {
+  "data_keys": [
+   "openapi_url",
+   "preview_url",
+   "project_id",
+   "runtime_api_base_url"
+  ],
+  "params": [
+   [
+    "project_id",
+    true
+   ]
+  ]
+ },
+ "get_project_structure": {
+  "data_keys": [
+   "file_count",
+   "max_depth",
+   "root",
+   "tree"
+  ],
+  "params": [
+   [
+    "project_id",
+    true
+   ],
+   [
+    "max_depth",
+    true
+   ]
+  ]
+ },
+ "get_recipes_doc": {
+  "data_keys": [
+   "content",
+   "mime_type",
+   "uri"
+  ],
+  "params": [
+   [
+    "project_id",
+    true
+   ],
+   [
+    "tool_prefix",
+    true
+   ],
+   [
+    "framework",
+    true
+   ]
+  ]
+ },
+ "get_resource": {
+  "data_keys": [
+   "content",
+   "mime_type",
+   "uri"
+  ],
+  "params": [
+   [
+    "uri",
+    false
+   ],
+   [
+    "project_id",
+    true
+   ],
+   [
+    "tool_prefix",
+    true
+   ],
+   [
+    "framework",
+    true
+   ]
+  ]
+ },
+ "get_settings": {
+  "data_keys": [
+   "settings"
+  ],
+  "params": [
+   [
+    "project_id",
+    true
+   ]
+  ]
+ },
+ "get_started": {
+  "data_keys": [
+   "discover",
+   "discover_all",
+   "docs",
+   "next_action",
+   "state",
+   "steps"
+  ],
+  "params": [
+   [
+    "project_id",
+    true
+   ]
+  ]
+ },
+ "get_user": {
+  "data_keys": [],
+  "params": [
+   [
+    "email_or_id",
+    false
+   ],
+   [
+    "project_id",
+    true
+   ]
+  ]
+ },
+ "install_app": {
+  "data_keys": [
+   "app",
+   "changed"
+  ],
+  "params": [
+   [
+    "app",
+    false
+   ],
+   [
+    "project_id",
+    true
+   ]
+  ]
+ },
+ "list_all_routes": {
+  "data_keys": [
+   "count",
+   "routes"
+  ],
+  "params": [
+   [
+    "project_id",
+    true
+   ]
+  ]
+ },
+ "list_apps": {
+  "data_keys": [
+   "apps",
+   "count"
+  ],
+  "params": [
+   [
+    "project_id",
+    true
+   ]
+  ]
+ },
+ "list_capabilities": {
+  "data_keys": [
+   "categories",
+   "count",
+   "modules",
+   "tiers",
+   "tools"
+  ],
+  "params": [
+   [
+    "include_docstrings",
+    true
+   ],
+   [
+    "module",
+    true
+   ],
+   [
+    "tier",
+    true
+   ],
+   [
+    "project_id",
+    true
+   ]
+  ]
+ },
+ "list_endpoints": {
+  "data_keys": [
+   "count",
+   "endpoints"
+  ],
+  "params": [
+   [
+    "project_id",
+    true
+   ]
+  ]
+ },
+ "list_features": {
+  "data_keys": [
+   "active_count",
+   "archived_count",
+   "count",
+   "features",
+   "inferred_count",
+   "manifest_path",
+   "manifest_warning"
+  ],
+  "params": [
+   [
+    "status",
+    true
+   ],
+   [
+    "project_id",
+    true
+   ]
+  ]
+ },
+ "list_files": {
+  "data_keys": [
+   "count",
+   "directory",
+   "entries",
+   "pattern"
+  ],
+  "params": [
+   [
+    "directory",
+    true
+   ],
+   [
+    "pattern",
+    true
+   ],
+   [
+    "project_id",
+    true
+   ]
+  ]
+ },
+ "list_model_signals": {
+  "data_keys": [
+   "app",
+   "count",
+   "model",
+   "receivers"
+  ],
+  "params": [
+   [
+    "app",
+    false
+   ],
+   [
+    "model_name",
+    false
+   ],
+   [
+    "project_id",
+    true
+   ]
+  ]
+ },
+ "list_models": {
+  "data_keys": [
+   "count",
+   "models"
+  ],
+  "params": [
+   [
+    "project_id",
+    true
+   ]
+  ]
+ },
+ "list_permission_classes": {
+  "data_keys": [
+   "app",
+   "count",
+   "permissions"
+  ],
+  "params": [
+   [
+    "app",
+    false
+   ],
+   [
+    "project_id",
+    true
+   ]
+  ]
+ },
+ "list_signal_receivers": {
+  "data_keys": [
+   "app",
+   "count",
+   "receivers"
+  ],
+  "params": [
+   [
+    "app",
+    false
+   ],
+   [
+    "project_id",
+    true
+   ]
+  ]
+ },
+ "list_tables": {
+  "data_keys": [
+   "count",
+   "tables"
+  ],
+  "params": [
+   [
+    "project_id",
+    true
+   ]
+  ]
+ },
+ "list_tasks": {
+  "data_keys": [
+   "app",
+   "count",
+   "tasks"
+  ],
+  "params": [
+   [
+    "app",
+    false
+   ],
+   [
+    "project_id",
+    true
+   ]
+  ]
+ },
+ "list_users": {
+  "data_keys": [
+   "limit",
+   "offset",
+   "total",
+   "users"
+  ],
+  "params": [
+   [
+    "limit",
+    true
+   ],
+   [
+    "offset",
+    true
+   ],
+   [
+    "project_id",
+    true
+   ]
+  ]
+ },
+ "make_migrations": {
+  "data_keys": [
+   "created",
+   "operations",
+   "possible_renames",
+   "renamed",
+   "warnings"
+  ],
+  "params": [
+   [
+    "name",
+    true
+   ],
+   [
+    "project_id",
+    true
+   ],
+   [
+    "accept_renames",
+    true
+   ]
+  ]
+ },
+ "manage_settings": {
+  "data_keys": [
+   "key",
+   "value"
+  ],
+  "params": [
+   [
+    "key",
+    false
+   ],
+   [
+    "value",
+    true
+   ],
+   [
+    "read_only",
+    true
+   ],
+   [
+    "project_id",
+    true
+   ]
+  ]
+ },
+ "plan_feature": {
+  "data_keys": [
+   "affected",
+   "drift",
+   "feature",
+   "operations",
+   "plan_version",
+   "preconditions",
+   "risk",
+   "state_changed",
+   "summary",
+   "warnings"
+  ],
+  "params": [
+   [
+    "spec",
+    false
+   ],
+   [
+    "tests",
+    true
+   ],
+   [
+    "project_id",
+    true
+   ]
+  ]
+ },
+ "read_file": {
+  "data_keys": [
+   "content",
+   "path",
+   "size"
+  ],
+  "params": [
+   [
+    "path",
+    false
+   ],
+   [
+    "project_id",
+    true
+   ]
+  ]
+ },
+ "read_logs": {
+  "data_keys": [
+   "lines",
+   "path",
+   "total_lines"
+  ],
+  "params": [
+   [
+    "lines",
+    true
+   ],
+   [
+    "level",
+    true
+   ],
+   [
+    "log_file",
+    true
+   ],
+   [
+    "project_id",
+    true
+   ],
+   [
+    "min_level",
+    true
+   ]
+  ]
+ },
+ "read_signal_receiver": {
+  "data_keys": [
+   "func_name",
+   "sender",
+   "signal",
+   "source"
+  ],
+  "params": [
+   [
+    "app",
+    false
+   ],
+   [
+    "function_name",
+    false
+   ],
+   [
+    "project_id",
+    true
+   ]
+  ]
+ },
+ "regenerate_tests": {
+  "data_keys": [
+   "feature",
+   "file",
+   "next_actions",
+   "state_changed",
+   "tests"
+  ],
+  "params": [
+   [
+    "feature",
+    false
+   ],
+   [
+    "project_id",
+    true
+   ]
+  ]
+ },
+ "register_route": {
+  "data_keys": [
+   "app",
+   "installed",
+   "prefix",
+   "urls_included",
+   "viewset"
+  ],
+  "params": [
+   [
+    "app",
+    false
+   ],
+   [
+    "model_name",
+    false
+   ],
+   [
+    "url_prefix",
+    true
+   ],
+   [
+    "if_exists",
+    true
+   ],
+   [
+    "project_id",
+    true
+   ]
+  ]
+ },
+ "remove_field": {
+  "data_keys": [
+   "app",
+   "field",
+   "model"
+  ],
+  "params": [
+   [
+    "app",
+    false
+   ],
+   [
+    "model_name",
+    false
+   ],
+   [
+    "field_name",
+    false
+   ],
+   [
+    "project_id",
+    true
+   ]
+  ]
+ },
+ "rename_app": {
+  "data_keys": [
+   "new_name",
+   "old_name",
+   "path"
+  ],
+  "params": [
+   [
+    "old_name",
+    false
+   ],
+   [
+    "new_name",
+    false
+   ],
+   [
+    "project_id",
+    true
+   ]
+  ]
+ },
+ "replace_model_fields": {
+  "data_keys": [
+   "app",
+   "fields",
+   "model"
+  ],
+  "params": [
+   [
+    "app",
+    false
+   ],
+   [
+    "model_name",
+    false
+   ],
+   [
+    "fields",
+    false
+   ],
+   [
+    "project_id",
+    true
+   ]
+  ]
+ },
+ "rollback_migration": {
+  "data_keys": [
+   "rolled_back"
+  ],
+  "params": [
+   [
+    "steps",
+    true
+   ],
+   [
+    "project_id",
+    true
+   ]
+  ]
+ },
+ "run_management_command": {
+  "data_keys": [
+   "args",
+   "command",
+   "output",
+   "returncode",
+   "timed_out"
+  ],
+  "params": [
+   [
+    "command",
+    false
+   ],
+   [
+    "args",
+    true
+   ],
+   [
+    "project_id",
+    true
+   ],
+   [
+    "timeout",
+    true
+   ]
+  ]
+ },
+ "run_migrations": {
+  "data_keys": [
+   "applied",
+   "fake",
+   "target",
+   "unapplied"
+  ],
+  "params": [
+   [
+    "target",
+    true
+   ],
+   [
+    "fake",
+    true
+   ],
+   [
+    "fake_initial",
+    true
+   ],
+   [
+    "project_id",
+    true
+   ]
+  ]
+ },
+ "run_query": {
+  "data_keys": [
+   "count",
+   "max_rows",
+   "rows",
+   "truncated"
+  ],
+  "params": [
+   [
+    "sql",
+    false
+   ],
+   [
+    "project_id",
+    true
+   ],
+   [
+    "max_rows",
+    true
+   ],
+   [
+    "timeout",
+    true
+   ]
+  ]
+ },
+ "run_tests": {
+  "data_keys": [
+   "all_passed",
+   "failed_tests",
+   "no_tests",
+   "output",
+   "returncode",
+   "timed_out"
+  ],
+  "params": [
+   [
+    "path",
+    true
+   ],
+   [
+    "verbose",
+    true
+   ],
+   [
+    "project_id",
+    true
+   ],
+   [
+    "timeout",
+    true
+   ]
+  ]
+ },
+ "search_code": {
+  "data_keys": [
+   "files",
+   "glob",
+   "pattern",
+   "total_matches"
+  ],
+  "params": [
+   [
+    "pattern",
+    false
+   ],
+   [
+    "glob",
+    true
+   ],
+   [
+    "project_id",
+    true
+   ]
+  ]
+ },
+ "search_logs": {
+  "data_keys": [
+   "count",
+   "matches"
+  ],
+  "params": [
+   [
+    "pattern",
+    false
+   ],
+   [
+    "log_file",
+    true
+   ],
+   [
+    "project_id",
+    true
+   ]
+  ]
+ },
+ "set_class_attribute": {
+  "data_keys": [
+   "action",
+   "app",
+   "attribute",
+   "class_name",
+   "file",
+   "imports_added",
+   "meta"
+  ],
+  "params": [
+   [
+    "app",
+    false
+   ],
+   [
+    "class_name",
+    false
+   ],
+   [
+    "attribute",
+    false
+   ],
+   [
+    "value",
+    true
+   ],
+   [
+    "file",
+    true
+   ],
+   [
+    "meta",
+    true
+   ],
+   [
+    "remove",
+    true
+   ],
+   [
+    "imports",
+    true
+   ],
+   [
+    "project_id",
+    true
+   ]
+  ]
+ },
+ "set_class_method": {
+  "data_keys": [
+   "action",
+   "app",
+   "class_name",
+   "file",
+   "imports_added",
+   "method"
+  ],
+  "params": [
+   [
+    "app",
+    false
+   ],
+   [
+    "class_name",
+    false
+   ],
+   [
+    "method_name",
+    false
+   ],
+   [
+    "source",
+    true
+   ],
+   [
+    "file",
+    true
+   ],
+   [
+    "remove",
+    true
+   ],
+   [
+    "imports",
+    true
+   ],
+   [
+    "project_id",
+    true
+   ]
+  ]
+ },
+ "set_env": {
+  "data_keys": [
+   "action",
+   "key"
+  ],
+  "params": [
+   [
+    "key",
+    false
+   ],
+   [
+    "value",
+    false
+   ],
+   [
+    "project_id",
+    true
+   ]
+  ]
+ },
+ "set_project_resolver": {
+  "data_keys": [],
+  "params": [
+   [
+    "resolver",
+    false
+   ]
+  ]
+ },
+ "set_user_password": {
+  "data_keys": [],
+  "params": [
+   [
+    "email_or_id",
+    false
+   ],
+   [
+    "new_password",
+    false
+   ],
+   [
+    "project_id",
+    true
+   ]
+  ]
+ },
+ "setup_auth": {
+  "data_keys": [
+   "already_wired",
+   "prefix",
+   "registration",
+   "settings_updated",
+   "wired"
+  ],
+  "params": [
+   [
+    "enable_registration",
+    true
+   ],
+   [
+    "url_prefix",
+    true
+   ],
+   [
+    "access_token_minutes",
+    true
+   ],
+   [
+    "refresh_token_days",
+    true
+   ],
+   [
+    "project_id",
+    true
+   ]
+  ]
+ },
+ "setup_oauth": {
+  "data_keys": [
+   "client_id_env",
+   "client_secret_env",
+   "provider",
+   "settings_updated",
+   "wired"
+  ],
+  "params": [
+   [
+    "provider",
+    false
+   ],
+   [
+    "client_id_env",
+    true
+   ],
+   [
+    "client_secret_env",
+    true
+   ],
+   [
+    "scopes",
+    true
+   ],
+   [
+    "redirect_uri",
+    true
+   ],
+   [
+    "project_id",
+    true
+   ]
+  ]
+ },
+ "show_migration": {
+  "data_keys": [
+   "applied",
+   "content",
+   "dependencies",
+   "name",
+   "operations",
+   "path",
+   "replaces"
+  ],
+  "params": [
+   [
+    "name",
+    false
+   ],
+   [
+    "project_id",
+    true
+   ]
+  ]
+ },
+ "squash_migrations": {
+  "data_keys": [
+   "created",
+   "output",
+   "path",
+   "replaces"
+  ],
+  "params": [
+   [
+    "start",
+    false
+   ],
+   [
+    "end",
+    false
+   ],
+   [
+    "name",
+    true
+   ],
+   [
+    "project_id",
+    true
+   ]
+  ]
+ },
+ "sync_serializer_field": {
+  "data_keys": [
+   "app",
+   "fields",
+   "serializer",
+   "skipped"
+  ],
+  "params": [
+   [
+    "app",
+    false
+   ],
+   [
+    "model_name",
+    false
+   ],
+   [
+    "field_name",
+    false
+   ],
+   [
+    "present",
+    true
+   ],
+   [
+    "project_id",
+    true
+   ]
+  ]
+ },
+ "unregister_route": {
+  "data_keys": [
+   "app",
+   "prefix",
+   "skipped",
+   "viewset"
+  ],
+  "params": [
+   [
+    "app",
+    false
+   ],
+   [
+    "model_name",
+    false
+   ],
+   [
+    "project_id",
+    true
+   ]
+  ]
+ },
+ "update_model": {
+  "data_keys": [
+   "app",
+   "changes",
+   "model"
+  ],
+  "params": [
+   [
+    "app",
+    false
+   ],
+   [
+    "model_name",
+    false
+   ],
+   [
+    "rename_to",
+    true
+   ],
+   [
+    "meta_changes",
+    true
+   ],
+   [
+    "project_id",
+    true
+   ]
+  ]
+ },
+ "update_serializer": {
+  "data_keys": [
+   "app",
+   "changes",
+   "serializer"
+  ],
+  "params": [
+   [
+    "app",
+    false
+   ],
+   [
+    "model_name",
+    false
+   ],
+   [
+    "fields",
+    true
+   ],
+   [
+    "read_only_fields",
+    true
+   ],
+   [
+    "project_id",
+    true
+   ]
+  ]
+ },
+ "update_signal_receiver": {
+  "data_keys": [
+   "func_name",
+   "path"
+  ],
+  "params": [
+   [
+    "app",
+    false
+   ],
+   [
+    "function_name",
+    false
+   ],
+   [
+    "new_body",
+    false
+   ],
+   [
+    "project_id",
+    true
+   ]
+  ]
+ },
+ "update_user": {
+  "data_keys": [],
+  "params": [
+   [
+    "email_or_id",
+    false
+   ],
+   [
+    "changes",
+    false
+   ],
+   [
+    "project_id",
+    true
+   ]
+  ]
+ },
+ "update_viewset": {
+  "data_keys": [
+   "app",
+   "changes",
+   "viewset"
+  ],
+  "params": [
+   [
+    "app",
+    false
+   ],
+   [
+    "model_name",
+    false
+   ],
+   [
+    "permission",
+    true
+   ],
+   [
+    "lookup_field",
+    true
+   ],
+   [
+    "pagination",
+    true
+   ],
+   [
+    "throttles",
+    true
+   ],
+   [
+    "search_fields",
+    true
+   ],
+   [
+    "ordering_fields",
+    true
+   ],
+   [
+    "authentication",
+    true
+   ],
+   [
+    "project_id",
+    true
+   ]
+  ]
+ },
+ "verify_project": {
+  "data_keys": [
+   "next_actions",
+   "state_changed",
+   "summary",
+   "verification",
+   "verified",
+   "warnings"
+  ],
+  "params": [
+   [
+    "checks",
+    true
+   ],
+   [
+    "port",
+    true
+   ],
+   [
+    "project_id",
+    true
+   ]
+  ]
+ },
+ "wire_app_urls": {
+  "data_keys": [
+   "app",
+   "changed"
+  ],
+  "params": [
+   [
+    "app",
+    false
+   ],
+   [
+    "prefix",
+    true
+   ],
+   [
+    "project_id",
+    true
+   ]
+  ]
+ },
+ "write_file": {
+  "data_keys": [
+   "action",
+   "path",
+   "size"
+  ],
+  "params": [
+   [
+    "path",
+    false
+   ],
+   [
+    "content",
+    false
+   ],
+   [
+    "project_id",
+    true
+   ]
+  ]
+ }
+}

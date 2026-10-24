@@ -17,14 +17,21 @@ Everything is async-first: all ORM operations are `await`ed, viewset methods are
 ## Commands
 
 ```bash
-pytest                                  # all tests (tests/ — asyncio mode is auto, no markers needed)
+pytest -n auto                          # all tests in parallel (tests/ — asyncio mode is auto)
 pytest tests/test_orm.py -v             # single file
 pytest tests/test_orm.py::test_name     # single test
 pytest --cov=zeeb_orm --cov=zeeb_api    # coverage
 ruff check .                            # lint (line-length 100, rules E,F,I,N,W,UP)
-mypy zeeb_orm zeeb_api zeeb_agents      # type check (advisory — ~290 known findings
-                                        # in metaclass-heavy internals; don't add new ones)
+mypy zeeb_orm zeeb_api zeeb_agents      # type check (advisory — metaclass-heavy internals;
+                                        # CI fails if the count exceeds .mypy-baseline)
+ZEEB_TEST_DATABASE_URL=postgresql+asyncpg://user:pw@host/db \
+  pytest tests/test_dialect_conformance.py   # the same ORM checks on a real Postgres/MySQL
 ```
+
+CI (`.github/workflows/ci.yml`) runs lint, the mypy ratchet, the suite on
+Python 3.10/3.12/3.14, and the dialect conformance tests against PostgreSQL and
+MySQL services. Test ids must be deterministic (xdist workers compare them):
+parametrize over objects with an explicit `ids=`.
 
 CLI entry points (both map to `zeeb_orm.cli.main:main`):
 
@@ -133,7 +140,10 @@ Projects and tools built on zeebpy may install it straight from this repository'
 `main` branch, with no release in between, so a push to `main` is a release. Run this
 suite before pushing. The `zeeb_agents` contract rules above are what keep downstream
 callers safe: never rename or remove a function or a `data` key, and only append new
-optional parameters.
+optional parameters. `tests/test_agents_contract_snapshot.py` enforces them against a
+golden file, `tests/contract/zeeb_agents.json`; after an additive change refresh it with
+`ZEEB_UPDATE_CONTRACT=1 pytest tests/test_agents_contract_snapshot.py` (it refuses while
+anything was removed, renamed or reordered).
 
 Documentation describes zeebpy on its own terms: never name a product built on it
 (`tests/test_no_downstream_names.py`).

@@ -52,7 +52,7 @@ class _Block:
 
     __slots__ = ("session", "callbacks", "open")
 
-    def __init__(self, session: AsyncSession, callbacks: list[Any]) -> None:
+    def __init__(self, session: Any, callbacks: list[Any]) -> None:
         self.session = session
         self.callbacks = callbacks
         self.open = True
@@ -725,21 +725,21 @@ async def atomic(using: str | None = None) -> AsyncGenerator[AsyncSession, None]
         # Nested block on the same database -> SAVEPOINT on the same session,
         # even with a block on another database open in between.
         active = outer.session
-        callbacks = outer.callbacks
-        cb_mark = len(callbacks)
+        outer_callbacks = outer.callbacks
+        cb_mark = len(outer_callbacks)
         if isinstance(active, _SerializedSession):
             await _begin_sqlite_transaction(active)
         nested = await active.begin_nested()
         token = _active_session.set(active)
         alias_token = _active_session_alias.set(alias)
-        cb_token = _on_commit_callbacks.set(callbacks)
+        cb_token = _on_commit_callbacks.set(outer_callbacks)
         try:
             yield active
             await nested.commit()
         except Exception:
             await nested.rollback()
             # Discard callbacks registered inside the rolled-back block
-            del callbacks[cb_mark:]
+            del outer_callbacks[cb_mark:]
             raise
         finally:
             _on_commit_callbacks.reset(cb_token)
