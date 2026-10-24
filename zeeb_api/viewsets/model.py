@@ -5,11 +5,11 @@ from __future__ import annotations
 from zeeb_api.viewsets.base import GenericViewSet
 from zeeb_api.viewsets.mixins import (
     CreateModelMixin,
-    QueryModelMixin,
+    DestroyModelMixin,
     ListModelMixin,
+    QueryModelMixin,
     RetrieveModelMixin,
     UpdateModelMixin,
-    DestroyModelMixin,
 )
 
 
@@ -24,7 +24,7 @@ class ModelViewSet(
 ):
     """
     ViewSet with full CRUD operations.
-    
+
     Provides (canonical paths are slash-less; the trailing-slash variant also
     resolves):
     - query (POST /items/query) - Query with Q filters, ordering, pagination
@@ -52,7 +52,7 @@ class ReadOnlyModelViewSet(
 ):
     """
     ViewSet with read-only operations.
-    
+
     Provides (canonical paths are slash-less; the trailing-slash variant also
     resolves):
     - query (POST /items/query) - Query with Q filters, ordering, pagination

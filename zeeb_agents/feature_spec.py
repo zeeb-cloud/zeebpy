@@ -1011,7 +1011,11 @@ def _validate_workflow(
         if permission is not None:
             if not isinstance(permission, str) or not permission:
                 problems.append(
-                    _problem(f"{tpath}.permission", "invalid_permission", "'permission' must be a class name")
+                    _problem(
+                        f"{tpath}.permission",
+                        "invalid_permission",
+                        "'permission' must be a class name",
+                    )
                 )
             elif "." in permission:
                 warnings.append(
@@ -2180,7 +2184,9 @@ def compile_changes(
             _validate_workflow(pseudo, f"{path}.workflow", set(model_fields), problems, warnings)
             if workflow is None:
                 problems.append(
-                    _problem(path, "invalid_input", "add_workflow needs 'workflow': a workflow dict")
+                    _problem(
+                        path, "invalid_input", "add_workflow needs 'workflow': a workflow dict"
+                    )
                 )
             if len(problems) > before or workflow is None:
                 continue
@@ -2226,7 +2232,11 @@ def compile_changes(
             status_field = change.get("field", "status")
             if not _is_identifier(status_field):
                 problems.append(
-                    _problem(path, "invalid_identifier", f"'field' must be an identifier, got {status_field!r}")
+                    _problem(
+                        path,
+                        "invalid_identifier",
+                        f"'field' must be an identifier, got {status_field!r}",
+                    )
                 )
                 continue
             from_states = _transition_from_states(transition)
@@ -2242,7 +2252,9 @@ def compile_changes(
                 continue
             if transition.get("actor") and transition.get("permission"):
                 problems.append(
-                    _problem(path, "invalid_input", "'actor' and 'permission' are mutually exclusive")
+                    _problem(
+                        path, "invalid_input", "'actor' and 'permission' are mutually exclusive"
+                    )
                 )
                 continue
             actor = transition.get("actor")

@@ -28,20 +28,20 @@ def validate_password_length(raw_password: str) -> None:
 def make_password(raw_password: str) -> str:
     """
     Hash a password using bcrypt.
-    
+
     Args:
         raw_password: The plain text password
-    
+
     Returns:
         The hashed password string
-    
+
     Example:
         hashed = make_password("mysecretpassword")
     """
     if not raw_password:
         raise ValueError("Password cannot be empty")
     validate_password_length(raw_password)
-    
+
     # Generate salt and hash
     salt = bcrypt.gensalt(rounds=12)
     hashed = bcrypt.hashpw(raw_password.encode("utf-8"), salt)
@@ -51,14 +51,14 @@ def make_password(raw_password: str) -> str:
 def check_password(raw_password: str, hashed_password: str) -> bool:
     """
     Verify a password against a hash.
-    
+
     Args:
         raw_password: The plain text password to check
         hashed_password: The hashed password to check against
-    
+
     Returns:
         True if the password matches, False otherwise
-    
+
     Example:
         if check_password("mysecretpassword", user.password):
             print("Password correct!")
@@ -108,10 +108,10 @@ def dummy_password_check(raw_password: str) -> None:
 def is_password_usable(hashed_password: str | None) -> bool:
     """
     Check if a password hash is usable (not None or empty).
-    
+
     Args:
         hashed_password: The hashed password to check
-    
+
     Returns:
         True if the password is usable
     """

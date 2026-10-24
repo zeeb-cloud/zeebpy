@@ -12,8 +12,6 @@ rather than the bare ``"User"``: the framework's own user class shares that
 class name, so the bare form depends on import order.
 """
 
-from zeeb_orm import Model, fields  # noqa: F401  (ready for your own models)
-
 from zeeb_api.auth.models import AbstractUser
 
 # Registering the OAuth identity table from here keeps the schema identical in
@@ -21,6 +19,7 @@ from zeeb_api.auth.models import AbstractUser
 # provider is configured, so enabling one later needs no migration. Importing
 # this module pulls in no HTTP client — httpx is only needed at request time.
 from zeeb_api.auth.oauth.models import ExternalIdentity  # noqa: F401
+from zeeb_orm import Model, fields  # noqa: F401  (ready for your own models)
 
 
 class User(AbstractUser):

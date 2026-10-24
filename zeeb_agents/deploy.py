@@ -33,7 +33,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 FROM base AS runner
 
-COPY --from=builder /usr/local/lib/python{python_version}/site-packages /usr/local/lib/python{python_version}/site-packages
+COPY --from=builder /usr/local/lib/python{python_version}/site-packages \\
+     /usr/local/lib/python{python_version}/site-packages
 COPY --from=builder /usr/local/bin /usr/local/bin
 COPY . .
 

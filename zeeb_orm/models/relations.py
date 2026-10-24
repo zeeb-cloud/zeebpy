@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal
 
 if TYPE_CHECKING:
-    from zeeb_orm.models.base import Model
+    pass
 
 # Pending relations to set up (for forward references)
 _pending_relations: list[tuple[type, Any]] = []

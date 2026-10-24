@@ -12,17 +12,17 @@ Example:
         title = fields.CharField(max_length=200)
         author = fields.ForeignKey("User", on_delete="CASCADE")
         status = fields.CharField(max_length=20, default="draft")
-        
+
         # Permission rules as class attributes
         read_permission = Rule.Q(status="published") | Rule.owner("author") | Rule.staff()
         add_permission = Rule.authenticated()
         change_permission = Rule.owner("author") | Rule.staff()
         delete_permission = Rule.owner("author") | Rule.staff()
-    
+
     # Object-level check
     if await post.check_change_permission(user):
         await post.save()
-    
+
     # Database-level filtering
     posts = await Post.objects.readable_by(user).all()
 """

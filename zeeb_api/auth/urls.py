@@ -7,7 +7,7 @@ Usage:
     # urls.py
     from zeeb_api.routers import DefaultRouter, include
     from zeeb_api.auth.urls import auth_patterns
-    
+
     router = DefaultRouter()
     router.include(auth_patterns, prefix="/auth")
 """

@@ -21,7 +21,7 @@ from zeeb_orm import (
     fields,
     setup_database,
 )
-from zeeb_orm.models.options import Index, UniqueConstraint
+from zeeb_orm.models.options import Index
 
 
 class MiBase(Model):

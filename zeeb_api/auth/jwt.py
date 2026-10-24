@@ -137,7 +137,7 @@ def configure_jwt(
 ) -> JWTConfig:
     """
     Configure JWT settings.
-    
+
     Usage:
         configure_jwt(
             secret_key="your-secret-key",
@@ -146,7 +146,7 @@ def configure_jwt(
         )
     """
     global _jwt_config
-    
+
     config_dict: dict[str, Any] = {}
     if secret_key is not None:
         config_dict["secret_key"] = secret_key
@@ -160,7 +160,7 @@ def configure_jwt(
         config_dict["issuer"] = issuer
     if audience is not None:
         config_dict["audience"] = audience
-    
+
     _jwt_config = JWTConfig(**config_dict)
     return _jwt_config
 
@@ -211,13 +211,13 @@ def get_jwt_config() -> JWTConfig:
 
 class TokenPayload(BaseModel):
     """JWT token payload structure."""
-    
+
     sub: str = Field(description="Subject (user ID)")
     type: str = Field(description="Token type: 'access' or 'refresh'")
     exp: datetime = Field(description="Expiration time")
     iat: datetime = Field(description="Issued at time")
     jti: str = Field(description="JWT ID (unique token identifier)")
-    
+
     # Optional claims
     iss: str | None = Field(default=None, description="Issuer")
     aud: str | None = Field(default=None, description="Audience")
@@ -225,7 +225,7 @@ class TokenPayload(BaseModel):
         default=None,
         description="Refresh-token family (``fam`` claim): one id per login, kept across rotations",
     )
-    
+
     # Custom claims
     claims: dict[str, Any] = Field(default_factory=dict, description="Additional claims")
 
@@ -237,19 +237,19 @@ def create_access_token(
 ) -> str:
     """
     Create an access token.
-    
+
     Args:
         user_id: User identifier (will be stored in 'sub' claim)
         claims: Additional claims to include in the token
         config: Optional JWT config (uses global config if not provided)
-    
+
     Returns:
         Encoded JWT access token
     """
     config = config or get_jwt_config()
     _ensure_secure_secret(config)
     now = datetime.now(timezone.utc)
-    
+
     payload = {
         "sub": str(user_id),
         "type": "access",
@@ -257,14 +257,14 @@ def create_access_token(
         "iat": now,
         "jti": str(uuid.uuid4()),
     }
-    
+
     if config.issuer:
         payload["iss"] = config.issuer
     if config.audience:
         payload["aud"] = config.audience
     if claims:
         payload["claims"] = claims
-    
+
     return jwt.encode(payload, config.secret_key, algorithm=config.algorithm)
 
 
@@ -340,7 +340,7 @@ def create_token_pair(
 
 class TokenError(Exception):
     """Base exception for token errors."""
-    
+
     def __init__(self, code: str, message: str):
         self.code = code
         self.message = message
@@ -349,14 +349,14 @@ class TokenError(Exception):
 
 class TokenExpiredError(TokenError):
     """Token has expired."""
-    
+
     def __init__(self, message: str = "Token has expired"):
         super().__init__("AUTH_TOKEN_EXPIRED", message)
 
 
 class TokenInvalidError(TokenError):
     """Token is invalid."""
-    
+
     def __init__(self, message: str = "Invalid token"):
         super().__init__("AUTH_TOKEN_INVALID", message)
 
@@ -368,15 +368,15 @@ def decode_token(
 ) -> TokenPayload:
     """
     Decode and verify a JWT token.
-    
+
     Args:
         token: The JWT token string
         token_type: Expected token type ('access' or 'refresh'), None to skip check
         config: Optional JWT config
-    
+
     Returns:
         TokenPayload with decoded claims
-    
+
     Raises:
         TokenExpiredError: If token has expired
         TokenInvalidError: If token is invalid or wrong type
@@ -405,11 +405,11 @@ def decode_token(
             options={"require": require},
             **verify_kwargs,
         )
-        
+
         # Check token type
         if token_type and payload.get("type") != token_type:
             raise TokenInvalidError(f"Expected {token_type} token, got {payload.get('type')}")
-        
+
         # Parse to TokenPayload
         return TokenPayload(
             sub=payload["sub"],
@@ -422,7 +422,7 @@ def decode_token(
             family=payload.get("fam"),
             claims=payload.get("claims", {}),
         )
-        
+
     except jwt.ExpiredSignatureError:
         raise TokenExpiredError()
     except jwt.InvalidTokenError as e:

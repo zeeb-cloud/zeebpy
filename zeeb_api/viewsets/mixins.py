@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
+
 from fastapi import Request
 
 from zeeb_api.exceptions import ValidationError
-from zeeb_api.response import Response
 
 
 async def _is_valid(serializer: Any) -> bool:
@@ -19,24 +19,24 @@ async def _is_valid(serializer: Any) -> bool:
 
 class CreateModelMixin:
     """Mixin for create (POST) operation."""
-    
+
     async def create(self, request: Request, **kwargs: Any) -> dict[str, Any]:
         """Create a new model instance."""
         # Check add permission if object permissions are enabled
         if hasattr(self, "check_add_permission"):
             await self.check_add_permission()
-        
+
         # Get data from pre-validated body or parse from request
         if hasattr(self, "_request_body"):
             data = self._request_body
         else:
             data = await request.json()
-        
+
         serializer = self.get_serializer(data=data)
-        
+
         if not await _is_valid(serializer):
             raise ValidationError(serializer.errors)
-        
+
         # Call perform_create hook to allow modification of validated_data
         # (or to save the instance itself, e.g. serializer.save(author_id=...)).
         await self.perform_create(serializer)
@@ -124,7 +124,7 @@ class QueryModelMixin:
     async def query(self, request: Request, **kwargs: Any) -> dict[str, Any]:
         """
         Query model instances with Q filter, ordering, and pagination.
-        
+
         Request body:
             {
                 "filter": "Q(name__icontains='john') | Q(active=True)",
@@ -132,7 +132,7 @@ class QueryModelMixin:
                 "limit": 20,
                 "offset": 0
             }
-        
+
         Response:
             {
                 "count": 100,
@@ -211,7 +211,7 @@ class QueryModelMixin:
                         {"order_by": [f"Cannot order by '{field}': {e}"]}
                     )
             queryset = queryset.order_by(*terms)
-        
+
         # Get pagination params (limit/offset). Defaults/caps come from the
         # DEFAULT_LIMIT / MAX_LIMIT settings (falling back to 20 / 100).
         from zeeb_api.conf import settings
@@ -232,7 +232,7 @@ class QueryModelMixin:
         # end is an empty page without a query: a huge one (the router caps it
         # at MAX_OFFSET; a hand-made body may not) would overflow the driver.
         items = [] if offset >= count else await queryset[offset:offset + limit]
-        
+
         # Serialize
         serializer = self.get_serializer(instance=items, many=True)
 
@@ -246,15 +246,15 @@ class QueryModelMixin:
 
 class ListModelMixin:
     """Mixin for list (GET collection) operation."""
-    
+
     async def list(self, request: Request, **kwargs: Any) -> dict[str, Any]:
         """List all model instances."""
         queryset = self.get_queryset()
         queryset = self.filter_queryset(queryset)
-        
+
         # Paginate
         items, page_info = await self.paginate_queryset(queryset)
-        
+
         # Serialize
         serializer = self.get_serializer(instance=items, many=True)
 
@@ -273,7 +273,7 @@ class ListModelMixin:
 
 class RetrieveModelMixin:
     """Mixin for retrieve (GET single) operation."""
-    
+
     async def retrieve(self, request: Request, **kwargs: Any) -> dict[str, Any]:
         """Retrieve a single model instance."""
         instance = await self.get_object()
@@ -283,17 +283,17 @@ class RetrieveModelMixin:
 
 class UpdateModelMixin:
     """Mixin for update (PUT/PATCH) operations."""
-    
+
     async def update(self, request: Request, **kwargs: Any) -> dict[str, Any]:
         """Update a model instance (full update)."""
         instance = await self.get_object()
-        
+
         # Get data from pre-validated body or parse from request
         if hasattr(self, "_request_body"):
             data = self._request_body
         else:
             data = await request.json()
-        
+
         serializer = self.get_serializer(
             instance=instance,
             data=data,
@@ -310,13 +310,13 @@ class UpdateModelMixin:
     async def partial_update(self, request: Request, **kwargs: Any) -> dict[str, Any]:
         """Partially update a model instance."""
         instance = await self.get_object()
-        
+
         # Get data from pre-validated body or parse from request
         if hasattr(self, "_request_body"):
             data = self._request_body
         else:
             data = await request.json()
-        
+
         serializer = self.get_serializer(
             instance=instance,
             data=data,
@@ -352,13 +352,13 @@ class UpdateModelMixin:
 
 class DestroyModelMixin:
     """Mixin for destroy (DELETE) operation."""
-    
+
     async def destroy(self, request: Request, **kwargs: Any) -> None:
         """Delete a model instance."""
         instance = await self.get_object()
         await self.perform_destroy(instance)
         return None
-    
+
     async def perform_destroy(self, instance: Any) -> None:
         """Perform the delete operation."""
         await instance.delete()

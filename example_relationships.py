@@ -12,12 +12,15 @@ Run: python example_relationships.py
 """
 
 import asyncio
+
 from zeeb_orm import (
-    Model, fields,
-    configure, setup_database, close_all_connections,
+    Model,
+    close_all_connections,
+    configure,
+    fields,
+    setup_database,
 )
 from zeeb_orm.models.base import metadata
-
 
 # Define Models with Relationships
 
@@ -29,7 +32,7 @@ class Author(Model):
 
     class Meta:
         table_name = "authors"
-    
+
     def __str__(self) -> str:
         return self.name
 
@@ -104,7 +107,7 @@ async def setup_data(db):
         genre="Fantasy",
         price=29.99
     )
-    hobbit = await Book.objects.create(
+    await Book.objects.create(
         title="The Hobbit",
         author=tolkien,
         published_year=1937,
@@ -118,7 +121,7 @@ async def setup_data(db):
         genre="Fantasy",
         price=24.99
     )
-    hp2 = await Book.objects.create(
+    await Book.objects.create(
         title="Harry Potter and the Chamber of Secrets",
         author=rowling,
         published_year=1998,
@@ -136,10 +139,14 @@ async def setup_data(db):
     # Create reviews
     await Review.objects.create(book=lotr, reviewer_name="Alice", rating=5, comment="Masterpiece!")
     await Review.objects.create(book=lotr, reviewer_name="Bob", rating=5, comment="Epic!")
-    await Review.objects.create(book=lotr, reviewer_name="Charlie", rating=4, comment="Long but great")
+    await Review.objects.create(
+        book=lotr, reviewer_name="Charlie", rating=4, comment="Long but great"
+    )
     await Review.objects.create(book=hp1, reviewer_name="Diana", rating=5, comment="Magical!")
     await Review.objects.create(book=hp1, reviewer_name="Eve", rating=4, comment="Great for kids")
-    await Review.objects.create(book=got, reviewer_name="Frank", rating=4, comment="Complex and gripping")
+    await Review.objects.create(
+        book=got, reviewer_name="Frank", rating=4, comment="Complex and gripping"
+    )
 
     print("✓ Test data created\n")
     return {"tolkien": tolkien, "rowling": rowling, "martin": martin}
@@ -162,7 +169,7 @@ async def main():
     book = await Book.objects.first()
     print(f"Book: {book.title}")
     print(f"  book.author_id = {book.author_id}  (raw FK ID)")
-    
+
     # Lazy load the related object with await
     author = await book.author
     print(f"  book.author = {author.name}  (await fetches Author object)")
@@ -173,10 +180,10 @@ async def main():
     print("\n--- REVERSE RELATIONS ---")
 
     tolkien = authors["tolkien"]
-    
+
     # Django-like: user.posts.all() equivalent
     tolkien_books = await tolkien.books.all()
-    print(f"Tolkien's books via reverse relation (author.books.all()):")
+    print("Tolkien's books via reverse relation (author.books.all()):")
     for b in tolkien_books:
         print(f"  - {b.title}")
 

@@ -8,30 +8,30 @@ Provides Serializer and ModelSerializer classes for:
 - FastAPI schema generation
 """
 
-from zeeb_api.serializers.pydantic import (
-    Serializer,
-    ModelSerializer,
-    SerializerMethodField,
-    PrimaryKeyRelatedField,
-    NestedSerializer,
-    create_list_response_schema,
-)
 from zeeb_api.serializers.fields import (
-    Field,
-    CharField,
-    IntegerField,
-    FloatField,
-    DecimalField,
     BooleanField,
-    DateTimeField,
+    CharField,
     DateField,
-    TimeField,
+    DateTimeField,
+    DecimalField,
+    DictField,
     EmailField,
+    Field,
+    FloatField,
+    IntegerField,
+    ListField,
+    SlugRelatedField,
+    TimeField,
     URLField,
     UUIDField,
-    ListField,
-    DictField,
-    SlugRelatedField,
+)
+from zeeb_api.serializers.pydantic import (
+    ModelSerializer,
+    NestedSerializer,
+    PrimaryKeyRelatedField,
+    Serializer,
+    SerializerMethodField,
+    create_list_response_schema,
 )
 
 __all__ = [

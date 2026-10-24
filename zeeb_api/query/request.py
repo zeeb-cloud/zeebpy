@@ -18,7 +18,7 @@ T = TypeVar("T")
 class QueryRequest(BaseModel):
     """
     Unified query request for list/filter operations.
-    
+
     Example:
         {
             "filter": "Q(title__icontains='ring') | Q(author_id=1)",
@@ -27,7 +27,7 @@ class QueryRequest(BaseModel):
             "offset": 0
         }
     """
-    
+
     filter: str | None = Field(
         default=None,
         description="Q filter expression, e.g. \"Q(name__icontains='john') | Q(active=True)\""
@@ -48,7 +48,7 @@ class QueryRequest(BaseModel):
         le=2**63 - 1,
         description="Number of items to skip"
     )
-    
+
     @field_validator("filter", mode="before")
     @classmethod
     def strip_filter(cls, v: Any) -> Any:
@@ -124,7 +124,7 @@ def query_request_model() -> type[QueryRequest]:
 class QueryResponse(BaseModel, Generic[T]):
     """
     Unified query response with pagination info.
-    
+
     Example:
         {
             "count": 100,
@@ -133,7 +133,7 @@ class QueryResponse(BaseModel, Generic[T]):
             "results": [...]
         }
     """
-    
+
     count: int = Field(description="Total number of items matching the query")
     limit: int = Field(description="Maximum number of items returned")
     offset: int = Field(description="Number of items skipped")
@@ -146,20 +146,20 @@ def create_query_response_model(
 ) -> type[BaseModel]:
     """
     Create a QueryResponse model with a specific item type.
-    
+
     Args:
         item_schema: Pydantic model for individual items
         name: Optional name for the response model
-    
+
     Returns:
         Pydantic model class for the query response
-    
+
     Example:
         >>> BookQueryResponse = create_query_response_model(BookResponse)
         >>> # BookQueryResponse has results: list[BookResponse]
     """
     schema_name = name or f"{item_schema.__name__}QueryResponse"
-    
+
     return type(
         schema_name,
         (BaseModel,),

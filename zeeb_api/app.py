@@ -6,9 +6,9 @@ Provides Django-style application creation that auto-configures from settings.
 
 from __future__ import annotations
 
-import os
+from collections.abc import Callable
 from contextlib import asynccontextmanager
-from typing import TYPE_CHECKING, Any, Callable, Awaitable
+from typing import TYPE_CHECKING, Any
 
 from fastapi import FastAPI
 
@@ -28,7 +28,7 @@ def create_app(
 ) -> FastAPI:
     """
     Create and configure a FastAPI application from settings.
-    
+
     This is the main entry point for creating a Zeeb API application.
     It reads configuration from your project's settings module and
     automatically configures:
@@ -39,32 +39,32 @@ def create_app(
     - Signal receivers (imports ``<app>.signals`` for every INSTALLED_APPS
       entry, so receivers scaffolded into ``apps/<app>/signals.py`` load at
       startup)
-    
+
     Args:
         settings_module: Dotted path to settings module (e.g., "myproject.settings").
                         If not provided, uses ZEEB_SETTINGS_MODULE env var or auto-detects.
         lifespan: Custom lifespan context manager for startup/shutdown.
                  If not provided, uses default (database setup if configured).
         **extra_settings: Override settings programmatically.
-    
+
     Returns:
         Configured FastAPI application.
-    
+
     Usage:
         # Simple usage (auto-detect settings)
         from zeeb_api import create_app
         app = create_app()
-        
+
         # Explicit settings module
         app = create_app("myproject.settings")
-        
+
         # With custom lifespan
         @asynccontextmanager
         async def lifespan(app):
             await setup_database()
             yield
             await cleanup()
-        
+
         app = create_app(lifespan=lifespan)
     """
     from zeeb_api.auth.jwt import configure_jwt, secret_key_problem
@@ -76,15 +76,15 @@ def create_app(
     from zeeb_api.exceptions import ImproperlyConfigured
     from zeeb_api.middleware import install_middleware
     from zeeb_api.routers import load_urlconf
-    
+
     # Configure settings
     if settings_module:
         configure_settings(settings_module)
-    
+
     # Apply any extra settings
     for key, value in extra_settings.items():
         setattr(settings, key, value)
-    
+
     # Ensure settings are loaded
     if not settings.is_configured():
         settings._setup()
@@ -109,7 +109,7 @@ def create_app(
     # Create lifespan if not provided
     if lifespan is None:
         lifespan = _create_default_lifespan(settings, check_migrations=True)
-    
+
     # Create FastAPI app
     app = FastAPI(
         title=getattr(settings, 'API_TITLE', 'Zeeb API'),
@@ -118,7 +118,7 @@ def create_app(
         debug=getattr(settings, 'DEBUG', False),
         lifespan=lifespan,
     )
-    
+
     # Configure JWT from settings
     configure_jwt(
         secret_key=settings.get_jwt_secret_key(),
@@ -128,19 +128,19 @@ def create_app(
         issuer=getattr(settings, 'JWT_ISSUER', None),
         audience=getattr(settings, 'JWT_AUDIENCE', None),
     )
-    
+
     # Install middleware from settings
     install_middleware(app, settings)
-    
+
     # Install exception handlers
     if getattr(settings, 'INSTALL_EXCEPTION_HANDLERS', True):
         install_exception_handlers(app)
         install_error_response_schema(app)
-    
+
     # Load and include URL routes
     root_urlconf = getattr(settings, 'ROOT_URLCONF', None)
     api_prefix = getattr(settings, 'API_PREFIX', '')
-    
+
     if root_urlconf:
         routes = load_urlconf(root_urlconf)
         for route in routes:
@@ -161,7 +161,7 @@ def create_app(
     return app
 
 
-def _autodiscover_signal_modules(settings: "Settings") -> None:
+def _autodiscover_signal_modules(settings: Settings) -> None:
     """Import ``<app>.signals`` for every ``INSTALLED_APPS`` entry.
 
     Only the signals module itself being absent is skipped (most apps have
@@ -184,7 +184,7 @@ def _autodiscover_signal_modules(settings: "Settings") -> None:
             raise
 
 
-def _create_default_lifespan(settings: "Settings", check_migrations: bool = False):
+def _create_default_lifespan(settings: Settings, check_migrations: bool = False):
     """
     Create a default lifespan that handles database setup/teardown.
 
@@ -205,9 +205,8 @@ def _create_default_lifespan(settings: "Settings", check_migrations: bool = Fals
 
         if database_config and database_config.get('url'):
             try:
-                from zeeb_orm import setup_database
-
                 from zeeb_api.conf.orm import apply_orm_settings, database_kwargs
+                from zeeb_orm import setup_database
 
                 # Hand the project settings down to the ORM layer so
                 # zeeb_orm.get_settings() reflects them (migrations etc.).
@@ -218,9 +217,9 @@ def _create_default_lifespan(settings: "Settings", check_migrations: bool = Fals
             except ImportError:
                 # zeeb_orm not installed, skip database setup
                 pass
-        
+
         yield
-        
+
         # Cleanup database connections
         if db is not None:
             try:
@@ -232,7 +231,7 @@ def _create_default_lifespan(settings: "Settings", check_migrations: bool = Fals
     return lifespan
 
 
-def _check_migrations_on_startup(settings: "Settings") -> None:
+def _check_migrations_on_startup(settings: Settings) -> None:
     """
     Refuse to start (or warn) when migrations are unapplied.
 
@@ -262,10 +261,16 @@ def _check_migrations_on_startup(settings: "Settings") -> None:
         )
         if enforce and not debug:
             logger.error("Unapplied migrations detected", error=str(e))
-            print(f"\n{separator}\nERROR: Unapplied migrations detected!\n{e}{commands}\n{separator}\n")
+            print(
+                f"\n{separator}\nERROR: Unapplied migrations detected!\n"
+                f"{e}{commands}\n{separator}\n"
+            )
             raise SystemExit(1)
         logger.warning("Unapplied migrations detected", error=str(e))
-        print(f"\n{separator}\nWARNING: Unapplied migrations detected!\n{e}{commands}\n{separator}\n")
+        print(
+            f"\n{separator}\nWARNING: Unapplied migrations detected!\n"
+            f"{e}{commands}\n{separator}\n"
+        )
 
 
 def _install_health_routes(app: FastAPI) -> None:
@@ -279,6 +284,7 @@ def _install_health_routes(app: FastAPI) -> None:
     async def _ready():
         from fastapi.responses import JSONResponse
         from sqlalchemy import text
+
         from zeeb_orm.db import get_database
 
         db = get_database()
@@ -299,9 +305,9 @@ def _install_health_routes(app: FastAPI) -> None:
 def get_asgi_application(settings_module: str | None = None) -> FastAPI:
     """
     Get the ASGI application.
-    
+
     This is a convenience function that can be used as the ASGI entry point.
-    
+
     Usage in asgi.py:
         from zeeb_api import get_asgi_application
         application = get_asgi_application("myproject.settings")

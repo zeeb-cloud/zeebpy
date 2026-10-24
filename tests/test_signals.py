@@ -2,15 +2,13 @@
 
 from __future__ import annotations
 
-import asyncio
-
 import pytest
 
 from zeeb_orm import (
     Model,
     Signal,
-    configure,
     close_all_connections,
+    configure,
     fields,
     post_delete,
     post_save,

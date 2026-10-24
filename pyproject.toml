@@ -74,6 +74,15 @@ target-version = "py310"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "N", "W", "UP"]
+# N818: exception names follow Django (DoesNotExist, MultipleObjectsReturned,
+# ImproperlyConfigured, ...) and are public API; renaming them would break callers.
+ignore = ["N818"]
+
+[tool.ruff.lint.per-file-ignores]
+# Generated migration files, and settings whose env-driven lines must stay on
+# one line (zeeb_agents.manage_settings rewrites them with a single-line regex).
+"demo_blog/migrations/*" = ["E501"]
+"demo_blog/demo_blog/settings.py" = ["E501"]
 
 # NOTE: `strict = true` was aspirational (528 errors); this is the honest,
 # attainable baseline. mypy is advisory: the metaclass-heavy ORM internals and

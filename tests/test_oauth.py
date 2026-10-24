@@ -1003,7 +1003,7 @@ class TestSPATokenFlow:
         from zeeb_api.auth.backends import create_user
         from zeeb_api.auth.oauth.models import ExternalIdentity
 
-        existing = await create_user(email="alice@example.com", password="local-pass-123")
+        await create_user(email="alice@example.com", password="local-pass-123")
         settings.OAUTH_AUTO_CREATE_USERS = False  # force the linking path
         idp.id_token_claims = {"email_verified": False}
 

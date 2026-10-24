@@ -9,9 +9,8 @@ and runtime contract gaps (M2M writes, list route, ORM validation errors).
 from __future__ import annotations
 
 import re
-from pathlib import Path
-
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -24,8 +23,8 @@ from zeeb_agents._utils.code_gen import (
     render_serializer_class,
     router_registrations,
 )
-from zeeb_agents._utils.field_types import render_field_line, validate_field_spec
 from zeeb_agents._utils.errors import AgentError
+from zeeb_agents._utils.field_types import render_field_line, validate_field_spec
 from zeeb_orm.models.base import _model_registry, metadata
 
 
@@ -69,7 +68,12 @@ async def project(tmp_path: Path) -> Path:
 
 
 async def test_add_viewset_action_lands_in_real_class(project: Path):
-    assert (await agents.create_model("blog", "Post", [{"name": "title", "type": "string", "max_length": 50}], project_id=project)).success
+    assert (
+        await agents.create_model(
+            "blog", "Post", [{"name": "title", "type": "string", "max_length": 50}],
+            project_id=project,
+        )
+    ).success
     assert (await agents.create_serializer("blog", "Post", project_id=project)).success
     assert (await agents.create_viewset("blog", "Post", project_id=project)).success
 
@@ -101,8 +105,17 @@ async def test_add_viewset_action_lands_in_real_class(project: Path):
 
 async def test_update_serializer_only_touches_target_class(project: Path):
     for model in ("Post", "Tag"):
-        assert (await agents.create_model("blog", model, [{"name": "title", "type": "string", "max_length": 50}], project_id=project)).success
-        assert (await agents.create_serializer("blog", model, fields=["id", "title"], project_id=project)).success
+        assert (
+            await agents.create_model(
+                "blog", model, [{"name": "title", "type": "string", "max_length": 50}],
+                project_id=project,
+            )
+        ).success
+        assert (
+            await agents.create_serializer(
+                "blog", model, fields=["id", "title"], project_id=project
+            )
+        ).success
 
     res = await agents.update_serializer(
         "blog", "Post", fields=["id"], read_only_fields=["id"], project_id=project
@@ -242,7 +255,12 @@ async def test_list_endpoints_skips_registrations_that_are_not_code(project: Pat
     assert res.success
     assert [e["viewset"] for e in res.data["endpoints"]] == ["UserViewSet"], res.data
 
-    assert (await agents.create_model("blog", "Post", [{"name": "title", "type": "string", "max_length": 50}], project_id=project)).success
+    assert (
+        await agents.create_model(
+            "blog", "Post", [{"name": "title", "type": "string", "max_length": 50}],
+            project_id=project,
+        )
+    ).success
     assert (await agents.create_serializer("blog", "Post", project_id=project)).success
     assert (await agents.create_viewset("blog", "Post", project_id=project)).success
     assert (await agents.register_route("blog", "Post", project_id=project)).success

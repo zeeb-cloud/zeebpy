@@ -9,19 +9,27 @@ Provides serializers that:
 
 from __future__ import annotations
 
-from typing import (
-    Annotated, Any, Callable, Optional, TypeVar, Generic, ClassVar, Sequence,
-    get_type_hints, TYPE_CHECKING,
-)
-from datetime import datetime, date, time, timedelta
-from decimal import Decimal
-from enum import Enum
 import inspect
 import uuid
+from collections.abc import Callable
+from datetime import date, datetime, time, timedelta
+from decimal import Decimal
+from typing import (
+    TYPE_CHECKING,
+    Annotated,
+    Any,
+    ClassVar,
+    Generic,
+    Optional,
+    TypeVar,
+)
 
 from pydantic import (
-    AfterValidator, AliasChoices, BaseModel, Field, ConfigDict,
-    field_validator, model_validator,
+    AfterValidator,
+    AliasChoices,
+    BaseModel,
+    ConfigDict,
+    Field,
 )
 from pydantic.fields import FieldInfo
 
@@ -64,7 +72,7 @@ def _constraint_validator(field: Any):
     return _validate
 
 if TYPE_CHECKING:
-    from zeeb_orm.models.base import Model
+    pass
 
 ModelT = TypeVar("ModelT")
 
@@ -141,15 +149,15 @@ def _relation_response_type(model: Any, field_name: str) -> tuple[Any, Any] | No
 class SerializerMethodField:
     """
     Read-only field that gets value from a serializer method.
-    
+
     Usage:
         class UserSerializer(ModelSerializer):
             full_name = SerializerMethodField()
-            
+
             def get_full_name(self, obj) -> str:
                 return f"{obj.first_name} {obj.last_name}"
     """
-    
+
     def __init__(
         self,
         method_name: str | None = None,
@@ -158,7 +166,7 @@ class SerializerMethodField:
         self.method_name = method_name
         self.return_type = return_type
         self.field_name: str = ""
-    
+
     def bind(self, field_name: str) -> None:
         """Attach to *field_name*; the method defaults to ``get_<field_name>``."""
         self.field_name = field_name
@@ -201,11 +209,11 @@ class PrimaryKeyRelatedField:
 class NestedSerializer:
     """
     Marker for nested serializer field.
-    
+
     Usage:
         author = NestedSerializer(AuthorSerializer)
     """
-    
+
     def __init__(
         self,
         serializer_class: type,
@@ -249,10 +257,10 @@ class _RelatedSpec:
 class SerializerMetaclass(type):
     """
     Metaclass that processes serializer class definition.
-    
+
     Collects declared fields and generates Pydantic models.
     """
-    
+
     def __new__(
         mcs,
         name: str,
@@ -261,7 +269,7 @@ class SerializerMetaclass(type):
     ) -> SerializerMetaclass:
         # Import old-style fields for detection
         from zeeb_api.serializers.fields import Field as OldField
-        
+
         # Collect declared fields (SerializerMethodField, etc.) and old-style
         # field declarations. Start from the bases' (furthest first) so a
         # subclass inherits every field its parents declared and can override
@@ -284,20 +292,20 @@ class SerializerMetaclass(type):
                 declared_fields.pop(key, None)
                 if not value.field_name:
                     value.field_name = key
-        
+
         namespace["_declared_fields"] = declared_fields
         namespace["_old_style_fields"] = old_style_fields
-        
+
         # Create the class
         cls = super().__new__(mcs, name, bases, namespace)
-        
+
         # Generate Pydantic schemas if this is a concrete serializer
         if hasattr(cls, "Meta") and hasattr(cls.Meta, "model"):
             cls._generate_schemas()
         elif old_style_fields:
             # Generate schema from old-style field declarations
             cls._generate_schema_from_fields(old_style_fields)
-        
+
         return cls
 
 
@@ -326,7 +334,7 @@ def _all_optional(entries: dict[str, tuple[Any, Any]]) -> dict[str, tuple[Any, A
     """The entries with every field optional (default None), aliases kept."""
     optional: dict[str, tuple[Any, Any]] = {}
     for k, (typ, val) in entries.items():
-        optional_type = typ if type(None) in getattr(typ, "__args__", ()) else Optional[typ]
+        optional_type = typ if type(None) in getattr(typ, "__args__", ()) else Optional[typ]  # noqa: UP045
         if isinstance(val, FieldInfo):
             optional[k] = (
                 optional_type,
@@ -445,21 +453,21 @@ OLD_FIELD_TO_TYPE: dict[str, type] = {
 class Serializer(metaclass=SerializerMetaclass):
     """
     Base serializer with Pydantic integration.
-    
+
     Supports both Pydantic Schema definition and Django-style field declarations:
-    
+
         # Pydantic style
         class LoginSerializer(Serializer):
             class Schema(BaseModel):
                 username: str
                 password: str
-        
-        # Django/DRF style  
+
+        # Django/DRF style
         class LoginSerializer(Serializer):
             username = CharField()
             password = CharField(write_only=True)
     """
-    
+
     _declared_fields: ClassVar[dict[str, Any]] = {}
     _old_style_fields: ClassVar[dict[str, Any]] = {}
     # Maps a foreign key's bare model name to its canonical "<name>_id" request
@@ -468,14 +476,14 @@ class Serializer(metaclass=SerializerMetaclass):
     # Declared related fields (PrimaryKeyRelatedField / SlugRelatedField) by
     # output name; populated by ModelSerializer._generate_schemas.
     _related_fields: ClassVar[dict[str, _RelatedSpec]] = {}
-    
+
     # Pydantic schemas - set by metaclass or manually
     Schema: ClassVar[type[BaseModel] | None] = None
     RequestSchema: ClassVar[type[BaseModel] | None] = None
     ResponseSchema: ClassVar[type[BaseModel] | None] = None
     # All-optional variant of RequestSchema, used to type PATCH bodies.
     PartialRequestSchema: ClassVar[type[BaseModel] | None] = None
-    
+
     @staticmethod
     def _declared_field_entries(
         field: Any,
@@ -603,7 +611,7 @@ class Serializer(metaclass=SerializerMetaclass):
 
         # Default Schema
         cls.Schema = cls.ResponseSchema or cls.RequestSchema
-    
+
     def __init__(
         self,
         instance: Any = None,
@@ -618,24 +626,24 @@ class Serializer(metaclass=SerializerMetaclass):
         self.many = many
         self.partial = partial
         self.context = context or {}
-        
+
         self._validated_data: dict[str, Any] | None = None
         self._errors: dict[str, list[str]] = {}
         # True once .save() has persisted an instance. The create/update
         # viewset mixins read this after perform_create/perform_update so a
         # hook that calls .save() itself is not saved a second time.
         self._saved: bool = False
-    
+
     @property
     def data(self) -> dict[str, Any] | list[dict[str, Any]]:
         """Get serialized output data."""
         if self.instance is None:
             return self._validated_data or {}
-        
+
         if self.many:
             return [self._serialize_instance(item) for item in self.instance]
         return self._serialize_instance(self.instance)
-    
+
     def _fk_names(self) -> set[str]:
         """ForeignKey/OneToOne field names on the serializer's model.
 
@@ -950,12 +958,12 @@ class Serializer(metaclass=SerializerMetaclass):
         if self._validated_data is None:
             raise AssertionError("Call .is_valid() before accessing .validated_data")
         return self._validated_data
-    
+
     @property
     def errors(self) -> dict[str, list[str]]:
         """Get validation errors."""
         return self._errors
-    
+
     def is_valid(self, *, raise_exception: bool = False) -> bool:
         """Validate input data: the Pydantic schema, then the DRF-style hooks.
 
@@ -1005,7 +1013,7 @@ class Serializer(metaclass=SerializerMetaclass):
         if self.initial_data is None:
             self._validated_data = {}
             return True
-        
+
         schema_class = self.RequestSchema or self.Schema
         if schema_class is None:
             self._validated_data = self.initial_data
@@ -1042,7 +1050,7 @@ class Serializer(metaclass=SerializerMetaclass):
             # PATCH touches only what was sent.
             self._validated_data = validated.model_dump(exclude_unset=True)
             return True
-            
+
         except Exception as e:
             self._validated_data = None
             # Extract Pydantic validation errors, keyed by their full path
@@ -1202,7 +1210,7 @@ class Serializer(metaclass=SerializerMetaclass):
             _collect_hook_error(errors, None, exc)
             raise _HookErrors(errors) from None
         self._validated_data = data if result is None else dict(result)
-    
+
     async def save(self, **kwargs: Any) -> Any:
         """Save validated data.
 
@@ -1249,11 +1257,11 @@ class Serializer(metaclass=SerializerMetaclass):
             if value is not None and hasattr(value, "pk"):
                 normalized[canonical] = value.pk
         return normalized
-    
+
     async def create(self, validated_data: dict[str, Any]) -> Any:
         """Create new instance. Override in subclass."""
         raise NotImplementedError()
-    
+
     async def update(self, instance: Any, validated_data: dict[str, Any]) -> Any:
         """Update existing instance. Override in subclass."""
         raise NotImplementedError()
@@ -1266,47 +1274,47 @@ class Serializer(metaclass=SerializerMetaclass):
 class ModelSerializer(Serializer, Generic[ModelT]):
     """
     Serializer for Zeeb ORM models with automatic Pydantic schema generation.
-    
+
     Usage:
         class UserSerializer(ModelSerializer):
             full_name = SerializerMethodField()
-            
+
             class Meta:
                 model = User
                 fields = ["id", "name", "email", "full_name", "created_at"]
                 read_only_fields = ["id", "created_at"]
-            
+
             def get_full_name(self, obj) -> str:
                 return f"{obj.first_name} {obj.last_name}"
     """
-    
+
     class Meta:
         model: type | None = None
         fields: list[str] | str = "__all__"
         exclude: list[str] = []
         read_only_fields: list[str] = []
         extra_kwargs: dict[str, dict[str, Any]] = {}
-    
+
     @classmethod
     def _generate_schemas(cls) -> None:
         """Generate Pydantic Request and Response schemas from model."""
         meta = cls.Meta
         model = meta.model
-        
+
         if model is None:
             return
-        
+
         # Get model fields
         model_fields = {}
         if hasattr(model, "_meta") and hasattr(model._meta, "local_fields"):
             for f in model._meta.local_fields:
                 model_fields[f.name] = f
-        
+
         # Determine which fields to include
         field_names = meta.fields
         if field_names == "__all__":
             field_names = list(model_fields.keys())
-        
+
         exclude = getattr(meta, "exclude", [])
         field_names = [f for f in field_names if f not in exclude]
 
@@ -1331,7 +1339,7 @@ class ModelSerializer(Serializer, Generic[ModelT]):
                     "that Meta.fields does not include; add them to "
                     "Meta.fields (or to Meta.exclude)."
                 )
-        
+
         cls._normalize_declared_fields()
 
         read_only = set(getattr(meta, "read_only_fields", []))
@@ -1410,7 +1418,7 @@ class ModelSerializer(Serializer, Generic[ModelT]):
                 if declared_request is not None and field_name not in read_only:
                     request_fields[field_name] = declared_request
                 continue
-            
+
             from zeeb_orm.models.fields import ForeignKeyField
 
             # Get model field
@@ -1458,7 +1466,7 @@ class ModelSerializer(Serializer, Generic[ModelT]):
             # Check if this is a ForeignKey. isinstance also covers
             # OneToOneField, whose class name does not contain "foreign".
             is_foreign_key = isinstance(model_field, ForeignKeyField)
-            
+
             # Handle ForeignKey - get the target model's PK type
             if is_foreign_key:
                 # Get target model's PK type
@@ -1468,14 +1476,14 @@ class ModelSerializer(Serializer, Generic[ModelT]):
                         target_model = model_field.get_target_model()
                     except Exception:
                         pass
-                
+
                 if target_model and hasattr(target_model, '_meta') and target_model._meta.pk:
                     target_pk = target_model._meta.pk
                     target_pk_type = getattr(target_pk, '_python_type', int)
                     python_type = target_pk_type
                 else:
                     python_type = uuid.UUID  # Default to UUID (new default)
-                
+
                 # Keep the field name as user specified (could be "author" or "author_id")
                 # For request, always use _id suffix
                 if field_name.endswith("_id"):
@@ -1484,12 +1492,12 @@ class ModelSerializer(Serializer, Generic[ModelT]):
                     field_name_for_request = f"{field_name}_id"
             else:
                 field_name_for_request = field_name
-            
+
             # Determine if nullable
             is_nullable = getattr(model_field, "null", False)
             if is_nullable:
                 python_type = python_type | None
-            
+
             # Get extra kwargs (keyed by the name used in Meta.fields, the
             # model field's name, or - for a FK - its "<name>_id" request key)
             spellings = {field_name, actual_field_name, field_name_for_request}
@@ -1510,7 +1518,7 @@ class ModelSerializer(Serializer, Generic[ModelT]):
                 getattr(model_field, "auto_now_add", False)
             )
             is_write_only = bool(field_extra.get("write_only"))
-            
+
             # Build Field info
             default = ...  # Required
             if is_nullable:
@@ -1538,7 +1546,7 @@ class ModelSerializer(Serializer, Generic[ModelT]):
             constraints = {
                 key: field_extra[key] for key in ("max_length", "min_length") if key in field_extra
             }
-            
+
             # Add to response schema (unless write-only)
             if not is_write_only:
                 response_fields[field_name] = (
@@ -1548,13 +1556,17 @@ class ModelSerializer(Serializer, Generic[ModelT]):
                         description=description,
                     ),
                 )
-            
+
             # Add to request schema (if not read-only)
             if not is_read_only:
                 # For FK, use the _id version in request with target PK type
                 if is_foreign_key:
                     # Use the same python_type we determined above (already includes nullable)
-                    base_type = python_type.__args__[0] if hasattr(python_type, '__args__') else python_type
+                    base_type = (
+                        python_type.__args__[0]
+                        if hasattr(python_type, '__args__')
+                        else python_type
+                    )
                     fk_type = base_type | None if is_nullable else base_type
                     # Accept the bare relationship name (e.g. "author") as an
                     # alias for the canonical "<name>_id" request key. GET
@@ -1588,7 +1600,7 @@ class ModelSerializer(Serializer, Generic[ModelT]):
                         request_type,
                         Field(default=request_default, description=description, **constraints),
                     )
-        
+
         cls._check_configured_names(model, configurable, read_only, extra_kwargs)
 
         # Create Pydantic models dynamically
@@ -1873,7 +1885,7 @@ def create_list_response_schema(
 ) -> type[BaseModel]:
     """
     Create a paginated list response schema.
-    
+
     Returns schema like:
     {
         "count": 100,
@@ -1883,7 +1895,7 @@ def create_list_response_schema(
     }
     """
     schema_name = name or f"{item_schema.__name__}List"
-    
+
     return type(
         schema_name,
         (BaseModel,),

@@ -5,9 +5,10 @@ from __future__ import annotations
 import asyncio
 import logging
 import warnings
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from contextvars import ContextVar
-from typing import Any, AsyncGenerator
+from typing import Any
 
 from sqlalchemy import create_engine, event, text
 from sqlalchemy import exc as _sa_exc
@@ -760,7 +761,9 @@ def get_active_session(using: str | None = _ANY_ALIAS) -> AsyncSession | None:
 
 
 @asynccontextmanager
-async def get_session(db_alias: str | None = None) -> AsyncGenerator[tuple[AsyncSession, bool], None]:
+async def get_session(
+    db_alias: str | None = None,
+) -> AsyncGenerator[tuple[AsyncSession, bool], None]:
     """
     Get a database session, reusing the active transaction session if available.
 

@@ -11,7 +11,8 @@ import logging
 import re
 import traceback
 import uuid
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
@@ -76,7 +77,7 @@ def _create_error_response(
             ),
         ),
     )
-    
+
     return JSONResponse(
         status_code=status_code,
         content=error_response.model_dump(),
@@ -89,7 +90,7 @@ PYDANTIC_ERROR_CODE_MAP: dict[str, str] = {
     # Missing/required
     "missing": ErrorCode.FIELD_REQUIRED.value,
     "value_error.missing": ErrorCode.FIELD_REQUIRED.value,
-    
+
     # Type errors
     "type_error": ErrorCode.FIELD_INVALID_TYPE.value,
     "type_error.integer": ErrorCode.FIELD_INVALID_TYPE.value,
@@ -107,14 +108,14 @@ PYDANTIC_ERROR_CODE_MAP: dict[str, str] = {
     "bool_type": ErrorCode.FIELD_INVALID_TYPE.value,
     "list_type": ErrorCode.FIELD_INVALID_TYPE.value,
     "dict_type": ErrorCode.FIELD_INVALID_TYPE.value,
-    
+
     # String constraints
     "string_too_short": ErrorCode.FIELD_TOO_SHORT.value,
     "string_too_long": ErrorCode.FIELD_TOO_LONG.value,
     "value_error.any_str.min_length": ErrorCode.FIELD_MIN_LENGTH.value,
     "value_error.any_str.max_length": ErrorCode.FIELD_MAX_LENGTH.value,
     "string_pattern_mismatch": ErrorCode.FIELD_REGEX_MISMATCH.value,
-    
+
     # Numeric constraints
     "greater_than": ErrorCode.FIELD_MIN_VALUE.value,
     "greater_than_equal": ErrorCode.FIELD_MIN_VALUE.value,
@@ -124,7 +125,7 @@ PYDANTIC_ERROR_CODE_MAP: dict[str, str] = {
     "value_error.number.not_ge": ErrorCode.FIELD_MIN_VALUE.value,
     "value_error.number.not_lt": ErrorCode.FIELD_MAX_VALUE.value,
     "value_error.number.not_le": ErrorCode.FIELD_MAX_VALUE.value,
-    
+
     # Format errors
     "value_error.email": ErrorCode.FIELD_INVALID_EMAIL.value,
     "value_error.url": ErrorCode.FIELD_INVALID_URL.value,
@@ -135,11 +136,11 @@ PYDANTIC_ERROR_CODE_MAP: dict[str, str] = {
     "datetime_parsing": ErrorCode.FIELD_INVALID_DATETIME.value,
     "time_parsing": ErrorCode.FIELD_INVALID_FORMAT.value,
     "json_invalid": ErrorCode.FIELD_INVALID_JSON.value,
-    
+
     # Enum/choices
     "enum": ErrorCode.FIELD_INVALID_CHOICE.value,
     "literal_error": ErrorCode.FIELD_INVALID_CHOICE.value,
-    
+
     # General value errors
     "value_error": ErrorCode.FIELD_INVALID_VALUE.value,
 }
@@ -150,12 +151,12 @@ def _pydantic_error_to_code(error_type: str) -> str:
     # Direct match
     if error_type in PYDANTIC_ERROR_CODE_MAP:
         return PYDANTIC_ERROR_CODE_MAP[error_type]
-    
+
     # Prefix match
     for prefix, code in PYDANTIC_ERROR_CODE_MAP.items():
         if error_type.startswith(prefix):
             return code
-    
+
     # Default
     return ErrorCode.FIELD_INVALID_VALUE.value
 
@@ -220,27 +221,27 @@ def _parse_pydantic_errors(
     for error in errors:
         # Get field path (e.g., ["body", "email"] -> "email")
         loc = error.get("loc", [])
-        
+
         # Skip "body" prefix from FastAPI
         if loc and loc[0] in ("body", "query", "path", "header", "cookie"):
             loc = loc[1:]
-        
+
         field = ".".join(str(x) for x in loc) if loc else None
-        
+
         # Map error type to code
         error_type = error.get("type", "value_error")
         code = _pydantic_error_to_code(error_type)
-        
+
         # Build meta with context
         meta: dict[str, Any] = {}
         ctx = error.get("ctx", {})
         if ctx:
             # Include relevant context (limits, expected values, etc.)
-            for key in ("min_length", "max_length", "gt", "ge", "lt", "le", 
+            for key in ("min_length", "max_length", "gt", "ge", "lt", "le",
                        "expected", "pattern", "limit_value"):
                 if key in ctx:
                     meta[key] = ctx[key]
-        
+
         # Include the offending value when it is safe to echo (for debugging)
         if "input" in error and _echoable_input(loc, error["input"]):
             input_val = error["input"]
@@ -262,7 +263,7 @@ def _parse_pydantic_errors(
             message=error.get("msg", "Invalid value"),
             meta=meta if meta else None,
         ))
-    
+
     return details
 
 
@@ -276,7 +277,7 @@ async def zeeb_exception_handler(
         path=str(request.url.path),
         method=request.method,
     )
-    
+
     return JSONResponse(
         status_code=exc.status_code,
         content=response.model_dump(),
@@ -290,7 +291,7 @@ async def pydantic_validation_exception_handler(
 ) -> JSONResponse:
     """Handle Pydantic ValidationError."""
     details = _parse_pydantic_errors(exc.errors())
-    
+
     return _create_error_response(
         code=ErrorCode.VALIDATION_ERROR.value,
         message="Validation failed",
@@ -306,7 +307,7 @@ async def request_validation_exception_handler(
 ) -> JSONResponse:
     """Handle FastAPI RequestValidationError (path, query, body validation)."""
     details = _parse_pydantic_errors(exc.errors(), body=getattr(exc, "body", None))
-    
+
     return _create_error_response(
         code=ErrorCode.VALIDATION_ERROR.value,
         message="Request validation failed",
@@ -330,7 +331,7 @@ async def http_exception_handler(
         message = "Validation failed"
 
     headers = getattr(exc, "headers", None)
-    
+
     return _create_error_response(
         code=code,
         message=message,
@@ -398,14 +399,14 @@ async def generic_exception_handler(
 def create_orm_exception_handlers() -> dict[type[Exception], Callable]:
     """
     Create handlers for ORM exceptions if zeeb_orm is available.
-    
+
     Returns dict mapping exception types to handler functions.
     """
     handlers = {}
-    
+
     try:
         from zeeb_orm import DoesNotExist, MultipleObjectsReturned
-        
+
         async def does_not_exist_handler(
             request: Request,
             exc: DoesNotExist,
@@ -417,7 +418,7 @@ def create_orm_exception_handlers() -> dict[type[Exception], Callable]:
                 status_code=404,
                 request=request,
             )
-        
+
         async def multiple_objects_handler(
             request: Request,
             exc: MultipleObjectsReturned,
@@ -429,7 +430,7 @@ def create_orm_exception_handlers() -> dict[type[Exception], Callable]:
                 status_code=409,
                 request=request,
             )
-        
+
         handlers[DoesNotExist] = does_not_exist_handler
         handlers[MultipleObjectsReturned] = multiple_objects_handler
 
@@ -518,28 +519,28 @@ def create_orm_exception_handlers() -> dict[type[Exception], Callable]:
 def install_exception_handlers(app: FastAPI) -> None:
     """
     Install all exception handlers on a FastAPI app.
-    
+
     Usage:
         from fastapi import FastAPI
         from zeeb_api.exception_handlers import install_exception_handlers
-        
+
         app = FastAPI()
         install_exception_handlers(app)
     """
     # Zeeb exceptions
     app.add_exception_handler(ZeebException, zeeb_exception_handler)
-    
+
     # Pydantic/FastAPI validation
     app.add_exception_handler(PydanticValidationError, pydantic_validation_exception_handler)
     app.add_exception_handler(RequestValidationError, request_validation_exception_handler)
-    
+
     # HTTP exceptions
     app.add_exception_handler(StarletteHTTPException, http_exception_handler)
-    
+
     # ORM exceptions
     for exc_type, handler in create_orm_exception_handlers().items():
         app.add_exception_handler(exc_type, handler)
-    
+
     # Catch-all (must be last)
     app.add_exception_handler(Exception, generic_exception_handler)
     _envelope_errors_in_debug(app)

@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+from collections.abc import AsyncGenerator, Callable
 from contextlib import asynccontextmanager
 from contextvars import ContextVar
-from typing import TYPE_CHECKING, Any, AsyncGenerator, Callable
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -42,9 +43,12 @@ class TransactionManager:
 
     @asynccontextmanager
     async def savepoint(self, name: str | None = None) -> AsyncGenerator[None, None]:
-        """Create a savepoint for nested transactions."""
+        """Create a savepoint for nested transactions.
+
+        ``name`` is accepted for compatibility but unused: SQLAlchemy's
+        ``begin_nested()`` names the SAVEPOINT itself.
+        """
         self._savepoint_count += 1
-        savepoint_name = name or f"sp_{self._savepoint_count}"
 
         async with self._session.begin_nested():
             try:

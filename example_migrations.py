@@ -143,18 +143,11 @@ TIPS
 
 # Demonstrate programmatic migration functions (info only)
 if __name__ == "__main__":
-    from zeeb_orm.migrations import (
-        makemigrations,
-        migrate,
-        rollback,
-        showmigrations,
-        current,
-    )
 
     print("\nProgrammatic functions available:")
-    print(f"  - makemigrations(message, autogenerate, empty)")
-    print(f"  - migrate(target, fake)")
-    print(f"  - rollback(steps)")
-    print(f"  - showmigrations()")
-    print(f"  - current()")
+    print("  - makemigrations(message, autogenerate, empty)")
+    print("  - migrate(target, fake)")
+    print("  - rollback(steps)")
+    print("  - showmigrations()")
+    print("  - current()")
     print("\n✓ See code examples above for usage!")

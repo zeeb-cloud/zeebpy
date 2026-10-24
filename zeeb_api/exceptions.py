@@ -20,7 +20,7 @@ from pydantic import BaseModel, Field
 class ErrorCode(str, Enum):
     """
     Standard error codes for i18n support.
-    
+
     Frontends should translate these codes to localized messages.
     Format: CATEGORY_SPECIFIC_ERROR
     """
@@ -111,7 +111,7 @@ class ErrorCode(str, Enum):
 class ErrorDetail(BaseModel):
     """
     Individual field-level error detail.
-    
+
     Example:
         {
             "code": "FIELD_REQUIRED",
@@ -188,9 +188,9 @@ class ErrorBody(BaseModel):
 class ErrorResponse(BaseModel):
     """
     Standardized error response structure.
-    
+
     ALL errors in the API use this format for consistency.
-    
+
     Example:
         {
             "success": false,
@@ -231,9 +231,9 @@ class ErrorResponse(BaseModel):
 class ZeebException(Exception):
     """
     Base exception class for all Zeeb API errors.
-    
+
     Provides consistent error structure with i18n-friendly codes.
-    
+
     Usage:
         raise ZeebException(
             code=ErrorCode.VALIDATION_ERROR,
@@ -854,7 +854,7 @@ def field_error(
 ) -> ErrorDetail:
     """
     Create a field error detail.
-    
+
     Usage:
         field_error("email", ErrorCode.FIELD_REQUIRED, "This field is required")
     """
@@ -874,7 +874,7 @@ def validation_error(
 ) -> ValidationException:
     """
     Create a validation exception for a single field.
-    
+
     Usage:
         raise validation_error("email", ErrorCode.FIELD_REQUIRED, "Required")
     """

@@ -108,7 +108,7 @@ class Manager(Generic[ModelT]):
         """Descriptor protocol - returns manager bound to model class."""
         if objtype is None:
             raise AttributeError("Manager is not accessible via model instances")
-        
+
         # Check if this is being accessed from the original model class
         # or from a subclass of Model
         from zeeb_orm.models.base import Model
@@ -128,7 +128,7 @@ class Manager(Generic[ModelT]):
                 manager._name = self._name
                 manager._original_model = self.model
                 return manager
-        
+
         # Return a copy bound to the model class
         manager = self.__class__()
         manager.model = objtype
@@ -327,7 +327,7 @@ class Manager(Generic[ModelT]):
 class RelatedManager(Manager[ModelT]):
     """
     Manager for reverse ForeignKey relations.
-    
+
     Provides Django-style access to related objects:
         user.posts.all()
         user.posts.filter(published=True)
@@ -409,7 +409,7 @@ class RelatedManager(Manager[ModelT]):
 class RelatedManagerDescriptor:
     """
     Descriptor that creates a RelatedManager for each instance.
-    
+
     This is set on the "one" side of a ForeignKey relation.
     """
 
@@ -429,7 +429,7 @@ class RelatedManagerDescriptor:
     def __get__(self, obj: Any | None, objtype: type | None = None) -> Any:
         if obj is None:
             return self
-        
+
         # Return a RelatedManager bound to this instance
         return RelatedManager(
             model=self.related_model,

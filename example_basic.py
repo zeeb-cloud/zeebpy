@@ -12,8 +12,8 @@ Run: python example_basic.py
 """
 
 import asyncio
-from zeeb_orm import Model, fields, configure, setup_database, close_all_connections
 
+from zeeb_orm import Model, close_all_connections, configure, fields, setup_database
 
 # Define Models
 
@@ -64,7 +64,9 @@ async def main():
     # Create more users
     bob = await User.objects.create(name="Bob Jones", email="bob@example.com", age=35)
     charlie = await User.objects.create(name="Charlie Brown", email="charlie@example.com", age=22)
-    diana = await User.objects.create(name="Diana Ross", email="diana@example.com", age=45, is_active=False)
+    diana = await User.objects.create(
+        name="Diana Ross", email="diana@example.com", age=45, is_active=False
+    )
 
     print(f"Created: {bob}, {charlie}, {diana}")
 
@@ -132,7 +134,7 @@ async def main():
 
     # Delete via model instance
     await diana.delete()
-    print(f"Deleted Diana")
+    print("Deleted Diana")
 
     # Delete via queryset
     # deleted = await User.objects.filter(is_active=False).delete()

@@ -347,7 +347,7 @@ class Model(metaclass=ModelBase):
     _sa_table: ClassVar[Table | None]
     _fk_fields: ClassVar[list[ForeignKeyField[Any]]]
     _m2m_fields: ClassVar[list[ManyToManyField[Any]]]
-    _permission_rules: ClassVar[dict[str, "Rule"]]
+    _permission_rules: ClassVar[dict[str, Rule]]
 
     # Exception classes bound to model
     DoesNotExist: ClassVar[type[DoesNotExist]] = DoesNotExist

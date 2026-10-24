@@ -4,27 +4,27 @@ Authentication router with login, refresh, logout, register endpoints.
 
 from __future__ import annotations
 
-from typing import Annotated, Any, Callable, Awaitable
+from collections.abc import Awaitable, Callable
+from typing import Annotated, Any
 
 from fastapi import APIRouter, Body, Depends, Request
 from pydantic import AfterValidator, BaseModel, EmailStr, Field
 
 from zeeb_api.auth.jwt import (
+    TokenExpiredError,
+    TokenInvalidError,
     create_token_pair,
     decode_token,
     get_jwt_config,
-    TokenExpiredError,
-    TokenInvalidError,
-)
-from zeeb_api.auth.schemas import (
-    TokenResponse,
-    RefreshRequest,
-    UserInfo,
-    LogoutResponse,
 )
 from zeeb_api.auth.middleware import (
-    AuthenticatedUser,
     get_current_user,
+)
+from zeeb_api.auth.schemas import (
+    LogoutResponse,
+    RefreshRequest,
+    TokenResponse,
+    UserInfo,
 )
 from zeeb_api.exceptions import (
     AuthenticationException,
@@ -33,7 +33,6 @@ from zeeb_api.exceptions import (
     error_response_doc,
     field_error,
 )
-
 
 # Type for user authentication callback
 AuthenticateFunc = Callable[[Request, dict[str, Any]], Awaitable[tuple[str, dict[str, Any]] | None]]
@@ -192,29 +191,31 @@ def create_auth_router(
     auth_func = authenticate
     if auth_func is None and use_database:
         # Use database-backed authentication
-        async def db_authenticate(request: Request, body: dict) -> tuple[str, dict[str, Any]] | None:
+        async def db_authenticate(
+            request: Request, body: dict
+        ) -> tuple[str, dict[str, Any]] | None:
             from zeeb_api.auth.backends import authenticate as db_auth
-            
+
             email = body.get("email")
             password = body.get("password")
-            
+
             user = await db_auth(email=email, password=password)
             if user is None:
                 return None
-            
+
             # Get claims from user
             claims = {}
             if hasattr(user, "get_claims"):
                 claims = user.get_claims()
-            
+
             # Update last login
             if hasattr(user, "update_last_login"):
                 await user.update_last_login()
-            
+
             return (str(user.id), claims)
-        
+
         auth_func = db_authenticate
-    
+
     # Login endpoint
     if auth_func:
         @router.post(
@@ -236,7 +237,7 @@ def create_auth_router(
         async def login(request: Request, body: LoginRequest) -> TokenResponse:
             """
             Login with email and password.
-            
+
             Returns access and refresh tokens on success.
             """
             result = await auth_func(request, body.model_dump())
@@ -245,17 +246,17 @@ def create_auth_router(
                     code=ErrorCode.AUTH_INVALID_CREDENTIALS,
                     message="Invalid email or password",
                 )
-            
+
             user_id, claims = result
             access_token, refresh_token = create_token_pair(user_id, claims)
-            
+
             return TokenResponse(
                 access_token=access_token,
                 refresh_token=refresh_token,
                 token_type="bearer",
                 expires_in=config.access_token_expire_minutes * 60,
             )
-    
+
     # Registration endpoint
     if enable_registration and use_database:
         @router.post(
@@ -275,13 +276,13 @@ def create_auth_router(
         async def register(body: RegisterRequest) -> RegisterResponse:
             """
             Register a new user.
-            
+
             Creates a new user account with the provided email and password.
             """
-            from zeeb_api.auth.backends import get_user_model, create_user
+            from zeeb_api.auth.backends import create_user, get_user_model
 
             # See the note in /refresh: `objects` is metaclass-added.
-            User: Any = get_user_model()
+            User: Any = get_user_model()  # noqa: N806
 
 
             # Check if email already exists
@@ -290,11 +291,11 @@ def create_auth_router(
                 raise ValidationException(
                     message="Email already registered",
                     details=[
-                        field_error("email", ErrorCode.FIELD_UNIQUE_CONSTRAINT, 
+                        field_error("email", ErrorCode.FIELD_UNIQUE_CONSTRAINT,
                                    "This email is already registered")
                     ],
                 )
-            
+
             # Create user. Name fields are passed only when the user model
             # has them: a custom AUTH_USER_MODEL need not, and the model
             # constructor rejects unknown keyword arguments.
@@ -303,19 +304,19 @@ def create_auth_router(
                 extra_fields["first_name"] = body.first_name
             if body.last_name and hasattr(User, "last_name"):
                 extra_fields["last_name"] = body.last_name
-            
+
             user = await create_user(
                 email=body.email,
                 password=body.password,
                 **extra_fields,
             )
-            
+
             return RegisterResponse(
                 id=str(user.id),
                 email=user.email,
                 message="User registered successfully",
             )
-    
+
     @router.post(
         "/refresh",
         response_model=TokenResponse,
@@ -392,11 +393,12 @@ def create_auth_router(
         # obtain new tokens.
         if use_database:
             from uuid import UUID
+
             from zeeb_api.auth.backends import get_user_model
 
             # get_user_model() is typed as `type`; `objects` is added by the
             # model metaclass, so the manager is only visible at runtime.
-            User: Any = get_user_model()
+            User: Any = get_user_model()  # noqa: N806
             lookup_id: Any = user_id
             try:
                 lookup_id = UUID(user_id)
@@ -420,7 +422,7 @@ def create_auth_router(
             token_type="bearer",
             expires_in=config.access_token_expire_minutes * 60,
         )
-    
+
     @router.post(
         "/logout",
         response_model=LogoutResponse,
@@ -437,7 +439,7 @@ def create_auth_router(
     ) -> LogoutResponse:
         """
         Logout current user.
-        
+
         A refresh token in the body is consumed and its family revoked, so it
         cannot mint new access tokens after logout. A token that is invalid,
         expired or belongs to another user is ignored. If a token blacklist is
@@ -448,15 +450,17 @@ def create_auth_router(
 
         if on_logout:
             # Get token JTI from user
-            token_payload = getattr(user, "_token_payload", None) or getattr(user, "token_payload", None)
+            token_payload = getattr(user, "_token_payload", None) or getattr(
+                user, "token_payload", None
+            )
             if token_payload:
                 await on_logout(token_payload.jti)
-        
+
         return LogoutResponse(
             success=True,
             message="Successfully logged out",
         )
-    
+
     @router.get(
         "/me",
         response_model=UserInfo,
@@ -471,12 +475,12 @@ def create_auth_router(
     ) -> UserInfo:
         """
         Get current user info.
-        
+
         Returns user information. If using database auth, returns full user data.
         """
         # Handle both DB user model and AuthenticatedUser
         user_id = str(getattr(user, "id", ""))
-        
+
         # Build claims from user attributes or get_claims method
         claims = {}
         if hasattr(user, "get_claims"):
@@ -485,11 +489,11 @@ def create_auth_router(
             claims = user.claims
         else:
             # Build from common attributes
-            for attr in ["email", "username", "first_name", "last_name", 
+            for attr in ["email", "username", "first_name", "last_name",
                         "is_staff", "is_superuser", "is_active"]:
                 if hasattr(user, attr):
                     claims[attr] = getattr(user, attr)
-        
+
         return UserInfo(
             id=user_id,
             is_authenticated=True,

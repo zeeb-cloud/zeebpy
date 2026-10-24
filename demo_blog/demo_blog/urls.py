@@ -13,13 +13,14 @@ App routers are appended below by ``zeeb startapp``. Keep the module-level
 ``router`` symbol and the ``get_routes()`` function so that stays automatic.
 """
 
+from apps.accounts.urls import router as accounts_router
+from apps.comment.urls import router as comment_router
+from apps.post.urls import router as post_router
+
 from zeeb_api.auth import create_auth_router
 from zeeb_api.auth.oauth import create_oauth_router
 from zeeb_api.conf import settings
 from zeeb_api.routers import DefaultRouter
-from apps.accounts.urls import router as accounts_router
-from apps.post.urls import router as post_router
-from apps.comment.urls import router as comment_router
 
 _AUTH_PREFIX = getattr(settings, "AUTH_URL_PREFIX", "/auth")
 _REGISTRATION = getattr(settings, "AUTH_ENABLE_REGISTRATION", True)
@@ -28,7 +29,13 @@ _LOGIN_THROTTLE = getattr(settings, "AUTH_LOGIN_THROTTLE_RATE", None)
 # Main router
 router = DefaultRouter()
 
-router.include(create_auth_router(prefix=_AUTH_PREFIX, enable_registration=_REGISTRATION, login_throttle=_LOGIN_THROTTLE))
+router.include(
+    create_auth_router(
+        prefix=_AUTH_PREFIX,
+        enable_registration=_REGISTRATION,
+        login_throttle=_LOGIN_THROTTLE,
+    )
+)
 
 if getattr(settings, "OAUTH_PROVIDERS", None):
     router.include(create_oauth_router(prefix=_AUTH_PREFIX))

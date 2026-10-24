@@ -107,28 +107,28 @@ def _auth_user_model_setting() -> str | None:
 def _resolve_model_string(model_string: str) -> type:
     """
     Resolve a model string like 'apps.myapp.CustomUser' to the actual class.
-    
+
     Supports formats:
     - 'apps.myapp.CustomUser' (full path)
     - 'myapp.CustomUser' (assumes apps.myapp.models)
     """
     import importlib
-    
+
     if "." not in model_string:
         raise ValueError(
             f"AUTH_USER_MODEL must be in format 'app.Model', got '{model_string}'"
         )
-    
+
     parts = model_string.rsplit(".", 1)
     model_name = parts[-1]
-    
+
     # Try different import paths
     paths_to_try = [
         model_string.rsplit(".", 1)[0],  # Direct path
         f"apps.{parts[0]}.models",  # apps.myapp.models
         f"{parts[0]}.models",  # myapp.models
     ]
-    
+
     for module_path in paths_to_try:
         try:
             module = importlib.import_module(module_path)
@@ -136,7 +136,7 @@ def _resolve_model_string(model_string: str) -> type:
                 return getattr(module, model_name)
         except ImportError:
             continue
-    
+
     raise ImportError(
         f"Could not import user model '{model_string}'. "
         f"Check that AUTH_USER_MODEL is set correctly and the model exists."
@@ -146,23 +146,23 @@ def _resolve_model_string(model_string: str) -> type:
 def get_user_model() -> type:
     """
     Get the user model from AUTH_USER_MODEL setting.
-    
+
     Like Django, this returns the custom user model if configured,
     otherwise returns the default User model.
-    
+
     Settings example:
         AUTH_USER_MODEL = 'apps.accounts.CustomUser'
-    
+
     Usage:
         User = get_user_model()
         user = await User.objects.get(email="test@example.com")
     """
     global _user_model_cache
-    
+
     # Return cached model if available
     if _user_model_cache is not None:
         return _user_model_cache
-    
+
     # Check settings for AUTH_USER_MODEL
     auth_user_model = _auth_user_model_setting()
     if auth_user_model:
@@ -176,7 +176,7 @@ def get_user_model() -> type:
             warnings.warn(str(e), stacklevel=2)
             from zeeb_api.auth.models import User
             return User
-    
+
     # Fall back to default User model
     from zeeb_api.auth.models import User
     _user_model_cache = User
@@ -195,21 +195,21 @@ def configure_auth(
 ) -> None:
     """
     Configure authentication settings programmatically.
-    
+
     Note: Prefer using AUTH_USER_MODEL in settings.py instead.
     This function is mainly for testing and special cases.
-    
+
     Args:
         user_model: Custom user model class (must subclass AbstractBaseUser)
-    
+
     Example:
         from zeeb_api.auth import configure_auth
         from myapp.models import CustomUser
-        
+
         configure_auth(user_model=CustomUser)
     """
     global _user_model_cache
-    
+
     if user_model is not None:
         _user_model_cache = user_model
 
@@ -222,19 +222,19 @@ async def authenticate(
 ) -> UserT | None:
     """
     Authenticate a user against the database.
-    
+
     Checks if the provided credentials match a user in the database.
     Uses the model specified in AUTH_USER_MODEL setting.
-    
+
     Args:
         email: User's email address
         password: User's password (plain text)
         username: User's username (alternative to email)
         **credentials: Additional credentials
-    
+
     Returns:
         User instance if authentication successful, None otherwise
-    
+
     Example:
         user = await authenticate(email="test@example.com", password="secret")
         if user:
@@ -242,16 +242,16 @@ async def authenticate(
         else:
             print("Invalid credentials")
     """
-    User = get_user_model()
-    
+    User = get_user_model()  # noqa: N806
+
     # Determine lookup field
     lookup_value = email or username
     if not lookup_value or not password:
         return None
-    
+
     # Get the USERNAME_FIELD from the model
     username_field = getattr(User, "USERNAME_FIELD", "email")
-    
+
     # Build filter
     if email:
         lookup_field = "email"
@@ -259,17 +259,17 @@ async def authenticate(
         lookup_field = "username"
     else:
         lookup_field = username_field
-    
+
     try:
         # Query user
         user = await User.objects.filter(**{lookup_field: lookup_value}).first()
-        
+
         if user is None:
             # Spend the same bcrypt work an existing account costs, so the
             # response time does not reveal which emails are registered.
             _dummy_password_check(password)
             return None
-        
+
         # Verify the password before looking at is_active, for the same
         # reason: an inactive account must not answer faster.
         password_ok = user.check_password(password)
@@ -277,12 +277,12 @@ async def authenticate(
         # Check if user is active
         if hasattr(user, "is_active") and not user.is_active:
             return None
-        
+
         if not password_ok:
             return None
-        
+
         return user
-        
+
     except Exception:
         return None
 
@@ -307,39 +307,39 @@ async def authenticate_and_get_tokens(
 ) -> tuple[str, str, Any] | None:
     """
     Authenticate and return JWT tokens.
-    
+
     Args:
         email: User's email
         password: User's password
         username: Alternative to email
-    
+
     Returns:
         Tuple of (access_token, refresh_token, user) or None if auth fails
     """
     from zeeb_api.auth.jwt import create_token_pair
-    
+
     user = await authenticate(
         email=email,
         password=password,
         username=username,
         **credentials,
     )
-    
+
     if user is None:
         return None
-    
+
     # Get claims from user
     claims = {}
     if hasattr(user, "get_claims"):
         claims = user.get_claims()
-    
+
     # Create tokens
     access_token, refresh_token = create_token_pair(str(user.id), claims)
-    
+
     # Update last login
     if hasattr(user, "update_last_login"):
         await user.update_last_login()
-    
+
     return access_token, refresh_token, user
 
 
@@ -350,17 +350,17 @@ async def create_user(
 ) -> UserT:
     """
     Create a new user with the given email and password.
-    
+
     Uses the model specified in AUTH_USER_MODEL setting.
-    
+
     Args:
         email: User's email address
         password: User's password (will be hashed)
         **extra_fields: Additional fields for the user model
-    
+
     Returns:
         The created user instance
-    
+
     Example:
         user = await create_user(
             email="new@example.com",
@@ -370,17 +370,17 @@ async def create_user(
         )
     """
     from datetime import datetime, timezone
-    
-    User = get_user_model()
-    
+
+    User = get_user_model()  # noqa: N806
+
     # Create user instance
     user = User(email=email, **extra_fields)
     user.set_password(password)
-    
+
     # Set date_joined if the model has it
     if hasattr(user, "date_joined"):
         user.date_joined = datetime.now(timezone.utc)
-    
+
     await user.save()
     return user
 
@@ -392,17 +392,17 @@ async def create_superuser(
 ) -> UserT:
     """
     Create a superuser with all permissions.
-    
+
     Args:
         email: Superuser's email
         password: Superuser's password
         **extra_fields: Additional fields
-    
+
     Returns:
         The created superuser instance
     """
     extra_fields.setdefault("is_staff", True)
     extra_fields.setdefault("is_superuser", True)
     extra_fields.setdefault("is_active", True)
-    
+
     return await create_user(email, password, **extra_fields)

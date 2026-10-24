@@ -3,10 +3,10 @@ Permissions - DRF-like permission classes.
 """
 
 from zeeb_api.permissions.base import (
-    BasePermission,
     AllowAny,
-    IsAuthenticated,
+    BasePermission,
     IsAdminUser,
+    IsAuthenticated,
     IsAuthenticatedOrReadOnly,
     IsOwner,
     IsOwnerOrReadOnly,
