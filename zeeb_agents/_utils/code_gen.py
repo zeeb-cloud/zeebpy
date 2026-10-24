@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import ast
+import io
 import os
 import re
 import tempfile
 import textwrap
+import tokenize
 from pathlib import Path
 
 from zeeb_agents._utils import AgentResult
@@ -2141,6 +2143,95 @@ def remove_import_name(content: str, name: str) -> str:
         elif kept:
             out.append(f"{match.group(1)}{', '.join(kept)}\n")
     return "".join(out)
+
+
+#: Characters an entry in a field list may lead with (an ordering direction, a
+#: search lookup) before the field it names.
+_FIELD_ENTRY_MARKERS = "-^=@$"
+
+
+def rename_field_in_class(
+    content: str, class_name: str, old: str, new: str, *, defines: bool = False
+) -> tuple[str, int, list[int]] | None:
+    """Rename field *old* to *new* wherever ``class <class_name>`` names it.
+
+    Rewritten inside the class, nested classes such as ``Meta`` included:
+
+    * every one-line string literal that names the field — ``"old"``, its key
+      column ``"old_id"``, or a path through it ``"old__name"`` — behind at
+      most one ordering/search marker (``"-old"``, ``"^old"``);
+    * with *defines* (the model's own class): the class-level ``old = ...``
+      assignment, and ``self.old`` / ``self.old_id`` in its methods.
+
+    Any other use of ``old`` or ``old_id`` as a Python name is code the rename
+    cannot follow (``queryset.filter(old_id=...)``, ``instance.old``): it is
+    left alone and its line (1-based, in *content*) comes back in
+    *leftovers*. Returns ``(content, rewritten, leftovers)``, or ``None`` when
+    the class is not defined or its source cannot be tokenized.
+    """
+    bounds = class_block_bounds(content, class_name)
+    if bounds is None:
+        return None
+    start, end = bounds
+    block = content[start:end]
+    first_line = content.count("\n", 0, start) + 1
+    names = {old: new, f"{old}_id": f"{new}_id"}
+    definition = re.compile(rf"^    {re.escape(old)}\s*[:=]")
+    try:
+        tokens = list(tokenize.generate_tokens(io.StringIO(block).readline))
+    except (tokenize.TokenError, SyntaxError):
+        return None
+    edits: list[tuple[int, int, int, str]] = []
+    leftovers: set[int] = set()
+    previous: list[tokenize.TokenInfo] = []
+    for token in tokens:
+        row, col = token.start
+        if token.type == tokenize.STRING:
+            renamed = _renamed_entry(token.string, old, new)
+            if renamed is not None:
+                edits.append((row, col, token.end[1], renamed))
+        elif token.type == tokenize.NAME and token.string in names:
+            is_definition = (
+                defines and token.string == old and col == 4 and definition.match(token.line)
+            )
+            on_self = (
+                defines
+                and len(previous) == 2
+                and previous[1].string == "."
+                and previous[0].string == "self"
+            )
+            if is_definition or on_self:
+                edits.append((row, col, token.end[1], names[token.string]))
+            else:
+                leftovers.add(first_line + row - 1)
+        if token.type not in (tokenize.NL, tokenize.COMMENT):
+            previous = [*previous, token][-2:]
+    lines = block.splitlines(keepends=True)
+    for row, col, end_col, text in sorted(edits, reverse=True):
+        line = lines[row - 1]
+        lines[row - 1] = line[:col] + text + line[end_col:]
+    renamed_content = content[:start] + "".join(lines) + content[end:]
+    return renamed_content, len(edits), sorted(leftovers)
+
+
+def _renamed_entry(literal: str, old: str, new: str) -> str | None:
+    """The string token *literal*, renamed, when it names field *old* — else ``None``.
+
+    Only a plain one-line literal qualifies: a prefixed, triple-quoted or
+    implicitly concatenated string is prose or code, not a field list entry.
+    """
+    quote = literal[:1]
+    if quote not in ("'", '"') or literal[:3] == quote * 3 or len(literal) < 2:
+        return None
+    value = literal[1:-1]
+    marker = value[:1] if value[:1] in _FIELD_ENTRY_MARKERS else ""
+    name = value[len(marker) :]
+    for suffix in ("", "_id"):
+        if name == old + suffix:
+            return f"{quote}{marker}{new}{suffix}{quote}"
+    if name.startswith(f"{old}__"):
+        return f"{quote}{marker}{new}{name[len(old) :]}{quote}"
+    return None
 
 
 def remove_field_from_class(content: str, class_name: str, field_name: str) -> str | None:

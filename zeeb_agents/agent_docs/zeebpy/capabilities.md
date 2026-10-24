@@ -90,7 +90,7 @@ is being solved.
 | `{prefix}search_code(pattern, glob="**/*.py")` | Search for a regex pattern across project source files. |
 | `{prefix}write_file(path, content)` | Write (or overwrite) a file in the project. |
 
-### Advanced (97)
+### Advanced (98)
 
 One tool per object. Fully supported — the feature compiler runs
 exactly these — but reach for them only when a spec cannot express
@@ -127,6 +127,7 @@ the change. Grouped by category below.
 | `{prefix}delete_model(app, model_name)` | Remove a ``Model`` subclass from ``apps/<app>/models.py``. |
 | `{prefix}list_models()` | Return all models defined across all apps. |
 | `{prefix}remove_field(app, model_name, field_name)` | Remove a field from an existing model. |
+| `{prefix}rename_field(app, model_name, old_name, new_name)` | Rename a field on a model, and every generated list that names it. |
 | `{prefix}replace_model_fields(app, model_name, fields)` | Replace **all** fields in a model with a new set. |
 | `{prefix}update_model(app, model_name, rename_to=None, meta_changes=None)` | Rename a model class and/or update its ``class Meta`` attributes. |
 

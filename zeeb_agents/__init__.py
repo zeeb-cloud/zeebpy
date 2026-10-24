@@ -146,6 +146,7 @@ from zeeb_agents.models import (
     delete_model,
     list_models,
     remove_field,
+    rename_field,
     replace_model_fields,
     update_model,
 )
@@ -303,6 +304,7 @@ __all__ = [
     "list_models",
     "add_field",
     "remove_field",
+    "rename_field",
     "delete_field",
     "add_relationship",
     # Serializers

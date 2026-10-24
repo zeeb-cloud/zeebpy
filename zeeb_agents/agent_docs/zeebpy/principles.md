@@ -64,7 +64,7 @@ Rules you can rely on:
 `env_key_not_found`, `feature_active`, `feature_archived`, `feature_in_use`,
 `feature_not_found`,
 `manifest_version_unsupported`,
-`field_not_found`, `file_not_found`, `function_not_found`,
+`field_in_use`, `field_not_found`, `file_not_found`, `function_not_found`,
 `invalid_authentication`, `invalid_field_spec`,
 `invalid_field_type`, `invalid_identifier`, `invalid_input`, `invalid_meta`,
 `invalid_permission`, `invalid_regex`, `invalid_sql`, `log_file_not_found`,

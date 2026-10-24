@@ -60,7 +60,7 @@ vocabulary: `app_not_found`, `model_not_found`, `already_exists`,
 `invalid_field_spec`, `invalid_field_type`, `invalid_identifier`,
 `invalid_input`, `invalid_permission`, `invalid_meta`, `invalid_sql`,
 `invalid_regex`, `table_not_found`, `user_not_found`, `no_user_table`,
-`setting_not_found`, `settings_error`, `syntax_error`, `env_key_not_found`, `field_not_found`,
+`setting_not_found`, `settings_error`, `syntax_error`, `env_key_not_found`, `field_not_found`, `field_in_use`,
 `function_not_found`, `file_not_found`, `log_file_not_found`,
 `manifest_version_unsupported`, `feature_in_use`, `model_referenced`,
 `delete_pending`, `delete_migration_missing`, `verification_failed`,
@@ -476,6 +476,21 @@ An unknown field name fails with close-match `suggestions`.
 
 ```python
 await alter_field("blog", "Article", "title = fields.CharField(max_length=500)")
+```
+
+### `rename_field(app, model_name, old_name, new_name, project_id=None)`
+Rename a field and every generated list that names it, together or not at all:
+the definition in `models.py` (plus `self.<old>` and `Meta` entries such as
+`ordering`), and the entries `"<old>"`, `"<old>_id"`, `"<old>__x"` (behind an
+ordering/search marker) in `<Model>Serializer`, `<Model>ViewSet` and
+`<Model>Filter`. Code the rename cannot follow — `instance.<old>` in an action,
+`filter(<old>_id=...)` — refuses it with `field_in_use`, naming each
+`{"file", "line"}`. Then `make_migrations(accept_renames=True)` writes a
+`RenameField`, which keeps the column's data.
+
+```python
+await rename_field("blog", "Article", "body", "content")
+await make_migrations(accept_renames=True)
 ```
 
 ### `add_relationship(app, model_name, rel, project_id=None)`
