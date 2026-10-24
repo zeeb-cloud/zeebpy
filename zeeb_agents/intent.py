@@ -217,6 +217,35 @@ async def _smoke_endpoints(project_root: Path, port: int) -> dict:
     if not prefixes:
         return {"ok": True, "checked": 0, "detail": "no registered endpoints"}
 
+    # Whatever listens on the port is not necessarily this project: another
+    # project's server, or an older revision of this one. Its GETs would answer
+    # 404 (< 500, "reachable") and pass. Its OpenAPI document must list this
+    # project's endpoints before they are smoked.
+    from zeeb_agents.schema import _fetch_openapi_spec
+
+    try:
+        spec = await _fetch_openapi_spec(port)
+    except AgentError:
+        spec = None  # unreachable: the requests below report it endpoint by endpoint
+    if spec is not None:
+        served = list(spec.get("paths", {}))
+        not_served = [
+            prefix
+            for prefix in prefixes
+            if not any(_contains_segments(path, prefix) for path in served)
+        ]
+        if not_served:
+            return {
+                "ok": False,
+                "checked": 0,
+                "not_served": not_served,
+                "error": (
+                    f"the server on port {port} does not serve this project's "
+                    f"endpoints {', '.join(not_served)} — it is another project, "
+                    "or an older revision of this one"
+                ),
+            }
+
     api_prefix = _api_prefix(project_root)
     base = f"http://127.0.0.1:{port}"
     failures: list[dict] = []
@@ -593,7 +622,13 @@ def _verification_next_actions(verification: dict) -> list[str]:
             "check_system_health() confirms; read_logs for the detail."
         )
     endpoints = checks.get("endpoints")
-    if endpoints and not endpoints["ok"]:
+    if endpoints and endpoints.get("not_served"):
+        actions.append(
+            f"The server that answered is not running this project's current code "
+            f"({endpoints['error']}) — restart this project's server "
+            "(zeeb-manage runserver) on the port you verify against."
+        )
+    elif endpoints and not endpoints["ok"]:
         failing = endpoints.get("failures") or []
         named = ", ".join(str(f.get("endpoint")) for f in failing[:3])
         actions.append(

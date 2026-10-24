@@ -127,32 +127,35 @@ def load_project_settings(project_root: Path) -> ProjectSettings:
             "INSTALLED_APPS": [],
         }
     )
-    for item in sorted(project_root.iterdir()):
-        if item.is_dir() and (item / "settings.py").exists():
-            settings.source = item / "settings.py"
-            spec = importlib.util.spec_from_file_location("_zeeb_settings", item / "settings.py")
-            if spec and spec.loader:
-                saved_path = list(sys.path)
-                sys.path.insert(0, str(project_root))
-                try:
-                    module = importlib.util.module_from_spec(spec)
-                    spec.loader.exec_module(module)  # type: ignore[union-attr]
-                    # Capture every top-level setting by Django convention:
-                    # UPPERCASE, non-dunder module attributes (DATABASE,
-                    # INSTALLED_APPS, CORS_*, SECRET_KEY, DEBUG, …).
-                    for attr in dir(module):
-                        if attr.isupper() and not attr.startswith("_"):
-                            settings[attr] = getattr(module, attr)
-                except BaseException as exc:  # noqa: BLE001 — incl. SystemExit from a settings module
-                    if isinstance(exc, KeyboardInterrupt):
-                        raise
-                    settings.load_error = f"{type(exc).__name__}: {exc}"
-                    logger.warning(
-                        "Could not load %s: %s", settings.source, settings.load_error
-                    )
-                finally:
-                    sys.path[:] = saved_path
-            break
+    # The one discovery rule ([tool.zeeb] settings_module, then the sorted
+    # scan that skips apps/) — not a loop of our own that could pick another file.
+    from zeeb_orm.conf.project import find_settings_path
+
+    item = find_settings_path(project_root)
+    if item is not None and item.is_file():
+        settings.source = item
+        spec = importlib.util.spec_from_file_location("_zeeb_settings", item)
+        if spec and spec.loader:
+            saved_path = list(sys.path)
+            sys.path.insert(0, str(project_root))
+            try:
+                module = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(module)  # type: ignore[union-attr]
+                # Capture every top-level setting by Django convention:
+                # UPPERCASE, non-dunder module attributes (DATABASE,
+                # INSTALLED_APPS, CORS_*, SECRET_KEY, DEBUG, …).
+                for attr in dir(module):
+                    if attr.isupper() and not attr.startswith("_"):
+                        settings[attr] = getattr(module, attr)
+            except BaseException as exc:  # noqa: BLE001 — incl. SystemExit from a settings module
+                if isinstance(exc, KeyboardInterrupt):
+                    raise
+                settings.load_error = f"{type(exc).__name__}: {exc}"
+                logger.warning(
+                    "Could not load %s: %s", settings.source, settings.load_error
+                )
+            finally:
+                sys.path[:] = saved_path
     return settings
 
 

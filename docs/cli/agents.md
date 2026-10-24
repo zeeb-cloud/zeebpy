@@ -106,6 +106,22 @@ id fails with `no_project_id`; an id no project is registered under fails with
 `project_not_found`. (Creating a project is the one bootstrapping exception —
 see `create_project`.)
 
+### Several projects in one process
+
+A host that serves many projects from one long-lived process (an MCP server)
+can call any tool on any project. The decorator keeps them apart:
+
+- A project-scoped call reads the project's own `.env` and nothing else: the
+  host process's environment (its `DATABASE_URL`, `SECRET_KEY`, …) is not the
+  project's.
+- Calls on the same project run concurrently; a call on another project waits
+  until they finish. On the switch, the previous project's imported code and
+  models are dropped — every project names its packages `apps.*`, so they would
+  otherwise be read as the next project's.
+- `verify_project`'s `endpoints` check only smokes a server whose OpenAPI
+  document lists this project's endpoints; anything else on the port fails the
+  check with `not_served`.
+
 ### Special cases & gotchas
 
 | Function | Behavior to know |

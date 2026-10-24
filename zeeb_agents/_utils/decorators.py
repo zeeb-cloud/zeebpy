@@ -22,6 +22,7 @@ from typing import Any, overload
 
 from zeeb_agents._utils import AgentResult
 from zeeb_agents._utils.errors import AgentError, fail
+from zeeb_agents._utils.isolation import project_scope
 from zeeb_agents._utils.resolver import resolve_project_id
 
 logger = logging.getLogger("zeeb_agents")
@@ -143,7 +144,10 @@ def agent_function(
                     else:
                         root = resolve_project_id(project_id)
                     call_kwargs["project_root"] = root
-                    return await fn(**call_kwargs)
+                    # One project's code and environment at a time in this
+                    # process (see _utils/isolation.py).
+                    async with project_scope(root):
+                        return await fn(**call_kwargs)
                 return await fn(*args, **kwargs)
             except AgentError as exc:
                 # Expected, targeted failure — no traceback needed.
