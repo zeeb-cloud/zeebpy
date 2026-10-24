@@ -67,6 +67,9 @@ class QuerySet(Generic[ModelT]):
         self._annotations: dict[str, Any] = {}
         self._limit: int | None = None
         self._offset: int | None = None
+        # A slice step (qs[::2]): applied to the fetched rows, as Django
+        # applies it to the evaluated list. None = no step.
+        self._step: int | None = None
         self._only_fields: list[str] | None = None
         self._defer_fields: list[str] | None = None
         # `_values_mode` is what makes rows come back as dicts; `_values_fields`
@@ -113,7 +116,16 @@ class QuerySet(Generic[ModelT]):
         return Manager.from_queryset(cls)()
 
     def _clone(self) -> QuerySet[ModelT]:
-        """Create a copy of this QuerySet (preserving the QuerySet subclass)."""
+        """Create a copy of this QuerySet (preserving the QuerySet subclass).
+
+        A queryset sliced with a step cannot be chained: Django returns a
+        plain list for ``qs[::2]``, so nothing can be applied to it.
+        """
+        if self._step is not None:
+            raise TypeError(
+                "Cannot chain a queryset sliced with a step: in Django qs[a:b:step] "
+                "is an evaluated list. Await it first."
+            )
         clone = self.__class__(self.model)
         clone._filters = self._filters.copy()
         clone._excludes = self._excludes.copy()
@@ -160,6 +172,25 @@ class QuerySet(Generic[ModelT]):
             op = "union" if self._combinator == "union_all" else self._combinator
             raise NotSupportedError(f"Calling QuerySet.{method}() after {op}() is not supported.")
 
+    def _check_raw(self, method: str) -> None:
+        """Refuse ``method`` on a ``raw()`` queryset.
+
+        The raw SQL *is* the query: a filter, an ordering, an UPDATE or a
+        DELETE built from this queryset's other state would silently run
+        against the whole table instead of the raw rows. Only evaluation
+        (``await``, ``async for``, indexing/slicing, ``count()``,
+        ``exists()``, ``prefetch_related()``, ``using()``) works on the raw
+        result.
+        """
+        if getattr(self, "_raw_sql", None) is not None:
+            from zeeb_orm.exceptions import NotSupportedError
+
+            raise NotSupportedError(
+                f"Calling QuerySet.{method}() on a raw() queryset is not supported: "
+                "the raw SQL defines the rows, so express it in the SQL, or evaluate "
+                "the queryset and work on the instances."
+            )
+
     def _invalidate_cache(self) -> None:
         """Invalidate the result cache."""
         self._result_cache = None
@@ -186,6 +217,7 @@ class QuerySet(Generic[ModelT]):
         Chaining stays sound: the empty marker survives ``_clone``, so
         ``.none().filter(...)`` is still empty.
         """
+        self._check_raw("none")
         clone = self._clone()
         clone._is_empty = True
         return clone
@@ -226,6 +258,7 @@ class QuerySet(Generic[ModelT]):
             .filter(Q(active=True) | Q(role='admin'))
         """
         self._check_combinator("filter")
+        self._check_raw("filter")
         clone = self._clone()
         q = self._call_q(args, kwargs)
         if q is not None:
@@ -248,6 +281,7 @@ class QuerySet(Generic[ModelT]):
             .exclude(tags__name='draft')   # no tag named "draft"
         """
         self._check_combinator("exclude")
+        self._check_raw("exclude")
         clone = self._clone()
         q = self._call_q(args, kwargs)
         if q is not None:
@@ -336,6 +370,7 @@ class QuerySet(Generic[ModelT]):
             .order_by('-created_at')
             .order_by('last_name', 'first_name')
         """
+        self._check_raw("order_by")
         clone = self._clone()
         clone._order_by = list(fields)
         clone._default_ordering = False
@@ -350,6 +385,7 @@ class QuerySet(Generic[ModelT]):
         ``distinct()`` with no arguments for row-level de-duplication.
         """
         self._check_combinator("distinct")
+        self._check_raw("distinct")
         if fields:
             from zeeb_orm.exceptions import NotSupportedError
 
@@ -364,30 +400,73 @@ class QuerySet(Generic[ModelT]):
     # Slicing / Limiting
 
     def __getitem__(self, key: int | slice) -> QuerySet[ModelT] | Any:
-        """Support slicing: qs[0], qs[5:10], qs[:5]"""
-        clone = self._clone()
+        """Slice the queryset: ``qs[5:10]``, ``qs[:5]``, ``qs[3]``.
+
+        Returns a new queryset (an index gives a one-row queryset). Slices
+        compose as in Django: a slice of a sliced queryset is taken within
+        the first one (``qs[5:10][2:4]`` is rows 7 and 8) and an empty range
+        (``qs[5:3]``) yields no rows. Negative indexes raise ``ValueError``.
+        A step (``qs[::2]``) is applied to the fetched rows; such a queryset
+        can be evaluated (``await``, ``async for``, ``count()``,
+        ``exists()``) but not chained further.
+        """
+        if isinstance(key, bool) or not isinstance(key, (int, slice)):
+            raise TypeError(
+                f"QuerySet indices must be integers or slices, not {type(key).__name__}."
+            )
         if isinstance(key, slice):
-            if key.start is not None:
-                clone._offset = key.start
-            if key.stop is not None:
-                if key.start is not None:
-                    clone._limit = key.stop - key.start
-                else:
-                    clone._limit = key.stop
+            for bound in (key.start, key.stop):
+                if bound is not None and (isinstance(bound, bool) or not isinstance(bound, int)):
+                    raise TypeError(
+                        "QuerySet slice bounds must be integers or None, not "
+                        f"{type(bound).__name__}."
+                    )
+            if (key.start is not None and key.start < 0) or (
+                key.stop is not None and key.stop < 0
+            ):
+                raise ValueError("Negative indexing is not supported.")
+            if key.step is not None:
+                if isinstance(key.step, bool) or not isinstance(key.step, int):
+                    raise TypeError("QuerySet slice step must be an integer.")
+                if key.step == 0:
+                    raise ValueError("slice step cannot be zero")
+            clone = self._clone()
+            clone._set_limits(key.start, key.stop)
+            if key.step is not None and key.step != 1:
+                clone._step = key.step
             return clone
-        elif isinstance(key, int):
-            if key < 0:
-                raise ValueError("Negative indexing is not supported")
-            clone._offset = key
-            clone._limit = 1
-            return clone
-        raise TypeError(f"QuerySet indices must be integers or slices, not {type(key).__name__}")
+        if key < 0:
+            raise ValueError("Negative indexing is not supported.")
+        clone = self._clone()
+        clone._set_limits(key, key + 1)
+        return clone
+
+    def _is_sliced(self) -> bool:
+        """Whether a LIMIT/OFFSET (or a step) has been applied."""
+        return self._limit is not None or self._offset is not None or self._step is not None
+
+    def _set_limits(self, low: int | None, high: int | None) -> None:
+        """Narrow the slice to ``[low:high]`` *within* the current one.
+
+        Django's ``Query.set_limits``: bounds are relative to the existing
+        slice and can never widen it, so ``qs[5:10][2:4]`` is ``[7:9]`` and
+        ``qs[5:10][3:]`` is ``[8:10]``. An empty range keeps ``LIMIT 0``.
+        """
+        low_mark = self._offset or 0
+        high_mark = None if self._limit is None else low_mark + self._limit
+        if high is not None:
+            high_mark = low_mark + high if high_mark is None else min(high_mark, low_mark + high)
+        if low is not None:
+            low_mark = low_mark + low if high_mark is None else min(high_mark, low_mark + low)
+        self._offset = low_mark or None
+        self._limit = None if high_mark is None else max(0, high_mark - low_mark)
 
     # Field selection
 
     def only(self, *fields: str) -> QuerySet[ModelT]:
         """Load only the specified fields."""
         self._check_combinator("only")
+        self._check_raw("only")
         clone = self._clone()
         clone._only_fields = list(fields)
         return clone
@@ -395,6 +474,7 @@ class QuerySet(Generic[ModelT]):
     def defer(self, *fields: str) -> QuerySet[ModelT]:
         """Defer loading of the specified fields."""
         self._check_combinator("defer")
+        self._check_raw("defer")
         clone = self._clone()
         clone._defer_fields = list(fields)
         return clone
@@ -414,6 +494,7 @@ class QuerySet(Generic[ModelT]):
         annotated, so ``values("tool").annotate(n=Count("id")).values("n")``
         is still one row per tool.
         """
+        self._check_raw("values")
         clone = self._clone()
         clone._values_mode = True
         clone._values_fields = list(fields) if fields else None
@@ -432,6 +513,7 @@ class QuerySet(Generic[ModelT]):
         ``values_list("tool").annotate(n=Count("id"))`` yields
         ``("x", 2)``. ``flat=True`` yields the first value of each tuple.
         """
+        self._check_raw("values_list")
         clone = self._clone()
         clone._values_annotations = [] if fields else None
         if not fields:
@@ -457,6 +539,7 @@ class QuerySet(Generic[ModelT]):
             Post.objects.select_related('author', 'category')
         """
         self._check_combinator("select_related")
+        self._check_raw("select_related")
         clone = self._clone()
         clone._select_related = list(fields)
         return clone
@@ -490,6 +573,7 @@ class QuerySet(Generic[ModelT]):
             Author.objects.annotate(post_count=Count('posts'))
         """
         self._check_combinator("annotate")
+        self._check_raw("annotate")
         _require_expressions("annotate", kwargs)
         clone = self._clone()
         clone._annotations.update(kwargs)
@@ -524,6 +608,7 @@ class QuerySet(Generic[ModelT]):
             await Author.objects.aggregate(avg_age=Avg('age'))
         """
         self._check_combinator("aggregate")
+        self._check_raw("aggregate")
         from zeeb_orm.db.connection import get_session
 
         _require_expressions("aggregate", kwargs)
@@ -636,21 +721,34 @@ class QuerySet(Generic[ModelT]):
         ``?`` or ``:word`` inside ``'...'`` is text, not a placeholder. The
         number of ``?`` placeholders must match the number of values
         (``ValueError`` otherwise).
+
+        The SQL defines the rows: the queryset can be evaluated (``await``,
+        ``async for``), indexed and sliced (applied to the fetched rows),
+        counted, tested with ``exists()`` and given ``prefetch_related()``.
+        Every method that would build its own query from the queryset
+        (``filter()``, ``order_by()``, ``values()``, ``update()``,
+        ``delete()``, ``get()``, ``first()``, …) raises
+        :class:`~zeeb_orm.exceptions.NotSupportedError` instead of silently
+        running against the whole table.
         """
         self._check_combinator("raw")
         clone = self._clone()
         clone._raw_sql = sql
         clone._raw_params = params
+        clone._limit = clone._offset = None
         return clone
 
     # Combinators (UNION / INTERSECT / EXCEPT)
 
     def _combinator_query(self, combinator: str, *others: QuerySet[Any]) -> QuerySet[ModelT]:
+        op = "union" if combinator == "union_all" else combinator
+        self._check_raw(op)
         for other in others:
             if not isinstance(other, QuerySet):
                 raise TypeError(
                     f"Combinator arguments must be QuerySets, got {type(other).__name__}"
                 )
+            other._check_raw(op)
         # The combined queryset is a fresh wrapper holding all components
         # (including self).  This makes chained combinations nest naturally.
         clone: QuerySet[ModelT] = self.__class__(self.model)
@@ -775,6 +873,7 @@ class QuerySet(Generic[ModelT]):
         SQL options; ``of`` restricts locking to the given relations
         (``"self"`` refers to the queryset's own table).
         """
+        self._check_raw("select_for_update")
         clone = self._clone()
         clone._for_update = {
             "nowait": nowait,
@@ -800,8 +899,19 @@ class QuerySet(Generic[ModelT]):
                 "Wrap the query in 'async with atomic():'."
             )
 
-    def _apply_for_update(self, stmt: Any) -> Any:
-        """Apply the stored FOR UPDATE options to ``stmt``."""
+    def _apply_for_update(self, stmt: Any, joins: JoinContext | None = None) -> Any:
+        """Apply the stored FOR UPDATE options to ``stmt``.
+
+        ``of`` names are resolved to the aliases ``joins`` gave the JOINs
+        ``stmt`` was built with (``FOR UPDATE OF _sr_author_author``, not the
+        base table name, which PostgreSQL rejects for an aliased table). As in
+        Django, only ``"self"`` and relations the query actually joins
+        (``select_related()`` or a ``__`` traversal) may be named; anything
+        else raises ``FieldError``. Without ``joins`` the statement's joins are
+        rebuilt (alias names are deterministic).
+        """
+        from zeeb_orm.exceptions import FieldError
+
         assert self._for_update is not None
         kwargs: dict[str, Any] = {}
         if self._for_update["nowait"]:
@@ -810,21 +920,38 @@ class QuerySet(Generic[ModelT]):
             kwargs["skip_locked"] = True
         of = self._for_update["of"]
         if of:
+            if joins is None and self._combinator is None:
+                joins = self._build_select_with_joins()[1]
             table = self.model._get_table()
             of_targets = []
             for name in of:
                 if name == "self":
                     of_targets.append(table)
-                else:
-                    from zeeb_orm.models.relations import resolve_relation
-
-                    relation = resolve_relation(self.model, name)
-                    if relation is None:
-                        raise ValueError(
-                            f"select_for_update(of=...): {name!r} is not a "
-                            f"relation on {self.model.__name__}"
-                        )
-                    of_targets.append(relation.target_model._get_table())
+                    continue
+                info = None
+                if joins is not None:
+                    info = next(
+                        (
+                            candidate
+                            for candidate in joins.joins.values()
+                            if candidate.path == name and candidate.parent_key != "#through"
+                        ),
+                        None,
+                    )
+                if info is None:
+                    joined = sorted(
+                        {
+                            candidate.path
+                            for candidate in (joins.joins.values() if joins else ())
+                            if candidate.parent_key != "#through"
+                        }
+                    )
+                    raise FieldError(
+                        f"Invalid field name(s) given in select_for_update(of=(...)): "
+                        f"{name!r}. Only relational fields followed in the query are "
+                        f"allowed. Choices are: {', '.join(['self', *joined])}."
+                    )
+                of_targets.append(info.alias)
             kwargs["of"] = of_targets
         return stmt.with_for_update(**kwargs)
 
@@ -849,8 +976,49 @@ class QuerySet(Generic[ModelT]):
             subq = subq.where(where_clause)
         return pk_col.in_(subq)
 
+    def _write_condition(self, table: Any, operation: str) -> Any:
+        """The WHERE condition of an UPDATE/DELETE built from this queryset.
+
+        UPDATE/DELETE can neither join nor group, so filters across relations
+        become ``pk IN (SELECT pk FROM <joins> WHERE ...)`` and a filter on an
+        aggregate annotation ``pk IN (SELECT pk ... GROUP BY pk HAVING ...)``
+        (the HAVING split of :meth:`_build_where_and_having`). An aggregation
+        grouped by ``values()`` fields has no per-row meaning and is refused.
+        """
+        from zeeb_orm.exceptions import NotSupportedError
+
+        joins = self._make_join_context()
+        if self._aggregate_aliases():
+            where_clause, having_clause = self._build_where_and_having(joins)
+            if having_clause is not None:
+                if self._group_by_fields is not None:
+                    raise NotSupportedError(
+                        f"Cannot {operation}() a values() aggregation filtered on an "
+                        "aggregate: its rows are groups, not objects."
+                    )
+                pk_col = table.c[self._pk_column_name()]
+                subq = select(pk_col).select_from(
+                    joins.apply(table) if joins.has_joins else table
+                )
+                if where_clause is not None:
+                    subq = subq.where(where_clause)
+                subq = subq.group_by(pk_col).having(having_clause).correlate(None)
+                return pk_col.in_(subq)
+        else:
+            where_clause = self._build_where_clause(joins)
+
+        if joins.has_joins:
+            return self._pk_in_join_subquery(table, joins, where_clause)
+        return where_clause
+
     def _build_where_clause(self, joins: JoinContext | None = None) -> Any:
         """Build SQLAlchemy WHERE clause from filters and excludes."""
+        if self._raw_sql is not None:
+            from zeeb_orm.exceptions import NotSupportedError
+
+            raise NotSupportedError(
+                "A raw() queryset has no ORM filters: its rows come from the raw SQL."
+            )
         if self._is_empty:
             from sqlalchemy import false
 
@@ -1397,8 +1565,22 @@ class QuerySet(Generic[ModelT]):
 
     def _build_select(self) -> Select[Any]:
         """Build the complete SELECT statement."""
+        return self._build_select_with_joins()[0]
+
+    def _build_select_with_joins(self) -> tuple[Any, JoinContext | None]:
+        """The complete SELECT statement and the JoinContext it was built on.
+
+        ``select_for_update(of=...)`` needs the context to name the aliases
+        the JOINs were given (``None`` for a combined query).
+        """
+        if self._raw_sql is not None:
+            from zeeb_orm.exceptions import NotSupportedError
+
+            raise NotSupportedError(
+                "A raw() queryset has no ORM query to build: its rows come from the raw SQL."
+            )
         if self._combinator is not None:
-            return self._build_combined_select()
+            return self._build_combined_select(), None
 
         table = self.model._get_table()
         joins = self._make_join_context()
@@ -1443,7 +1625,7 @@ class QuerySet(Generic[ModelT]):
         if self._offset is not None:
             stmt = stmt.offset(self._offset)
 
-        return stmt
+        return stmt, joins
 
     # Execution methods
 
@@ -1514,18 +1696,18 @@ class QuerySet(Generic[ModelT]):
         if self._raw_sql is not None:
             return await self._fetch_raw(db)
 
-        stmt = self._build_select()
+        stmt, joins = self._build_select_with_joins()
 
         if self._for_update is not None:
             # Raises on SQLite or outside a transaction.
             self._validate_for_update(db.get_engine().dialect.name)
-            stmt = self._apply_for_update(stmt)
+            stmt = self._apply_for_update(stmt, joins)
             # Locks only make sense on the active transaction's session.
             session = _active_session_on(self._db_alias)
             assert session is not None  # guaranteed by _validate_for_update
             result = await session.execute(stmt)
             rows = result.fetchall()
-            instances = self._rows_to_objects(rows)
+            instances = self._apply_step(self._rows_to_objects(rows))
             if self._prefetch_related and instances:
                 await self._do_prefetch_related(instances, db)
             self._result_cache = instances
@@ -1536,7 +1718,7 @@ class QuerySet(Generic[ModelT]):
         async with get_session(self._db_alias) as (session, _):
             result = await session.execute(stmt)
             rows = result.fetchall()
-            instances = self._rows_to_objects(rows)
+            instances = self._apply_step(self._rows_to_objects(rows))
 
             # Handle prefetch_related after main fetch
             if (
@@ -1551,7 +1733,11 @@ class QuerySet(Generic[ModelT]):
             return instances
 
     async def _fetch_raw(self, db: Any) -> list[Any]:
-        """Execute a raw SQL query and return model instances."""
+        """Execute a raw SQL query and return model instances.
+
+        A slice taken after ``raw()`` is applied to the fetched rows (the SQL
+        is never rewritten), and so is ``prefetch_related()``.
+        """
         from sqlalchemy import text
 
         from zeeb_orm.db.connection import get_session
@@ -1566,8 +1752,17 @@ class QuerySet(Generic[ModelT]):
 
             instances = [self._load_instance(self.model, row) for row in rows]
 
-            self._result_cache = instances
-            return instances
+        start = self._offset or 0
+        stop = None if self._limit is None else start + self._limit
+        instances = self._apply_step(instances[start:stop])
+        if self._prefetch_related and instances:
+            await self._do_prefetch_related(instances, db)
+        self._result_cache = instances
+        return instances
+
+    def _apply_step(self, rows: list[Any]) -> list[Any]:
+        """The fetched rows with the slice step (``qs[::2]``) applied."""
+        return rows if self._step is None else rows[:: self._step]
 
     def _load_instance(self, model: Any, row: Any) -> Any:
         """A persisted ``model`` instance from a result row.
@@ -1713,25 +1908,51 @@ class QuerySet(Generic[ModelT]):
             NotSupportedError: when combined with prefetch_related()
                 (prefetching requires the full result set).
         """
+        self._check_raw("iterator")
         from zeeb_orm.exceptions import NotSupportedError
 
         if self._prefetch_related:
             raise NotSupportedError("iterator() cannot be used with prefetch_related().")
         if chunk_size <= 0:
             raise ValueError("Chunk size must be strictly positive.")
+        step = self._step or 1
+        if step < 0:
+            raise NotSupportedError(
+                "iterator() cannot stream a queryset sliced with a negative step."
+            )
 
         async def _generate() -> AsyncIterator[ModelT]:
-            from zeeb_orm.db.connection import get_session
+            from zeeb_orm.db.connection import get_connection, get_session
 
-            stmt = self._build_select()
+            stmt, joins = self._build_select_with_joins()
+            index = 0
+
+            async def _stream(session: Any) -> AsyncIterator[ModelT]:
+                nonlocal index
+                result = await session.stream(stmt)
+                async for partition in result.partitions(chunk_size):
+                    for obj in self._rows_to_objects(list(partition)):
+                        if index % step == 0:
+                            yield obj
+                        index += 1
+
+            if self._for_update is not None:
+                # The same locks _fetch_all takes: on SQLite or outside a
+                # transaction this raises instead of silently locking nothing.
+                db = await get_connection(self._db_alias)
+                self._validate_for_update(db.get_engine().dialect.name)
+                stmt = self._apply_for_update(stmt, joins)
+                session = _active_session_on(self._db_alias)
+                assert session is not None  # guaranteed by _validate_for_update
+                async for obj in _stream(session):
+                    yield obj
+                return
 
             # The session must stay open across yields - hold it in the
             # generator so it lives exactly as long as the iteration.
             async with get_session(self._db_alias) as (session, _):
-                result = await session.stream(stmt)
-                async for partition in result.partitions(chunk_size):
-                    for obj in self._rows_to_objects(list(partition)):
-                        yield obj
+                async for obj in _stream(session):
+                    yield obj
 
         return _generate()
 
@@ -1751,6 +1972,7 @@ class QuerySet(Generic[ModelT]):
         Raises:
             ValueError: when ``field_name`` is not unique.
         """
+        self._check_raw("in_bulk")
         if field_name == "pk":
             accessor = self.model._meta.pk_name or "id"
         else:
@@ -1785,6 +2007,7 @@ class QuerySet(Generic[ModelT]):
         ``EXPLAIN`` / ``EXPLAIN ANALYZE`` on PostgreSQL and ``EXPLAIN``
         on MySQL.
         """
+        self._check_raw("explain")
         from zeeb_orm.db.connection import get_connection
 
         db = await get_connection(self._db_alias)
@@ -1815,9 +2038,16 @@ class QuerySet(Generic[ModelT]):
 
         Raises DoesNotExist if no object found.
         Raises MultipleObjectsReturned if more than one found.
+
+        On a sliced queryset the lookup stays within the slice
+        (``qs[:1].get()`` is the slice's one row); filtering a sliced
+        queryset through ``get(**lookups)`` raises ``TypeError`` (Django).
         """
+        self._check_raw("get")
+        if (args or kwargs) and self._is_sliced():
+            raise TypeError("Cannot filter a query once a slice has been taken.")
         clone = self.filter(*args, **kwargs) if args or kwargs else self._clone()
-        clone._limit = 2  # Fetch 2 to check for multiple
+        clone._set_limits(None, 2)  # Fetch 2 (within the slice) to check for multiple
 
         results = await clone._fetch_all()
 
@@ -1894,10 +2124,22 @@ class QuerySet(Generic[ModelT]):
         An unordered aggregation that is not grouped by the primary key has no
         such order to fall back on, so it raises ``TypeError`` asking for an
         ``order_by()``.
+
+        On a sliced queryset it is the first row of the slice, which needs
+        the ordering the slice was taken in: a sliced queryset without one
+        raises ``TypeError`` (Django: no reordering after a slice).
         """
+        self._check_raw("first")
         clone = self._clone()
-        clone._order_by = self._effective_ordering("first")
-        clone._limit = 1
+        if self._is_sliced():
+            if not (
+                self._order_by
+                or (self._applies_default_ordering() and self.model._meta.ordering)
+            ):
+                raise TypeError("Cannot reorder a query once a slice has been taken.")
+        else:
+            clone._order_by = self._effective_ordering("first")
+        clone._set_limits(None, 1)
         results = await clone._fetch_all()
         return results[0] if results else None
 
@@ -1907,8 +2149,13 @@ class QuerySet(Generic[ModelT]):
         Reverses the effective ordering (explicit order_by, Meta.ordering,
         or the primary key) and returns the first row. Raises ``TypeError``
         where ``first()`` does: an unordered aggregation not grouped by the
-        primary key.
+        primary key, and — as in Django — on a sliced queryset, whose
+        ordering cannot be reversed without changing which rows the slice
+        holds.
         """
+        self._check_raw("last")
+        if self._is_sliced():
+            raise TypeError("Cannot reverse a query once a slice has been taken.")
         clone = self._clone()
         clone._order_by = [
             f[1:] if f.startswith("-") else f"-{f}" for f in self._effective_ordering("last")
@@ -1952,24 +2199,33 @@ class QuerySet(Generic[ModelT]):
 
         Respects slicing (``qs[:10].count()`` is at most 10), ``distinct()``
         and filters on aggregate annotations. An already evaluated queryset
-        answers from its result cache.
+        answers from its result cache; a ``raw()`` queryset counts the rows
+        its SQL returns (by evaluating it).
         """
         from zeeb_orm.db.connection import get_session
 
         if self._result_cache is not None:
             return len(self._result_cache)
+        if self._raw_sql is not None:
+            return len(await self._fetch_all())
 
         stmt = self._build_count_select()
         async with get_session(self._db_alias) as (session, _):
             result = await session.execute(stmt)
-            return result.scalar() or 0
+            total = result.scalar() or 0
+        if self._step is not None:
+            step = abs(self._step)
+            total = (total + step - 1) // step
+        return total
 
     async def exists(self) -> bool:
-        """Check if any objects match the query."""
+        """Check if any objects match the query (within its slice, if any)."""
         if self._result_cache is not None:
             return bool(self._result_cache)
+        if self._step is not None:
+            return bool(await self._fetch_all())
         clone = self._clone()
-        clone._limit = 1 if self._limit is None else min(self._limit, 1)
+        clone._set_limits(None, 1)
         results = await clone._fetch_all()
         return len(results) > 0
 
@@ -1987,6 +2243,7 @@ class QuerySet(Generic[ModelT]):
         (``create(author=author)``); the descriptor stores the id and caches
         the instance, so a later ``await obj.author`` needs no query.
         """
+        self._check_raw("create")
         instance = self.model(**kwargs)
         await instance.save(validate=validate, using=self._db_alias)
         return instance
@@ -2018,6 +2275,7 @@ class QuerySet(Generic[ModelT]):
 
         Returns (instance, created) tuple.
         """
+        self._check_raw("get_or_create")
         from zeeb_orm.exceptions import IntegrityError
 
         try:
@@ -2054,6 +2312,7 @@ class QuerySet(Generic[ModelT]):
 
         Returns (instance, created) tuple.
         """
+        self._check_raw("update_or_create")
         from zeeb_orm.db.connection import get_connection
 
         update_defaults = defaults or {}
@@ -2140,12 +2399,21 @@ class QuerySet(Generic[ModelT]):
         instance or a primary key (``update(author=alice)``) or as
         ``author_id``. Values may be expressions (``F("views") + 1``).
 
+        A sliced queryset raises ``TypeError`` (Django: an UPDATE has no
+        LIMIT/OFFSET, so it would write every matching row). A filter on an
+        aggregate annotation (``annotate(n=Count("books")).filter(n__gte=2)``)
+        selects the rows through a ``pk IN (... GROUP BY pk HAVING ...)``
+        subquery.
+
         Returns the number of rows updated.
         """
         from zeeb_orm.db.connection import get_session
         from zeeb_orm.query.expressions import Expression
 
         self._check_combinator("update")
+        self._check_raw("update")
+        if self._is_sliced():
+            raise TypeError("Cannot update a query once a slice has been taken.")
 
         table = self.model._get_table()
 
@@ -2162,15 +2430,9 @@ class QuerySet(Generic[ModelT]):
             values[field.db_column or field.name] = value
 
         stmt = update(table).values(values)
-
-        joins = self._make_join_context()
-        where_clause = self._build_where_clause(joins)
-
-        if joins.has_joins:
-            # UPDATE cannot join: rewrite as pk IN (SELECT pk FROM <joins> ...)
-            stmt = stmt.where(self._pk_in_join_subquery(table, joins, where_clause))
-        elif where_clause is not None:
-            stmt = stmt.where(where_clause)
+        condition = self._write_condition(table, "update")
+        if condition is not None:
+            stmt = stmt.where(condition)
 
         async with get_session(self._db_alias) as (session, should_commit):
             result = await session.execute(stmt)
@@ -2192,6 +2454,11 @@ class QuerySet(Generic[ModelT]):
         registered receiver always runs.  Otherwise a single fast DELETE
         statement runs.
 
+        A sliced queryset raises ``TypeError`` on either route (Django: a
+        DELETE has no LIMIT/OFFSET). A filter on an aggregate annotation is
+        applied through a ``pk IN (... HAVING ...)`` subquery, as in
+        :meth:`update`.
+
         Returns the number of rows deleted.
         """
         from zeeb_orm.db.connection import get_session
@@ -2199,6 +2466,9 @@ class QuerySet(Generic[ModelT]):
         from zeeb_orm.signals import post_delete, pre_delete
 
         self._check_combinator("delete")
+        self._check_raw("delete")
+        if self._is_sliced():
+            raise TypeError("Cannot use 'limit' or 'offset' with delete().")
 
         has_delete_receivers = pre_delete.has_listeners(self.model) or post_delete.has_listeners(
             self.model
@@ -2221,15 +2491,9 @@ class QuerySet(Generic[ModelT]):
         table = self.model._get_table()
 
         stmt = delete(table)
-
-        joins = self._make_join_context()
-        where_clause = self._build_where_clause(joins)
-
-        if joins.has_joins:
-            # DELETE cannot join: rewrite as pk IN (SELECT pk FROM <joins> ...)
-            stmt = stmt.where(self._pk_in_join_subquery(table, joins, where_clause))
-        elif where_clause is not None:
-            stmt = stmt.where(where_clause)
+        condition = self._write_condition(table, "delete")
+        if condition is not None:
+            stmt = stmt.where(condition)
 
         async with get_session(self._db_alias) as (session, should_commit):
             result = await session.execute(stmt)
@@ -2267,6 +2531,7 @@ class QuerySet(Generic[ModelT]):
         to run ``full_clean()`` on every object before any insert. No
         ``save()`` and no signals.
         """
+        self._check_raw("bulk_create")
         from zeeb_orm.db.connection import get_connection, get_session
 
         if batch_size is not None and batch_size <= 0:
@@ -2363,6 +2628,7 @@ class QuerySet(Generic[ModelT]):
 
         Returns the number of rows matched.
         """
+        self._check_raw("bulk_update")
         from sqlalchemy import case, literal
 
         from zeeb_orm.db.connection import get_session

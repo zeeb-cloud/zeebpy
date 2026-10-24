@@ -443,7 +443,7 @@ class TestAzureADProvider:
         )
 
     def test_multi_tenant_issuer_regex(self):
-        p = AzureADProvider(tenant="common", client_id=CLIENT_ID)
+        p = AzureADProvider(tenant="common", client_id=CLIENT_ID, allow_any_tenant=True)
         assert p._issuer_validator(
             f"https://login.microsoftonline.com/{self.GUID}/v2.0"
         )

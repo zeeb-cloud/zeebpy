@@ -221,6 +221,8 @@ AUTH_LOGIN_THROTTLE_RATE = env_str("AUTH_LOGIN_THROTTLE_RATE", "10/min")
 #   GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET
 #   GITHUB_CLIENT_ID / GITHUB_CLIENT_SECRET
 #   AZURE_CLIENT_ID  / AZURE_CLIENT_SECRET / AZURE_TENANT_ID (default "common")
+#   A multi-tenant Azure app ("common") refuses every sign-in until it names
+#   AZURE_ALLOWED_TENANTS (tenant GUIDs) or sets AZURE_ALLOW_ANY_TENANT=true.
 # With none set this stays empty and urls.py mounts no OAuth route at all.
 
 OAUTH_PROVIDERS = env_oauth_providers()
@@ -379,6 +381,8 @@ SECRET_KEY=
 # AZURE_CLIENT_ID=
 # AZURE_CLIENT_SECRET=
 # AZURE_TENANT_ID=common
+# AZURE_ALLOWED_TENANTS=        # comma-separated tenant GUIDs; required for "common"
+# AZURE_ALLOW_ANY_TENANT=false  # or accept any tenant (never grants token roles)
 # OAUTH_AUTO_CREATE_USERS=true
 # OAUTH_LINK_BY_EMAIL=false
 # OAUTH_REQUIRE_VERIFIED_EMAIL=true

@@ -141,6 +141,7 @@ def _one_pass(ops: list[Operation]) -> tuple[list[Operation], bool]:
                     table=current.table,
                     name=current.name,
                     column=new_col,
+                    backfill=current.backfill,
                 )
                 result.append(fused)
                 ops = ops[:i] + ops[i + 1:j] + ops[j + 1:]
@@ -200,7 +201,7 @@ def _tables(op: Operation) -> set[str] | None:
 
     if isinstance(op, (ops.RunSQL, ops.RunPython)):
         return None
-    if isinstance(op, ops.RenameModel):
+    if isinstance(op, (ops.RenameModel, ops.AlterModelTable)):
         return {op.old_table, op.new_table}
     table = getattr(op, "table", None)
     if not table:

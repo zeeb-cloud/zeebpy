@@ -103,6 +103,9 @@ async def async_handler(sender, instance, **kwargs):   # async def — awaited
     await notify_subscribers(instance)
 ```
 
+Whatever a receiver returns that is awaitable is awaited, so an object with an
+`async def __call__` (or a sync function returning a coroutine) works too.
+
 ---
 
 ## Preventing duplicate connections
@@ -228,6 +231,11 @@ async def on_activation(sender, instance, **kwargs):
 
 By default, receivers are stored as weak references. This means if the function or
 bound method is garbage-collected, it is silently pruned from the receiver list.
+Dead entries are pruned before `connect()` checks for duplicates, so a new
+receiver that happens to reuse a collected one's memory address is still
+connected, and `has_listeners()` only counts live receivers. A bound method is
+identified by its instance and function (`connect(obj.handler)` twice connects
+it once; `disconnect(obj.handler)` finds it).
 
 To keep a reference alive regardless of scope, pass `weak=False`:
 

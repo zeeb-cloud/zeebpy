@@ -88,7 +88,7 @@ def test_every_documented_env_var_exists_in_the_scaffold():
         f"{provider}_{suffix}"
         for provider in ("GOOGLE", "GITHUB", "AZURE")
         for suffix in ("CLIENT_ID", "CLIENT_SECRET", "TENANT_ID")
-    }
+    } | {"AZURE_ALLOWED_TENANTS", "AZURE_ALLOW_ANY_TENANT"}
 
     stale = documented - read_by_settings - derived
     assert not stale, ".env.example documents unread variables: " + ", ".join(sorted(stale))

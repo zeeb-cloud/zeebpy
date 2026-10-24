@@ -304,7 +304,10 @@ def env_oauth_providers(
 
     A provider activates as soon as ``<NAME>_CLIENT_ID`` is present, e.g.
     ``GOOGLE_CLIENT_ID`` / ``GOOGLE_CLIENT_SECRET``. ``azure`` additionally
-    reads ``AZURE_TENANT_ID`` (default ``"common"``). Returns ``{}`` when
+    reads ``AZURE_TENANT_ID`` (default ``"common"``), ``AZURE_ALLOWED_TENANTS``
+    (comma-separated tenant GUIDs) and ``AZURE_ALLOW_ANY_TENANT``; a
+    multi-tenant Azure provider refuses every token until one of the last two
+    is set. Returns ``{}`` when
     nothing is configured, which is what keeps the OAuth routes unmounted.
 
     Building the mapping here rather than with inline ``if`` blocks in
@@ -324,5 +327,10 @@ def env_oauth_providers(
             config["client_secret"] = secret
         if name == "azure":
             config["tenant"] = env_str("AZURE_TENANT_ID", "common")
+            # A multi-tenant endpoint accepts no tenant until one of these is set.
+            if _raw("AZURE_ALLOWED_TENANTS") is not None:
+                config["allowed_tenants"] = env_list("AZURE_ALLOWED_TENANTS")
+            if env_bool("AZURE_ALLOW_ANY_TENANT", False):
+                config["allow_any_tenant"] = True
         providers[name] = config
     return providers

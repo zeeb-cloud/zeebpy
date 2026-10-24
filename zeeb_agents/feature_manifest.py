@@ -324,6 +324,31 @@ def record_feature(
     return entry
 
 
+def tests_shared_with_others(
+    root: Path, name: str, *, active_only: bool = True
+) -> set[str]:
+    """Test files *name* owns that another feature also claims.
+
+    Manifests written before generated test files were named per feature
+    record the app's one ``tests/test_<app>_generated.py`` against every
+    feature built into that app. Archiving or deleting one of them must not
+    take the others' tests along, so the lifecycle tools leave these files
+    where they are. *active_only* counts only claims of active features (what
+    deactivating needs); ``False`` counts every other feature (what deleting
+    needs — an archived app-mate's tests must not be destroyed either).
+    """
+    features = load_manifest(root)["features"]
+    mine = set(((features.get(name) or {}).get("artifacts") or {}).get("tests") or [])
+    shared: set[str] = set()
+    for other, entry in features.items():
+        if other == name or not isinstance(entry, dict):
+            continue
+        if active_only and entry.get("status", STATUS_ACTIVE) != STATUS_ACTIVE:
+            continue
+        shared.update(mine & set((entry.get("artifacts") or {}).get("tests") or []))
+    return shared
+
+
 def get_feature(root: Path, name: str) -> dict | None:
     """Return the manifest entry for *name*, or ``None``."""
     return load_manifest(root)["features"].get(name)

@@ -287,21 +287,16 @@ async def authenticate(
         return None
 
 
-_DUMMY_HASH: str | None = None
-
-
 def _dummy_password_check(password: str) -> None:
     """Run one bcrypt verification against a throwaway hash (timing equaliser).
 
-    The hash is made once, with the same cost factor ``make_password`` uses,
-    so the dummy check costs what a real one does.
+    The same check ``check_password`` runs for an account with no usable
+    password (an OAuth-only user), so a missing account, a passwordless one
+    and a wrong password all cost one bcrypt verification.
     """
-    global _DUMMY_HASH
-    from zeeb_api.auth.hashers import check_password, make_password
+    from zeeb_api.auth import hashers
 
-    if _DUMMY_HASH is None:
-        _DUMMY_HASH = make_password("zeeb-timing-equaliser")
-    check_password(password, _DUMMY_HASH)
+    hashers.dummy_password_check(password)
 
 
 async def authenticate_and_get_tokens(

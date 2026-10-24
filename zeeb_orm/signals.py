@@ -36,9 +36,27 @@ Transaction compliance
 
 from __future__ import annotations
 
-import asyncio
+import inspect
 import weakref
 from typing import Any, Callable
+
+
+def _make_id(target: Any) -> Any:
+    """A key identifying ``target`` for as long as it lives.
+
+    A bound method is a new object on every attribute access, so it is keyed
+    by its instance and function instead (Django's ``_make_id``).
+    """
+    if hasattr(target, "__func__") and hasattr(target, "__self__"):
+        return (id(target.__self__), id(target.__func__))
+    return id(target)
+
+
+def _resolve(ref: Any) -> Any:
+    """The receiver behind ``ref`` (``None`` once a weak reference died)."""
+    if isinstance(ref, weakref.ref):  # WeakMethod is a weakref.ref subclass
+        return ref()
+    return ref
 
 
 class Signal:
@@ -54,8 +72,29 @@ class Signal:
 
     def __init__(self, providing_args: list[str] | None = None) -> None:
         self.providing_args: list[str] = providing_args or []
-        # List of (lookup_key, receiver_ref) where lookup_key = (id(receiver), sender)
-        self._receivers: list[tuple[tuple[int, type | None], Any]] = []
+        # List of (lookup_key, receiver_ref) where lookup_key =
+        # (_make_id(receiver) or ("uid", dispatch_uid), sender).
+        self._receivers: list[tuple[tuple[Any, type | None], Any]] = []
+
+    def _clear_dead(self) -> None:
+        """Drop entries whose weakly referenced receiver was collected.
+
+        Must run before any key comparison: a dead entry keeps the ``id()``
+        of a receiver that no longer exists, and CPython reuses addresses, so
+        a new receiver could otherwise be taken for a duplicate and silently
+        not be connected (or be disconnected by mistake).
+        """
+        self._receivers = [
+            (key, ref) for key, ref in self._receivers if _resolve(ref) is not None
+        ]
+
+    @staticmethod
+    def _lookup_key(
+        receiver: Callable, sender: type | None, dispatch_uid: str | None
+    ) -> tuple[Any, type | None]:
+        if dispatch_uid:
+            return (("uid", dispatch_uid), sender)
+        return (_make_id(receiver), sender)
 
     # ------------------------------------------------------------------
     # Registration
@@ -79,12 +118,10 @@ class Signal:
                   otherwise be garbage-collected.
             dispatch_uid: A unique string key to prevent duplicate connections.
         """
-        if dispatch_uid:
-            lookup_key = (hash(dispatch_uid), sender)
-        else:
-            lookup_key = (id(receiver), sender)
+        lookup_key = self._lookup_key(receiver, sender, dispatch_uid)
 
-        # Avoid duplicates
+        # Avoid duplicates (among live receivers only, see _clear_dead)
+        self._clear_dead()
         for existing_key, _ in self._receivers:
             if existing_key == lookup_key:
                 return
@@ -110,11 +147,9 @@ class Signal:
 
         Returns ``True`` if the receiver was found and removed.
         """
-        if dispatch_uid:
-            lookup_key = (hash(dispatch_uid), sender)
-        else:
-            lookup_key = (id(receiver), sender)
+        lookup_key = self._lookup_key(receiver, sender, dispatch_uid)
 
+        self._clear_dead()
         before = len(self._receivers)
         self._receivers = [
             (k, r) for k, r in self._receivers if k != lookup_key
@@ -127,33 +162,15 @@ class Signal:
 
     def _live_receivers(self, sender: type) -> list[Callable]:
         """Return receivers that are alive and match *sender*."""
+        self._clear_dead()
         live: list[Callable] = []
-        dead_keys: list[tuple[int, type | None]] = []
-
         for lookup_key, ref in self._receivers:
             _, registered_sender = lookup_key
-
-            # Filter by sender
             if registered_sender is not None and registered_sender is not sender:
                 continue
-
-            # Resolve weak ref
-            if callable(ref) and not isinstance(ref, (weakref.ref, weakref.WeakMethod)):
-                func = ref  # strong reference
-            else:
-                func = ref()  # resolve weak ref
-                if func is None:
-                    dead_keys.append(lookup_key)
-                    continue
-
-            live.append(func)
-
-        # Prune dead weak refs
-        if dead_keys:
-            self._receivers = [
-                (k, r) for k, r in self._receivers if k not in dead_keys
-            ]
-
+            func = _resolve(ref)
+            if func is not None:
+                live.append(func)
         return live
 
     def has_listeners(self, sender: type) -> bool:
@@ -168,8 +185,10 @@ class Signal:
     async def send(self, sender: type, **kwargs: Any) -> list[tuple[Callable, Any]]:
         """Fire all connected receivers.
 
-        Both sync and async receivers are supported.  Async receivers are
-        awaited; sync receivers are called directly.
+        Both sync and async receivers are supported: whatever a receiver
+        returns that is awaitable is awaited — an ``async def`` function or
+        method, an object with an ``async def __call__``, a sync function
+        returning a coroutine.
 
         Raises the first exception encountered.
 
@@ -178,10 +197,9 @@ class Signal:
         """
         responses: list[tuple[Callable, Any]] = []
         for recv in self._live_receivers(sender):
-            if asyncio.iscoroutinefunction(recv):
-                response = await recv(sender=sender, **kwargs)
-            else:
-                response = recv(sender=sender, **kwargs)
+            response = recv(sender=sender, **kwargs)
+            if inspect.isawaitable(response):
+                response = await response
             responses.append((recv, response))
         return responses
 
@@ -200,10 +218,9 @@ class Signal:
         responses: list[tuple[Callable, Any]] = []
         for recv in self._live_receivers(sender):
             try:
-                if asyncio.iscoroutinefunction(recv):
-                    response: Any = await recv(sender=sender, **kwargs)
-                else:
-                    response = recv(sender=sender, **kwargs)
+                response: Any = recv(sender=sender, **kwargs)
+                if inspect.isawaitable(response):
+                    response = await response
             except Exception as exc:
                 response = exc
             responses.append((recv, response))

@@ -381,6 +381,21 @@ async def get_current_user(
     )
 
 
+def _roles_from_token_claims(user: Any) -> bool:
+    """Whether *user*'s token ``roles`` claim may count towards its roles.
+
+    Never for a database-backed user (an ORM model instance, or anything
+    ``default_user_loader`` attached a token payload to) — its roles are
+    whatever the database says now — and never for a user that declares
+    ``trusts_token_roles = False`` (an untrusted external IdP token).
+    """
+    from zeeb_orm.models.base import Model
+
+    if isinstance(user, Model) or hasattr(user, "_token_payload"):
+        return False
+    return getattr(user, "trusts_token_roles", True) is not False
+
+
 def get_user_roles(user: Any) -> set[str]:
     """The roles ``require_auth(roles=...)`` checks a user against.
 
@@ -388,11 +403,19 @@ def get_user_roles(user: Any) -> set[str]:
 
     - ``user.get_roles()`` when the user model defines it (override this on a
       custom user model to source roles from anywhere, e.g. group membership);
-    - a ``roles`` attribute on the user, or a ``roles`` claim in its token
-      (``claims["roles"]``, which is also where Azure AD puts app roles);
+    - a ``roles`` attribute on the user;
+    - for a **token-only** user (``AuthenticatedUser``, built when
+      ``AUTH_LOAD_USER_FROM_DB`` is off), the ``roles`` claim of its token;
     - the account flags: ``"staff"`` for ``is_staff``, ``"superuser"`` for
       ``is_superuser``, and ``"admin"`` for anyone ``IsAdminUser`` admits
       (``is_staff``, ``is_admin`` or ``is_superuser``).
+
+    A user loaded from the database gets its roles from the database alone:
+    the ``roles`` claim baked into its token at login is ignored, so demoting
+    an account takes effect on its next request, not when the token expires.
+    An ``ExternalAuthenticatedUser`` (an IdP token with no linked account)
+    exposes the token's roles through its ``roles`` attribute only when its
+    provider trusts them (``trust_token_roles``; off by default).
 
     ``AbstractUser.get_roles()`` returns exactly the flag-derived set, and
     ``AbstractUser.get_claims()`` emits it as the ``roles`` claim, so a
@@ -406,10 +429,7 @@ def get_user_roles(user: Any) -> set[str]:
     declared = getattr(user, "roles", None)
     if isinstance(declared, (list, tuple, set, frozenset)):
         roles.update(str(r) for r in declared)
-    claims = getattr(user, "claims", None)
-    if not isinstance(claims, dict):
-        payload = getattr(user, "_token_payload", None)
-        claims = getattr(payload, "claims", None)
+    claims = getattr(user, "claims", None) if _roles_from_token_claims(user) else None
     if isinstance(claims, dict):
         claimed = claims.get("roles")
         if isinstance(claimed, str):

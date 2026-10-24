@@ -78,8 +78,34 @@ class M2MMembership(Model):
         table_name = "m2m_memberships"
 
 
-MODELS = (M2MTag, M2MPost, M2MColor, M2MShirt, M2MPerson, M2MTeam, M2MMembership)
-AUTO_THROUGH_TABLES = ("m2m_posts_tags", "m2m_shirts_colors")
+class M2MIntTag(Model):
+    id = fields.AutoField(primary_key=True)
+    name = fields.CharField(max_length=50)
+
+    class Meta:
+        table_name = "m2m_int_tags"
+
+
+class M2MIntPost(Model):
+    id = fields.AutoField(primary_key=True)
+    tags = fields.ManyToMany(M2MIntTag, related_name="posts")
+
+    class Meta:
+        table_name = "m2m_int_posts"
+
+
+MODELS = (
+    M2MTag,
+    M2MPost,
+    M2MColor,
+    M2MShirt,
+    M2MPerson,
+    M2MTeam,
+    M2MMembership,
+    M2MIntTag,
+    M2MIntPost,
+)
+AUTO_THROUGH_TABLES = ("m2m_posts_tags", "m2m_shirts_colors", "m2m_int_posts_tags")
 
 
 @pytest.fixture
@@ -413,3 +439,57 @@ class TestCustomThrough:
         await M2MMembership.objects.create(person=alice, team=team_b, role="advisor")
         teams = await alice.teams.all()
         assert {t.name for t in teams} == {"Team A", "Team B"}
+
+
+class TestM2MRawPkValues:
+    """Raw pk values are converted to the related key type.
+
+    ``add(str(tag.pk))`` crashed on a UUID key (``'str' object has no
+    attribute 'hex'``), and on an integer key ``"5"`` slipped past the
+    existing-pair check and inserted a duplicate link.
+    """
+
+    @pytest.mark.asyncio
+    async def test_uuid_strings(self, seeded):
+        post = seeded["posts"][1]  # linked to python
+        python, testing = seeded["tags"]["python"], seeded["tags"]["testing"]
+        await post.tags.add(str(python.pk), str(testing.pk))
+        assert sorted(t.name for t in await post.tags.all()) == ["python", "testing"]
+        await post.tags.remove(str(python.pk))
+        assert [t.name for t in await post.tags.all()] == ["testing"]
+        await post.tags.set([str(python.pk)])
+        assert [t.name for t in await post.tags.all()] == ["python"]
+
+    @pytest.mark.asyncio
+    async def test_integer_strings_do_not_duplicate_links(self, db):
+        from sqlalchemy import func, select
+
+        from zeeb_orm.db.connection import get_session
+
+        tag = await M2MIntTag.objects.create(name="a")
+        post = await M2MIntPost.objects.create()
+        await post.tags.add(tag)
+        await post.tags.add(str(tag.pk))
+        await post.tags.set([str(tag.pk), tag.pk])
+        through = M2MIntPost._m2m_fields[0].get_through_table()
+        async with get_session() as (session, _):
+            links = (await session.execute(select(func.count()).select_from(through))).scalar()
+        assert links == 1
+        await post.tags.remove(str(tag.pk))
+        assert await post.tags.all() == []
+
+    @pytest.mark.asyncio
+    async def test_invalid_values_raise_validation_error(self, seeded):
+        from zeeb_orm.exceptions import ValidationError
+
+        post = seeded["posts"][0]
+        with pytest.raises(ValidationError):
+            await post.tags.add("not-a-uuid")
+        with pytest.raises(ValidationError):
+            await post.tags.set([42])
+        tag = await M2MIntTag.objects.create(name="b")
+        int_post = await M2MIntPost.objects.create()
+        with pytest.raises(ValidationError):
+            await int_post.tags.add("five")
+        assert await int_post.tags.all() == []
+        assert tag.pk is not None

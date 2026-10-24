@@ -14,8 +14,11 @@ agent-facing ``AgentError``.
 
 from zeeb_orm.scaffold.errors import ScaffoldError
 from zeeb_orm.scaffold.naming import (
+    app_name_problem,
     find_project_root,
+    identifier_problem,
     pluralize,
+    project_name_problem,
     singularize,
     to_class_name,
     to_title,
@@ -31,12 +34,15 @@ from zeeb_orm.scaffold.wiring import (
 __all__ = [
     "STANDARD_URLS_TEMPLATE",
     "ScaffoldError",
+    "app_name_problem",
     "append_router_include",
     "ensure_app_urls_included",
     "ensure_installed_app",
     "find_project_package",
     "find_project_root",
+    "identifier_problem",
     "pluralize",
+    "project_name_problem",
     "singularize",
     "to_class_name",
     "to_title",

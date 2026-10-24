@@ -90,20 +90,24 @@ class QueryModelMixin:
         # Provided by GenericViewSet, which every viewset using this mixin is.
         def filter_queryset(self, queryset: Any) -> Any: ...
 
-    def _allowed_query_fields(self) -> set[str] | None:
+    def _allowed_query_fields(self) -> set[str] | dict[str, str] | None:
         """Field paths a client may filter or order by.
 
         An explicit ``query_fields`` attribute on the viewset wins; it may list
         paths through relations (``"author__name"``). Otherwise the
-        serializer's exposed (response) fields are used, so a client cannot
-        filter or order by a column the API does not surface (e.g. a password
-        hash) — nor by one on a related model. Returns None when the set
-        cannot be determined, leaving the query unrestricted
-        (backwards-compatible for untyped viewsets).
+        serializer's output decides (``serializer_field_paths``): a client
+        names the fields the API returns, by the names it returns them under,
+        and each is translated to the column behind it. A column the API does
+        not surface (a password hash, a value a ``SerializerMethodField``
+        masks) cannot be filtered or ordered by, nor can one on a related
+        model. Returns None when the set cannot be determined, leaving the
+        query unrestricted (backwards-compatible for untyped viewsets).
         """
+        from zeeb_api.query import serializer_field_paths
+
         explicit = getattr(self, "query_fields", None)
         if explicit is not None:
-            return set(explicit)
+            return dict(explicit) if isinstance(explicit, dict) else set(explicit)
 
         get_serializer_class = getattr(self, "get_serializer_class", None)
         if get_serializer_class is None:
@@ -115,13 +119,7 @@ class QueryModelMixin:
         if serializer_class is None:
             return None
 
-        schema = getattr(serializer_class, "ResponseSchema", None) or getattr(
-            serializer_class, "Schema", None
-        )
-        model_fields = getattr(schema, "model_fields", None)
-        if model_fields:
-            return set(model_fields.keys())
-        return None
+        return serializer_field_paths(serializer_class)
 
     async def query(self, request: Request, **kwargs: Any) -> dict[str, Any]:
         """
@@ -151,6 +149,7 @@ class QueryModelMixin:
             QFilterError,
             check_field_path,
             parse_q_filter_with_paths,
+            rename_q_paths,
         )
 
         # Get query params from request body
@@ -180,28 +179,38 @@ class QueryModelMixin:
             except QFilterError as e:
                 raise ValidationError({"filter": [str(e)]})
             refused = []
+            renames: dict[str, str] = {}
             for path in sorted(referenced):
                 try:
-                    check_field_path(model, path, allowed_fields, allow_regex=allow_regex)
+                    used = check_field_path(
+                        model, path, allowed_fields, allow_regex=allow_regex
+                    )
                 except FieldPathError as e:
                     refused.append(str(e))
+                    continue
+                if used != path:
+                    renames[path] = used
             if refused:
                 raise ValidationError({"filter": refused})
-            queryset = queryset.filter(q_filter)
+            # Output names (``nick``) become the columns behind them (``nickname``).
+            queryset = queryset.filter(rename_q_paths(q_filter, renames))
 
         # Apply ordering
         order_by = query_params.get("order_by")
         if order_by:
             if isinstance(order_by, str):
                 order_by = [order_by]
+            terms = []
             for field in order_by:
                 try:
-                    check_field_path(model, field, allowed_fields, allow_regex=False)
+                    terms.append(
+                        check_field_path(model, field, allowed_fields, allow_regex=False)
+                    )
                 except FieldPathError as e:
                     raise ValidationError(
                         {"order_by": [f"Cannot order by '{field}': {e}"]}
                     )
-            queryset = queryset.order_by(*order_by)
+            queryset = queryset.order_by(*terms)
         
         # Get pagination params (limit/offset). Defaults/caps come from the
         # DEFAULT_LIMIT / MAX_LIMIT settings (falling back to 20 / 100).
@@ -215,12 +224,14 @@ class QueryModelMixin:
         # Clamp limit
         limit = max(1, min(limit, max_limit))
         offset = max(0, offset)
-        
+
         # Get total count
         count = await queryset.count()
-        
-        # Get paginated items using Django-style slicing
-        items = await queryset[offset:offset + limit]
+
+        # Get paginated items using Django-style slicing. An offset past the
+        # end is an empty page without a query: a huge one (the router caps it
+        # at MAX_OFFSET; a hand-made body may not) would overflow the driver.
+        items = [] if offset >= count else await queryset[offset:offset + limit]
         
         # Serialize
         serializer = self.get_serializer(instance=items, many=True)

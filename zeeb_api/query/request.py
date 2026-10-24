@@ -44,6 +44,8 @@ class QueryRequest(BaseModel):
     offset: int = Field(
         default=0,
         ge=0,
+        # A signed 64-bit bound: anything larger overflows the database driver.
+        le=2**63 - 1,
         description="Number of items to skip"
     )
     

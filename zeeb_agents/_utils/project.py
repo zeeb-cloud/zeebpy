@@ -250,6 +250,90 @@ def to_class_name(name: str) -> str:
     return "".join(word.capitalize() for word in name.replace("-", "_").split("_"))
 
 
+def _is_project_module(name: str, module: object, root: Path) -> bool:
+    """Whether *module* is the target project's own code.
+
+    ``apps.*``, or a module whose file sits under *root* in the directory its
+    top-level package is named after (``<project>/settings.py``) or in
+    ``migrations/``. A virtualenv inside the project (``.venv/…/sqlalchemy``)
+    does not qualify, and neither does the framework itself.
+    """
+    top = name.split(".")[0]
+    if top in ("zeeb_orm", "zeeb_api", "zeeb_agents"):
+        return False
+    if top == "apps":
+        return True
+    file = getattr(module, "__file__", None)
+    if not file:
+        return False
+    try:
+        path = Path(file).resolve()
+        if not path.is_relative_to(root):
+            return False
+        first = path.relative_to(root).parts[0]
+    except (OSError, ValueError, IndexError):
+        return False
+    return first in (top, f"{top}.py", "migrations")
+
+
+def forget_loaded_project_code(project_root: Path) -> list[str]:
+    """Drop the target project's already-imported modules and models.
+
+    The agent layer edits a project's files and then imports them to read
+    the models back — in a process that may have imported them before (a
+    long-running MCP server, or ``build_feature`` then ``delete_feature`` in
+    one process). ``importlib`` hands back the cached module, so the models
+    it registered are the ones from *before* the edit: a model deleted from
+    ``models.py`` is still in the registry and its table still in the
+    metadata, and ``make_migrations`` writes no ``DeleteModel`` for it.
+
+    Every ``apps``/``apps.*`` module (any project's — they share the name)
+    and every module loaded from a file under *project_root* is removed from
+    ``sys.modules``; the models they defined leave the registry, and their
+    tables (and auto-created many-to-many join tables) the metadata. The next
+    import reads the files as they are now. Returns the module names dropped.
+    """
+    import importlib
+
+    from zeeb_orm.models import relations
+    from zeeb_orm.models.base import _model_registry, metadata
+
+    root = Path(project_root).resolve()
+    dropped = [
+        name
+        for name, module in list(sys.modules.items())
+        if _is_project_module(name, module, root)
+    ]
+    dropped_set = set(dropped)
+    stale = {
+        key: model
+        for key, model in _model_registry.items()
+        if getattr(model, "__module__", "") in dropped_set
+    }
+    stale_models = set(stale.values())
+    stale_tables: set[Any] = set()
+    live_tables: set[Any] = set()
+    for model in _model_registry.values():
+        table = getattr(model, "_sa_table", None)
+        if table is not None:
+            (stale_tables if model in stale_models else live_tables).add(table)
+    stale_names = {table.name for table in stale_tables}
+    for table in list(metadata.tables.values()):
+        is_join = table not in live_tables and any(
+            fk.target_fullname.split(".")[0] in stale_names for fk in table.foreign_keys
+        )
+        if table in stale_tables or is_join:
+            metadata.remove(table)
+    for key in stale:
+        del _model_registry[key]
+    for pending in (relations._pending_relations, relations._pending_m2m):
+        pending[:] = [entry for entry in pending if entry[0] not in stale_models]
+    for name in dropped:
+        del sys.modules[name]
+    importlib.invalidate_caches()
+    return dropped
+
+
 def to_table_name(app_name: str, model_name: str) -> str:
     """Return a sensible default table name: ``<app>_<model_lower>``."""
     return f"{app_name}_{model_name.lower()}"

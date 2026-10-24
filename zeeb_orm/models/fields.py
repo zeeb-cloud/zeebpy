@@ -40,10 +40,18 @@ ModelT = TypeVar("ModelT", bound="Model")
 
 
 def _mark_loaded(obj: object, name: str) -> None:
-    """Assigning a deferred field makes it part of the next ``save()``."""
+    """Assigning a deferred field makes it part of the next ``save()``.
+
+    It also settles the field's value: a callable default left pending by
+    the constructor no longer applies (``obj.data = None`` stores NULL).
+    """
     state = obj.__dict__.get("_state")
-    if state is not None and state.deferred:
-        state.deferred.discard(name)
+    if state is not None:
+        if state.deferred:
+            state.deferred.discard(name)
+        pending = getattr(state, "pending_defaults", None)
+        if pending:
+            pending.discard(name)
 
 
 def _set_fk_id(obj: object, field_name: str, value: Any) -> None:

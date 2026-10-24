@@ -462,7 +462,7 @@ All fields support these options:
 |--------|------|---------|-------------|
 | `null` | bool | `False` | Allow NULL in database |
 | `blank` | bool | `False` | Allow empty in validation |
-| `default` | any | None | Default value (can be callable) |
+| `default` | any | None | Default value (can be callable). Applied to a field that is not passed; an explicit `None` on a `null=True` field is stored as NULL |
 | `primary_key` | bool | `False` | Use as primary key |
 | `unique` | bool | `False` | Unique constraint |
 | `index` | bool | `False` | Create database index |

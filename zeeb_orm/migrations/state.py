@@ -63,6 +63,21 @@ class UnknownMigrationError(MigrationError):
         self.candidates = list(candidates or [])
 
 
+class MigrationLoadError(MigrationError, ImportError):
+    """A migration file does not load (a syntax error, a failing import, …).
+
+    An ``ImportError`` too, which is what loading a file without a
+    ``Migration`` class always raised.
+
+    Attributes:
+        path: The migration file, as a string (``ImportError.path``).
+    """
+
+    def __init__(self, message: str, *, path: Path | str) -> None:
+        super().__init__(message)
+        self.path = str(path)
+
+
 class MigrationLayoutError(MigrationError):
     """Migration files sit where ``migrate`` does not read them.
 

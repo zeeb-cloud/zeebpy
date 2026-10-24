@@ -97,6 +97,16 @@ class OAuthProvider:
             providers you fully trust to verify email ownership.
         extra_authorize_params: Extra query params for the authorization URL.
         http_client: Optional ``httpx.AsyncClient`` (test seam).
+        trust_token_roles: Let an external bearer token with **no** linked
+            local account carry roles: its ``roles`` claim feeds
+            ``require_auth(roles=...)`` and its ``is_staff``/``is_superuser``
+            claims feed the permission classes (None = use
+            ``settings.OAUTH_TRUST_TOKEN_ROLES``; defaults to False). Only
+            enable it when every principal the IdP can mint a token for is
+            one you would let assign itself those roles.
+        jwks_refetch_cooldown_seconds: Minimum interval between forced JWKS
+            refetches triggered by an unknown ``kid`` (None = use
+            ``settings.OAUTH_JWKS_REFETCH_COOLDOWN_SECONDS``; defaults to 60).
     """
 
     def __init__(
@@ -121,6 +131,8 @@ class OAuthProvider:
         require_verified_email: bool | None = None,
         extra_authorize_params: dict[str, str] | None = None,
         http_client: Any | None = None,
+        trust_token_roles: bool | None = None,
+        jwks_refetch_cooldown_seconds: float | None = None,
     ) -> None:
         self.client_id = client_id
         self.client_secret = client_secret
@@ -140,6 +152,8 @@ class OAuthProvider:
         self.link_by_email = link_by_email
         self.require_verified_email = require_verified_email
         self.extra_authorize_params = dict(extra_authorize_params or {})
+        self.trust_token_roles = trust_token_roles
+        self.jwks_refetch_cooldown_seconds = jwks_refetch_cooldown_seconds
 
         self.client = OAuth2Client(http_client=http_client)
         self._metadata: OIDCMetadata | None = None
@@ -190,8 +204,40 @@ class OAuthProvider:
                 raise OAuthValidationError(
                     f"Provider {self.name!r} has no jwks_uri; cannot validate tokens"
                 )
-            self._jwks = JWKSCache(self.client, metadata.jwks_uri)
+            self._jwks = JWKSCache(
+                self.client,
+                metadata.jwks_uri,
+                refetch_cooldown_seconds=self._resolved_jwks_refetch_cooldown(),
+            )
         return self._jwks
+
+    def _resolved_jwks_refetch_cooldown(self) -> float:
+        if self.jwks_refetch_cooldown_seconds is not None:
+            return float(self.jwks_refetch_cooldown_seconds)
+        try:
+            from zeeb_api.conf import settings
+
+            value = getattr(settings, "OAUTH_JWKS_REFETCH_COOLDOWN_SECONDS", None)
+            return 60.0 if value is None else float(value)
+        except Exception:
+            return 60.0
+
+    def trusts_token_roles(self, claims: ExternalClaims) -> bool:
+        """Whether *claims* may grant roles/staff flags to an unlinked user.
+
+        ``trust_token_roles`` on the provider wins, then
+        ``settings.OAUTH_TRUST_TOKEN_ROLES``; the default is False, so a
+        token without a linked local account authenticates but carries no
+        roles. Presets may narrow this further (see ``AzureADProvider``).
+        """
+        if self.trust_token_roles is not None:
+            return bool(self.trust_token_roles)
+        try:
+            from zeeb_api.conf import settings
+
+            return bool(getattr(settings, "OAUTH_TRUST_TOKEN_ROLES", False))
+        except Exception:
+            return False
 
     # Flow steps
 

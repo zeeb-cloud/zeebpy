@@ -144,7 +144,8 @@ class TestPinned:
         stmt = LkPost.objects.select_related("author")._build_select()
         sql = str(stmt)
         assert sql.count("JOIN") == 1
-        assert "LEFT OUTER JOIN" in sql
+        # A required (non-null) FK is an INNER JOIN, as in Django
+        assert "LEFT OUTER JOIN" not in sql
         # Alias / label scheme used for hydration
         assert "_sr_author_author" in sql
         assert "_sr_author_name" in sql
@@ -362,7 +363,7 @@ class TestTraversalWithSelectRelated:
         sql = str(qs._build_select())
         # select_related and the filter traversal must share ONE JOIN
         assert sql.count("JOIN") == 1
-        assert "LEFT OUTER JOIN" in sql
+        assert "LEFT OUTER JOIN" not in sql  # required FK: INNER JOIN
 
         posts = await qs
         assert len(posts) == 2

@@ -21,25 +21,50 @@ class ExternalAuthenticatedUser:
     """
     Lightweight user object for externally-validated tokens without a local
     database user (mirrors ``zeeb_api.auth.middleware.AuthenticatedUser``).
+
+    The token's ``roles``/``is_staff``/``is_superuser`` claims are honoured
+    only when ``trusts_token_roles`` is True, which the validator sets from
+    the provider (``trust_token_roles`` / ``settings.OAUTH_TRUST_TOKEN_ROLES``,
+    off by default). Otherwise the user is authenticated but has no roles and
+    no staff flags: an IdP admin, not this app, decides what those claims say.
     """
 
-    def __init__(self, claims: ExternalClaims, provider: str) -> None:
+    def __init__(
+        self,
+        claims: ExternalClaims,
+        provider: str,
+        *,
+        trusts_token_roles: bool = False,
+    ) -> None:
         self.id = claims.subject
         self.email = claims.email
         self.provider = provider
         self.external_claims = claims
         self.claims = claims.raw
         self.is_authenticated = True
+        self.trusts_token_roles = trusts_token_roles
+
+    @property
+    def roles(self) -> list[str]:
+        """The token's ``roles`` claim when trusted, else no roles."""
+        if not self.trusts_token_roles:
+            return []
+        claimed = self.claims.get("roles")
+        if isinstance(claimed, str):
+            return [claimed]
+        if isinstance(claimed, (list, tuple)):
+            return [str(r) for r in claimed]
+        return []
 
     @property
     def is_staff(self) -> bool:
-        """The token's ``is_staff`` claim (False when absent)."""
-        return bool(self.claims.get("is_staff", False))
+        """The token's ``is_staff`` claim when trusted (False otherwise)."""
+        return self.trusts_token_roles and bool(self.claims.get("is_staff", False))
 
     @property
     def is_superuser(self) -> bool:
-        """The token's ``is_superuser`` claim (False when absent)."""
-        return bool(self.claims.get("is_superuser", False))
+        """The token's ``is_superuser`` claim when trusted (False otherwise)."""
+        return self.trusts_token_roles and bool(self.claims.get("is_superuser", False))
 
     def __repr__(self) -> str:
         return f"<ExternalAuthenticatedUser provider={self.provider!r} id={self.id}>"
@@ -83,7 +108,10 @@ class ExternalTokenValidator:
         table was never migrated) — an error must not turn into a lightweight
         user built from claims nobody could check against the account. Only a
         token with **no** linked identity (and ``create_users`` off) yields an
-        ``ExternalAuthenticatedUser``.
+        ``ExternalAuthenticatedUser``, which carries the token's roles and
+        staff flags only when the provider trusts them
+        (:meth:`OAuthProvider.trusts_token_roles`). A linked user's roles come
+        from the database alone.
         """
         try:
             claims = await self.provider.validate_external_token(token)
@@ -124,7 +152,13 @@ class ExternalTokenValidator:
             )
             return None
 
-        return ExternalAuthenticatedUser(claims, self.provider.name)
+        try:
+            trusted = bool(self.provider.trusts_token_roles(claims))
+        except Exception:
+            trusted = False
+        return ExternalAuthenticatedUser(
+            claims, self.provider.name, trusts_token_roles=trusted
+        )
 
     def _resolved_link_by_email(self) -> bool:
         if self.provider.link_by_email is not None:

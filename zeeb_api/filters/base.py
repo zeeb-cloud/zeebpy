@@ -248,15 +248,25 @@ class OrderingFilter(BaseFilter):
         valid_fields = []
         for field in fields:
             try:
-                check_field_path(model, field, allowed_fields, allow_regex=False)
+                # A serializer-derived allow-list maps output names to the
+                # columns behind them; the returned term is what to order by.
+                valid_fields.append(
+                    check_field_path(model, field, allowed_fields, allow_regex=False)
+                )
             except FieldPathError:
                 continue
-            valid_fields.append(field)
 
         return valid_fields if valid_fields else None
 
-    def _default_valid_fields(self, view: ViewSet) -> set[str] | None:
-        """Serializer-exposed field names, or None if not resolvable."""
+    def _default_valid_fields(self, view: ViewSet) -> dict[str, str] | None:
+        """``{output name: model path}`` the serializer returns, or None.
+
+        Built from the serializer's output, not its model: a method field
+        named like a column does not make that column orderable (sorting by
+        it would reveal the value it masks).
+        """
+        from zeeb_api.query.paths import serializer_field_paths
+
         get_serializer_class = getattr(view, "get_serializer_class", None)
         if get_serializer_class is None:
             return None
@@ -264,10 +274,4 @@ class OrderingFilter(BaseFilter):
             serializer_class = get_serializer_class()
         except Exception:
             return None
-        schema = getattr(serializer_class, "ResponseSchema", None) or getattr(
-            serializer_class, "Schema", None
-        )
-        model_fields = getattr(schema, "model_fields", None)
-        if model_fields:
-            return set(model_fields.keys())
-        return None
+        return serializer_field_paths(serializer_class)

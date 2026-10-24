@@ -317,6 +317,7 @@ class Migration(Migration):
 | `RemoveField` | Remove a column from a table |
 | `AlterField` | Change a column's type, nullable, etc. |
 | `RenameModel` | Rename a table |
+| `AlterModelTable` | Rename a model's table (`Meta.table_name` changed), keeping its rows |
 | `RenameField` | Rename a column |
 | `AddIndex` | Create an index |
 | `RemoveIndex` | Drop an index |
@@ -331,7 +332,7 @@ Unapplying a migration (`migrate <earlier>`, `migrate zero`, `--rollback N`)
 runs each operation's reversal. An operation that cannot be reversed —
 `RunSQL` without `reverse_sql`, `RunPython` without `reverse_code`,
 `RemoveField` without `field`, `RemoveIndex` without `columns`,
-`RemoveConstraint`, or a `DeleteModel` that does not record the dropped
+`RemoveConstraint` without `constraint`, or a `DeleteModel` that does not record the dropped
 table's columns — makes the rollback refuse **before anything runs**, with an
 `IrreversibleError` naming the migration and operation. Nothing is ever
 "reversed" by silently doing nothing. When no reverse step is needed, say so:
@@ -346,8 +347,9 @@ case where the schema was already put back by hand.
 
 `makemigrations` writes `DeleteModel` with the dropped table's columns,
 primary key and unique constraints (as the earlier migrations declared them)
-and `RemoveIndex` with the index's columns, so both reverse: the table or
-index is recreated. Rows a `DeleteModel` dropped are not restored.
+and `RemoveIndex` with the index's columns, and `RemoveConstraint` with the
+constraint itself, so all three reverse: the table, index or constraint is
+recreated. Rows a `DeleteModel` dropped are not restored.
 
 #### RenameModel
 
@@ -361,6 +363,20 @@ operations.RenameModel(
 ```
 
 Reversal: renames back to the original table name.
+
+#### AlterModelTable
+
+```python
+operations.AlterModelTable(
+    name='Post',
+    old_table='blog_posts',
+    new_table='posts',
+)
+```
+
+What `makemigrations` writes when a model keeps its name but its
+`Meta.table_name` changes: the table is renamed, rows included. Reversal:
+renames it back.
 
 #### RenameField
 
@@ -426,8 +442,12 @@ operations.RemoveConstraint(
     model_name='Post',
     table='posts',
     name='uq_posts_slug',
+    constraint=sa.UniqueConstraint('slug', name='uq_posts_slug'),  # for reversal
 )
 ```
+
+Without `constraint`, `RemoveConstraint` is irreversible. `makemigrations`
+always records it.
 
 ### Auto-detection
 
@@ -442,8 +462,11 @@ Models with `Meta.managed = False` are left out: no operation is generated for
 their tables, and test schemas (`temporary_database`, the generated `db`
 fixture) do not create them either.
 
-- **Tables**: Create, drop
-- **Columns**: Add, drop, alter type
+- **Tables**: Create, drop, rename — a model that keeps its class name but
+  changes `Meta.table_name` gets an `AlterModelTable`, not a drop and a create
+  (which would lose every row); any other change to it is detected alongside
+- **Columns**: Add, drop, alter type — foreign-key and `unique=True` fields
+  included
 - **Nullability**: Changes to nullable
 - **Server defaults**: Changes to a column's `server_default` — removal included
   (`server_default=operations.NO_DEFAULT`): a server default the models do not
@@ -451,12 +474,30 @@ fixture) do not create them either.
 - **Indexes**: Create, drop
 - **Unique constraints**: Add, drop — including unnamed ones (what `unique=True` on a column produces), which are given a deterministic `uq_{table}_{cols}` name
 
-Foreign-key constraint changes (adding/removing an FK, altering `on_delete`)
-are **not** auto-detected — write a manual migration for those. On SQLite,
+Adding or removing a `ForeignKey` *field* is an `AddField` / `RemoveField`
+carrying the reference. Changing the foreign-key constraint of a column that
+stays (altering `on_delete`, pointing it elsewhere) is **not** auto-detected —
+write a manual migration for that. On SQLite, adding a column with a foreign
+key, a `unique=True` column or a `NOT NULL` column, dropping any column, and
 column and constraint alterations are applied via Alembic batch mode
-(`batch_alter_table`), which rebuilds the table via copy-and-swap; migrations
-therefore run with SQLite's foreign-key enforcement switched off, so dropping
-the old copy of a table never cascades into the rows that reference it.
+(`batch_alter_table`), which rebuilds the table via copy-and-swap (SQLite's
+`ALTER TABLE` cannot add a constraint or drop a column a constraint uses);
+migrations therefore run with SQLite's foreign-key enforcement switched off, so
+dropping the old copy of a table never cascades into the rows that reference
+it. A `unique=True` column added to an existing table gets the constraint
+`uq_{table}_{column}` on every database, the name `CreateModel` gives it.
+
+**Model names.** Operations on a table name the model that declares it; a
+table no model declares any more (one being dropped) is named as the
+migration that created it named it, never guessed from the table name.
+
+**Order.** Operations are written so each runs after what it depends on: a
+foreign key to a table, and a table that references it, are removed before
+that table is dropped; a table is created before anything references it; a
+renamed table is renamed before anything uses its new name. Rollback runs a
+migration's operations in reverse, so it gets the reverse order — the table
+comes back before the key that points at it. `squashmigrations`' optimizer
+never moves an operation past one that touches the same table.
 
 **Renamed fields.** A field removed while another with the same definition is
 added on the same model looks like a rename, but it is written as
@@ -491,6 +532,8 @@ each type must evaluate to one with the same DDL. A value that cannot be written
 faithfully (a type defined inside a function, a lambda, a computed column) raises
 `MigrationSerializationError` and **no file is written**: a broken migration file
 would break every later `migrate` and `makemigrations`, which import them all.
+A file that does not load anyway (edited by hand) raises `MigrationLoadError`
+(a `MigrationError` and an `ImportError`) naming the file.
 
 **Tracking table.** Applied migrations are recorded in `zeeb_migrations`,
 created through SQLAlchemy so its auto-increment key is right on every
@@ -532,8 +575,15 @@ python manage.py migrate
 #### Adding a NOT NULL column
 
 A `null=False` field cannot simply be appended to a table that already has
-rows — there is no value for them. The framework handles this at `migrate`
-time:
+rows — there is no value for them. The framework handles this when the
+migration is made and when it is applied:
+
+- **`auto_now` / `auto_now_add` fields** (`DateTimeField`, `DateField`).
+  `makemigrations` writes `AddField(..., backfill=sa.func.current_timestamp())`
+  (`current_date()` for a `DateField`): existing rows get the time the
+  migration runs. The column is added with that SQL `DEFAULT`, which is then
+  dropped again on every database (SQLite included, by rebuilding the table),
+  so the schema matches the migration files.
 
 - **The field has a scalar `default`.** The default is emitted as a SQL
   `DEFAULT` on the `ADD COLUMN`, so the database backfills existing rows in the
@@ -543,21 +593,25 @@ time:
   SQLite cannot drop a default without rebuilding the table, so there it stays —
   unused by the ORM, which always writes the column, and invisible to
   `makemigrations`, which compares against the declared schema.
-- **The field has no scalar default.** `migrate` raises `MigrationError`:
+- **Anything else** (no default, or a callable one). `makemigrations` refuses
+  — it raises `NotNullFieldError` (`--json`: `success: false`, the fields
+  under `data.fields`) and **writes no file**, since that migration could
+  never be applied to a table with rows (on SQLite, not even to an empty one):
 
   ```
-  Cannot add NOT NULL column 'posts.views' with no default: existing rows
-  have no value to fall back on. Give the field a default, or make it
-  nullable.
+  Cannot add the NOT NULL field(s) Post.views to existing table(s): rows
+  already there would have no value. Give each field null=True or a static
+  default (a callable default cannot fill existing rows), then re-run
+  makemigrations.
   ```
 
-  This is raised **before** anything is written, so the migration is not left
-  half-applied. Fix it by giving the field a `default=`, or by declaring it
-  `null=True`.
+  When the field looks like a renamed one, the message also points at
+  `--accept-renames`. A hand-written `AddField` with nothing to fill the rows
+  still fails at `migrate` with `MigrationError`, before the column is added.
 
-Note that a callable default (`default=uuid4`) is not a scalar and cannot be
-pushed into SQL. For those, use the three-step pattern: add the column as
-nullable, backfill it in a data migration, then alter it to `NOT NULL`.
+A callable default (`default=uuid4`) is not a scalar and cannot be pushed into
+SQL. For those, use the three-step pattern: add the column as nullable,
+backfill it in a data migration, then alter it to `NOT NULL`.
 
 ### Removing a Field
 

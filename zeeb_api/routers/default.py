@@ -180,6 +180,45 @@ def _bare_viewset(viewset: Type[ViewSet]) -> Any:
         return instance
 
 
+def _prefix_segments(prefix: str) -> list[str]:
+    return [segment for segment in prefix.strip("/").split("/") if segment]
+
+
+def _shadows(outer: str, inner: str) -> bool:
+    """Whether *outer*'s routes would capture paths meant for *inner*.
+
+    True when *inner* lies under *outer* (``posts`` / ``posts/archive``, or
+    ``users/{user_id}`` / ``users/me/posts``): ``/posts/{id}`` matches
+    ``/posts/archive``, and FastAPI serves the first route that matches.
+    """
+    outer_parts, inner_parts = _prefix_segments(outer), _prefix_segments(inner)
+    if len(outer_parts) >= len(inner_parts):
+        return False
+    return all(
+        o == i or (o.startswith("{") and o.endswith("}"))
+        for o, i in zip(outer_parts, inner_parts)
+    )
+
+
+def _routing_order(
+    registry: list[tuple[str, type[ViewSet], str]],
+) -> list[tuple[str, type[ViewSet], str]]:
+    """The registry in the order its routers must be served.
+
+    Registration order, except that a prefix nested under another one goes
+    before it, so ``register("posts", A)`` then ``register("posts/archive",
+    B)`` serves ``/posts/archive`` from B instead of A's ``/posts/{id}``.
+    """
+    ordered: list[tuple[str, type[ViewSet], str]] = []
+    for entry in registry:
+        position = next(
+            (i for i, placed in enumerate(ordered) if _shadows(placed[0], entry[0])),
+            len(ordered),
+        )
+        ordered.insert(position, entry)
+    return ordered
+
+
 class Route:
     """Route configuration for a ViewSet action."""
     
@@ -373,7 +412,7 @@ class SimpleRouter:
         """Generate FastAPI routers for all registered ViewSets."""
         routers = []
 
-        for prefix, viewset, basename in self._registry:
+        for prefix, viewset, basename in _routing_order(self._registry):
             router = self._get_router_for_viewset(prefix, viewset, basename)
             add_slash_alias_routes(router)
             routers.append(router)

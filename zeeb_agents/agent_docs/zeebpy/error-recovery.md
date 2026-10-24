@@ -120,6 +120,11 @@ the failing test node ids), and `next_actions` says what to do.
 | `feature_archived` | The feature's code is out of the tree, so the change would apply to nothing. | `{prefix}activate_feature(feature=...)` first. |
 | `feature_active` | The feature is already in the tree. | Nothing to restore; `{prefix}deactivate_feature(feature=...)` is the other direction. |
 | `archive_missing` | Neither an archive nor a stored spec to restore the feature from. | `{prefix}build_feature(spec=...)` to recreate it. |
+| `feature_in_use` | Code that would stay in the tree still uses a class or function the feature owns (`data["dependents"]`: `{"file", "name"}`); nothing was changed. | Remove or rewrite those references first, or take out the feature that holds them too. |
+| `model_referenced` | `delete_feature` would drop a table that a model it does not own still points at (`data["references"]`); nothing was changed. | Remove/retarget that relation, or delete the referencing feature first; `{prefix}deactivate_feature` keeps the data. |
+| `delete_migration_missing` | `delete_feature` removed the code but no migration drops the tables; the archive and manifest entry were kept (`delete_pending`). | `{prefix}make_migrations()`, `{prefix}run_migrations()`, then `{prefix}delete_feature(feature=..., confirm=True)` again. |
+| `delete_pending` | The feature is half-deleted (its models are gone), so it cannot be activated. | Finish it: `{prefix}make_migrations()`, `{prefix}run_migrations()`, `{prefix}delete_feature(feature=..., confirm=True)`. |
+| `verification_failed` | `deactivate_feature` / `activate_feature` did their work, but the verification chain failed (an unreachable OpenAPI server alone does not count). All the usual `data` keys are present. | Follow `data["next_actions"]`; `{prefix}activate_feature` / `{prefix}deactivate_feature` undoes the change. |
 
 ## Security boundaries
 

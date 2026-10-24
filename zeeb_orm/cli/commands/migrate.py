@@ -6,6 +6,7 @@ and reports through :mod:`zeeb_orm.cli.output`, so a caller does not have to
 parse prose to learn what happened.
 """
 
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -68,6 +69,56 @@ def _register_models(project_root: Path) -> None:
     do_register(project_root)
 
 
+def _shown_path(path: Path) -> str:
+    """*path* relative to the working directory when it is below it."""
+    try:
+        return Path(path).resolve().relative_to(Path.cwd().resolve()).as_posix()
+    except ValueError:
+        return str(path)
+
+
+def _unexpected_failure(
+    command: str,
+    exc: Exception,
+    *,
+    json_output: bool,
+    next_command: str = "python manage.py check",
+    state_changed: bool = False,
+) -> int:
+    """The failure for an error no specific handler knows (a database error, …).
+
+    Reported through the envelope like every other failure, so ``--json``
+    still prints one object; the traceback goes to stderr for debugging.
+    """
+    import traceback
+
+    traceback.print_exception(exc, file=sys.stderr)
+    return fail(
+        f"{command} failed: {type(exc).__name__}: {exc}",
+        code="partial_failure" if state_changed else "invalid_input",
+        next_command=next_command,
+        json_output=json_output,
+        state_changed=state_changed,
+        exception_type=type(exc).__name__,
+    )
+
+
+def _applied(db_url: str, project_root: Path) -> set[str] | None:
+    """The applied migrations, or ``None`` when they cannot be read."""
+    from zeeb_orm.migrations import executor
+
+    try:
+        return {
+            name
+            for name, applied in executor.showmigrations(
+                database_url=db_url, project_root=project_root
+            )
+            if applied
+        }
+    except Exception:
+        return None
+
+
 # ---------------------------------------------------------------------------
 # CLI command handlers (called from cli/main.py)
 # ---------------------------------------------------------------------------
@@ -95,12 +146,34 @@ def run_init(directory: str) -> int:
 
 def _migration_failure(exc: Exception, *, json_output: bool) -> int:
     """The failure a migration command reports for an engine refusal."""
+    from zeeb_orm.migrations.autodetector import NotNullFieldError
     from zeeb_orm.migrations.state import (
         IrreversibleError,
         MigrationLayoutError,
+        MigrationLoadError,
         UnknownMigrationError,
     )
 
+    if isinstance(exc, MigrationLoadError):
+        return fail(
+            str(exc),
+            code="invalid_input",
+            next_command=f"python -m py_compile {_shown_path(Path(str(exc.path)))}",
+            json_output=json_output,
+            path=exc.path,
+        )
+    if isinstance(exc, NotNullFieldError):
+        return fail(
+            str(exc),
+            code="invalid_input",
+            next_command=(
+                f"Give {', '.join(exc.fields)} null=True or a default, then "
+                f"python manage.py makemigrations"
+            ),
+            json_output=json_output,
+            suggestions=["null=True", "default=<a static value>"],
+            fields=exc.fields,
+        )
     if isinstance(exc, UnknownMigrationError):
         return fail(
             str(exc),
@@ -161,11 +234,22 @@ def run_makemigrations(
         migrations_dir.mkdir(parents=True, exist_ok=True)
 
     # Register all models
+    from zeeb_orm.exceptions import ModelRegistrationError
+
     try:
         _register_models(project_root)
         installed_apps = [a.replace("apps.", "") for a in get_installed_apps(project_root)]
     except SettingsImportError as exc:
         return _settings_failure("makemigrations", exc, json_output=json_output)
+    except ModelRegistrationError as exc:
+        return fail(
+            str(exc),
+            code="invalid_input",
+            next_command="python manage.py check",
+            json_output=json_output,
+        )
+    except Exception as exc:
+        return _unexpected_failure("makemigrations", exc, json_output=json_output)
     scanned = ["Checking for model changes in installed apps:"]
     scanned += [f"  - {app_name}" for app_name in installed_apps]
 
@@ -196,6 +280,8 @@ def run_makemigrations(
         )
     except MigrationError as exc:
         return _migration_failure(exc, json_output=json_output)
+    except Exception as exc:
+        return _unexpected_failure("makemigrations", exc, json_output=json_output)
 
     if empty:
         return ok(
@@ -314,6 +400,9 @@ def run_migrate(
     except SettingsImportError as exc:
         return _settings_failure("migrate", exc, json_output=json_output)
 
+    # Each migration commits as it is applied, so a failure part-way leaves the
+    # earlier ones in place: compare before and after to say so.
+    before = None if plan else _applied(db_url, project_root)
     try:
         return _run_migrate(
             project_root, db_url, migration, rollback_steps, fake, fake_initial, plan,
@@ -321,6 +410,15 @@ def run_migrate(
         )
     except MigrationError as exc:
         return _migration_failure(exc, json_output=json_output)
+    except Exception as exc:
+        after = None if before is None else _applied(db_url, project_root)
+        return _unexpected_failure(
+            "migrate",
+            exc,
+            json_output=json_output,
+            next_command="python manage.py showmigrations",
+            state_changed=before is not None and after is not None and before != after,
+        )
 
 
 def _run_migrate(
@@ -456,9 +554,17 @@ def run_showmigrations(json_output: bool = False) -> int:
         db_url = _database_url(project_root)
     except SettingsImportError as exc:
         return _settings_failure("showmigrations", exc, json_output=json_output)
-    if not migrations_dir.exists() or not (
-        status := executor.showmigrations(database_url=db_url, project_root=project_root)
-    ):
+    from zeeb_orm.migrations.state import MigrationError
+
+    status: list = []
+    if migrations_dir.exists():
+        try:
+            status = executor.showmigrations(database_url=db_url, project_root=project_root)
+        except MigrationError as exc:
+            return _migration_failure(exc, json_output=json_output)
+        except Exception as exc:
+            return _unexpected_failure("showmigrations", exc, json_output=json_output)
+    if not status:
         return ok(
             "No migrations have been created yet.",
             json_output=json_output,

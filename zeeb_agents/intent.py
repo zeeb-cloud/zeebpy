@@ -28,6 +28,7 @@ Design:
 
 from __future__ import annotations
 
+import ast
 import asyncio
 import re
 from pathlib import Path, PurePosixPath
@@ -37,6 +38,7 @@ from zeeb_agents._utils.errors import AgentError, close_matches, fail
 from zeeb_agents._utils.project import load_project_settings, require_project_root
 from zeeb_agents.feature_archive import (
     archive_artifacts,
+    find_dependents,
     purge_archive,
     read_record,
     restore_artifacts,
@@ -52,11 +54,13 @@ from zeeb_agents.feature_manifest import (
     infer_features,
     load_manifest,
     manifest_version_on_disk,
+    merge_artifacts,
     merge_changes_into_spec,
     newer_manifest_message,
     record_feature,
     set_status,
     split_ref,
+    tests_shared_with_others,
 )
 from zeeb_agents.feature_spec import (
     _DB_CHANGING_OPS,
@@ -1407,6 +1411,47 @@ async def list_features(
     )
 
 
+def _verification_failures(verification: dict | None) -> list[str]:
+    """The checks that failed and say the project no longer holds together.
+
+    An OpenAPI check that could not reach a server is not counted: no server
+    running is not evidence that the change broke anything.
+    """
+    if not verification:
+        return []
+    failed = []
+    for name, entry in (verification.get("checks") or {}).items():
+        if entry.get("ok"):
+            continue
+        if name == "openapi" and entry.get("paths_count") is None and entry.get("error"):
+            continue
+        failed.append(name)
+    return sorted(failed)
+
+
+async def _refuse_dependents(root: Path, feature: str, artifacts: dict) -> AgentResult | None:
+    """A refusal when code staying in the tree uses what *feature* would take out."""
+    ignore = {
+        (f"apps/{route.get('app')}/urls.py", f"{route.get('model')}ViewSet")
+        for route in artifacts.get("routes") or []
+        if route.get("app") and route.get("model")
+    }
+    dependents = await asyncio.to_thread(find_dependents, root, artifacts, ignore=ignore)
+    if not dependents:
+        return None
+    shown = "; ".join(f"{dep['file']} uses {dep['name']}" for dep in dependents[:5])
+    return fail(
+        f"Feature '{feature}' cannot be taken out of the tree: code that stays "
+        f"still uses what it owns ({shown}). Nothing was changed.",
+        code="feature_in_use",
+        dependents=dependents,
+        suggestions=[
+            "Remove or rewrite those references first (edit_file / set_class_method), "
+            "or take out the feature that holds them too.",
+        ],
+    )
+
+
 @agent_function
 async def deactivate_feature(
     feature: str,
@@ -1452,9 +1497,29 @@ async def deactivate_feature(
         state_changed (bool): whether anything was actually moved.
         affected (dict): ``{"apps", "entities", "files"}``.
 
+    Returns data (when refused before any change):
+        dependents (list[dict]): with ``feature_in_use`` — each
+            ``{"file", "name"}`` use, by code that stays, of a class or
+            function the feature owns.
+
     Notes:
         - Idempotent: deactivating an already-archived feature fails with
           ``error_code="feature_archived"`` rather than double-archiving.
+        - Imports of the archived classes left in other modules (``from
+          .serializers import PostSerializer`` in ``views.py``) are removed
+          too, and restored exactly by :func:`activate_feature`, so an
+          app-mate keeps importing.
+        - Refuses with ``error_code="feature_in_use"`` — before changing
+          anything — when code that stays would still use something the
+          feature owns (another feature's serializer nesting this one's, say);
+          ``data["dependents"]`` lists ``{"file", "name"}``.
+        - A generated test file another *active* feature also owns (manifests
+          recorded before test files were named per feature) is left in place
+          and named in ``warnings``.
+        - With ``verify=True``, a verification failure makes the call
+          ``success=False`` with ``error_code="verification_failed"`` (all the
+          keys above still present; the feature *is* archived) — an OpenAPI
+          check that only found no server running does not count.
         - No migration runs and none is needed. If you also want the tables
           gone, that is :func:`delete_feature` — deliberately a separate,
           confirmed call.
@@ -1476,6 +1541,9 @@ async def deactivate_feature(
         )
 
     artifacts = entry.get("artifacts") or {}
+    refusal = await _refuse_dependents(root, feature, artifacts)
+    if refusal is not None:
+        return refusal
     warnings: list[str] = []
     if entry.get("inferred"):
         warnings.append(
@@ -1497,10 +1565,18 @@ async def deactivate_feature(
         else:
             warnings.append(f"Route for {app}.{model}: {result.message}")
 
-    record = await asyncio.to_thread(archive_artifacts, root, feature, artifacts)
+    shared_tests = await asyncio.to_thread(tests_shared_with_others, root, feature)
+    record = await asyncio.to_thread(
+        archive_artifacts, root, feature, artifacts, shared_tests
+    )
     await asyncio.to_thread(
         set_status, root, feature, STATUS_ARCHIVED, artifacts=artifacts, app=entry.get("app")
     )
+    if record["tests_kept"]:
+        warnings.append(
+            "Left in place, also owned by another active feature: "
+            f"{', '.join(record['tests_kept'])}."
+        )
 
     archived = [fragment["name"] for fragment in record["fragments"]]
     tests_archived = [entry_["path"] for entry_ in record["tests"]]
@@ -1521,14 +1597,23 @@ async def deactivate_feature(
             f"delete_feature('{feature}', confirm=True) is what removes them."
         )
 
+    failed_checks = _verification_failures(verification)
+    message = (
+        f"Feature '{feature}' archived: {len(archived)} artifact(s) and "
+        f"{len(unregistered)} route(s) removed from the API; "
+        f"{len(retained)} model(s) and all data left intact."
+    )
+    if failed_checks:
+        message += (
+            f" BUT VERIFICATION FAILED ({', '.join(failed_checks)}) — the "
+            f"remaining project does not hold together; activate_feature('{feature}') "
+            "puts it back."
+        )
     return AgentResult(
-        success=True,
-        message=(
-            f"Feature '{feature}' archived: {len(archived)} artifact(s) and "
-            f"{len(unregistered)} route(s) removed from the API; "
-            f"{len(retained)} model(s) and all data left intact."
-        ),
+        success=not failed_checks,
+        message=message,
         data={
+            **({"error_code": "verification_failed"} if failed_checks else {}),
             "feature": feature,
             "status": STATUS_ARCHIVED,
             "archived": archived,
@@ -1599,6 +1684,12 @@ async def activate_feature(
           stored spec to rebuild from.
         - Idempotent: an artifact already present in its file is left alone, so
           re-running after a partial restore finishes the job.
+        - The imports :func:`deactivate_feature` took out of other modules go
+          back first, each in its original form and place.
+        - With ``verify=True``, a verification failure makes the call
+          ``success=False`` with ``error_code="verification_failed"`` (all the
+          keys above still present; the feature *is* restored) — an OpenAPI
+          check that only found no server running does not count.
     """
     root = require_project_root(project_root)
     ensure_manifest_writable(root)
@@ -1611,6 +1702,17 @@ async def activate_feature(
             f"Feature '{feature}' is already active.",
             code="feature_active",
             suggestions=["list_features()", f"deactivate_feature('{feature}')"],
+        )
+    if entry.get("delete_pending"):
+        return fail(
+            f"Feature '{feature}' is half-deleted: its models already left models.py, "
+            "so its API code cannot come back. Finish the deletion instead.",
+            code="delete_pending",
+            suggestions=[
+                "make_migrations()",
+                "run_migrations()",
+                f"delete_feature('{feature}', confirm=True)",
+            ],
         )
 
     record = await asyncio.to_thread(read_record, root, feature)
@@ -1680,14 +1782,21 @@ async def activate_feature(
         next_actions.extend(_verification_next_actions(verification))
 
     state_changed = bool(outcome["restored"] or outcome["tests_restored"] or registered)
+    failed_checks = _verification_failures(verification)
     return AgentResult(
-        success=True,
+        success=not failed_checks,
         message=(
             f"Feature '{feature}' restored: {len(outcome['restored'])} artifact(s) "
             f"and {len(registered)} route(s) back in the API."
             + (" Some artifacts were rebuilt from its spec." if rebuilt else "")
+            + (
+                f" BUT VERIFICATION FAILED ({', '.join(failed_checks)})."
+                if failed_checks
+                else ""
+            )
         ),
         data={
+            **({"error_code": "verification_failed"} if failed_checks else {}),
             "feature": feature,
             "status": STATUS_ACTIVE,
             "restored": outcome["restored"],
@@ -1703,6 +1812,165 @@ async def activate_feature(
             "affected": _feature_scope(entry),
         },
     )
+
+
+_RELATION_FIELDS = frozenset({"ForeignKey", "OneToOneField", "ManyToManyField"})
+
+
+def _model_classes(root: Path) -> dict[str, dict[str, ast.ClassDef]]:
+    """``{app: {class name: node}}`` for every top-level class in ``apps/*/models.py``."""
+    out: dict[str, dict[str, ast.ClassDef]] = {}
+    apps_dir = root / "apps"
+    if not apps_dir.is_dir():
+        return out
+    for models_py in sorted(apps_dir.glob("*/models.py")):
+        try:
+            tree = ast.parse(models_py.read_text(encoding="utf-8"))
+        except (OSError, SyntaxError, UnicodeDecodeError):
+            continue
+        out[models_py.parent.name] = {
+            node.name: node for node in tree.body if isinstance(node, ast.ClassDef)
+        }
+    return out
+
+
+def _relation_target(call: ast.Call) -> str | None:
+    """The model a ``ForeignKey(...)``-style call points at, as written."""
+    func = call.func
+    name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", None)
+    if name not in _RELATION_FIELDS:
+        return None
+    target = call.args[0] if call.args else next(
+        (kw.value for kw in call.keywords if kw.arg == "to"), None
+    )
+    if isinstance(target, ast.Constant) and isinstance(target.value, str):
+        return target.value
+    if isinstance(target, ast.Name):
+        return target.id
+    if isinstance(target, ast.Attribute):
+        return target.attr
+    return None
+
+
+def _model_references(root: Path, models: list[str]) -> list[dict]:
+    """Relations from models that stay to the *models* (``app.Model`` refs) that go.
+
+    Read from the AST of every ``apps/*/models.py``. A bare target (``"Post"``)
+    is resolved the way the ORM does: the referencing model's own app first,
+    then any app. Returns ``{"model", "field", "target"}`` dicts.
+    """
+    doomed = {split_ref(ref) for ref in models}
+    classes = _model_classes(root)
+    found: list[dict] = []
+    for app, nodes in classes.items():
+        for class_name, node in nodes.items():
+            if (app, class_name) in doomed:
+                continue
+            for stmt in node.body:
+                value = getattr(stmt, "value", None)
+                if not isinstance(stmt, (ast.Assign, ast.AnnAssign)) or not isinstance(
+                    value, ast.Call
+                ):
+                    continue
+                target = _relation_target(value)
+                if not target or target == "self":
+                    continue
+                parts = target.split(".")
+                target_name = parts[-1]
+                target_app = parts[-2] if len(parts) > 1 else None
+                for d_app, d_model in doomed:
+                    if target_name != d_model:
+                        continue
+                    if target_app is not None and target_app != d_app:
+                        continue
+                    if target_app is None and d_app != app and target_name in nodes:
+                        continue  # resolves to the referencing app's own model
+                    field = (
+                        stmt.targets[0] if isinstance(stmt, ast.Assign) else stmt.target
+                    )
+                    found.append(
+                        {
+                            "model": f"{app}.{class_name}",
+                            "field": getattr(field, "id", "?"),
+                            "target": f"{d_app}.{d_model}",
+                        }
+                    )
+    return found
+
+
+def _model_tables(
+    root: Path, models: list[str], known: dict | None = None
+) -> dict[str, str]:
+    """``{"app.Model": table}`` for *models*, read from their ``Meta`` (or the default).
+
+    A model no longer in ``models.py`` takes its table from *known* (what an
+    earlier, unfinished ``delete_feature`` recorded) before the default.
+    """
+    classes = _model_classes(root)
+    recorded = known or {}
+    tables: dict[str, str] = {}
+    for ref in models:
+        app, model = split_ref(ref)
+        node = classes.get(app, {}).get(model)
+        if node is None and isinstance(recorded.get(ref), str):
+            tables[ref] = recorded[ref]
+            continue
+        # The ORM's default: the class name in snake_case.
+        table = "".join(f"_{c.lower()}" if c.isupper() else c for c in model).lstrip("_")
+        for stmt in node.body if node is not None else []:
+            if isinstance(stmt, ast.ClassDef) and stmt.name == "Meta":
+                for inner in stmt.body:
+                    if (
+                        isinstance(inner, ast.Assign)
+                        and any(
+                            getattr(t, "id", None) in ("table_name", "db_table")
+                            for t in inner.targets
+                        )
+                        and isinstance(inner.value, ast.Constant)
+                        and isinstance(inner.value.value, str)
+                    ):
+                        table = inner.value.value
+        tables[ref] = table
+    return tables
+
+
+def _models_without_delete_migration(root: Path, tables: dict[str, str]) -> list[str]:
+    """The models (of ``{"app.Model": table}``) no migration file drops.
+
+    Read from the migration files' AST — a ``DeleteModel(...)`` naming the
+    model's table or the model — so it is true whichever run (or process)
+    wrote the migration, including a re-run after the class already left
+    ``models.py``.
+    """
+    dropped_tables: set[str] = set()
+    dropped_names: set[str] = set()
+    for path in sorted((root / "migrations").glob("*.py")):
+        try:
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+        except (OSError, SyntaxError, UnicodeDecodeError):
+            continue
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", None)
+            if name != "DeleteModel":
+                continue
+            values = {kw.arg: kw.value for kw in node.keywords}
+            for position, key in enumerate(("name", "table")):
+                if position < len(node.args):
+                    values.setdefault(key, node.args[position])
+            table = values.get("table")
+            model = values.get("name")
+            if isinstance(table, ast.Constant) and isinstance(table.value, str):
+                dropped_tables.add(table.value)
+            if isinstance(model, ast.Constant) and isinstance(model.value, str):
+                dropped_names.add(model.value)
+    return [
+        ref
+        for ref, table in tables.items()
+        if table not in dropped_tables and split_ref(ref)[1] not in dropped_names
+    ]
 
 
 @agent_function
@@ -1748,6 +2016,9 @@ async def delete_feature(
         next_actions (list[str]): concrete follow-ups.
         state_changed (bool): whether anything was actually removed.
         affected (dict): ``{"apps", "entities", "files"}``.
+        models_not_dropped (list[str]): only on the
+            ``delete_migration_missing`` failure (``success=False``, with the
+            keys above) — the models no migration file drops; see Notes.
 
     Returns data (when refused):
         confirm_required (bool): always ``True``.
@@ -1755,8 +2026,31 @@ async def delete_feature(
             "functions", "tests"}`` — so the confirmation is informed.
         risk (dict): as above.
 
+    Returns data (when refused before any change):
+        references (list[dict]): with ``model_referenced`` — each
+            ``{"model", "field", "target"}`` relation to a model it would drop.
+        dependents (list[dict]): with ``feature_in_use`` — each
+            ``{"file", "name"}`` use of one of its API classes.
+
     Notes:
         - Refuses with ``error_code="invalid_input"`` unless ``confirm=True``.
+        - Refuses, before changing anything, with
+          ``error_code="model_referenced"`` when a model the feature does not
+          own still has a relation to one it would drop
+          (``data["references"]``: ``{"model", "field", "target"}``), and with
+          ``error_code="feature_in_use"`` when code that stays uses one of its
+          API classes (``data["dependents"]``).
+        - Migration detection reads the project's files as they are now, even
+          in a process that imported the project's models before.
+        - Fail-safe: with ``migrate=True``, if after the run no migration file
+          drops one of the models' tables, the archive and the manifest entry
+          are **kept** (status ``archived``, ``delete_pending``) and the call
+          fails with ``delete_migration_missing``. Run ``make_migrations()``
+          and ``run_migrations()``, then call ``delete_feature`` again to
+          finish; :func:`activate_feature` refuses such a feature with
+          ``delete_pending``.
+        - A generated test file another feature also owns (manifests recorded
+          before test files were named per feature) is left in place.
         - The app directory itself is left in place: other features may live in
           it. An app with nothing left in it can be removed with ``delete_app``.
     """
@@ -1795,6 +2089,31 @@ async def delete_feature(
             risk=risk,
         )
 
+    # Refusals come before anything changes.
+    references = await asyncio.to_thread(_model_references, root, models)
+    if references:
+        shown = "; ".join(
+            f"{ref['model']}.{ref['field']} -> {ref['target']}" for ref in references[:5]
+        )
+        return fail(
+            f"delete_feature('{feature}') would drop tables that models it does not "
+            f"own still point at ({shown}). Nothing was changed.",
+            code="model_referenced",
+            references=references,
+            suggestions=[
+                "Remove or retarget those relations first (remove_field / change_feature), "
+                "or delete the feature that owns the referencing model first.",
+                f"deactivate_feature('{feature}') takes it off the API and keeps the data.",
+            ],
+            risk=risk,
+        )
+    refusal = await _refuse_dependents(root, feature, artifacts)
+    if refusal is not None:
+        return refusal
+    tables = await asyncio.to_thread(
+        _model_tables, root, models, entry.get("delete_tables")
+    )
+
     warnings: list[str] = []
     from zeeb_agents.viewsets import unregister_route
 
@@ -1809,8 +2128,18 @@ async def delete_feature(
         else:
             warnings.append(f"Route for {app}.{model}: {result.message}")
 
-    record = await asyncio.to_thread(archive_artifacts, root, feature, artifacts)
+    shared_tests = await asyncio.to_thread(
+        tests_shared_with_others, root, feature, active_only=False
+    )
+    record = await asyncio.to_thread(
+        archive_artifacts, root, feature, artifacts, shared_tests
+    )
     deleted = [fragment["name"] for fragment in record["fragments"]]
+    if record["tests_kept"]:
+        warnings.append(
+            "Left in place, also owned by another feature: "
+            f"{', '.join(record['tests_kept'])}."
+        )
 
     operations = [
         {"op": "delete_model", "app": app, "model": model}
@@ -1827,6 +2156,58 @@ async def delete_feature(
     warnings.extend(outcome.get("warnings", []))
     if outcome["errors"]:
         warnings.extend(outcome["errors"])
+
+    undropped = (
+        await asyncio.to_thread(_models_without_delete_migration, root, tables)
+        if migrate and tables
+        else []
+    )
+    if undropped:
+        # Fail safe: the models are out of models.py but no migration drops
+        # their tables, so the archive and the manifest entry are all that
+        # still say what this feature was. Keep both.
+        await asyncio.to_thread(
+            set_status,
+            root,
+            feature,
+            STATUS_ARCHIVED,
+            artifacts=artifacts,
+            app=entry.get("app"),
+            delete_pending=True,
+            # The classes (and their Meta) are gone from models.py; the re-run
+            # that finishes the delete needs to know which tables to look for.
+            delete_tables=tables,
+        )
+        return AgentResult(
+            success=False,
+            message=(
+                f"delete_feature('{feature}') removed the code but no migration drops "
+                f"the tables of {', '.join(undropped)} — the archive and the manifest "
+                "entry were kept. Run make_migrations() and run_migrations(), then "
+                f"delete_feature('{feature}', confirm=True) again to finish."
+            ),
+            data={
+                "error_code": "delete_migration_missing",
+                "recoverable": True,
+                "feature": feature,
+                "deleted": deleted,
+                "models_deleted": models,
+                "models_not_dropped": undropped,
+                "routes_unregistered": unregistered,
+                "risk": risk,
+                "migrations_created": outcome["changes"]["migrations_created"],
+                "verification": None,
+                "verified": False,
+                "warnings": warnings,
+                "next_actions": [
+                    "make_migrations() — it should write the DeleteModel migration",
+                    "run_migrations()",
+                    f"delete_feature('{feature}', confirm=True) to purge the archive",
+                ],
+                "state_changed": True,
+                "affected": _feature_scope(entry),
+            },
+        )
 
     # The archive was only a staging area for the removal: nothing may restore
     # a feature whose tables have been dropped.
@@ -2524,8 +2905,10 @@ async def regenerate_tests(
 ) -> AgentResult:
     """Rewrite a feature's generated test file from its stored spec.
 
-    ``build_feature(tests=True)`` writes ``tests/test_<app>_generated.py`` once
-    and never overwrites it, so after the feature's fields change the suite it
+    ``build_feature(tests=True)`` writes the feature's test file once —
+    ``tests/test_<app>_generated.py``, or
+    ``tests/test_<app>_feature_<feature>_generated.py`` for a feature not named
+    after its app — and never overwrites it, so after the feature's fields change the suite it
     generated can fail on assertions that were true when it was written. This
     is the refresh: the feature's current spec (``change_feature`` keeps it
     current) is compiled again and only the generated test file is rewritten
@@ -2548,6 +2931,10 @@ async def regenerate_tests(
           unknown name, and ``invalid_input`` for a feature reconstructed from
           disk (``inferred``) — it has no stored spec to compile; rebuild it
           with ``build_feature`` to record one.
+        - Only ever rewrites a file this feature owns alone: a feature recorded
+          before test files were named per feature keeps its own generated
+          file, and one that only shares an app-wide file gets its per-feature
+          file (recorded in the manifest) instead of overwriting the shared one.
     """
     from zeeb_agents.test_scaffold import generate_tests
 
@@ -2570,15 +2957,34 @@ async def regenerate_tests(
             f"Feature '{feature}' compiles to no tests (no exposed entities).",
             code="invalid_input",
         )
-    res = await generate_tests(op["app"], op["entities"], overwrite=True, project_id=root)
+    # The feature's own file: the one the compiler names, or — for a feature
+    # recorded before test files were named per feature — the generated file
+    # it owns alone. Never a file another feature also owns, which this
+    # overwrite would otherwise rewrite with only this feature's tests.
+    target = op.get("filename") or f"tests/test_{op['app']}_generated.py"
+    owned = list(((entry or {}).get("artifacts") or {}).get("tests") or [])
+    if target not in owned:
+        shared = await asyncio.to_thread(
+            tests_shared_with_others, root, feature, active_only=False
+        )
+        exclusive = [path for path in owned if path not in shared]
+        if exclusive:
+            target = exclusive[0]
+    res = await generate_tests(
+        op["app"], op["entities"], filename=target, overwrite=True, project_id=root
+    )
     if not res.success:
         return res
     data = res.data or {}
     written = [*data.get("overwritten", []), *data.get("created", [])]
-    file = next(
-        (path for path in written if path.startswith("tests/test_")),
-        f"tests/test_{op['app']}_generated.py",
-    )
+    file = next((path for path in written if path.startswith("tests/test_")), target)
+    if entry and not entry.get("inferred") and file not in owned:
+        # A new per-feature file: record it, so the lifecycle tools move it
+        # with the feature.
+        artifacts = merge_artifacts(entry.get("artifacts"), {"tests": [file]})
+        await asyncio.to_thread(
+            set_status, root, feature, entry.get("status", STATUS_ACTIVE), artifacts=artifacts
+        )
     return AgentResult(
         success=True,
         message=f"Regenerated {file} ({data.get('tests', 0)} test(s))",

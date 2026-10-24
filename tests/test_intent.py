@@ -708,10 +708,14 @@ async def test_build_feature_rerun_converges_new_spec_fields(root: Path):
     res = await agents.build_feature(SPEC, verify=False, project_id=root)
     assert res.success, res.message
 
+    # Optional: the re-run really migrates now (make_migrations sees the edited
+    # models.py even in this process), and a NOT NULL column without a default
+    # cannot be added to an existing table.
     extended = {
         **SPEC,
         "entities": [
-            {**e, "fields": [*e["fields"], {"name": "subtitle", "type": "string"}]}
+            {**e, "fields": [*e["fields"],
+                             {"name": "subtitle", "type": "string", "required": False}]}
             if e["name"] == "Post"
             else e
             for e in SPEC["entities"]
@@ -720,6 +724,7 @@ async def test_build_feature_rerun_converges_new_spec_fields(root: Path):
     res = await agents.build_feature(extended, verify=False, project_id=root)
     assert res.success, res.message
     assert res.data["changes"]["fields_added"] == ["Post.subtitle"]
+    assert res.data["changes"]["migrations_created"], res.data["changes"]
     assert res.data["state_changed"] is True
 
     models = (root / "apps" / "blog" / "models.py").read_text()

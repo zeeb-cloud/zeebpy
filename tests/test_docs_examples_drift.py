@@ -86,7 +86,13 @@ def test_every_documented_import_resolves():
                 continue
 
             for name in _imported_names(clause):
-                if not hasattr(imported, name):
+                if hasattr(imported, name):
+                    continue
+                # ``from pkg import submodule`` is valid even when nothing has
+                # imported the submodule yet, so resolve it the way Python would.
+                try:
+                    importlib.import_module(f"{module}.{name}")
+                except ImportError:
                     problems.append(f"{page}:{line} {module} has no {name!r}")
 
     assert not problems, "documented imports that do not resolve:\n  " + "\n  ".join(

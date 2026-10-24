@@ -13,10 +13,24 @@ if TYPE_CHECKING:
     pass
 
 
+#: The largest row offset a paginator sends to the database (a signed 64-bit
+#: integer). A larger one used to reach the driver and fail there with an
+#: ``OverflowError`` (a 500); a page that far out is past the end, and empty.
+MAX_OFFSET = 2**63 - 1
+
+
+async def _page_items(queryset: Any, offset: int, size: int, count: int) -> list[Any]:
+    """Rows ``offset .. offset + size`` - none, without a query, past the end."""
+    if offset >= count or offset > MAX_OFFSET:
+        return []
+    # Slicing is the QuerySet's limit/offset API (it has no .limit()).
+    return list(await queryset[offset:min(offset + size, MAX_OFFSET)])
+
+
 class BasePagination:
     """
     Base pagination class.
-    
+
     Override paginate_queryset() to implement custom pagination.
     """
     
@@ -93,9 +107,8 @@ class PageNumberPagination(BasePagination):
         # Calculate offset
         offset = (page - 1) * page_size
         
-        # Get items
-        # Slicing is the QuerySet's limit/offset API (it has no .limit()).
-        items = list(await queryset[offset:offset + page_size])
+        # Get items (a page past the end is empty, however far out it is)
+        items = await _page_items(queryset, offset, page_size, count)
         
         # Calculate pagination info
         total_pages = (count + page_size - 1) // page_size if page_size > 0 else 1
@@ -169,8 +182,8 @@ class LimitOffsetPagination(BasePagination):
         limit = self._get_limit(request)
         offset = self._get_offset(request)
         
-        # Get items
-        items = list(await queryset[offset:offset + limit])
+        # Get items (an offset past the end gives an empty page)
+        items = await _page_items(queryset, offset, limit, count)
         
         # Calculate next/previous URLs
         next_url = None

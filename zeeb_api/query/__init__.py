@@ -20,7 +20,12 @@ from zeeb_api.query.parser import (
     extract_q_paths,
     QFilterError,
 )
-from zeeb_api.query.paths import FieldPathError, check_field_path
+from zeeb_api.query.paths import (
+    FieldPathError,
+    check_field_path,
+    rename_q_paths,
+    serializer_field_paths,
+)
 
 __all__ = [
     "QueryRequest",
@@ -34,4 +39,6 @@ __all__ = [
     "QFilterError",
     "check_field_path",
     "FieldPathError",
+    "serializer_field_paths",
+    "rename_q_paths",
 ]

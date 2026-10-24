@@ -22,10 +22,48 @@ when they actually changed the file.
 from __future__ import annotations
 
 import ast
+import os
 import re
 from pathlib import Path
 
 from zeeb_orm.scaffold.errors import ScaffoldError
+
+
+def _check_app_name(app: str) -> None:
+    """Refuse an app name that cannot appear in ``import apps.<app>``."""
+    from zeeb_orm.scaffold.naming import app_name_problem
+
+    problem = app_name_problem(app)
+    if problem:
+        raise ScaffoldError(problem, code="invalid_identifier", name=app)
+
+
+def write_python_source(path: Path, source: str) -> None:
+    """Write *source* to *path* atomically, refusing source that does not parse.
+
+    A wiring edit that produced broken Python would leave the project unable
+    to start (``urls.py`` and ``settings.py`` are imported on every run) while
+    the command reported success; the file is left as it was instead.
+
+    Raises:
+        ScaffoldError: ``invalid_input`` when *source* is not valid Python.
+    """
+    try:
+        ast.parse(source, filename=str(path))
+    except SyntaxError as exc:
+        raise ScaffoldError(
+            f"Editing {path.name} would make it invalid Python ({exc.msg}, line "
+            f"{exc.lineno}); it was left unchanged.",
+            code="invalid_input",
+            path=str(path),
+        ) from exc
+    tmp = path.with_name(f".{path.name}.tmp")
+    try:
+        tmp.write_text(source, encoding="utf-8")
+        os.replace(tmp, path)
+    finally:
+        if tmp.exists():
+            tmp.unlink()
 
 
 def find_project_package(root: Path) -> Path:
@@ -154,6 +192,7 @@ def ensure_installed_app(root: Path, app: str) -> bool:
     when ``settings.py`` cannot be found, does not parse (``invalid_input``),
     or holds a non-list ``INSTALLED_APPS`` (``setting_not_found``).
     """
+    _check_app_name(app)
     settings_path = find_project_package(root) / "settings.py"
     text = settings_path.read_text(encoding="utf-8")
     entry = f"apps.{app}"
@@ -162,7 +201,7 @@ def ensure_installed_app(root: Path, app: str) -> bool:
     if span is None:
         # No assignment at all — create one with this app (repair semantics).
         updated = text.rstrip("\n") + f'\n\nINSTALLED_APPS = [\n    "{entry}",\n]\n'
-        settings_path.write_text(updated, encoding="utf-8")
+        write_python_source(settings_path, updated)
         return True
     body_start, body_end = span
     body = text[body_start:body_end]
@@ -198,7 +237,7 @@ def ensure_installed_app(root: Path, app: str) -> bool:
     before = "".join(lines)
     lead = "" if before.endswith("\n") else "\n"
     updated = f'{before}{lead}{indent}"{entry}",\n{text[body_end:]}'
-    settings_path.write_text(updated, encoding="utf-8")
+    write_python_source(settings_path, updated)
     return True
 
 
@@ -220,7 +259,8 @@ def append_router_include(
     - The import is inserted after the last top-level import; the include is
       inserted just before ``def get_routes`` (or appended when absent).
     - Raises :class:`ScaffoldError` (``file_not_found``) when ``urls.py`` is
-      missing and (``invalid_input``) when no ``router = ...`` symbol exists.
+      missing and (``invalid_input``) when no ``router = ...`` symbol exists
+      or the edited file would not parse (it is then left unchanged).
     """
     if not urls_path.exists():
         raise ScaffoldError(
@@ -273,7 +313,7 @@ def append_router_include(
         include_at -= 1
     lines.insert(include_at, include_stmt)
 
-    urls_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    write_python_source(urls_path, "\n".join(lines) + "\n")
     return True
 
 
@@ -338,6 +378,7 @@ def ensure_app_urls_included(root: Path, app: str, prefix: str | None = None) ->
     file exists but defines no ``router`` symbol to include into (see
     :func:`append_router_include`).
     """
+    _check_app_name(app)
     urls_path = find_project_package(root) / "urls.py"
     if not urls_path.exists():
         urls_path.write_text(STANDARD_URLS_TEMPLATE, encoding="utf-8")

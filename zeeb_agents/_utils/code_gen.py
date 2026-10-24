@@ -2217,3 +2217,180 @@ def extract_field_types(content: str, class_name: str) -> dict[str, str]:
                 fields[m.group(1)] = m.group(2)
 
     return fields
+
+
+# ---------------------------------------------------------------------------
+# Module-level ``from … import`` bindings, read and edited through the AST.
+# ---------------------------------------------------------------------------
+
+
+def absolute_import_module(node: ast.ImportFrom, package: str) -> str:
+    """The absolute module a ``from … import`` names, seen from *package*.
+
+    ``from .serializers import X`` in ``apps/blog/views.py`` (package
+    ``apps.blog``) names ``apps.blog.serializers``.
+    """
+    if not node.level:
+        return node.module or ""
+    parts = package.split(".") if package else []
+    keep = len(parts) - (node.level - 1)
+    base = parts[:keep] if keep > 0 else []
+    return ".".join([*base, *([node.module] if node.module else [])])
+
+
+def _alias_source(alias: ast.alias) -> str:
+    return alias.name + (f" as {alias.asname}" if alias.asname else "")
+
+
+def _own_lines(lines: list[str], tree: ast.Module, node: ast.stmt) -> bool:
+    """Whether *node* has its lines to itself (no ``a; b`` sharing a line)."""
+    first, last = node.lineno, node.end_lineno or node.lineno
+    if node.col_offset != 0:
+        return False
+    for other in tree.body:
+        if other is node:
+            continue
+        o_first, o_last = other.lineno, other.end_lineno or other.lineno
+        if o_first <= last and o_last >= first:
+            return False
+    tail = lines[last - 1][node.end_col_offset or 0 :].strip()
+    return not tail or tail.startswith("#")
+
+
+def _statement_text(lines: list[str], node: ast.stmt) -> str:
+    return "\n".join(lines[node.lineno - 1 : node.end_lineno or node.lineno]).rstrip()
+
+
+def imported_bindings(content: str, package: str) -> list[tuple[str, str, str]]:
+    """Every module-level ``from … import`` binding in *content*.
+
+    Returns ``(absolute module, imported name, bound name)`` triples.
+    """
+    tree = _parse(content)
+    if tree is None:
+        return []
+    out: list[tuple[str, str, str]] = []
+    for node in tree.body:
+        if isinstance(node, ast.ImportFrom):
+            module = absolute_import_module(node, package)
+            out.extend((module, alias.name, alias.asname or alias.name) for alias in node.names)
+    return out
+
+
+def remove_imported_names(
+    content: str, package: str, targets: set[tuple[str, str]]
+) -> tuple[str, list[dict]]:
+    """Drop the module-level imports of *targets* — ``(module, name)`` pairs.
+
+    The import-side half of lifting a class out of its module: a sibling that
+    still says ``from .serializers import PostSerializer`` after
+    ``PostSerializer`` left ``serializers.py`` fails at import time and takes
+    the whole app down. A statement importing only targets is removed; one
+    importing others too is trimmed to the rest.
+
+    Returns ``(content, records)``; each record is what
+    :func:`restore_import_statement` needs to put the statement back exactly:
+    ``{"original", "trimmed", "after", "before", "module", "names"}``
+    (``trimmed`` is ``None`` when the statement went entirely; ``after`` /
+    ``before`` are the neighbouring import statements, the anchors for
+    putting it back in place). A statement sharing its line with another one
+    is left alone.
+    """
+    tree = _parse(content)
+    if tree is None:
+        return content, []
+    lines = content.splitlines()
+    body = tree.body
+    records: list[dict] = []
+    edits: list[tuple[int, int, list[str]]] = []
+    for index, node in enumerate(body):
+        if not isinstance(node, ast.ImportFrom):
+            continue
+        module = absolute_import_module(node, package)
+        dropped = [alias for alias in node.names if (module, alias.name) in targets]
+        if not dropped or not _own_lines(lines, tree, node):
+            continue
+        kept = [alias for alias in node.names if alias not in dropped]
+        source_module = "." * (node.level or 0) + (node.module or "")
+        trimmed = (
+            f"from {source_module} import {', '.join(_alias_source(a) for a in kept)}"
+            if kept
+            else None
+        )
+        previous = body[index - 1] if index > 0 else None
+        following = body[index + 1] if index + 1 < len(body) else None
+        records.append(
+            {
+                "original": _statement_text(lines, node),
+                "trimmed": trimmed,
+                "after": (
+                    _statement_text(lines, previous)
+                    if isinstance(previous, (ast.Import, ast.ImportFrom))
+                    else None
+                ),
+                "before": (
+                    _statement_text(lines, following)
+                    if isinstance(following, (ast.Import, ast.ImportFrom))
+                    else None
+                ),
+                "module": source_module,
+                "names": [_alias_source(alias) for alias in dropped],
+            }
+        )
+        edits.append((node.lineno, node.end_lineno or node.lineno, [trimmed] if trimmed else []))
+    if not edits:
+        return content, []
+    for first, last, replacement in reversed(edits):
+        lines = _splice(lines, first, last, replacement)
+    return "\n".join(lines).rstrip("\n") + "\n", records
+
+
+def _find_statement(tree: ast.Module, lines: list[str], text: str | None) -> ast.stmt | None:
+    if not text:
+        return None
+    for node in tree.body:
+        if isinstance(node, (ast.Import, ast.ImportFrom)) and _statement_text(lines, node) == text:
+            return node
+    return None
+
+
+def restore_import_statement(content: str, record: dict) -> str | None:
+    """Put back an import :func:`remove_imported_names` took out.
+
+    A trimmed statement gets its full original text again; a removed one goes
+    back between the neighbours it had. When the file changed so much that
+    neither anchor is found, the names are re-imported after the last import.
+    Returns the new content, or ``None`` when the names are already imported.
+    """
+    tree = _parse(content)
+    if tree is None:
+        return None
+    lines = content.splitlines()
+    original = record.get("original") or ""
+    trimmed = _find_statement(tree, lines, record.get("trimmed"))
+    if trimmed is not None:
+        lines = _splice(lines, trimmed.lineno, trimmed.end_lineno or trimmed.lineno, [original])
+        return "\n".join(lines).rstrip("\n") + "\n"
+    fallback = f"from {record.get('module')} import {', '.join(record.get('names') or [])}"
+    if _already_imported(content, fallback):
+        return None
+    if record.get("trimmed") is not None:
+        original = fallback  # its kept half changed since: add only what was taken
+    after = _find_statement(tree, lines, record.get("after"))
+    before = _find_statement(tree, lines, record.get("before"))
+    if after is not None:
+        at = after.end_lineno or after.lineno
+    elif before is not None:
+        at = before.lineno - 1
+    else:
+        at = last_import_line(content)
+    lines = lines[:at] + original.splitlines() + lines[at:]
+    return "\n".join(lines).rstrip("\n") + "\n"
+
+
+def referenced_names(content: str) -> set[str]:
+    """Every bare name *content* reads or writes (``ast.Name`` ids)."""
+    tree = _parse(content)
+    if tree is None:
+        return set()
+    return {node.id for node in ast.walk(tree) if isinstance(node, ast.Name)}

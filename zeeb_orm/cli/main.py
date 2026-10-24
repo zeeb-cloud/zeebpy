@@ -281,7 +281,29 @@ def main() -> int:
         return 0
 
     as_json = getattr(args, "json_output", False)
+    if not as_json:
+        return _dispatch(args, parser, as_json)
+    # --json promises one envelope on stdout, failure included: an error no
+    # command handled still becomes one (the traceback goes to stderr).
+    try:
+        return _dispatch(args, parser, as_json)
+    except Exception as exc:
+        import traceback
 
+        from zeeb_orm.cli.output import fail
+
+        traceback.print_exception(exc, file=sys.stderr)
+        return fail(
+            f"{args.command} failed unexpectedly: {type(exc).__name__}: {exc}",
+            code="invalid_input",
+            next_command="python manage.py check",
+            json_output=True,
+            exception_type=type(exc).__name__,
+        )
+
+
+def _dispatch(args: argparse.Namespace, parser: argparse.ArgumentParser, as_json: bool) -> int:
+    """Run the parsed command."""
     # Import and run commands
     if args.command == "startproject":
         from zeeb_orm.cli.commands.startproject import run_startproject

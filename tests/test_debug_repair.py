@@ -315,6 +315,18 @@ async def test_add_dependency_upserts_by_normalised_name(built: Path):
     assert not res.success and res.data["error_code"] == "invalid_input"
 
 
+async def test_add_dependency_refuses_a_symlink_out_of_the_project(root: Path, tmp_path: Path):
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (root / "ext").symlink_to(outside, target_is_directory=True)
+    res = await agents.add_dependency(
+        "httpx", requirements_file="ext/requirements.txt", project_id=root
+    )
+    assert not res.success
+    assert res.data["error_code"] == "outside_project_root"
+    assert not (outside / "requirements.txt").exists()
+
+
 # ---------------------------------------------------------------------------
 # check_code — file, line and column, for syntax and import failures
 # ---------------------------------------------------------------------------

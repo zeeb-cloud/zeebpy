@@ -316,12 +316,12 @@ class TestRenames:
             mig_dir,
             "ms_articles",
             sa.Column("id", sa.Integer(), primary_key=True),
-            sa.Column("body", sa.Text(), nullable=False),
+            sa.Column("body", sa.Text()),
         )
         _table(
             "ms_articles",
             sa.Column("id", sa.Integer(), primary_key=True),
-            sa.Column("content", sa.Text(), nullable=False),
+            sa.Column("content", sa.Text()),
         )
 
     def test_a_likely_rename_is_reported(self, mig_dir):
@@ -330,7 +330,7 @@ class TestRenames:
         mine = _mine(ops, "ms_articles")
         assert {type(op) for op in mine} == {RemoveField, AddField}
         assert [r.as_dict() for r in report.possible_renames] == [
-            {"model": "MsArticles", "table": "ms_articles", "old": "body", "new": "content"}
+            {"model": "Article", "table": "ms_articles", "old": "body", "new": "content"}
         ]
         assert "DROPS the data" in report.warnings()[0]
 
@@ -421,7 +421,7 @@ class TestMakemigrationsCommand:
 
         assert code == 0
         renames = payload["data"]["possible_renames"]
-        expected = {"model": "MsArticles", "table": "ms_articles", "old": "body", "new": "content"}
+        expected = {"model": "Article", "table": "ms_articles", "old": "body", "new": "content"}
         assert expected in renames
         assert any("--accept-renames" in w for w in payload["data"]["warnings"])
 

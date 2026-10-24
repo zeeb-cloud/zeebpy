@@ -797,6 +797,121 @@ async def test_run_query_gate_rejects_side_effects(query_project, sql):
     assert res.data["error_code"] == "invalid_sql"
 
 
+@pytest.mark.parametrize(
+    "sql",
+    [
+        # SQLite [bracket] identifiers: the quote inside one is not a string.
+        "WITH [a'] AS (SELECT 1) DELETE FROM posts WHERE EXISTS (SELECT 1 FROM [a'])",
+        "WITH [a'] AS (SELECT 1) DELETE FROM posts WHERE ['] IS NULL",
+        # PostgreSQL: backslashes escape only inside E'' strings.
+        "SELECT E'\\'' , 'x\\' , pg_sleep(1) --'",
+        # ... and an E'' string continued on the next line stays one.
+        "SELECT E'a'\n'\\' , pg_sleep(1) --'",
+        # PostgreSQL: a $ inside an identifier does not open a dollar quote.
+        "SELECT 1 AS a$x$, $y$'$y$ , pg_sleep(1), $y$'$y$ AS b$x$",
+        # PostgreSQL ends a -- comment at a bare carriage return.
+        "SELECT 1 --x\r, pg_sleep(1)",
+        # MySQL: -- is a comment only when followed by whitespace.
+        "SELECT 1--1, sleep(5)",
+        "SELECT 1--1 INTO OUTFILE '/tmp/zeeb_out.txt'",
+        # MariaDB executable comments.
+        "SELECT 1 /*M! , sleep(5) */",
+        "SELECT 1 /*M!100100 , sleep(5) */",
+    ],
+)
+def test_read_only_gate_closes_dialect_lexing_gaps(sql):
+    from zeeb_agents.database import _validate_read_only_sql
+
+    assert _validate_read_only_sql(sql) is not None, sql
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "SELECT * FROM [posts]",
+        "SELECT title FROM posts WHERE title <> 'it''s -- not a comment'",
+        "SELECT x-1 FROM (SELECT 2 AS x) AS t",
+        "SELECT E'\\n' AS a",
+        "SELECT 1 -- trailing comment\r\n",
+        "SELECT a$b FROM (SELECT 1 AS a$b) AS t",
+    ],
+)
+def test_read_only_gate_still_accepts_plain_reads(sql):
+    from zeeb_agents.database import _validate_read_only_sql
+
+    assert _validate_read_only_sql(sql) is None, sql
+
+
+async def test_run_query_bracket_delete_leaves_the_rows(query_project):
+    import sqlite3
+
+    res = await agents.run_query(
+        "WITH [a'] AS (SELECT 1) DELETE FROM posts WHERE EXISTS (SELECT 1 FROM [a'])",
+        project_id=query_project,
+    )
+    assert not res.success and res.data["error_code"] == "invalid_sql"
+    conn = sqlite3.connect(query_project / "query.sqlite3")
+    try:
+        assert conn.execute("SELECT count(*) FROM posts").fetchone() == (3,)
+    finally:
+        conn.close()
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "WITH x AS (SELECT 1) DELETE FROM posts",
+        "DELETE FROM posts",
+        "INSERT INTO posts (title) VALUES ('d')",
+        "UPDATE posts SET title = 'z'",
+        "CREATE TABLE extra (a)",
+    ],
+)
+async def test_run_query_database_refuses_writes_even_past_the_gate(
+    query_project, monkeypatch, sql
+):
+    """The gate bypassed outright: the database itself must still refuse the write."""
+    import sqlite3
+
+    import zeeb_agents.database as database
+
+    monkeypatch.setattr(database, "_validate_read_only_sql", lambda _sql: None)
+    res = await agents.run_query(sql, project_id=query_project)
+    assert not res.success, res.message
+    assert res.data["error_code"] == "invalid_sql"
+    conn = sqlite3.connect(query_project / "query.sqlite3")
+    try:
+        assert conn.execute("SELECT count(*) FROM posts").fetchone() == (3,)
+        assert conn.execute("SELECT group_concat(title) FROM posts").fetchone() == ("a,b,c",)
+        tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master")}
+        assert "extra" not in tables
+    finally:
+        conn.close()
+
+
+async def test_run_query_rolls_back_inside_a_real_sqlite_transaction(query_project, monkeypatch):
+    """Without ``query_only`` the explicit BEGIN alone must still undo a write."""
+    import sqlite3
+
+    import zeeb_agents.database as database
+
+    def _begin_only(conn, dialect):  # noqa: ANN001
+        assert dialect == "sqlite"
+        conn.exec_driver_sql("BEGIN")
+
+    monkeypatch.setattr(database, "_validate_read_only_sql", lambda _sql: None)
+    monkeypatch.setattr(database, "_begin_read_only", _begin_only)
+    res = await agents.run_query(
+        "WITH x AS (SELECT 1) DELETE FROM posts RETURNING id", project_id=query_project
+    )
+    assert res.success, res.message  # the delete ran ... and was rolled back
+    conn = sqlite3.connect(query_project / "query.sqlite3")
+    try:
+        assert conn.execute("SELECT count(*) FROM posts").fetchone() == (3,)
+    finally:
+        conn.close()
+
+
 async def test_run_query_ignores_keywords_inside_string_literals(query_project):
     res = await agents.run_query(
         "SELECT title FROM posts WHERE title <> 'update; drop table posts'",

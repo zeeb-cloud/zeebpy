@@ -72,6 +72,17 @@ OAUTH_LINK_BY_EMAIL = False
 # provider is fully trusted to verify ownership; otherwise an attacker can seed
 # an unverified email matching a victim's account and be linked to it.
 OAUTH_REQUIRE_VERIFIED_EMAIL = True
+# Let an external bearer token (OAUTH_ACCEPT_EXTERNAL_TOKENS) with no linked
+# local account carry roles: its `roles` claim feeds require_auth(roles=...) and
+# its is_staff/is_superuser claims the permission classes. SECURITY: off by
+# default — the IdP's admins, not this app, decide what those claims say. Never
+# honoured for a multi-tenant Azure provider without `allowed_tenants`.
+# Override per provider with `trust_token_roles=`.
+OAUTH_TRUST_TOKEN_ROLES = False
+# Minimum seconds between forced JWKS refetches triggered by an unknown `kid`
+# (the kid comes from an unverified token header, so this bounds outbound
+# fetches an anonymous client can cause). Per provider: jwks_refetch_cooldown_seconds=
+OAUTH_JWKS_REFETCH_COOLDOWN_SECONDS = 60
 # Lifetime of the signed OAuth state token (seconds)
 OAUTH_STATE_TTL_SECONDS = 600
 # Explicit redirect URI (defaults to the callback route URL derived from the request)

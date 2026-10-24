@@ -365,7 +365,9 @@ async def add_dependency(
 
     Notes:
         - Fails with ``invalid_input`` when the specifier does not start with
-          a package name or the path escapes the project.
+          a package name or the path is absolute / contains ``..``, and with
+          ``outside_project_root`` when it resolves outside the project
+          through a symlink.
     """
     root = project_root
     spec = requirement.strip()
@@ -382,7 +384,10 @@ async def add_dependency(
             f"requirements_file must be a project-relative path, got '{requirements_file}'.",
             code="invalid_input",
         )
-    path = root / target
+    # Resolved with symlinks followed, like every other caller-supplied path:
+    # a link inside the project must not carry the write out of it.
+    assert root is not None  # resolved by @agent_function
+    path = confine_path(root, target, kind="requirements_file")
 
     def _line_name(line: str) -> str | None:
         stripped = line.strip()
