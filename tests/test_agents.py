@@ -1529,6 +1529,69 @@ async def test_update_viewset_sets_attrs(project):
     assert not missing.success
 
 
+async def test_create_viewset_query_fields(project):
+    """query_fields renders the /query allow-list, paths through relations included."""
+    await agents.create_model("blog", "Post", POST_FIELDS, project_id=project)
+    await agents.create_serializer("blog", "Post", project_id=project)
+    result = await agents.create_viewset(
+        "blog", "Post", query_fields=["title", "author__name"], project_id=project
+    )
+    assert result.success, result.message
+    assert "query_fields" in result.data["options"]
+    path = project / "apps" / "blog" / "views.py"
+    content = path.read_text()
+    assert 'query_fields = ["title", "author__name"]' in content
+    compile(content, str(path), "exec")
+
+
+async def test_create_viewset_without_query_fields_leaves_the_default(project):
+    await agents.create_model("blog", "Post", POST_FIELDS, project_id=project)
+    await agents.create_serializer("blog", "Post", project_id=project)
+    result = await agents.create_viewset("blog", "Post", project_id=project)
+    assert result.success, result.message
+    assert "query_fields" not in result.data["options"]
+    assert "query_fields" not in (project / "apps" / "blog" / "views.py").read_text()
+
+
+@pytest.mark.parametrize(
+    "bad", [["-title"], ["^title"], ["author__"], ["__class__"], ["title; import os"], "title"]
+)
+async def test_create_viewset_refuses_malformed_query_fields(project, bad):
+    await agents.create_model("blog", "Post", POST_FIELDS, project_id=project)
+    await agents.create_serializer("blog", "Post", project_id=project)
+    result = await agents.create_viewset("blog", "Post", query_fields=bad, project_id=project)
+    assert not result.success
+    assert result.data["error_code"] == "invalid_input"
+    assert "PostViewSet" not in (project / "apps" / "blog" / "views.py").read_text()
+
+
+async def test_update_viewset_sets_and_replaces_query_fields(project):
+    await agents.create_model("blog", "Post", POST_FIELDS, project_id=project)
+    await agents.create_serializer("blog", "Post", project_id=project)
+    await agents.create_viewset("blog", "Post", query_fields=["title"], project_id=project)
+    path = project / "apps" / "blog" / "views.py"
+
+    result = await agents.update_viewset(
+        "blog", "Post", query_fields=["title", "created_at"], project_id=project
+    )
+    assert result.success, result.message
+    assert "query_fields set" in result.data["changes"]
+    content = path.read_text()
+    assert content.count("query_fields =") == 1
+    assert 'query_fields = ["title", "created_at"]' in content
+
+    # An empty list is an allow-list too: nothing may be filtered on.
+    result = await agents.update_viewset("blog", "Post", query_fields=[], project_id=project)
+    assert result.success, result.message
+    assert "query_fields = []" in path.read_text()
+    compile(path.read_text(), str(path), "exec")
+
+    # Omitted, the attribute is left as it is.
+    result = await agents.update_viewset("blog", "Post", pagination="page", project_id=project)
+    assert result.success, result.message
+    assert "query_fields = []" in path.read_text()
+
+
 async def test_create_viewset_custom_permission_same_app(project):
     await agents.create_model("blog", "Post", POST_FIELDS, project_id=project)
     await agents.create_serializer("blog", "Post", project_id=project)

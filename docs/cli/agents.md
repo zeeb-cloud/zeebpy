@@ -529,7 +529,7 @@ Remove `<ModelName>Serializer` and the model import only it used.
 
 ## ViewSet & Route Management
 
-### `create_viewset(app, model_name, serializer_class=None, permission='IsAuthenticatedOrReadOnly', read_only=False, lookup_field=None, pagination=None, throttles=None, search_fields=None, ordering_fields=None, filterset=None, authentication=None, operations=None, owner_field=None, owner_scoped_reads=False, if_exists='error', register=False, url_prefix=None, project_id=None)`
+### `create_viewset(app, model_name, serializer_class=None, permission='IsAuthenticatedOrReadOnly', read_only=False, lookup_field=None, pagination=None, throttles=None, search_fields=None, ordering_fields=None, filterset=None, authentication=None, operations=None, owner_field=None, owner_scoped_reads=False, if_exists='error', register=False, url_prefix=None, project_id=None, query_fields=None)`
 Append a `ModelViewSet` (or `ReadOnlyModelViewSet` with `read_only=True`) to
 `apps/<app>/views.py`, with the full viewset option surface:
 
@@ -541,18 +541,23 @@ await create_viewset("shop", "Product",
     throttles=["UserRateThrottle"],    # Anon/User/ScopedRateThrottle
     search_fields=["name"],            # ?search=…
     ordering_fields=["price"],         # ?ordering=…
-    filterset="ProductFilter")         # from apps/shop/filters.py
+    filterset="ProductFilter",         # from apps/shop/filters.py
+    query_fields=["name", "price", "category__name"])  # what POST /query may filter/order by
 ```
 
 Permissions are validated against `zeeb_api.permissions` (`AllowAny`,
 `IsAuthenticated`, `IsAdminUser`, `IsAuthenticatedOrReadOnly`, `IsOwner`,
 `IsOwnerOrReadOnly`, `ModelPermissions`); imports for pagination,
-throttling, and filters are added automatically.
+throttling, and filters are added automatically. `query_fields` sets the
+viewset's `POST /query` allow-list (see [ViewSets](../api/viewsets.md#which-fields-a-client-may-use)):
+omitted, the fields the serializer returns decide; a path through a relation
+is reachable only when listed in full; an empty list allows none.
 
-### `update_viewset(app, model_name, permission=None, lookup_field=None, pagination=None, throttles=None, search_fields=None, ordering_fields=None, authentication=None, project_id=None)`
+### `update_viewset(app, model_name, permission=None, lookup_field=None, pagination=None, throttles=None, search_fields=None, ordering_fields=None, authentication=None, project_id=None, query_fields=None)`
 Set or update class attributes on an existing ViewSet (same option names as
 `create_viewset`); `filter_backends` is kept in sync when
-`search_fields`/`ordering_fields` are given.
+`search_fields`/`ordering_fields` are given, and `query_fields` (an empty list
+included) replaces the `/query` allow-list.
 
 ### `add_viewset_action(app, model_name, action_name, detail=True, methods=None, body=None, url_path=None, request_serializer=None, response_serializer=None, request_schema=None, response_schema=None, permission=None, imports=None, if_exists='error', project_id=None)`
 Add a custom `@action` method to an existing ViewSet. Pass the method body via

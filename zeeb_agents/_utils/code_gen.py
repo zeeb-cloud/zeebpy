@@ -15,6 +15,7 @@ from zeeb_agents._utils.field_types import render_field_line, render_py_literal
 from zeeb_agents._utils.validation import (
     ensure_action_url_path,
     ensure_dotted_name,
+    ensure_field_paths,
     ensure_field_refs,
     ensure_identifier,
     ensure_identifiers,
@@ -740,6 +741,7 @@ def render_viewset_class(
     operations: list[str] | None = None,
     owner_field: str | None = None,
     owner_scoped_reads: bool = False,
+    query_fields: list[str] | None = None,
 ) -> str:
     """Render a ``ModelViewSet`` (or ``ReadOnlyModelViewSet``) subclass definition.
 
@@ -765,6 +767,10 @@ def render_viewset_class(
     and ``filter_backends`` built from *filterset* / *search_fields* /
     *ordering_fields*.  The caller is responsible for the matching imports
     (see :func:`viewset_option_imports`).
+
+    *query_fields* renders the ``query_fields`` allow-list of ``POST /query``:
+    the field paths a client may filter and order by, replacing the default
+    (the fields the serializer returns). An empty list allows none.
     """
     ensure_identifier(model_name, "model name")
     class_name = f"{model_name}ViewSet"
@@ -777,6 +783,8 @@ def render_viewset_class(
         ensure_field_refs(search_fields, "search field")
     if ordering_fields:
         ensure_field_refs(ordering_fields, "ordering field")
+    if query_fields is not None:
+        ensure_field_paths(query_fields, "query field")
     if filterset:
         ensure_identifier(filterset, "filterset class name")
     base_class, _ = resolve_viewset_base(operations, read_only)
@@ -810,6 +818,8 @@ def render_viewset_class(
         lines.append(f"    search_fields = {render_list_literal(search_fields)}")
     if ordering_fields:
         lines.append(f"    ordering_fields = {render_list_literal(ordering_fields)}")
+    if query_fields is not None:
+        lines.append(f"    query_fields = {render_list_literal(query_fields)}")
     if owner_field:
         # Ownership is three things, not one: the permission class checks the
         # object, perform_create stamps the owner server-side (never trusting

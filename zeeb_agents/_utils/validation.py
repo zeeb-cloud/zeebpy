@@ -64,6 +64,10 @@ DOTTED_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*
 #: A field reference in ``search_fields``/``ordering_fields``: a name, optionally
 #: behind one of the search/ordering prefixes (``^``, ``=``, ``@``, ``$``, ``-``).
 FIELD_REF_RE = re.compile(r"^[=^@$\-]?[A-Za-z_][A-Za-z0-9_]*$")
+#: A field path in ``query_fields``: a name, or a path through relations
+#: (``author__name``), with no prefix — it names a field, not a sort direction.
+FIELD_PATH_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_FIELD_PATH_SHAPE = "a field name, or a path through a relation (e.g. 'author__name')"
 
 
 def _ensure_shape(value: object, pattern: re.Pattern[str], kind: str, shape: str) -> str:
@@ -134,6 +138,25 @@ def ensure_field_refs(values: object, kind: str = "field") -> list[str]:
         _ensure_shape(v, FIELD_REF_RE, kind, "a field name, optionally prefixed by ^ = @ $ or -")
         for v in values
     ]
+
+
+def ensure_field_paths(values: object, kind: str = "field path") -> list[str]:
+    """Field paths for ``query_fields`` — plain names, ``__`` through a relation."""
+    if isinstance(values, str) or not isinstance(values, (list, tuple)):
+        raise AgentError(
+            f"{kind} must be a list of field names, got {type(values).__name__}",
+            code="invalid_input",
+        )
+    paths = [_ensure_shape(v, FIELD_PATH_RE, kind, _FIELD_PATH_SHAPE) for v in values]
+    for path in paths:
+        # ``author__`` or ``__name`` names no field: every segment must be one.
+        if not all(path.split("__")):
+            raise AgentError(
+                f"Invalid {kind} {path!r}: must be {_FIELD_PATH_SHAPE}",
+                code="invalid_input",
+                value=path,
+            )
+    return paths
 
 
 def ensure_app_exists(app: str, project_root: Path) -> Path:

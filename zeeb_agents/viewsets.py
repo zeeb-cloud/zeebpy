@@ -39,6 +39,7 @@ from zeeb_agents._utils.project import require_project_root
 from zeeb_agents._utils.validation import (
     ensure_action_url_path,
     ensure_app_exists,
+    ensure_field_paths,
     ensure_field_refs,
     ensure_identifier,
     ensure_url_prefix,
@@ -83,6 +84,7 @@ async def create_viewset(
     register: bool = False,
     url_prefix: str | None = None,
     project_root: Path | None = None,
+    query_fields: list[str] | None = None,
 ) -> AgentResult:
     """Append a ``ModelViewSet`` subclass to ``apps/<app>/views.py``.
 
@@ -158,6 +160,11 @@ async def create_viewset(
             (defaults to the pluralized lowercase model name, ``Company`` →
             ``companies``).
         project_id: The host-assigned project id (required).
+        query_fields: The field paths ``POST /<prefix>/query`` may filter and
+            order by — sets ``query_fields``. A path may go through a
+            relation (``"author__name"``); nothing on a related model is
+            reachable unless listed in full. Omitted (default), the fields the
+            serializer returns decide; an empty list allows none.
 
     Returns data (on success):
         app (str): the app directory name
@@ -197,6 +204,8 @@ async def create_viewset(
         validate_throttles(throttles)
     if filterset:
         ensure_identifier(filterset, "filterset class name")
+    if query_fields is not None:
+        ensure_field_paths(query_fields, "query field")
     path = _views_file(app, project_root)
     if not path.exists():
         return fail(f"views.py not found at {path}", code="file_not_found", missing="views.py")
@@ -232,6 +241,7 @@ async def create_viewset(
             operations=operations,
             owner_field=owner_field,
             owner_scoped_reads=owner_scoped_reads,
+            query_fields=query_fields,
         )
         ensure_import(path, "from zeeb_api import viewsets, permissions")
         for import_line in (*perm_imports, *auth_imports, *base_imports):
@@ -258,6 +268,7 @@ async def create_viewset(
                 ("ordering_fields", ordering_fields),
                 ("filter_backends", filterset or search_fields or ordering_fields),
                 ("authentication_classes", authentication),
+                ("query_fields", query_fields is not None),
             )
             if given
         ]
@@ -605,6 +616,7 @@ async def update_viewset(
     ordering_fields: list[str] | None = None,
     authentication: str | list[str] | None = None,
     project_root: Path | None = None,
+    query_fields: list[str] | None = None,
 ) -> AgentResult:
     """Set or update class attributes on an existing ``<ModelName>ViewSet``.
 
@@ -639,6 +651,10 @@ async def update_viewset(
             app's ``authentication.py``, or a dotted
             ``apps.<app>.authentication.<Class>`` reference.
         project_id: The host-assigned project id (required).
+        query_fields: Field paths ``POST /<prefix>/query`` may filter and
+            order by (see :func:`create_viewset`). Sets or replaces
+            ``query_fields``; an empty list allows none. Omit to leave it
+            unchanged.
 
     Returns data (on success):
         app (str): the app directory name
@@ -659,6 +675,8 @@ async def update_viewset(
         ensure_field_refs(search_fields, "search field")
     if ordering_fields:
         ensure_field_refs(ordering_fields, "ordering field")
+    if query_fields is not None:
+        ensure_field_paths(query_fields, "query field")
     if pagination:
         resolve_pagination(pagination)
     if throttles:
@@ -730,6 +748,9 @@ async def update_viewset(
                 block, "ordering_fields", quoted_list(ordering_fields)
             )
             changes.append("ordering_fields set")
+        if query_fields is not None:
+            block, _ = _set_class_attr(block, "query_fields", quoted_list(query_fields))
+            changes.append("query_fields set")
 
         # Keep filter_backends in sync with search/ordering usage.
         needed_backends = [
