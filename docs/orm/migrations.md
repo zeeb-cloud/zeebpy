@@ -732,6 +732,42 @@ python manage.py makemigrations
 # → Creates migration with CustomUser, Permission, and UserPermission
 ```
 
+## Models contributed by other packages
+
+A project's own models come from `INSTALLED_APPS`. A package built on the ORM
+can also own tables every project using it has — `zeeb_api`'s auth tables are
+one — through a **model provider**:
+
+```python
+from zeeb_orm.models.providers import register_model_provider
+
+
+class BillingModels:
+    app_labels = frozenset({"billing"})   # INSTALLED_APPS entries that stand for it
+
+    def before_apps(self, project_root, settings):
+        Plan._get_table()                 # nothing in the apps points at these first
+
+    def after_apps(self, project_root, settings):
+        Subscription._get_table()         # points at a project model (e.g. the user model)
+
+
+register_model_provider("billing", BillingModels())
+```
+
+Declare it as an entry point too, so it is active before anything imports the
+package:
+
+```toml
+[project.entry-points."zeeb_orm.model_providers"]
+billing = "billing.orm_models:provider"
+```
+
+Model registration (makemigrations, migrate, `check`) calls every provider
+around the app scan. A provider that raises stops it with
+`ModelRegistrationError`, like an app whose models fail to import: a schema
+diffed without those tables would drop them.
+
 ## Troubleshooting
 
 ### Pending Migrations Error

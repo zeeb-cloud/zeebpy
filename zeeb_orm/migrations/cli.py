@@ -50,41 +50,30 @@ def _register_models(project_root: Path | None = None) -> None:
 
     sys.path.insert(0, str(project_root))
     try:
-        # Point zeeb_api's settings discovery at the target project so
-        # AUTH_USER_MODEL resolves even when the process CWD is elsewhere
-        # (zeeb_agents operates on projects by path).
-        try:
-            from zeeb_api.auth.backends import set_project_root
-            set_project_root(project_root)
-        except ImportError:
-            pass  # zeeb_api is optional
-
-        # Load settings to get INSTALLED_APPS and AUTH_USER_MODEL
+        # Load settings to get INSTALLED_APPS
         from zeeb_orm.migrations._settings import load_settings_module
         settings_module = load_settings_module(project_root)
         installed_apps: list[str] = (
             list(getattr(settings_module, "INSTALLED_APPS", []))
             if settings_module is not None else []
         )
-        auth_user_model: str | None = (
-            getattr(settings_module, "AUTH_USER_MODEL", None)
-            if settings_module is not None else None
-        )
 
-        # Register auth models — Permission first (no FK dependencies)
-        try:
-            from zeeb_api.auth.models import Permission
-            Permission._get_table()
-            if not auth_user_model:
-                from zeeb_api.auth.models import User
-                User._get_table()
-        except ImportError:
-            pass  # zeeb_api is optional — no auth models to register
-        except Exception as exc:
-            warnings.warn(
-                f"Could not register zeeb_api auth models: {exc}",
-                stacklevel=2,
-            )
+        # Models a layer above the ORM contributes (zeeb_api's auth tables),
+        # through the provider hook — the ORM does not import that layer.
+        # Failures are fatal like an app's: a provider's tables missing from
+        # the model state diff as DeleteModel.
+        from zeeb_orm.exceptions import ModelRegistrationError
+        from zeeb_orm.models.providers import model_providers
+
+        failures: list[str] = []
+        providers = model_providers()
+        provider_labels: set[str] = set()
+        for provider in providers:
+            provider_labels.update(getattr(provider, "app_labels", ()))
+            try:
+                provider.before_apps(project_root, settings_module)
+            except Exception as exc:
+                failures.append(f"model provider {type(provider).__name__}: {exc!r}")
 
         # Register models from installed apps (including custom user models).
         # Two phases: first import every app's models module so ALL model
@@ -94,13 +83,10 @@ def _register_models(project_root: Path | None = None) -> None:
         # Failures here are fatal, not warnings — schema tooling running
         # against an incomplete model state can generate destructive
         # migrations (missing tables diff as DeleteModel).
-        from zeeb_orm.exceptions import ModelRegistrationError
-
-        failures: list[str] = []
         app_models: list[tuple[str, type[Model]]] = []
         seen_models: set[type[Model]] = set()
         for app in installed_apps:
-            if app == "zeeb_auth":
+            if app in provider_labels:
                 continue
             clean_name = app.replace("apps.", "")
             import importlib
@@ -157,36 +143,17 @@ def _register_models(project_root: Path | None = None) -> None:
                     f"model '{model_cls.__name__}' (app '{app}'): {exc}"
                 )
 
+        for provider in providers:
+            try:
+                provider.after_apps(project_root, settings_module)
+            except Exception as exc:
+                failures.append(f"model provider {type(provider).__name__}: {exc!r}")
+
         if failures:
             raise ModelRegistrationError(
                 "Could not register all models from INSTALLED_APPS — refusing "
                 "to continue with an incomplete model state:\n  - "
                 + "\n  - ".join(failures)
-            )
-
-        # Clear cached user model so it re-resolves with sys.path set up
-        try:
-            from zeeb_api.auth.backends import clear_user_model_cache
-            clear_user_model_cache()
-        except ImportError:
-            pass  # zeeb_api is optional
-        except Exception as exc:
-            warnings.warn(
-                f"Could not clear cached user model: {exc}",
-                stacklevel=2,
-            )
-
-        # Register UserPermission after app models so that the user FK
-        # target (default User or custom user model) is already available
-        try:
-            from zeeb_api.auth.models import UserPermission
-            UserPermission._get_table()
-        except ImportError:
-            pass  # zeeb_api is optional
-        except Exception as exc:
-            warnings.warn(
-                f"Could not register UserPermission model: {exc}",
-                stacklevel=2,
             )
 
         # Resolve any pending reverse relations (callable FK targets that

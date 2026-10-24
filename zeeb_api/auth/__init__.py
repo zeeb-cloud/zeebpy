@@ -10,6 +10,8 @@ Provides:
 - FastAPI dependencies for protected routes
 """
 
+# Registers the auth tables with the ORM's schema tooling (model provider).
+from zeeb_api.auth import orm_models as _orm_models  # noqa: F401
 from zeeb_api.auth.backends import (
     authenticate,
     clear_user_model_cache,

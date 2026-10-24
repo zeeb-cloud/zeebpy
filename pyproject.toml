@@ -66,6 +66,11 @@ dev = [
 zeeb = "zeeb_orm.cli.main:main"
 zeeb-manage = "zeeb_orm.cli.main:main"
 
+# zeeb_api's auth tables join every project's model state through the ORM's
+# provider hook (zeeb_orm.models.providers) — the ORM never imports zeeb_api.
+[project.entry-points."zeeb_orm.model_providers"]
+zeeb_api = "zeeb_api.auth.orm_models:provider"
+
 [tool.hatch.build.targets.wheel]
 packages = ["zeeb_orm", "zeeb_api", "zeeb_agents"]
 
