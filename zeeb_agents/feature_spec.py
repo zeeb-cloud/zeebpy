@@ -152,6 +152,36 @@ _OP_REQUIRED: dict[str, tuple[str, ...]] = {
     "run_migrations": (),
 }
 
+# Per-op optional payload keys. With _OP_REQUIRED this is the whole op schema:
+# the compiler emits, and the executor, manifest and archive read, only these
+# keys (tests/test_plan_op_schema.py) — so a reader cannot drift to a key name
+# the compiler never writes ("url_prefix" for "prefix" recorded every route
+# prefix as None).
+_OP_OPTIONAL: dict[str, tuple[str, ...]] = {
+    "add_viewset_action": (
+        "detail", "imports", "methods", "permission", "request_schema",
+        "response_schema", "response_serializer",
+    ),
+    "create_model": ("meta",),
+    "create_permission_class": ("logic",),
+    "create_route": ("body", "imports"),
+    "create_serializer": ("fields", "read_only_fields"),
+    "create_task": ("schedule",),
+    "create_user_model": ("extra_fields", "model_name"),
+    "create_viewset": (
+        "operations", "ordering_fields", "owner_field", "owner_scoped_reads",
+        "pagination", "permission", "read_only", "search_fields",
+    ),
+    "delete_function": ("entity",),
+    "generate_tests": ("filename",),
+    "make_migrations": ("name",),
+    "register_route": ("prefix",),
+    "setup_auth": ("enable_registration",),
+    "setup_oauth": ("scopes",),
+    "sync_serializer": ("present",),
+    "update_viewset": ("ordering_fields", "pagination", "permission", "search_fields"),
+}
+
 # Recognized keys per level — unknown keys warn (never error) so typos like
 # "filds" cannot be silently ignored.
 _SPEC_KEYS = {"name", "app", "entities", "api", "auth", "description", "functions"}
