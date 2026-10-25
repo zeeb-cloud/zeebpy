@@ -194,3 +194,57 @@ class TestFromDb:
         rows = await SsParent.objects.raw("SELECT * FROM ss_parents WHERE name = ?", ["p"])
         assert [r.name for r in rows] == ["p"]
         assert [cls for cls, _v, _a in from_db_calls] == [SsParent]
+
+
+class TestNestedBlocksOnTwoDatabases:
+    """Each database keeps its own transaction while blocks on others nest inside."""
+
+    async def test_default_writes_inside_an_other_block_join_the_outer_transaction(self, db):
+        with pytest.raises(RuntimeError):
+            async with atomic():
+                async with atomic("other"):
+                    await SsParent.objects.create(name="inner")
+                raise RuntimeError("roll back the default database")
+        assert await SsParent.objects.count() == 0
+
+    async def test_a_savepoint_on_the_outer_database_nests_past_another_block(self, db):
+        async with atomic() as outer:
+            async with atomic("other"):
+                async with atomic() as inner:
+                    assert inner is outer
+
+    async def test_on_commit_waits_for_the_database_it_names(self, db):
+        from zeeb_orm.db.transaction import on_commit
+
+        fired = []
+        async with atomic():
+            async with atomic("other"):
+                on_commit(lambda: fired.append("default"), using="default")
+                on_commit(lambda: fired.append("other"), using="other")
+            assert fired == ["other"]
+        assert fired == ["other", "default"]
+
+    async def test_on_commit_for_a_database_without_a_block_is_refused(self, db):
+        from zeeb_orm.db.transaction import on_commit
+
+        async with atomic():
+            with pytest.raises(RuntimeError, match="'other'"):
+                on_commit(lambda: None, using="other")
+
+    async def test_a_task_that_outlives_its_block_does_not_reuse_the_closed_session(self, db):
+        import asyncio
+
+        from zeeb_orm.db.connection import get_active_session
+
+        release = asyncio.Event()
+
+        async def late_writer():
+            await release.wait()
+            assert get_active_session() is None
+            await SsParent.objects.create(name="late")
+
+        async with atomic():
+            task = asyncio.create_task(late_writer())
+        release.set()
+        await task
+        assert await SsParent.objects.filter(name="late").exists()

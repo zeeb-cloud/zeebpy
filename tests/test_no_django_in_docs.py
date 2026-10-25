@@ -65,7 +65,10 @@ def test_human_docs_are_django_free():
 
 def test_package_metadata_is_django_free():
     """`pip show zeebpy` (description/keywords) is documentation too."""
-    import tomllib
+    import pytest
+
+    # tomllib is 3.11+; the metadata is the same on every version, so 3.10 skips.
+    tomllib = pytest.importorskip("tomllib")
 
     project = tomllib.loads((_REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"]
     text = project.get("description", "") + " " + " ".join(project.get("keywords", []))

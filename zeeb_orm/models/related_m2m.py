@@ -113,7 +113,7 @@ class ManyRelatedManager(Manager[Any]):
         not convert raises :class:`~zeeb_orm.exceptions.ValidationError`;
         an unsaved instance raises ``ValueError``.
         """
-        from zeeb_orm.query.queryset import _coerce_typed_value
+        from zeeb_orm.query.lookups import _coerce_typed_value
 
         assert self._field is not None
         through = self._field.get_through_table()

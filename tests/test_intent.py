@@ -905,3 +905,28 @@ async def test_partial_failure_reports_resume_metadata(root: Path, monkeypatch):
     ) + data["completed_count"] + len(failed)
     assert data["completed_count"] > 0
     assert any("failed_operations" in a for a in data["next_actions"])
+
+
+async def test_verify_project_endpoints_check_refuses_a_server_of_another_project(
+    root: Path, monkeypatch
+):
+    """A server on the port that does not list this project's routes is not smoked.
+
+    Its GETs answer 404 — under 500, so they used to count as reachable and the
+    check passed against whatever happened to listen on the port.
+    """
+    import zeeb_agents.schema as schema
+
+    assert (await agents.build_feature(SPEC, project_id=root, verify=False)).success
+
+    async def _foreign_spec(port):
+        return {"paths": {"/api/invoices": {}, "/api/invoices/{id}": {}}}
+
+    monkeypatch.setattr(schema, "_fetch_openapi_spec", _foreign_spec)
+    res = await agents.verify_project(checks=["endpoints"], port=9, project_id=root)
+
+    endpoints = res.data["verification"]["checks"]["endpoints"]
+    assert endpoints["ok"] is False
+    assert endpoints["not_served"]
+    assert endpoints["checked"] == 0
+    assert any("not running this project" in a for a in res.data["next_actions"])

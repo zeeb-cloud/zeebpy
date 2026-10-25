@@ -63,7 +63,7 @@ vocabulary: `app_not_found`, `model_not_found`, `already_exists`,
 `setting_not_found`, `settings_error`, `syntax_error`, `env_key_not_found`, `field_not_found`, `field_in_use`,
 `function_not_found`, `file_not_found`, `log_file_not_found`,
 `manifest_version_unsupported`, `feature_in_use`, `model_referenced`,
-`delete_pending`, `delete_migration_missing`, `verification_failed`,
+`delete_pending`, `delete_migration_missing`, `delete_incomplete`, `verification_failed`,
 `outside_project_root`, `query_timeout`, `server_not_running`, `server_not_reachable`,
 `dependency_missing`, `permission_denied`, `no_project_root`,
 `no_project_id`, `project_not_found`, `runtime_not_configured`) plus
@@ -105,6 +105,22 @@ resolves the id to a location through a resolver the host registers once
 id fails with `no_project_id`; an id no project is registered under fails with
 `project_not_found`. (Creating a project is the one bootstrapping exception —
 see `create_project`.)
+
+### Several projects in one process
+
+A host that serves many projects from one long-lived process (an MCP server)
+can call any tool on any project. The decorator keeps them apart:
+
+- A project-scoped call reads the project's own `.env` and nothing else: the
+  host process's environment (its `DATABASE_URL`, `SECRET_KEY`, …) is not the
+  project's.
+- Calls on the same project run concurrently; a call on another project waits
+  until they finish. On the switch, the previous project's imported code and
+  models are dropped — every project names its packages `apps.*`, so they would
+  otherwise be read as the next project's.
+- `verify_project`'s `endpoints` check only smokes a server whose OpenAPI
+  document lists this project's endpoints; anything else on the port fails the
+  check with `not_served`.
 
 ### Special cases & gotchas
 
@@ -290,7 +306,9 @@ no migration file drops the tables after the run, the archive and the manifest
 entry are kept (`delete_pending`) and the call fails with
 `delete_migration_missing` — run `make_migrations()` and `run_migrations()`,
 then `delete_feature(..., confirm=True)` again; `activate_feature` refuses a
-`delete_pending` feature.
+`delete_pending` feature. A model that cannot be removed from `models.py` keeps
+the archive the same way and fails with `delete_incomplete`
+(`data["models_not_removed"]`), before any migration runs.
 
 Generated test files are per feature: a feature named after its app writes
 `tests/test_<app>_generated.py`, any other feature in that app

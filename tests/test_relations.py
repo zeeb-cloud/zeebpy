@@ -127,3 +127,29 @@ class TestNonRelations:
         assert resolve_relation(RelAuthor, "relpost_set") is None
         # Same for the O2O with related_name="profile"
         assert resolve_relation(RelAuthor, "relprofile_set") is None
+
+
+class TestUnresolvableTargets:
+    """A relation whose target cannot be resolved concerns only its own accessor."""
+
+    def test_an_unresolvable_target_does_not_break_other_lookups(self):
+        """A misconfigured AUTH_USER_MODEL raised from every lookup on every model."""
+        from zeeb_orm.models.base import _model_registry
+
+        def broken_target():
+            raise RuntimeError("AUTH_USER_MODEL could not be resolved")
+
+        before = dict(_model_registry)
+
+        class RelGrant(Model):
+            holder = fields.ForeignKey(broken_target, related_name="rel_grants_unresolvable")
+
+            class Meta:
+                table_name = "rel_grants_unresolvable"
+
+        try:
+            assert resolve_relation(RelPost, "title") is None
+            assert resolve_relation(RelAuthor, "rel_posts").target_model is RelPost
+        finally:
+            _model_registry.clear()
+            _model_registry.update(before)

@@ -341,3 +341,50 @@ async def test_partial_update_invokes_perform_update(db):
     refreshed = await HookArticle.objects.get(id=article.id)
     assert refreshed.title == "Patched"
     assert refreshed.note == "mutated-by-hook"  # hook ran on partial_update too
+
+
+# --------------------------------------------------------------------------- #
+# Writes are one transaction
+# --------------------------------------------------------------------------- #
+
+
+class _RefuseAfterSave(Exception):
+    pass
+
+
+class SaveThenFailViewSet(ModelViewSet):
+    queryset = HookArticle.objects
+    serializer_class = AutoAssignSerializer
+    lookup_field = "id"
+
+    async def perform_create(self, serializer):
+        await serializer.save(author_id=self.request.state.user.id)
+        from zeeb_api.exceptions import ValidationError
+
+        raise ValidationError({"title": ["refused after the insert"]})
+
+
+class NonAtomicSaveThenFailViewSet(SaveThenFailViewSet):
+    atomic_writes = False
+
+
+@pytest.mark.asyncio
+async def test_a_hook_that_fails_after_saving_leaves_no_row(db):
+    user = await HookUser.objects.create(name="Ada")
+    router = SimpleRouter()
+    router.register("articles", SaveThenFailViewSet)
+    async with _client(router, user_id=user.id) as client:
+        resp = await client.post("/articles", json={"title": "Draft"})
+    assert resp.status_code == 400
+    assert await HookArticle.objects.count() == 0
+
+
+@pytest.mark.asyncio
+async def test_atomic_writes_false_keeps_the_hooks_own_commits(db):
+    user = await HookUser.objects.create(name="Ada")
+    router = SimpleRouter()
+    router.register("articles", NonAtomicSaveThenFailViewSet)
+    async with _client(router, user_id=user.id) as client:
+        resp = await client.post("/articles", json={"title": "Draft"})
+    assert resp.status_code == 400
+    assert await HookArticle.objects.count() == 1

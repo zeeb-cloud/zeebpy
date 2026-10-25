@@ -17,14 +17,21 @@ Everything is async-first: all ORM operations are `await`ed, viewset methods are
 ## Commands
 
 ```bash
-pytest                                  # all tests (tests/ — asyncio mode is auto, no markers needed)
+pytest -n auto                          # all tests in parallel (tests/ — asyncio mode is auto)
 pytest tests/test_orm.py -v             # single file
 pytest tests/test_orm.py::test_name     # single test
 pytest --cov=zeeb_orm --cov=zeeb_api    # coverage
 ruff check .                            # lint (line-length 100, rules E,F,I,N,W,UP)
-mypy zeeb_orm zeeb_api zeeb_agents      # type check (advisory — ~290 known findings
-                                        # in metaclass-heavy internals; don't add new ones)
+mypy zeeb_orm zeeb_api zeeb_agents      # type check (advisory — metaclass-heavy internals;
+                                        # CI fails if the count exceeds .mypy-baseline)
+ZEEB_TEST_DATABASE_URL=postgresql+asyncpg://user:pw@host/db \
+  pytest tests/test_dialect_conformance.py   # the same ORM checks on a real Postgres/MySQL
 ```
+
+CI (`.github/workflows/ci.yml`) runs lint, the mypy ratchet, the suite on
+Python 3.10/3.12/3.14, and the dialect conformance tests against PostgreSQL and
+MySQL services. Test ids must be deterministic (xdist workers compare them):
+parametrize over objects with an explicit `ids=`.
 
 CLI entry points (both map to `zeeb_orm.cli.main:main`):
 
@@ -50,7 +57,7 @@ Demo project: `cd demo_blog && python manage.py runserver`. Runnable examples li
 
 - `models/base.py` — `ModelBase` metaclass: collects fields, processes `class Meta`. Models get UUID PKs by default. Split-out helpers: `models/sa_builder.py` (SQLAlchemy table/DDL incl. Meta constraints + M2M through tables), `models/relations.py` (`resolve_relation`, pending-relation registry — `_process_pending_relations` must stay importable from `base`), `models/permissions_gen.py`, `models/deletion.py` (on_delete constants + `Collector`), `models/related_m2m.py` (`ManyRelatedManager`).
 - `models/fields.py` — Django-style field types mapping to SQLAlchemy columns (incl. `ForeignKey` with all `on_delete` variants, `OneToOneField`, full `ManyToManyField`); `choices`/`validators` are enforced on save (see `validators.py`, `Model.full_clean`; `validate=False` opts out).
-- `models/manager.py` + `query/queryset.py` — `Model.objects` manager returning async QuerySets (related-field traversal `author__name__gte`, datetime transforms `created__year`, `in_bulk`/`iterator`/`union`/`select_for_update`/`explain`, `Manager.from_queryset`/`as_manager`). Join machinery in `query/joins.py` (`JoinContext`, aliases shared with `select_related`); path parsing in `query/q.py::parse_path`; datetime transforms in `query/transforms.py` (per-dialect `@compiles`).
+- `models/manager.py` + `query/queryset.py` — `Model.objects` manager returning async QuerySets (related-field traversal `author__name__gte`, datetime transforms `created__year`, `in_bulk`/`iterator`/`union`/`select_for_update`/`explain`, `Manager.from_queryset`/`as_manager`). Lookup compilation (`Q`/`field__lookup` → SQL condition, value coercion, LIKE escaping) in `query/lookups.py`, re-exported from `queryset`; join machinery in `query/joins.py` (`JoinContext`, aliases shared with `select_related`); path parsing in `query/q.py::parse_path`; datetime transforms in `query/transforms.py` (per-dialect `@compiles`).
 - `query/expressions.py` — `F`, `Q`, `Case`/`When`, `Subquery`/`OuterRef`/`Exists`, window functions (`Window`, `Rank`, `Lag`, …), `Cast`, `StringAgg`, aggregates.
 - `exceptions.py` — `ValidationError`, `FieldError`, `ProtectedError`, `NotSupportedError`, … (canonical; `DoesNotExist` also re-exported here).
 - `db/connection.py` — `Database` wrapper around AsyncEngine/AsyncSession; configured via `configure(database={...})` or `DATABASE_URL` env var (asyncpg / aiomysql / aiosqlite).
@@ -133,7 +140,10 @@ Projects and tools built on zeebpy may install it straight from this repository'
 `main` branch, with no release in between, so a push to `main` is a release. Run this
 suite before pushing. The `zeeb_agents` contract rules above are what keep downstream
 callers safe: never rename or remove a function or a `data` key, and only append new
-optional parameters.
+optional parameters. `tests/test_agents_contract_snapshot.py` enforces them against a
+golden file, `tests/contract/zeeb_agents.json`; after an additive change refresh it with
+`ZEEB_UPDATE_CONTRACT=1 pytest tests/test_agents_contract_snapshot.py` (it refuses while
+anything was removed, renamed or reordered).
 
 Documentation describes zeebpy on its own terms: never name a product built on it
 (`tests/test_no_downstream_names.py`).
@@ -143,4 +153,4 @@ Documentation describes zeebpy on its own terms: never name a product built on i
 - Always update `/docs` when you add/change/remove features (`docs/orm/`, `docs/api/`, `docs/cli/`, `docs/configuration/`, `docs/reference/`).
 - Configuration is layered: project `settings.py` is read by `zeeb_api.conf.settings` (LazySettings, canonical in-process reader); `zeeb_api.conf.orm.apply_orm_settings()` hands it down to `zeeb_orm.conf.settings` (low-level sink, also fed by env vars `DATABASE_URL`, `DATABASE_ECHO`, …); `zeeb_agents` reads *target* projects off disk by path (`load_project_settings`) and is process-independent by design.
 - Finding a project on disk — its root, settings module (`[tool.zeeb] settings_module` first, then a sorted scan skipping `apps/`) and database URL — goes through `zeeb_orm.conf.project` (`find_project_root`, `find_settings_module`, `load_settings_module`, `resolve_database_url`). A settings.py that fails to import raises `SettingsImportError`; never fall back to a default database. Don't add another discovery loop.
-- The three packages layer strictly: zeeb_api depends on zeeb_orm; zeeb_agents depends on both. Don't introduce reverse dependencies.
+- The three packages layer strictly: zeeb_api depends on zeeb_orm; zeeb_agents depends on both. Don't introduce reverse dependencies (`tests/test_package_layering.py`; only the `zeeb_orm/cli/` and `zeeb_orm/scaffold/` tooling may import upward). Tables a higher layer owns reach the ORM's model state through a model provider (`zeeb_orm.models.providers`, entry-point group `zeeb_orm.model_providers`) — `zeeb_api.auth.orm_models` is the one for the auth tables.

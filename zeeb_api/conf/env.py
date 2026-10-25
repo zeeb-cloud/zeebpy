@@ -28,6 +28,11 @@ process (the CLI, the agent layer, the test suite):
 - :func:`load_env` **replaces** that layer rather than merging into it, so no
   key survives from a previously loaded project.
 
+Tooling that evaluates *another* project's settings (the agent layer, working
+on projects by path from a long-lived server) wraps that in
+:func:`isolated_env`: inside it the project's ``.env`` is the only layer, so the
+tool's own ``DATABASE_URL`` or ``SECRET_KEY`` never becomes the project's.
+
 Nothing here raises. A malformed line is dropped, an unparsable value falls
 back to its default with a warning. Callers such as
 ``zeeb_agents._utils.project.load_project_settings`` execute ``settings.py``
@@ -40,6 +45,9 @@ from __future__ import annotations
 import os
 import re
 import warnings
+from collections.abc import Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from pathlib import Path
 
 __all__ = [
@@ -49,6 +57,7 @@ __all__ = [
     "env_list",
     "env_oauth_providers",
     "env_str",
+    "isolated_env",
     "load_env",
     "loaded_env_path",
     "parse_env",
@@ -67,6 +76,28 @@ _FALSE_VALUES = frozenset({"0", "false", "no", "n", "off", "f", ""})
 # The file layer. Deliberately *not* os.environ — see the module docstring.
 _file_env: dict[str, str] = {}
 _loaded_path: Path | None = None
+
+# Inside isolated_env(): that block's own file layer, which is also the only
+# layer — the process environment is not consulted.
+_isolated: ContextVar[dict[str, str] | None] = ContextVar("zeeb_isolated_env", default=None)
+
+
+@contextmanager
+def isolated_env() -> Iterator[None]:
+    """Evaluate a project's settings against its own ``.env`` alone.
+
+    Inside the block :func:`load_env` fills a layer private to the block (and
+    to threads started from it with ``asyncio.to_thread``) instead of the
+    process-wide one, never writes ``os.environ``, and the getters read that
+    layer only: the real environment of the process running the block is shut
+    out. For tooling that evaluates *another* project's ``settings.py`` — the
+    caller's ``DATABASE_URL`` must not become that project's database.
+    """
+    token = _isolated.set({})
+    try:
+        yield
+    finally:
+        _isolated.reset(token)
 
 
 # ---------------------------------------------------------------------------
@@ -173,10 +204,15 @@ def load_env(
         project never linger.
 
     Notes:
-        - Real environment variables always win over file values.
+        - Real environment variables always win over file values — except
+          inside :func:`isolated_env`, where the file is the only layer.
         - Never raises: an unreadable file emits a warning and resets the layer.
     """
     global _file_env, _loaded_path
+
+    isolated = _isolated.get()
+    if isolated is not None:
+        return _load_isolated(isolated, path, encoding)
 
     if path is None:
         env_path = _discover(Path.cwd())
@@ -208,6 +244,23 @@ def load_env(
     return env_path
 
 
+def _load_isolated(layer: dict[str, str], path: str | Path | None, encoding: str) -> Path | None:
+    """:func:`load_env` inside :func:`isolated_env`: fill the block's layer only."""
+    layer.clear()
+    if path is None:
+        return None  # no cwd discovery: the cwd is the tool's, not the project's
+    candidate = Path(path)
+    env_path = candidate / ".env" if candidate.is_dir() else candidate
+    if not env_path.is_file():
+        return None
+    try:
+        layer.update(parse_env(env_path.read_text(encoding=encoding)))
+    except OSError as exc:
+        warnings.warn(f"Could not read {env_path}: {exc}", stacklevel=3)
+        return None
+    return env_path
+
+
 def loaded_env_path() -> Path | None:
     """Return the path of the currently loaded ``.env``, if any."""
     return _loaded_path
@@ -232,6 +285,9 @@ def _raw(key: str) -> str | None:
     ``CORS_ALLOW_ORIGINS=`` in a container is a deliberate "no origins", not a
     request to fall back to the ``.env`` file.
     """
+    isolated = _isolated.get()
+    if isolated is not None:
+        return isolated.get(key)
     if key in os.environ:
         return os.environ[key]
     return _file_env.get(key)

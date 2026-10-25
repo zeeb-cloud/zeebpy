@@ -201,7 +201,7 @@ class TestExtract:
             Extract("created", "year FROM created) OR 1=1 --")
 
     @pytest.mark.parametrize(
-        "dialect", [sqlite.dialect(), postgresql.dialect(), mysql.dialect()], ids=str
+        "dialect", [sqlite.dialect(), postgresql.dialect(), mysql.dialect()], ids=lambda d: d.name
     )
     def test_known_names_compile_per_dialect(self, dialect):
         InjNote._get_table()

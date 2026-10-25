@@ -619,6 +619,24 @@ Do not both mutate `validated_data` and call `save()` for the same field — pic
 one. Calling `save()` twice updates the same row (it does not insert a
 duplicate).
 
+#### Writes are one transaction
+
+`create`, `update`, `partial_update` and `destroy` run the `perform_*` hook and
+the save inside one `atomic()` block on the database of the view's queryset.
+The row, its many-to-many links and anything else the hook writes commit
+together; if the hook (or the save) raises, nothing it wrote is kept. The
+response is serialized after the commit.
+
+Inside that block `post_save` fires before the commit, so a receiver that
+sends mail or enqueues a job should defer it with `on_commit()` (see
+[Signals](../orm/signals.md)). A view that needs the hook's writes committed
+one by one can opt out:
+
+```python
+class ImportViewSet(ModelViewSet):
+    atomic_writes = False
+```
+
 ## Filtering
 
 ### Query Parameters
@@ -866,9 +884,19 @@ class ArticleViewSet(ModelViewSet):
     query_fields = ["title", "published", "created_at", "author"]
 ```
 
+`query_fields = "__all__"` allows every field of the model itself (a path
+through a relation still has to be listed in full).
+
 A `filter` or `order_by` naming a field outside the allow-list is a **400**
 with the standard `VALIDATION_ERROR` envelope, detailed under the `filter` or
 `order_by` key — see [Error Handling](errors.md).
+
+The allow-list fails closed. A viewset whose serializer's output fields cannot
+be determined — no serializer class, or a custom serializer without a
+generated response schema — and that declares no `query_fields` refuses every
+`filter` and `order_by` with a 400 telling you to set `query_fields`. (Earlier
+versions left such a query unrestricted, so every column and relation path was
+filterable.)
 
 The **whole** path is checked, not just its first segment. With `author`
 exposed, a client may filter on the relation itself (`Q(author=3)`,

@@ -152,6 +152,36 @@ _OP_REQUIRED: dict[str, tuple[str, ...]] = {
     "run_migrations": (),
 }
 
+# Per-op optional payload keys. With _OP_REQUIRED this is the whole op schema:
+# the compiler emits, and the executor, manifest and archive read, only these
+# keys (tests/test_plan_op_schema.py) — so a reader cannot drift to a key name
+# the compiler never writes ("url_prefix" for "prefix" recorded every route
+# prefix as None).
+_OP_OPTIONAL: dict[str, tuple[str, ...]] = {
+    "add_viewset_action": (
+        "detail", "imports", "methods", "permission", "request_schema",
+        "response_schema", "response_serializer",
+    ),
+    "create_model": ("meta",),
+    "create_permission_class": ("logic",),
+    "create_route": ("body", "imports"),
+    "create_serializer": ("fields", "read_only_fields"),
+    "create_task": ("schedule",),
+    "create_user_model": ("extra_fields", "model_name"),
+    "create_viewset": (
+        "operations", "ordering_fields", "owner_field", "owner_scoped_reads",
+        "pagination", "permission", "read_only", "search_fields",
+    ),
+    "delete_function": ("entity",),
+    "generate_tests": ("filename",),
+    "make_migrations": ("name",),
+    "register_route": ("prefix",),
+    "setup_auth": ("enable_registration",),
+    "setup_oauth": ("scopes",),
+    "sync_serializer": ("present",),
+    "update_viewset": ("ordering_fields", "pagination", "permission", "search_fields"),
+}
+
 # Recognized keys per level — unknown keys warn (never error) so typos like
 # "filds" cannot be silently ignored.
 _SPEC_KEYS = {"name", "app", "entities", "api", "auth", "description", "functions"}
@@ -2528,7 +2558,9 @@ async def execute_plan(
     Structural ops run with ``if_exists="skip"`` (the ``generate_crud``
     resumability pattern) and failures are collected rather than aborting, so
     a re-run completes whatever is missing.  Migration ops stop the run on
-    failure (nothing meaningful follows them).
+    failure (nothing meaningful follows them), and never run at all once an
+    earlier op has failed — they are left in ``remaining_operations`` instead,
+    so an incomplete schema is never migrated.
 
     Returns ``{"changes", "steps", "errors", "failed_operations",
     "completed_count", "total_count", "remaining_operations", "warnings",
@@ -2596,6 +2628,13 @@ async def execute_plan(
 
     for index, op in enumerate(operations):
         kind = op["op"]
+        if kind in _MIGRATION_OPS and failed_operations:
+            # Never migrate a half-applied plan: the autodetector would diff the
+            # models that *did* land and write (and apply) a migration for an
+            # incomplete schema. Stop here; a re-run resumes from this op.
+            steps.append(f"Stopped before {kind}: an earlier operation failed")
+            remaining = operations[index:]
+            break
         attempted = index + 1
         if kind in _MIGRATION_OPS and not migrate:
             steps.append(f"Skipped {kind} (migrate=False)")

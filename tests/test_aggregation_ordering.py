@@ -127,7 +127,7 @@ async def events():
     async with temporary_database(AgOrdAuthor, AgOrdEvent, AgOrdByAuthor):
         amy = await AgOrdAuthor.objects.create(name="Amy")
         zed = await AgOrdAuthor.objects.create(name="Zed")
-        start = datetime.datetime(2026, 1, 1, tzinfo=datetime.UTC)
+        start = datetime.datetime(2026, 1, 1, tzinfo=datetime.timezone.utc)
         rows = [("x", 1, amy), ("x", 2, amy), ("y", 4, zed), ("z", 8, None)]
         for hour, (tool, cost, author) in enumerate(rows):
             await AgOrdEvent.objects.create(

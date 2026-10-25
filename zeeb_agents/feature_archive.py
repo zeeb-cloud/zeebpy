@@ -35,6 +35,7 @@ from pathlib import Path
 
 from zeeb_agents._utils.code_gen import (
     append_block,
+    atomic_write_text,
     ensure_import,
     extract_class_block,
     extract_function_block,
@@ -115,7 +116,9 @@ def _cut(
     imports = imports_referenced_by(content, block)
     target = _fragment_file(root, feature, kind, name)
     target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(block, encoding="utf-8")
+    # The fragment lands (whole) before the host loses the block, so a crash in
+    # between leaves the code in two places, never in none.
+    atomic_write_text(target, block)
 
     updated = (
         remove_class_block(content, name)
@@ -317,7 +320,26 @@ def archive_artifacts(
     *keep_tests* — also owned by another active feature — stay where they are
     and are listed under ``tests_kept``.
     """
+    # A re-run (a delete that has to be finished) cuts nothing new; what the
+    # first run archived stays on the record.
+    previous = read_record(root, feature) or {}
     fragments: list[dict] = []
+    imports_removed: list[dict] = []
+    tests: list[dict] = []
+    tests_kept: list[str] = []
+
+    def _record() -> dict:
+        return {
+            "feature": feature,
+            "archived_at": _now(),
+            "fragments": [*(previous.get("fragments") or []), *fragments],
+            "imports_removed": [*(previous.get("imports_removed") or []), *imports_removed],
+            "routes": list(artifacts.get("routes") or []),
+            "tests": [*(previous.get("tests") or []), *tests],
+            "tests_kept": tests_kept,
+            "models_retained": list(artifacts.get("models") or []),
+        }
+
     targets: set[tuple[str, str]] = set()
     used_by_cut: dict[str, set[str]] = {}
     for app, filename, kind, name, is_class in planned_cuts(artifacts):
@@ -327,14 +349,18 @@ def archive_artifacts(
             targets.add((_host_module(app, filename), name))
             block = (_fragment_file(root, feature, kind, name)).read_text(encoding="utf-8")
             used_by_cut.setdefault(fragment["file"], set()).update(referenced_names(block))
+            # Checkpoint after every cut: a failure later in the loop must not
+            # leave a lifted fragment off the record, where neither a re-run
+            # (the block is gone from its host) nor a restore would find it.
+            write_record(root, feature, _record())
 
     # Two passes, each recorded with its number: the restore undoes the later
     # pass first, so every record's anchors are back when it is replayed.
-    imports_removed = [{**r, "pass": 0} for r in _trim_imports(root, targets)]
+    imports_removed.extend({**r, "pass": 0} for r in _trim_imports(root, targets))
+    write_record(root, feature, _record())
     imports_removed.extend({**r, "pass": 1} for r in _prune_host_imports(root, used_by_cut))
+    write_record(root, feature, _record())
 
-    tests: list[dict] = []
-    tests_kept: list[str] = []
     for rel in artifacts.get("tests") or []:
         source = root / rel
         if not source.is_file():
@@ -346,20 +372,9 @@ def archive_artifacts(
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.move(str(source), str(target))
         tests.append({"path": rel, "fragment": f"tests/{Path(rel).name}"})
+        write_record(root, feature, _record())
 
-    # A re-run (a delete that has to be finished) cuts nothing new; what the
-    # first run archived stays on the record.
-    previous = read_record(root, feature) or {}
-    record = {
-        "feature": feature,
-        "archived_at": _now(),
-        "fragments": [*(previous.get("fragments") or []), *fragments],
-        "imports_removed": [*(previous.get("imports_removed") or []), *imports_removed],
-        "routes": list(artifacts.get("routes") or []),
-        "tests": [*(previous.get("tests") or []), *tests],
-        "tests_kept": tests_kept,
-        "models_retained": list(artifacts.get("models") or []),
-    }
+    record = _record()
     write_record(root, feature, record)
     return record
 
@@ -368,9 +383,7 @@ def write_record(root: Path, feature: str, record: dict) -> None:
     """Persist the archive record next to the fragments."""
     path = archive_path(root, feature)
     path.mkdir(parents=True, exist_ok=True)
-    (path / RECORD_NAME).write_text(
-        json.dumps(record, indent=2, sort_keys=True) + "\n", encoding="utf-8"
-    )
+    atomic_write_text(path / RECORD_NAME, json.dumps(record, indent=2, sort_keys=True) + "\n")
 
 
 def read_record(root: Path, feature: str) -> dict | None:
@@ -414,23 +427,26 @@ def restore_artifacts(root: Path, feature: str, record: dict) -> dict:
     for fragment in record.get("fragments", []):
         source = archive_path(root, feature) / _record_path(fragment.get("fragment"))
         host = root / _record_path(fragment.get("file"))
-        if not source.is_file():
-            missing.append(fragment.get("name", "?"))
-            continue
-        if not host.is_file():
-            missing.append(fragment.get("name", "?"))
-            continue
-        block = source.read_text(encoding="utf-8")
-        content = host.read_text(encoding="utf-8")
         name = fragment.get("name", "")
+        if not host.is_file():
+            missing.append(name or "?")
+            continue
+        content = host.read_text(encoding="utf-8")
         already = (
             extract_class_block(content, name)
             if fragment.get("is_class")
             else extract_function_block(content, name)
         )
+        # Present-in-host is checked before the fragment: a re-run after a
+        # partial restore finds the block back (and its fragment consumed) —
+        # that is done, not missing.
         if already is not None:
             skipped.append(name)
             continue
+        if not source.is_file():
+            missing.append(name or "?")
+            continue
+        block = source.read_text(encoding="utf-8")
         for import_line in fragment.get("imports", []):
             ensure_import(host, import_line)
         append_block(host, block)

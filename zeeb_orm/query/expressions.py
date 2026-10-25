@@ -217,8 +217,8 @@ def _filter_condition(model: Any, q: Any, joins: Any = None) -> Any:
     like a normal filter would, without one paths like ``author__name``
     raise ``FieldError`` instead of silently matching nothing.
     """
+    from zeeb_orm.query.lookups import q_to_condition
     from zeeb_orm.query.q import Q
-    from zeeb_orm.query.queryset import q_to_condition
 
     if not isinstance(q, Q):
         raise TypeError(f"Aggregate filter must be a Q object, got {type(q).__name__}.")
@@ -394,8 +394,8 @@ class Case(Expression):
         """Resolve to a ``CASE WHEN ... THEN ... ELSE ... END`` expression."""
         from sqlalchemy import case, literal
 
+        from zeeb_orm.query.lookups import q_to_condition
         from zeeb_orm.query.q import Q
-        from zeeb_orm.query.queryset import q_to_condition
 
         cases = []
         for when in self.whens:
@@ -470,7 +470,7 @@ class When(Expression):
         """Resolve to (condition, result) tuple for Case."""
         from sqlalchemy import literal
 
-        from zeeb_orm.query.queryset import q_to_condition
+        from zeeb_orm.query.lookups import q_to_condition
 
         cond = q_to_condition(model, self.q)
         if cond is None:

@@ -155,3 +155,35 @@ def test_create_app_without_logging_does_not_configure(restore_settings, monkeyp
     create_app(DEBUG=True)
     # No LOGGING setting -> we must not clobber an externally configured root.
     assert called["n"] == 0
+
+
+# --------------------------------------------------------------------------- #
+# create_app hands the project's DATABASE to the ORM, whatever the lifespan
+# --------------------------------------------------------------------------- #
+
+
+def test_create_app_with_a_custom_lifespan_points_the_orm_at_the_projects_database(
+    tmp_path,
+):
+    from contextlib import asynccontextmanager
+
+    from zeeb_api import create_app
+    from zeeb_orm.conf.settings import Settings, get_settings
+
+    @asynccontextmanager
+    async def lifespan(app):
+        yield
+
+    url = f"sqlite+aiosqlite:///{tmp_path / 'project.sqlite3'}"
+    saved = (settings._wrapped, settings._configured, set(settings._explicit_settings))
+    saved_orm = Settings._instance
+    try:
+        # A fresh holder: create_app(**extra) writes onto the settings module.
+        settings._configured = False
+        settings._explicit_settings = set()
+        settings.configure(DEBUG=True)
+        create_app(lifespan=lifespan, DATABASE={"url": url})
+        assert get_settings().database.url == url
+    finally:
+        settings._wrapped, settings._configured, settings._explicit_settings = saved
+        Settings._instance = saved_orm

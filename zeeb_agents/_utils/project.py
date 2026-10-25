@@ -127,32 +127,35 @@ def load_project_settings(project_root: Path) -> ProjectSettings:
             "INSTALLED_APPS": [],
         }
     )
-    for item in sorted(project_root.iterdir()):
-        if item.is_dir() and (item / "settings.py").exists():
-            settings.source = item / "settings.py"
-            spec = importlib.util.spec_from_file_location("_zeeb_settings", item / "settings.py")
-            if spec and spec.loader:
-                saved_path = list(sys.path)
-                sys.path.insert(0, str(project_root))
-                try:
-                    module = importlib.util.module_from_spec(spec)
-                    spec.loader.exec_module(module)  # type: ignore[union-attr]
-                    # Capture every top-level setting by Django convention:
-                    # UPPERCASE, non-dunder module attributes (DATABASE,
-                    # INSTALLED_APPS, CORS_*, SECRET_KEY, DEBUG, …).
-                    for attr in dir(module):
-                        if attr.isupper() and not attr.startswith("_"):
-                            settings[attr] = getattr(module, attr)
-                except BaseException as exc:  # noqa: BLE001 — incl. SystemExit from a settings module
-                    if isinstance(exc, KeyboardInterrupt):
-                        raise
-                    settings.load_error = f"{type(exc).__name__}: {exc}"
-                    logger.warning(
-                        "Could not load %s: %s", settings.source, settings.load_error
-                    )
-                finally:
-                    sys.path[:] = saved_path
-            break
+    # The one discovery rule ([tool.zeeb] settings_module, then the sorted
+    # scan that skips apps/) — not a loop of our own that could pick another file.
+    from zeeb_orm.conf.project import find_settings_path
+
+    item = find_settings_path(project_root)
+    if item is not None and item.is_file():
+        settings.source = item
+        spec = importlib.util.spec_from_file_location("_zeeb_settings", item)
+        if spec and spec.loader:
+            saved_path = list(sys.path)
+            sys.path.insert(0, str(project_root))
+            try:
+                module = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(module)  # type: ignore[union-attr]
+                # Capture every top-level setting by Django convention:
+                # UPPERCASE, non-dunder module attributes (DATABASE,
+                # INSTALLED_APPS, CORS_*, SECRET_KEY, DEBUG, …).
+                for attr in dir(module):
+                    if attr.isupper() and not attr.startswith("_"):
+                        settings[attr] = getattr(module, attr)
+            except BaseException as exc:  # noqa: BLE001 — incl. SystemExit from a settings module
+                if isinstance(exc, KeyboardInterrupt):
+                    raise
+                settings.load_error = f"{type(exc).__name__}: {exc}"
+                logger.warning(
+                    "Could not load %s: %s", settings.source, settings.load_error
+                )
+            finally:
+                sys.path[:] = saved_path
     return settings
 
 
@@ -251,6 +254,27 @@ def to_class_name(name: str) -> str:
     return "".join(word.capitalize() for word in name.replace("-", "_").split("_"))
 
 
+def _resolve_dir(directory: str, cache: dict[str, Path]) -> Path:
+    """``Path(directory).resolve()`` for an absolute *directory*, one stat per new component.
+
+    Resolves the parent first (cached), then checks only the last component: a
+    symlink is resolved in full, anything else is appended. Directories share
+    their ancestors, so a sweep over every loaded module stats each directory
+    once instead of every component of every path.
+    """
+    cached = cache.get(directory)
+    if cached is not None:
+        return cached
+    parent, name = os.path.split(directory)
+    if not name or parent == directory:
+        resolved = Path(directory)
+    else:
+        candidate = _resolve_dir(parent, cache) / name
+        resolved = candidate.resolve() if os.path.islink(candidate) else candidate
+    cache[directory] = resolved
+    return resolved
+
+
 def _is_project_module(
     name: str, module: object, root: Path, resolved_dirs: dict[str, Path] | None = None
 ) -> bool:
@@ -261,10 +285,10 @@ def _is_project_module(
     ``migrations/``. A virtualenv inside the project (``.venv/…/sqlalchemy``)
     does not qualify, and neither does the framework itself.
 
-    *resolved_dirs* caches each module directory's resolved path across one
-    sweep of ``sys.modules``: a process holds a thousand modules from a few
-    hundred directories, and resolving every file again cost seconds on a slow
-    filesystem — on every ``make_migrations``.
+    *resolved_dirs* caches resolved directories across one sweep of
+    ``sys.modules`` (see :func:`_resolve_dir`): a process holds thousands of
+    modules, and resolving each file component by component cost seconds on a
+    slow filesystem — on every ``make_migrations`` and every project switch.
     """
     top = name.split(".")[0]
     if top in ("zeeb_orm", "zeeb_api", "zeeb_agents"):
@@ -278,10 +302,7 @@ def _is_project_module(
         directory, filename = os.path.split(os.fspath(file))
         if resolved_dirs is None:
             resolved_dirs = {}
-        resolved = resolved_dirs.get(directory)
-        if resolved is None:
-            resolved = resolved_dirs[directory] = Path(directory).resolve()
-        path = resolved / filename
+        path = _resolve_dir(os.path.abspath(directory), resolved_dirs) / filename
         if not path.is_relative_to(root):
             return False
         first = path.relative_to(root).parts[0]

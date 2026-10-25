@@ -2,11 +2,33 @@
 
 from __future__ import annotations
 
+from contextlib import AbstractAsyncContextManager, nullcontext
 from typing import TYPE_CHECKING, Any
 
 from fastapi import Request
 
 from zeeb_api.exceptions import ValidationError
+
+
+def _write_block(view: Any) -> AbstractAsyncContextManager[Any]:
+    """The transaction a create/update/destroy runs its hook and save in.
+
+    One ``atomic()`` on the database of the view's queryset, so the row, its
+    many-to-many links and whatever the ``perform_*`` hook writes commit
+    together or not at all. ``atomic_writes = False`` on the view opts out.
+    """
+    if not getattr(view, "atomic_writes", True):
+        return nullcontext()
+    from zeeb_orm.db.connection import atomic
+
+    alias = None
+    get_queryset = getattr(view, "get_queryset", None)
+    if get_queryset is not None:
+        try:
+            alias = getattr(get_queryset(), "_db_alias", None)
+        except Exception:
+            alias = None  # no queryset (a hand-rolled view): the default database
+    return atomic(alias)
 
 
 async def _is_valid(serializer: Any) -> bool:
@@ -39,9 +61,9 @@ class CreateModelMixin:
 
         # Call perform_create hook to allow modification of validated_data
         # (or to save the instance itself, e.g. serializer.save(author_id=...)).
-        await self.perform_create(serializer)
-
-        instance = await self._save_from_hook(serializer)
+        async with _write_block(self):
+            await self.perform_create(serializer)
+            instance = await self._save_from_hook(serializer)
 
         # Return serialized response
         output_serializer = self.get_serializer(instance=instance)
@@ -90,36 +112,51 @@ class QueryModelMixin:
         # Provided by GenericViewSet, which every viewset using this mixin is.
         def filter_queryset(self, queryset: Any) -> Any: ...
 
-    def _allowed_query_fields(self) -> set[str] | dict[str, str] | None:
+    def _allowed_query_fields(self) -> set[str] | dict[str, str] | str:
         """Field paths a client may filter or order by.
 
         An explicit ``query_fields`` attribute on the viewset wins; it may list
-        paths through relations (``"author__name"``). Otherwise the
-        serializer's output decides (``serializer_field_paths``): a client
-        names the fields the API returns, by the names it returns them under,
-        and each is translated to the column behind it. A column the API does
-        not surface (a password hash, a value a ``SerializerMethodField``
-        masks) cannot be filtered or ordered by, nor can one on a related
-        model. Returns None when the set cannot be determined, leaving the
-        query unrestricted (backwards-compatible for untyped viewsets).
+        paths through relations (``"author__name"``), or be ``"__all__"`` for
+        every field of the model itself (relations still need their full path
+        listed). Otherwise the serializer's output decides
+        (``serializer_field_paths``): a client names the fields the API
+        returns, by the names it returns them under, and each is translated to
+        the column behind it. A column the API does not surface (a password
+        hash, a value a ``SerializerMethodField`` masks) cannot be filtered or
+        ordered by, nor can one on a related model.
+
+        Fails closed: when the set cannot be determined (no serializer, or one
+        whose output fields are unknown) it is empty, and every path is refused
+        until the viewset declares ``query_fields``.
         """
         from zeeb_api.query import serializer_field_paths
+        from zeeb_api.query.paths import ALL_FIELDS
 
         explicit = getattr(self, "query_fields", None)
+        if explicit == ALL_FIELDS:
+            return ALL_FIELDS
         if explicit is not None:
             return dict(explicit) if isinstance(explicit, dict) else set(explicit)
 
         get_serializer_class = getattr(self, "get_serializer_class", None)
         if get_serializer_class is None:
-            return None
+            return set()
         try:
             serializer_class = get_serializer_class()
         except Exception:
-            return None
+            return set()
         if serializer_class is None:
-            return None
+            return set()
 
-        return serializer_field_paths(serializer_class)
+        paths = serializer_field_paths(serializer_class)
+        return set() if paths is None else paths
+
+    def _no_query_fields(self) -> str:
+        return (
+            f"{type(self).__name__} has no queryable fields: its serializer's output "
+            "fields are unknown. Set `query_fields` on the viewset (a list of field "
+            'paths, or "__all__" for the model\'s own fields).'
+        )
 
     async def query(self, request: Request, **kwargs: Any) -> dict[str, Any]:
         """
@@ -166,7 +203,7 @@ class QueryModelMixin:
             queryset = queryset.all()
         model = getattr(queryset, "model", None)
 
-        # Field paths a client is allowed to filter / order by (None = unrestricted).
+        # Field paths a client is allowed to filter / order by (empty = none).
         allowed_fields = self._allowed_query_fields()
         allow_regex = bool(getattr(self, "query_allow_regex", False))
 
@@ -178,6 +215,8 @@ class QueryModelMixin:
                 q_filter, referenced = parse_q_filter_with_paths(filter_expr)
             except QFilterError as e:
                 raise ValidationError({"filter": [str(e)]})
+            if referenced and not allowed_fields:
+                raise ValidationError({"filter": [self._no_query_fields()]})
             refused = []
             renames: dict[str, str] = {}
             for path in sorted(referenced):
@@ -200,6 +239,8 @@ class QueryModelMixin:
         if order_by:
             if isinstance(order_by, str):
                 order_by = [order_by]
+            if not allowed_fields:
+                raise ValidationError({"order_by": [self._no_query_fields()]})
             terms = []
             for field in order_by:
                 try:
@@ -303,8 +344,9 @@ class UpdateModelMixin:
         if not await _is_valid(serializer):
             raise ValidationError(serializer.errors)
 
-        await self.perform_update(serializer)
-        instance = await self._save_from_hook(serializer)
+        async with _write_block(self):
+            await self.perform_update(serializer)
+            instance = await self._save_from_hook(serializer)
         return await self.get_serializer(instance=instance).adata()
 
     async def partial_update(self, request: Request, **kwargs: Any) -> dict[str, Any]:
@@ -326,8 +368,9 @@ class UpdateModelMixin:
         if not await _is_valid(serializer):
             raise ValidationError(serializer.errors)
 
-        await self.perform_update(serializer)
-        instance = await self._save_from_hook(serializer)
+        async with _write_block(self):
+            await self.perform_update(serializer)
+            instance = await self._save_from_hook(serializer)
         return await self.get_serializer(instance=instance).adata()
 
     async def _save_from_hook(self, serializer: Any) -> Any:
@@ -356,7 +399,8 @@ class DestroyModelMixin:
     async def destroy(self, request: Request, **kwargs: Any) -> None:
         """Delete a model instance."""
         instance = await self.get_object()
-        await self.perform_destroy(instance)
+        async with _write_block(self):
+            await self.perform_destroy(instance)
         return None
 
     async def perform_destroy(self, instance: Any) -> None:

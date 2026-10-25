@@ -53,6 +53,13 @@ so a container or CI runner overrides anything a checked-out `.env` says.
 `load_env` does not write to `os.environ`, which keeps one project's
 configuration from leaking into another loaded in the same process.
 
+Tooling that evaluates *another* project's settings wraps that in
+`zeeb_api.conf.env.isolated_env()`. Inside the block the project's `.env` is the
+**only** layer — the real environment of the process running the tool is not
+consulted, and nothing is written to `os.environ` — so a `DATABASE_URL` the tool
+itself was started with never becomes the project's database. The agent layer
+runs every project-scoped call this way.
+
 `startproject` generates two files:
 
 - **`.env`** — gitignored, holds `DEBUG` and a signing key generated for this

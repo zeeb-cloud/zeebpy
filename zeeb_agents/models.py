@@ -16,6 +16,7 @@ from zeeb_agents._utils.code_gen import (
     extract_field_names,
     extract_field_types,
     extract_model_names,
+    remove_class_block,
     remove_field_from_class,
     rename_field_in_class,
     render_model_class,
@@ -29,6 +30,7 @@ from zeeb_agents._utils.errors import AgentError, close_matches, did_you_mean, f
 from zeeb_agents._utils.field_types import field_extra_imports, render_field_line
 from zeeb_agents._utils.project import (
     list_apps,
+    require_project_root,
     to_table_name,
 )
 from zeeb_agents._utils.validation import (
@@ -167,13 +169,11 @@ async def delete_model(
     def _remove() -> None:
         content = path.read_text(encoding="utf-8")
         ensure_model_exists(content, model_name, str(path))
-        import re
-        pattern = re.compile(
-            rf"^(class {re.escape(model_name)}\b.*?)(?=\nclass |\Z)",
-            re.MULTILINE | re.DOTALL,
-        )
-        new_content = pattern.sub("", content).rstrip("\n") + "\n"
-        write_source(path, new_content)
+        # AST-located: a text span up to the next ``class`` would also take any
+        # module-level code (functions, signal receivers) that follows the model.
+        new_content = remove_class_block(content, model_name)
+        if new_content is not None:
+            write_source(path, new_content)
 
     await asyncio.to_thread(_remove)
     return AgentResult(
@@ -481,7 +481,7 @@ async def rename_field(
     ensure_identifier(model_name, "model name")
     ensure_identifier(old_name, "field name")
     ensure_identifier(new_name, "field name")
-    root = project_root
+    root = require_project_root(project_root)
     path = _models_file(app, root)
     if not path.exists():
         return fail(f"models.py not found at {path}", code="file_not_found", missing="models.py")

@@ -129,7 +129,7 @@ async def test_plain_count_keeps_the_fast_form(world):
 
 
 @pytest.mark.parametrize(
-    "dialect", [sqlite.dialect(), postgresql.dialect(), mysql.dialect()], ids=str
+    "dialect", [sqlite.dialect(), postgresql.dialect(), mysql.dialect()], ids=lambda d: d.name
 )
 def test_count_subquery_compiles_on_every_dialect(dialect):
     CtPost.tags.get_through_table()

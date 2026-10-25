@@ -231,7 +231,7 @@ class TestCompiledSql:
     """The exclude subquery and NULL guards render on every dialect."""
 
     @pytest.mark.parametrize(
-        "dialect", [sqlite.dialect(), postgresql.dialect(), mysql.dialect()], ids=str
+        "dialect", [sqlite.dialect(), postgresql.dialect(), mysql.dialect()], ids=lambda d: d.name
     )
     def test_multi_valued_exclude_is_a_pk_subquery(self, dialect):
         MvBook.tags.get_through_table()
@@ -243,7 +243,7 @@ class TestCompiledSql:
         assert "LEFT OUTER JOIN mv_tags" not in sql.split("NOT IN")[0]
 
     @pytest.mark.parametrize(
-        "dialect", [sqlite.dialect(), postgresql.dialect(), mysql.dialect()], ids=str
+        "dialect", [sqlite.dialect(), postgresql.dialect(), mysql.dialect()], ids=lambda d: d.name
     )
     def test_nullable_exclude_guards_null(self, dialect):
         qs = MvAuthor.objects.exclude(age=30)

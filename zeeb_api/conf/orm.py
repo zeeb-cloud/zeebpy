@@ -35,8 +35,10 @@ def database_kwargs(database_config: dict[str, Any]) -> dict[str, Any]:
 def apply_orm_settings(settings: Any | None = None) -> None:
     """Configure zeeb_orm from the project settings.
 
-    Called by ``create_app()``'s default lifespan; safe to call manually when
-    using zeeb_orm alongside a project without ``create_app``.
+    Called by ``create_app()`` itself when the project sets ``DATABASE`` or
+    ``MIGRATIONS_DIR`` (so a custom lifespan sees the same database), and
+    again by its default lifespan; safe to call manually when using zeeb_orm
+    alongside a project without ``create_app``.
     """
     if settings is None:
         from zeeb_api.conf import settings as _settings
