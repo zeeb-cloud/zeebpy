@@ -1030,6 +1030,10 @@
    [
     "project_id",
     true
+   ],
+   [
+    "query_fields",
+    true
    ]
   ]
  },
@@ -2575,6 +2579,38 @@
    ]
   ]
  },
+ "rename_field": {
+  "data_keys": [
+   "app",
+   "files",
+   "model",
+   "new",
+   "old",
+   "skipped"
+  ],
+  "params": [
+   [
+    "app",
+    false
+   ],
+   [
+    "model_name",
+    false
+   ],
+   [
+    "old_name",
+    false
+   ],
+   [
+    "new_name",
+    false
+   ],
+   [
+    "project_id",
+    true
+   ]
+  ]
+ },
  "replace_model_fields": {
   "data_keys": [
    "app",
@@ -3212,6 +3248,10 @@
    ],
    [
     "project_id",
+    true
+   ],
+   [
+    "query_fields",
     true
    ]
   ]
