@@ -254,6 +254,27 @@ def to_class_name(name: str) -> str:
     return "".join(word.capitalize() for word in name.replace("-", "_").split("_"))
 
 
+def _resolve_dir(directory: str, cache: dict[str, Path]) -> Path:
+    """``Path(directory).resolve()`` for an absolute *directory*, one stat per new component.
+
+    Resolves the parent first (cached), then checks only the last component: a
+    symlink is resolved in full, anything else is appended. Directories share
+    their ancestors, so a sweep over every loaded module stats each directory
+    once instead of every component of every path.
+    """
+    cached = cache.get(directory)
+    if cached is not None:
+        return cached
+    parent, name = os.path.split(directory)
+    if not name or parent == directory:
+        resolved = Path(directory)
+    else:
+        candidate = _resolve_dir(parent, cache) / name
+        resolved = candidate.resolve() if os.path.islink(candidate) else candidate
+    cache[directory] = resolved
+    return resolved
+
+
 def _is_project_module(
     name: str, module: object, root: Path, resolved_dirs: dict[str, Path] | None = None
 ) -> bool:
@@ -264,10 +285,10 @@ def _is_project_module(
     ``migrations/``. A virtualenv inside the project (``.venv/…/sqlalchemy``)
     does not qualify, and neither does the framework itself.
 
-    *resolved_dirs* caches each module directory's resolved path across one
-    sweep of ``sys.modules``: a process holds a thousand modules from a few
-    hundred directories, and resolving every file again cost seconds on a slow
-    filesystem — on every ``make_migrations``.
+    *resolved_dirs* caches resolved directories across one sweep of
+    ``sys.modules`` (see :func:`_resolve_dir`): a process holds thousands of
+    modules, and resolving each file component by component cost seconds on a
+    slow filesystem — on every ``make_migrations`` and every project switch.
     """
     top = name.split(".")[0]
     if top in ("zeeb_orm", "zeeb_api", "zeeb_agents"):
@@ -281,10 +302,7 @@ def _is_project_module(
         directory, filename = os.path.split(os.fspath(file))
         if resolved_dirs is None:
             resolved_dirs = {}
-        resolved = resolved_dirs.get(directory)
-        if resolved is None:
-            resolved = resolved_dirs[directory] = Path(directory).resolve()
-        path = resolved / filename
+        path = _resolve_dir(os.path.abspath(directory), resolved_dirs) / filename
         if not path.is_relative_to(root):
             return False
         first = path.relative_to(root).parts[0]
