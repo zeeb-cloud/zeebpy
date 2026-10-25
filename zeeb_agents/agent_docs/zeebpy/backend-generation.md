@@ -362,6 +362,7 @@ matching imports:
     operations=["list", "retrieve", "create"],  # serve only these; unnamed ones get no route
     owner_field="owner",                  # stamp the caller onto this FK on create
     owner_scoped_reads=True,              # …and restrict reads to rows they own
+    query_fields=["name", "price", "category__name"],  # what POST /query may filter/order by
     register=True,                        # also register the route (default False)
     url_prefix="products",                # the URL segment, when registering
 )

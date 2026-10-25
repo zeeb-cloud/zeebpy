@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib.util
 import keyword
 import logging
+import os
 import re
 import sys
 from pathlib import Path
@@ -250,13 +251,20 @@ def to_class_name(name: str) -> str:
     return "".join(word.capitalize() for word in name.replace("-", "_").split("_"))
 
 
-def _is_project_module(name: str, module: object, root: Path) -> bool:
+def _is_project_module(
+    name: str, module: object, root: Path, resolved_dirs: dict[str, Path] | None = None
+) -> bool:
     """Whether *module* is the target project's own code.
 
     ``apps.*``, or a module whose file sits under *root* in the directory its
     top-level package is named after (``<project>/settings.py``) or in
     ``migrations/``. A virtualenv inside the project (``.venv/…/sqlalchemy``)
     does not qualify, and neither does the framework itself.
+
+    *resolved_dirs* caches each module directory's resolved path across one
+    sweep of ``sys.modules``: a process holds a thousand modules from a few
+    hundred directories, and resolving every file again cost seconds on a slow
+    filesystem — on every ``make_migrations``.
     """
     top = name.split(".")[0]
     if top in ("zeeb_orm", "zeeb_api", "zeeb_agents"):
@@ -267,7 +275,13 @@ def _is_project_module(name: str, module: object, root: Path) -> bool:
     if not file:
         return False
     try:
-        path = Path(file).resolve()
+        directory, filename = os.path.split(os.fspath(file))
+        if resolved_dirs is None:
+            resolved_dirs = {}
+        resolved = resolved_dirs.get(directory)
+        if resolved is None:
+            resolved = resolved_dirs[directory] = Path(directory).resolve()
+        path = resolved / filename
         if not path.is_relative_to(root):
             return False
         first = path.relative_to(root).parts[0]
@@ -299,10 +313,11 @@ def forget_loaded_project_code(project_root: Path) -> list[str]:
     from zeeb_orm.models.base import _model_registry, metadata
 
     root = Path(project_root).resolve()
+    resolved_dirs: dict[str, Path] = {}
     dropped = [
         name
         for name, module in list(sys.modules.items())
-        if _is_project_module(name, module, root)
+        if _is_project_module(name, module, root, resolved_dirs)
     ]
     dropped_set = set(dropped)
     stale = {

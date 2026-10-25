@@ -90,7 +90,7 @@ is being solved.
 | `{prefix}search_code(pattern, glob="**/*.py")` | Search for a regex pattern across project source files. |
 | `{prefix}write_file(path, content)` | Write (or overwrite) a file in the project. |
 
-### Advanced (97)
+### Advanced (98)
 
 One tool per object. Fully supported — the feature compiler runs
 exactly these — but reach for them only when a spec cannot express
@@ -127,6 +127,7 @@ the change. Grouped by category below.
 | `{prefix}delete_model(app, model_name)` | Remove a ``Model`` subclass from ``apps/<app>/models.py``. |
 | `{prefix}list_models()` | Return all models defined across all apps. |
 | `{prefix}remove_field(app, model_name, field_name)` | Remove a field from an existing model. |
+| `{prefix}rename_field(app, model_name, old_name, new_name)` | Rename a field on a model, and every generated list that names it. |
 | `{prefix}replace_model_fields(app, model_name, fields)` | Replace **all** fields in a model with a new set. |
 | `{prefix}update_model(app, model_name, rename_to=None, meta_changes=None)` | Rename a model class and/or update its ``class Meta`` attributes. |
 
@@ -145,13 +146,13 @@ the change. Grouped by category below.
 |---|---|
 | `{prefix}add_viewset_action(app, model_name, action_name, detail=True, methods=None, body=None, url_path=None, request_serializer=None, response_serializer=None, request_schema=None, response_schema=None, permission=None, imports=None, if_exists="error")` | Append a custom ``@action`` method to an existing ViewSet. |
 | `{prefix}create_route(app, path, method, function_name, response_model=None, body=None, imports=None, if_exists="error")` | Append a standalone FastAPI route handler to ``apps/{app}/views.py`` **and wire it up**. |
-| `{prefix}create_viewset(app, model_name, serializer_class=None, permission="IsAuthenticatedOrReadOnly", read_only=False, lookup_field=None, pagination=None, throttles=None, search_fields=None, ordering_fields=None, filterset=None, authentication=None, operations=None, owner_field=None, owner_scoped_reads=False, if_exists="error", register=False, url_prefix=None)` | Append a ``ModelViewSet`` subclass to ``apps/<app>/views.py``. |
+| `{prefix}create_viewset(app, model_name, serializer_class=None, permission="IsAuthenticatedOrReadOnly", read_only=False, lookup_field=None, pagination=None, throttles=None, search_fields=None, ordering_fields=None, filterset=None, authentication=None, operations=None, owner_field=None, owner_scoped_reads=False, if_exists="error", register=False, url_prefix=None, query_fields=None)` | Append a ``ModelViewSet`` subclass to ``apps/<app>/views.py``. |
 | `{prefix}delete_viewset(app, model_name)` | Remove ``<ModelName>ViewSet`` and the imports only it used. |
 | `{prefix}generate_crud(app, model_name, fields, serializer_fields=None, read_only_fields=None, permission="IsAuthenticatedOrReadOnly", meta=None, extra_fields=None, validate_fields=None, read_only=False, lookup_field=None, pagination=None, throttles=None, search_fields=None, ordering_fields=None, filterset=None, authentication=None, url_prefix=None, migrate=False)` | One-shot scaffold: create model + serializer + viewset + register route — wired and served. |
 | `{prefix}list_endpoints()` | Return all ``router.register(...)`` calls found across all app ``urls.py`` files. |
 | `{prefix}register_route(app, model_name, url_prefix=None, if_exists="error")` | Register a ViewSet with the app's router in ``apps/<app>/urls.py``. |
 | `{prefix}unregister_route(app, model_name)` | Remove a ViewSet's ``router.register(...)`` line and its import. |
-| `{prefix}update_viewset(app, model_name, permission=None, lookup_field=None, pagination=None, throttles=None, search_fields=None, ordering_fields=None, authentication=None)` | Set or update class attributes on an existing ``<ModelName>ViewSet``. |
+| `{prefix}update_viewset(app, model_name, permission=None, lookup_field=None, pagination=None, throttles=None, search_fields=None, ordering_fields=None, authentication=None, query_fields=None)` | Set or update class attributes on an existing ``<ModelName>ViewSet``. |
 
 #### Custom Logic
 

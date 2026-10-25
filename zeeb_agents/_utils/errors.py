@@ -29,6 +29,7 @@ ERROR_CODES = frozenset(
         "user_not_found",
         "log_file_not_found",
         "field_not_found",
+        "field_in_use",
         "feature_not_found",
         "feature_archived",
         "feature_active",

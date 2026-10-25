@@ -60,7 +60,7 @@ vocabulary: `app_not_found`, `model_not_found`, `already_exists`,
 `invalid_field_spec`, `invalid_field_type`, `invalid_identifier`,
 `invalid_input`, `invalid_permission`, `invalid_meta`, `invalid_sql`,
 `invalid_regex`, `table_not_found`, `user_not_found`, `no_user_table`,
-`setting_not_found`, `settings_error`, `syntax_error`, `env_key_not_found`, `field_not_found`,
+`setting_not_found`, `settings_error`, `syntax_error`, `env_key_not_found`, `field_not_found`, `field_in_use`,
 `function_not_found`, `file_not_found`, `log_file_not_found`,
 `manifest_version_unsupported`, `feature_in_use`, `model_referenced`,
 `delete_pending`, `delete_migration_missing`, `verification_failed`,
@@ -478,6 +478,21 @@ An unknown field name fails with close-match `suggestions`.
 await alter_field("blog", "Article", "title = fields.CharField(max_length=500)")
 ```
 
+### `rename_field(app, model_name, old_name, new_name, project_id=None)`
+Rename a field and every generated list that names it, together or not at all:
+the definition in `models.py` (plus `self.<old>` and `Meta` entries such as
+`ordering`), and the entries `"<old>"`, `"<old>_id"`, `"<old>__x"` (behind an
+ordering/search marker) in `<Model>Serializer`, `<Model>ViewSet` and
+`<Model>Filter`. Code the rename cannot follow — `instance.<old>` in an action,
+`filter(<old>_id=...)` — refuses it with `field_in_use`, naming each
+`{"file", "line"}`. Then `make_migrations(accept_renames=True)` writes a
+`RenameField`, which keeps the column's data.
+
+```python
+await rename_field("blog", "Article", "body", "content")
+await make_migrations(accept_renames=True)
+```
+
 ### `add_relationship(app, model_name, rel, project_id=None)`
 Convenience wrapper around `add_field` for relation fields.
 
@@ -529,7 +544,7 @@ Remove `<ModelName>Serializer` and the model import only it used.
 
 ## ViewSet & Route Management
 
-### `create_viewset(app, model_name, serializer_class=None, permission='IsAuthenticatedOrReadOnly', read_only=False, lookup_field=None, pagination=None, throttles=None, search_fields=None, ordering_fields=None, filterset=None, authentication=None, operations=None, owner_field=None, owner_scoped_reads=False, if_exists='error', register=False, url_prefix=None, project_id=None)`
+### `create_viewset(app, model_name, serializer_class=None, permission='IsAuthenticatedOrReadOnly', read_only=False, lookup_field=None, pagination=None, throttles=None, search_fields=None, ordering_fields=None, filterset=None, authentication=None, operations=None, owner_field=None, owner_scoped_reads=False, if_exists='error', register=False, url_prefix=None, project_id=None, query_fields=None)`
 Append a `ModelViewSet` (or `ReadOnlyModelViewSet` with `read_only=True`) to
 `apps/<app>/views.py`, with the full viewset option surface:
 
@@ -541,18 +556,23 @@ await create_viewset("shop", "Product",
     throttles=["UserRateThrottle"],    # Anon/User/ScopedRateThrottle
     search_fields=["name"],            # ?search=…
     ordering_fields=["price"],         # ?ordering=…
-    filterset="ProductFilter")         # from apps/shop/filters.py
+    filterset="ProductFilter",         # from apps/shop/filters.py
+    query_fields=["name", "price", "category__name"])  # what POST /query may filter/order by
 ```
 
 Permissions are validated against `zeeb_api.permissions` (`AllowAny`,
 `IsAuthenticated`, `IsAdminUser`, `IsAuthenticatedOrReadOnly`, `IsOwner`,
 `IsOwnerOrReadOnly`, `ModelPermissions`); imports for pagination,
-throttling, and filters are added automatically.
+throttling, and filters are added automatically. `query_fields` sets the
+viewset's `POST /query` allow-list (see [ViewSets](../api/viewsets.md#which-fields-a-client-may-use)):
+omitted, the fields the serializer returns decide; a path through a relation
+is reachable only when listed in full; an empty list allows none.
 
-### `update_viewset(app, model_name, permission=None, lookup_field=None, pagination=None, throttles=None, search_fields=None, ordering_fields=None, authentication=None, project_id=None)`
+### `update_viewset(app, model_name, permission=None, lookup_field=None, pagination=None, throttles=None, search_fields=None, ordering_fields=None, authentication=None, project_id=None, query_fields=None)`
 Set or update class attributes on an existing ViewSet (same option names as
 `create_viewset`); `filter_backends` is kept in sync when
-`search_fields`/`ordering_fields` are given.
+`search_fields`/`ordering_fields` are given, and `query_fields` (an empty list
+included) replaces the `/query` allow-list.
 
 ### `add_viewset_action(app, model_name, action_name, detail=True, methods=None, body=None, url_path=None, request_serializer=None, response_serializer=None, request_schema=None, response_schema=None, permission=None, imports=None, if_exists='error', project_id=None)`
 Add a custom `@action` method to an existing ViewSet. Pass the method body via

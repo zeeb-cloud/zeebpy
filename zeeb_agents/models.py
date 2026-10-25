@@ -17,6 +17,7 @@ from zeeb_agents._utils.code_gen import (
     extract_field_types,
     extract_model_names,
     remove_field_from_class,
+    rename_field_in_class,
     render_model_class,
     replace_field_in_class,
     set_class_attribute_in_block,
@@ -415,6 +416,141 @@ async def alter_field(
         success=True,
         message=f"Field '{field_name}' redefined on {model_name}",
         data={"app": app, "model": model_name, "field": field_name},
+    )
+
+
+#: The generated classes that name a model's fields, beside the model itself:
+#: ``file -> class name template``.
+_FIELD_REFERRERS = {
+    "serializers.py": "{model}Serializer",
+    "views.py": "{model}ViewSet",
+    "filters.py": "{model}Filter",
+}
+
+
+@agent_function
+async def rename_field(
+    app: str,
+    model_name: str,
+    old_name: str,
+    new_name: str,
+    project_root: Path | None = None,
+) -> AgentResult:
+    """Rename a field on a model, and every generated list that names it.
+
+    Rewritten together, or not at all: the field's definition in ``models.py``
+    (with ``self.<old>`` in the model's methods and ``Meta`` entries such as
+    ``ordering = ["-<old>"]``), and the string entries naming it — ``"<old>"``,
+    ``"<old>_id"``, ``"<old>__name"``, behind a ``-``/``^``/``=``/``@``/``$``
+    marker — in ``<Model>Serializer`` (``fields``, ``read_only_fields``,
+    ``extra_kwargs``), ``<Model>ViewSet`` (``search_fields``,
+    ``ordering_fields``, ``query_fields``) and ``<Model>Filter``.
+
+    The schema is not touched: ``make_migrations(accept_renames=True)`` then
+    writes a ``RenameField``, which keeps the column's data (without it, the
+    migration drops the old column and adds an empty one).
+
+    Args:
+        app: App directory name (e.g. ``"blog"``).
+        model_name: PascalCase class name (e.g. ``"Post"``).
+        old_name: The field's current name.
+        new_name: Its new name — an identifier the model does not use yet.
+        project_id: The host-assigned project id (required).
+
+    Returns data (on success):
+        app (str): the app name.
+        model (str): the model class name.
+        old (str): the field's previous name.
+        new (str): its name now.
+        files (list[str]): the files rewritten, relative to the project root.
+        skipped (bool): present and ``True`` when *old_name* was already gone
+            and *new_name* defined — a rename that already happened.
+
+    Notes:
+        - Refused with ``field_in_use`` (and nothing written) while code the
+          rename cannot follow still uses the old name — ``instance.<old>`` in
+          an action, ``filter(<old>_id=...)`` in a ``get_queryset``. ``data``
+          names each ``locations`` entry as ``{"file", "line"}``; change that
+          code first.
+        - ``field_not_found`` (with close-match ``suggestions``) when the model
+          has neither name; ``already_exists`` when it has both.
+        - Other models' and other apps' references to the field (an ordering
+          ``"post__<old>"`` elsewhere) are not followed; check the project
+          afterwards with ``check_code``.
+    """
+    ensure_identifier(model_name, "model name")
+    ensure_identifier(old_name, "field name")
+    ensure_identifier(new_name, "field name")
+    root = project_root
+    path = _models_file(app, root)
+    if not path.exists():
+        return fail(f"models.py not found at {path}", code="file_not_found", missing="models.py")
+
+    def _rename() -> list[str] | None:
+        content = path.read_text(encoding="utf-8")
+        ensure_model_exists(content, model_name, str(path))
+        existing = extract_field_names(content, model_name)
+        if old_name not in existing:
+            if new_name in existing:
+                return None
+            hint = did_you_mean(old_name, existing)
+            if not hint:
+                hint = f" Fields present: {', '.join(existing) or '(none)'}."
+            raise AgentError(
+                f"Field '{old_name}' not found in model '{model_name}' in {path}.{hint}",
+                code="field_not_found",
+                suggestions=close_matches(old_name, existing),
+                fields=existing,
+            )
+        if new_name in existing:
+            raise AgentError(
+                f"Model '{model_name}' already has a field '{new_name}'",
+                code="already_exists",
+                field=new_name,
+            )
+
+        app_dir = path.parent
+        targets = [(path, model_name, True)] + [
+            (app_dir / filename, template.format(model=model_name), False)
+            for filename, template in _FIELD_REFERRERS.items()
+        ]
+        rewritten: dict[Path, str] = {}
+        locations: list[dict] = []
+        for file, class_name, defines in targets:
+            if not file.exists():
+                continue
+            outcome = rename_field_in_class(
+                file.read_text(encoding="utf-8"), class_name, old_name, new_name, defines=defines
+            )
+            if outcome is None:
+                continue
+            renamed, edits, leftovers = outcome
+            rel = file.relative_to(root).as_posix()
+            locations.extend({"file": rel, "line": line} for line in leftovers)
+            if edits:
+                rewritten[file] = renamed
+        if locations:
+            where = ", ".join(f"{loc['file']}:{loc['line']}" for loc in locations)
+            raise AgentError(
+                f"'{old_name}' is still used as code at {where}; the rename cannot follow it. "
+                "Change that code first (or rename by hand), then rename the field.",
+                code="field_in_use",
+                locations=locations,
+            )
+        for file, renamed in rewritten.items():
+            write_source(file, renamed)
+        return [file.relative_to(root).as_posix() for file in rewritten]
+
+    files = await asyncio.to_thread(_rename)
+    data = {"app": app, "model": model_name, "old": old_name, "new": new_name}
+    if files is None:
+        return skip_result(
+            f"'{model_name}.{old_name}' is already named '{new_name}'; skipped", **data, files=[]
+        )
+    return AgentResult(
+        success=True,
+        message=f"Field '{model_name}.{old_name}' renamed to '{new_name}' in {', '.join(files)}",
+        data={**data, "files": files},
     )
 
 

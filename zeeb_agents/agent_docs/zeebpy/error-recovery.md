@@ -100,6 +100,7 @@ the failing test node ids), and `next_actions` says what to do.
 | `app_not_found` | No such app. | `{prefix}list_apps()`; create it with `{prefix}create_app`. |
 | `model_not_found` | No such model. | `{prefix}list_models()`; check the `model_name`. |
 | `field_not_found` | No such field on the model. | Inspect the model; check the `field_name`. |
+| `field_in_use` | Code the rename cannot follow still uses the field (`data["locations"]`). | Change that code first (`{prefix}edit_function`), then rename again. |
 | `table_not_found` | No such database table. | `{prefix}list_tables()`; run migrations if the model is new. |
 | `user_not_found` | No user matches. | `{prefix}list_users()`; check the email/id. |
 | `function_not_found` | No such signal receiver / function. | `{prefix}list_signal_receivers(app=...)`. |
