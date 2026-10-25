@@ -271,14 +271,17 @@ def resolve_relation(model: type, name: str) -> RelationInfo | None:
     # and register further models, which would invalidate a live iterator.
     for model_cls in list(_model_registry.values()):
         for fk_field in getattr(model_cls, "_fk_fields", []):
+            # The accessor name first: it needs no target, and resolving every
+            # relation's target to find one name made any unresolvable target
+            # (a misconfigured AUTH_USER_MODEL) break lookups on every model.
+            rel_name = related_accessor_name(fk_field, model_cls)
+            if rel_name is None or rel_name != name:
+                continue
             try:
                 target = fk_field.get_target_model()
             except (KeyError, AttributeError):
                 continue
             if target is not model:
-                continue
-            rel_name = related_accessor_name(fk_field, model_cls)
-            if rel_name is None or rel_name != name:
                 continue
             kind = "reverse_o2o" if isinstance(fk_field, OneToOneField) else "reverse_fk"
             return RelationInfo(
