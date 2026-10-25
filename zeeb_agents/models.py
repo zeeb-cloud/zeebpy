@@ -30,6 +30,7 @@ from zeeb_agents._utils.errors import AgentError, close_matches, did_you_mean, f
 from zeeb_agents._utils.field_types import field_extra_imports, render_field_line
 from zeeb_agents._utils.project import (
     list_apps,
+    require_project_root,
     to_table_name,
 )
 from zeeb_agents._utils.validation import (
@@ -480,7 +481,7 @@ async def rename_field(
     ensure_identifier(model_name, "model name")
     ensure_identifier(old_name, "field name")
     ensure_identifier(new_name, "field name")
-    root = project_root
+    root = require_project_root(project_root)
     path = _models_file(app, root)
     if not path.exists():
         return fail(f"models.py not found at {path}", code="file_not_found", missing="models.py")
