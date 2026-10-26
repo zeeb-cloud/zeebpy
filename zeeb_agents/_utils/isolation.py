@@ -17,7 +17,12 @@ in:
   (:func:`~zeeb_agents._utils.project.forget_loaded_project_code`), and the
   cached user model and auth project root are reset;
 - the call evaluates settings inside :func:`zeeb_api.conf.env.isolated_env`,
-  so the project's ``.env`` is its only environment.
+  so the project's ``.env`` is its only environment — unless the process *is*
+  that project's: a host that runs a project's own code (its runtime
+  container) names the project's root in ``ZEEB_AGENTS_PROJECT_ROOT``, and a
+  call on that root keeps the process environment, where such a host injects
+  the project's ``DATABASE_URL`` and secrets. A call on any other root is
+  isolated as before.
 
 A nested agent call on the same project joins the running scope.
 """
@@ -26,9 +31,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import weakref
 from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, nullcontext
 from contextvars import ContextVar
 from pathlib import Path
 
@@ -36,6 +42,10 @@ logger = logging.getLogger("zeeb_agents")
 
 # The project whose code this process has imported, if any.
 _loaded_root: Path | None = None
+
+#: Names the project this process runs as (see the module docstring): an agent
+#: call on that root reads the process environment, every other one is isolated.
+OWN_PROJECT_ENV = "ZEEB_AGENTS_PROJECT_ROOT"
 
 # The project of the scope this task is running in (nested calls join it).
 _current: ContextVar[Path | None] = ContextVar("zeeb_agents_project_scope", default=None)
@@ -61,6 +71,17 @@ def _gate() -> _Gate:
     if gate is None:
         gate = _gates[loop] = _Gate()
     return gate
+
+
+def _is_own_project(root: Path) -> bool:
+    """Whether *root* (resolved) is the project this process runs as."""
+    declared = (os.environ.get(OWN_PROJECT_ENV) or "").strip()
+    if not declared:
+        return False
+    try:
+        return Path(declared).resolve() == root
+    except OSError:
+        return False
 
 
 def _switch_to(root: Path) -> None:
@@ -113,7 +134,7 @@ async def project_scope(root: Path | None) -> AsyncIterator[None]:
     token = _current.set(root)
     try:
         _switch_to(root)
-        with isolated_env():
+        with nullcontext() if _is_own_project(root) else isolated_env():
             yield
     finally:
         _current.reset(token)

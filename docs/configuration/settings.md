@@ -58,7 +58,12 @@ Tooling that evaluates *another* project's settings wraps that in
 **only** layer — the real environment of the process running the tool is not
 consulted, and nothing is written to `os.environ` — so a `DATABASE_URL` the tool
 itself was started with never becomes the project's database. The agent layer
-runs every project-scoped call this way.
+runs every project-scoped call this way — except on the project the process
+runs *as*: a host that runs a project's own code and its tooling together (the
+project's runtime container, whose environment carries the project's
+`DATABASE_URL`) names that project's root in `ZEEB_AGENTS_PROJECT_ROOT`, and
+agent calls on that root keep the real environment. Calls on any other root are
+isolated as before.
 
 `startproject` generates two files:
 

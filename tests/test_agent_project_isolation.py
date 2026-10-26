@@ -66,6 +66,32 @@ async def test_the_projects_own_env_file_is_read(tmp_path, monkeypatch):
     assert res.data["database_url"] == "sqlite+aiosqlite:///alpha-own.sqlite3"
 
 
+async def test_the_process_of_the_project_itself_keeps_its_environment(tmp_path, monkeypatch):
+    """A project's own runtime gets its database from the process: it names its own root."""
+    root = await _project(tmp_path, "alpha")
+    monkeypatch.setenv("DATABASE_URL", "postgresql+asyncpg://runtime/alpha-db")
+    # Named the way a host would write it (unresolved); compared resolved.
+    monkeypatch.setenv("ZEEB_AGENTS_PROJECT_ROOT", str(tmp_path / "." / "alpha"))
+
+    res = await agents.get_project_info(project_id=root)
+
+    assert res.success, res.message
+    assert res.data["database_url"] == "postgresql+asyncpg://runtime/alpha-db"
+
+
+async def test_naming_one_project_leaves_every_other_isolated(tmp_path, monkeypatch):
+    alpha = await _project(tmp_path, "alpha")
+    beta = await _project(tmp_path, "beta")
+    monkeypatch.setenv("DATABASE_URL", "postgresql+asyncpg://runtime/alpha-db")
+    monkeypatch.setenv("ZEEB_AGENTS_PROJECT_ROOT", str(alpha))
+
+    res = await agents.get_project_info(project_id=beta)
+
+    assert res.success, res.message
+    assert "alpha-db" not in res.data["database_url"]
+    assert res.data["database_url"].startswith("sqlite")
+
+
 def _content_models(registry: dict) -> list[str]:
     """Models of the `content` app, which only project alpha has."""
     return [
