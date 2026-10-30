@@ -1,0 +1,265 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>zeebpy System Architecture</title>
+    <style>
+/* rendercraft theme: ember — warm dark. Every neutral carries a low-chroma amber hue. */
+@import url('https://fonts.googleapis.com/css2?family=Inter+Tight:wght@500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+:root {
+  --theme-name: "ember";
+  /* Components first. Every colour below is built from one of these, so a token
+     and its alpha grades can never drift apart: any transparency you need is
+     oklch(var(--a1-raw) / 20%). See SKILL.md §4. */
+  --ground-raw: 0.152 0.016 52;
+  --surface-raw: 0.185 0.018 52;
+  --ink-raw: 0.958 0.012 70;
+  --a1-raw: 0.83 0.13 195;   /* cyan — primary, forward paths */
+  --a2-raw: 0.735 0.168 42;  /* ember — actions, returns */
+  --a3-raw: 0.7 0.21 335;    /* magenta — external, tertiary */
+  --a4-raw: 0.85 0.18 125;   /* lime — success */
+
+  --ground: oklch(var(--ground-raw));
+  --surface: oklch(var(--surface-raw) / 92%);
+  --line: oklch(0.98 0.01 60 / 15%);
+  --ink: oklch(var(--ink-raw));
+  --ink-dim: oklch(0.735 0.018 60);
+  --ink-faint: oklch(0.62 0.02 60);
+  --a1: oklch(var(--a1-raw));
+  --a2: oklch(var(--a2-raw));
+  --a3: oklch(var(--a3-raw));
+  --a4: oklch(var(--a4-raw));
+  --grad: linear-gradient(100deg, oklch(0.958 0.012 70) 4%, oklch(0.84 0.15 85) 44%, oklch(0.735 0.168 42) 96%);
+  --glow1: oklch(var(--a2-raw));
+  --glow2: oklch(var(--a1-raw));
+  --glow-opacity: 0.16;
+  --dot: oklch(0.98 0.01 60 / 9%);
+  --shadow: 0 32px 80px -20px oklch(0 0 0 / 0.55);
+  --font-display: "Inter Tight", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", monospace;
+}
+
+</style>
+    <style>
+      html { background: oklch(0.152 0.016 52); }
+      body { width: 1600px; height: 1190px; }
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      body { overflow: hidden; background: var(--ground); position: relative; font-family: var(--font-display); }
+      .glow { position: absolute; border-radius: 999px; filter: blur(120px); opacity: var(--glow-opacity); }
+      .g1 { width: 620px; height: 620px; top: -260px; left: -120px; background: var(--glow1); }
+      .g2 { width: 580px; height: 580px; top: -220px; right: -140px; background: var(--glow2); }
+      .dots { position: absolute; inset: 0;
+        background-image: radial-gradient(circle at 1px 1px, var(--dot) 1px, transparent 0);
+        background-size: 30px 30px;
+        -webkit-mask-image: radial-gradient(ellipse 80% 75% at 50% 45%, #000 40%, transparent 100%); }
+      svg { position: absolute; top: 0; left: 0; display: block; }
+      .head { position: absolute; left: 50px; top: 36px; z-index: 1; }
+      .kick { font: 500 14px var(--font-mono); color: var(--ink-faint); letter-spacing: 0.06em; }
+      h1 { font: 650 30px var(--font-display); color: var(--ink); margin-top: 10px; letter-spacing: -0.01em; }
+      .grad { background: var(--grad); -webkit-background-clip: text; background-clip: text; color: transparent; }
+      .lede { font: 400 13.5px var(--font-mono); color: var(--ink-dim); margin-top: 8px; }
+      .title { font: 600 20px var(--font-display); fill: var(--ink); }
+      .ptitle { font: 650 23px var(--font-mono); fill: var(--ink); }
+      .sub { font: 400 12.5px var(--font-mono); fill: var(--ink-dim); }
+      .tag { font: 500 12px var(--font-mono); fill: var(--ink-faint); letter-spacing: 0.04em; }
+      .lbl { font: 500 12.5px var(--font-mono); }
+      .sm { font: 500 11.5px var(--font-mono); }
+      .code { font: 400 12.5px var(--font-mono); fill: var(--ink); }
+      .codef { font: 400 12px var(--font-mono); fill: var(--ink-faint); }
+      .ct { font: 500 12.5px var(--font-mono); fill: var(--ink); }
+      .cs { font: 400 11px var(--font-mono); fill: var(--ink-dim); }
+      .kicker { font: 500 13px var(--font-mono); fill: var(--ink-faint); letter-spacing: 0.06em; }
+      .node { fill: var(--surface); stroke: var(--line); }
+      .band { fill: oklch(var(--a1-raw) / 5%); stroke: oklch(var(--a1-raw) / 35%); }
+      .chip { fill: oklch(var(--surface-raw) / 92%); stroke: var(--line); }
+      .chip3 { fill: oklch(var(--a3-raw) / 7%); stroke: oklch(var(--a3-raw) / 55%); stroke-dasharray: 5 4; }
+      .chipd { fill: oklch(var(--a1-raw) / 9%); stroke: oklch(var(--a1-raw) / 40%); }
+      .frame { fill: none; stroke: var(--ink-faint); stroke-dasharray: 6 6; opacity: 0.6; }
+      .s1 { stroke: var(--a1); } .s2 { stroke: var(--a2); } .s3 { stroke: var(--a3); } .s4 { stroke: var(--a4); }
+      .f1 { fill: var(--a1); } .f2 { fill: var(--a2); } .f3 { fill: var(--a3); } .f4 { fill: var(--a4); }
+      .sline { stroke: var(--line); } .fline { fill: var(--line); }
+      .sfaint { stroke: var(--ink-faint); } .ffaint { fill: var(--ink-faint); }
+      .fground { fill: var(--ground); }
+      .glyph { fill: none; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+
+    </style>
+  </head>
+  <body>
+    <div class="glow g1"></div>
+    <div class="glow g2"></div>
+    <div class="dots"></div>
+    <div class="head">
+      <div class="kick">ZEEBPY · SYSTEM ARCHITECTURE</div>
+      <h1>Three async packages, <span class="grad">layered strictly downward</span></h1>
+      <div class="lede">zeeb_agents → zeeb_api → zeeb_orm. A layer imports only the layers below it (tests/test_package_layering.py).</div>
+    </div>
+    <svg width="1600" height="1190" viewBox="0 0 1600 1190" fill="none">
+  <defs>
+    <marker id="m1" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="f1" d="M0 0 L10 5 L0 10 z"/></marker>
+    <marker id="m2" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="f2" d="M0 0 L10 5 L0 10 z"/></marker>
+    <marker id="m3" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="f3" d="M0 0 L10 5 L0 10 z"/></marker>
+  </defs>
+
+    
+    <g transform="translate(370,160)">
+      <rect class="band" width="780" height="218" rx="16" stroke-width="1.2"/>
+      <g class="s1 glyph" transform="translate(20,20)">
+  <path d="M15.5 3.5 L7.5 16 h5 l-1.5 8.5 L19.5 12 h-5 z"/>
+</g>
+      <text class="ptitle" x="62" y="42">zeeb_agents</text>
+      <text class="sub" x="62" y="64">async tools on a project on disk · AgentResult, never raises</text>
+      <text class="tag" x="760" y="40" text-anchor="end">132 TOOLS</text>
+      <g transform="translate(20,86)"><rect class="chip" width="176" height="50" rx="9" stroke-width="1"/><text class="ct" x="12" y="21">intent.py</text><text class="cs" x="12" y="39">feature lifecycle</text></g>
+      <g transform="translate(208,86)"><rect class="chip" width="176" height="50" rx="9" stroke-width="1"/><text class="ct" x="12" y="21">feature_spec.py</text><text class="cs" x="12" y="39">spec → plan → ops</text></g>
+      <g transform="translate(396,86)"><rect class="chip" width="176" height="50" rx="9" stroke-width="1"/><text class="ct" x="12" y="21">tiers.py</text><text class="cs" x="12" y="39">core 22 · escape 8</text></g>
+      <g transform="translate(584,86)"><rect class="chip" width="176" height="50" rx="9" stroke-width="1"/><text class="ct" x="12" y="21">capabilities.py</text><text class="cs" x="12" y="39">inventory, tier=</text></g>
+      <g transform="translate(20,148)"><rect class="chip" width="176" height="50" rx="9" stroke-width="1"/><text class="ct" x="12" y="21">resources.py</text><text class="cs" x="12" y="39">8 mcp:// docs</text></g>
+      <g transform="translate(208,148)"><rect class="chip" width="176" height="50" rx="9" stroke-width="1"/><text class="ct" x="12" y="21">per-object tools</text><text class="cs" x="12" y="39">models · views · routes</text></g>
+      <g transform="translate(396,148)"><rect class="chip" width="176" height="50" rx="9" stroke-width="1"/><text class="ct" x="12" y="21">@agent_function</text><text class="cs" x="12" y="39">scope · confine · wrap</text></g>
+      <g transform="translate(584,148)"><rect class="chip" width="176" height="50" rx="9" stroke-width="1"/><text class="ct" x="12" y="21">code_gen</text><text class="cs" x="12" y="39">AST edits, atomic write</text></g>
+    </g>
+    <g transform="translate(370,422)">
+      <rect class="band" width="780" height="280" rx="16" stroke-width="1.2"/>
+      <g class="s1 glyph" transform="translate(20,20)">
+  <path d="M11.5 4 c-3.2 0 -4 1.2 -4 4 c0 2.6 0 4.4 -3.5 6 c3.5 1.6 3.5 3.4 3.5 6 c0 2.8 0.8 4 4 4"/>
+  <path d="M16.5 4 c3.2 0 4 1.2 4 4 c0 2.6 0 4.4 3.5 6 c-3.5 1.6 -3.5 3.4 -3.5 6 c0 2.8 -0.8 4 -4 4"/>
+</g>
+      <text class="ptitle" x="62" y="42">zeeb_api</text>
+      <text class="sub" x="62" y="64">API layer on FastAPI + Pydantic v2</text>
+      <text class="tag" x="760" y="40" text-anchor="end">DEPENDS ON zeeb_orm</text>
+      <g transform="translate(20,86)"><rect class="chip" width="176" height="50" rx="9" stroke-width="1"/><text class="ct" x="12" y="21">create_app</text><text class="cs" x="12" y="39">app factory, fail-fast</text></g>
+      <g transform="translate(208,86)"><rect class="chip" width="176" height="50" rx="9" stroke-width="1"/><text class="ct" x="12" y="21">serializers/</text><text class="cs" x="12" y="39">models → Pydantic</text></g>
+      <g transform="translate(396,86)"><rect class="chip" width="176" height="50" rx="9" stroke-width="1"/><text class="ct" x="12" y="21">viewsets/ routers/</text><text class="cs" x="12" y="39">CRUD + POST /query/</text></g>
+      <g transform="translate(584,86)"><rect class="chip" width="176" height="50" rx="9" stroke-width="1"/><text class="ct" x="12" y="21">query/</text><text class="cs" x="12" y="39">serialized Q filters</text></g>
+      <g transform="translate(20,148)"><rect class="chip" width="176" height="50" rx="9" stroke-width="1"/><text class="ct" x="12" y="21">auth/</text><text class="cs" x="12" y="39">JWT · bcrypt · User</text></g>
+      <g transform="translate(208,148)"><rect class="chip" width="176" height="50" rx="9" stroke-width="1"/><text class="ct" x="12" y="21">auth/oauth/</text><text class="cs" x="12" y="39">OIDC · PKCE (extra)</text></g>
+      <g transform="translate(396,148)"><rect class="chip" width="176" height="50" rx="9" stroke-width="1"/><text class="ct" x="12" y="21">permissions/</text><text class="cs" x="12" y="39">per-viewset checks</text></g>
+      <g transform="translate(584,148)"><rect class="chip" width="176" height="50" rx="9" stroke-width="1"/><text class="ct" x="12" y="21">throttling/</text><text class="cs" x="12" y="39">anon · user · scoped</text></g>
+      <g transform="translate(20,210)"><rect class="chip" width="176" height="50" rx="9" stroke-width="1"/><text class="ct" x="12" y="21">versioning/</text><text class="cs" x="12" y="39">URL · header · query</text></g>
+      <g transform="translate(208,210)"><rect class="chip" width="176" height="50" rx="9" stroke-width="1"/><text class="ct" x="12" y="21">exceptions.py</text><text class="cs" x="12" y="39">error envelope + codes</text></g>
+      <g transform="translate(396,210)"><rect class="chip" width="176" height="50" rx="9" stroke-width="1"/><text class="ct" x="12" y="21">middleware/</text><text class="cs" x="12" y="39">auth · CORS</text></g>
+      <g transform="translate(584,210)"><rect class="chip" width="176" height="50" rx="9" stroke-width="1"/><text class="ct" x="12" y="21">conf/</text><text class="cs" x="12" y="39">LazySettings · .env</text></g>
+    </g>
+    <g transform="translate(370,746)">
+      <rect class="band" width="780" height="280" rx="16" stroke-width="1.2"/>
+      <g class="s1 glyph" transform="translate(20,20)">
+  <ellipse cx="14" cy="6.8" rx="9.5" ry="3.3"/>
+  <path d="M4.5 6.8 V21.2 c0 1.8 4.3 3.3 9.5 3.3 s9.5 -1.5 9.5 -3.3 V6.8"/>
+  <path d="M4.5 14 c0 1.8 4.3 3.3 9.5 3.3 s9.5 -1.5 9.5 -3.3"/>
+</g>
+      <text class="ptitle" x="62" y="42">zeeb_orm</text>
+      <text class="sub" x="62" y="64">async ORM on SQLAlchemy 2.0 + Alembic migrations</text>
+      <text class="tag" x="760" y="40" text-anchor="end">FOUNDATION</text>
+      <g transform="translate(20,86)"><rect class="chip" width="176" height="50" rx="9" stroke-width="1"/><text class="ct" x="12" y="21">models/</text><text class="cs" x="12" y="39">ModelBase · fields · UUID</text></g>
+      <g transform="translate(208,86)"><rect class="chip" width="176" height="50" rx="9" stroke-width="1"/><text class="ct" x="12" y="21">manager + QuerySet</text><text class="cs" x="12" y="39">async, chainable</text></g>
+      <g transform="translate(396,86)"><rect class="chip" width="176" height="50" rx="9" stroke-width="1"/><text class="ct" x="12" y="21">query/</text><text class="cs" x="12" y="39">Q · F · lookups · joins</text></g>
+      <g transform="translate(584,86)"><rect class="chip" width="176" height="50" rx="9" stroke-width="1"/><text class="ct" x="12" y="21">expressions</text><text class="cs" x="12" y="39">Window · Subquery · Case</text></g>
+      <g transform="translate(20,148)"><rect class="chip" width="176" height="50" rx="9" stroke-width="1"/><text class="ct" x="12" y="21">signals.py</text><text class="cs" x="12" y="39">pre/post save, on_commit</text></g>
+      <g transform="translate(208,148)"><rect class="chip" width="176" height="50" rx="9" stroke-width="1"/><text class="ct" x="12" y="21">validators.py</text><text class="cs" x="12" y="39">choices · full_clean</text></g>
+      <g transform="translate(396,148)"><rect class="chip" width="176" height="50" rx="9" stroke-width="1"/><text class="ct" x="12" y="21">db/connection</text><text class="cs" x="12" y="39">AsyncEngine · session</text></g>
+      <g transform="translate(584,148)"><rect class="chip" width="176" height="50" rx="9" stroke-width="1"/><text class="ct" x="12" y="21">migrations/</text><text class="cs" x="12" y="39">detect · write · apply</text></g>
+      <g transform="translate(20,210)"><rect class="chip" width="176" height="50" rx="9" stroke-width="1"/><text class="ct" x="12" y="21">conf.project</text><text class="cs" x="12" y="39">root · settings · DB URL</text></g>
+      <g transform="translate(208,210)"><rect class="chip" width="176" height="50" rx="9" stroke-width="1"/><text class="ct" x="12" y="21">models.providers</text><text class="cs" x="12" y="39">upper-layer tables</text></g>
+      <g transform="translate(396,210)"><rect class="chip3" width="176" height="50" rx="9" stroke-width="1"/><text class="ct" x="12" y="21">cli/</text><text class="cs" x="12" y="39">zeeb · zeeb-manage</text></g>
+      <g transform="translate(584,210)"><rect class="chip3" width="176" height="50" rx="9" stroke-width="1"/><text class="ct" x="12" y="21">scaffold/</text><text class="cs" x="12" y="39">templates · AST wiring</text></g>
+    </g>
+    
+    <g transform="translate(50,219)">
+      <rect class="node" width="220" height="100" rx="14" stroke-width="1"/>
+      <g class="s3 glyph" transform="translate(20,22)">
+  <rect x="7" y="7" width="14" height="14" rx="2.5"/>
+  <rect x="11.5" y="11.5" width="5" height="5"/>
+  <path d="M10 7 V4 M14 7 V4 M18 7 V4 M10 21 v3 M14 21 v3 M18 21 v3"/>
+  <path d="M7 10 H4 M7 14 H4 M7 18 H4 M21 10 h3 M21 14 h3 M21 18 h3"/>
+</g>
+      <text class="title" x="62" y="42">Coding agent</text>
+      <text class="sub" x="62" y="64">via an MCP host</text>
+      
+    </g>
+    <g transform="translate(50,512)">
+      <rect class="node" width="220" height="100" rx="14" stroke-width="1"/>
+      <g class="s3 glyph" transform="translate(20,22)">
+  <circle cx="14" cy="14" r="10"/>
+  <path d="M4 14 h20"/>
+  <ellipse cx="14" cy="14" rx="4.5" ry="10"/>
+</g>
+      <text class="title" x="62" y="42">HTTP clients</text>
+      <text class="sub" x="62" y="64">browser · SPA · apps</text>
+      
+    </g>
+    <g transform="translate(50,836)">
+      <rect class="node" width="220" height="100" rx="14" stroke-width="1"/>
+      <g class="s3 glyph" transform="translate(20,22)">
+  <rect x="3.5" y="4.5" width="21" height="19" rx="3"/>
+  <path d="M8 10.5 l3.5 3 -3.5 3 M15 16.5 h4.5"/>
+</g>
+      <text class="title" x="62" y="42">Developer</text>
+      <text class="sub" x="62" y="64">zeeb · zeeb-manage</text>
+      
+    </g>
+    <g transform="translate(1262,160)">
+      <rect class="node" width="288" height="470" rx="14" stroke-width="1"/>
+      <g class="s2 glyph" transform="translate(20,22)">
+  <path d="M3.5 22 V6.5 a2 2 0 0 1 2 -2 h4.6 a2 2 0 0 1 1.6 0.8 l1.7 2.2 h9.1 a2 2 0 0 1 2 2 V22 a2 2 0 0 1 -2 2 h-17 a2 2 0 0 1 -2 -2 z"/>
+</g>
+      <text class="title" x="62" y="42">Your project</text>
+      <text class="sub" x="62" y="64">generated · on disk</text>
+      <text class="code" x="22" y="104">manage.py</text>
+      <text class="code" x="22" y="130">.env  (SECRET_KEY, 0600)</text>
+      <text class="code" x="22" y="156">AGENTS.md · pyproject.toml</text>
+      <text class="code" x="22" y="182">myproject/</text>
+      <text class="code" x="42" y="208">settings · urls · asgi</text>
+      <text class="code" x="22" y="234">apps/accounts/  (User)</text>
+      <text class="code" x="22" y="260">apps/&lt;app&gt;/</text>
+      <text class="code" x="42" y="286">models · serializers</text>
+      <text class="code" x="42" y="312">views · urls</text>
+      <text class="code" x="22" y="338">migrations/  (flat)</text>
+      <text class="code" x="22" y="364">tests/  conftest · smoke</text>
+      <text class="code" x="22" y="390">.zeeb/features.json</text>
+      <text class="code" x="22" y="416">.zeeb/archive/&lt;feature&gt;/</text>
+    </g>
+    <g transform="translate(1262,826)">
+      <rect class="node" width="288" height="132" rx="14" stroke-width="1"/>
+      <g class="s2 glyph" transform="translate(20,22)">
+  <ellipse cx="14" cy="6.8" rx="9.5" ry="3.3"/>
+  <path d="M4.5 6.8 V21.2 c0 1.8 4.3 3.3 9.5 3.3 s9.5 -1.5 9.5 -3.3 V6.8"/>
+  <path d="M4.5 14 c0 1.8 4.3 3.3 9.5 3.3 s9.5 -1.5 9.5 -3.3"/>
+</g>
+      <text class="title" x="62" y="42">Database</text>
+      <text class="sub" x="62" y="64">PostgreSQL · MySQL · SQLite</text>
+      <text class="codef" x="22" y="100">asyncpg · aiomysql · aiosqlite</text>
+    </g>
+    <path d="M270 269 H 366" class="s3" stroke-width="1.8" marker-end="url(#m3)" />
+    <text class="lbl f3" x="320" y="259" text-anchor="middle">tool calls</text>
+    <path d="M270 562 H 366" class="s3" stroke-width="1.8" marker-end="url(#m3)" />
+    <text class="lbl f3" x="320" y="552" text-anchor="middle">HTTP + JWT</text>
+    <path d="M270 886 H 366" class="s3" stroke-width="1.8" marker-end="url(#m3)" />
+    <text class="lbl f3" x="320" y="876" text-anchor="middle">commands</text>
+    <path d="M760 378 V 418" class="s1" stroke-width="1.8" marker-end="url(#m1)" />
+    <text class="lbl f1" x="774" y="405" text-anchor="start">imports</text>
+    <path d="M760 702 V 742" class="s1" stroke-width="1.8" marker-end="url(#m1)" />
+    <text class="lbl f1" x="774" y="729" text-anchor="start">imports</text>
+    <path d="M1150 338 H 1173 Q 1188 338 1188 353 V 791 Q 1188 806 1173 806 H 1154" class="s1" stroke-width="1.8" marker-end="url(#m1)" />
+    <text class="lbl f1" transform="translate(1204,596) rotate(90)">imports both</text>
+    <path d="M1150 230 H 1258" class="s2" stroke-width="1.8" marker-end="url(#m2)" />
+    <text class="lbl f2" x="1206" y="220" text-anchor="middle">writes</text>
+    <path d="M1262 580 H 1197 A 9 9 0 0 0 1179 580 H 1154" class="s1" stroke-width="1.8" marker-end="url(#m1)" />
+    <text class="sm f1" x="1229" y="568" text-anchor="middle">runs on</text>
+    <path d="M1150 906 H 1258" class="s1" stroke-width="1.8" marker-end="url(#m1)" />
+    <text class="lbl f1" x="1206" y="896" text-anchor="middle">async SQL</text>
+    <text class="kicker" x="50" y="1088">BUILT ON</text>
+    <g transform="translate(370,1066)"><rect class="chip" width="180" height="34" rx="17" stroke-width="1"/><text class="ct" x="90" y="22" text-anchor="middle">SQLAlchemy 2.0 async</text></g><g transform="translate(562,1066)"><rect class="chip" width="82.5" height="34" rx="17" stroke-width="1"/><text class="ct" x="41.25" y="22" text-anchor="middle">Alembic</text></g><g transform="translate(656.5,1066)"><rect class="chip" width="82.5" height="34" rx="17" stroke-width="1"/><text class="ct" x="41.25" y="22" text-anchor="middle">FastAPI</text></g><g transform="translate(751,1066)"><rect class="chip" width="112.5" height="34" rx="17" stroke-width="1"/><text class="ct" x="56.25" y="22" text-anchor="middle">Pydantic v2</text></g><g transform="translate(875.5,1066)"><rect class="chip" width="82.5" height="34" rx="17" stroke-width="1"/><text class="ct" x="41.25" y="22" text-anchor="middle">uvicorn</text></g><g transform="translate(970,1066)"><rect class="chip" width="135" height="34" rx="17" stroke-width="1"/><text class="ct" x="67.5" y="22" text-anchor="middle">PyJWT · bcrypt</text></g><g transform="translate(1117,1066)"><rect class="chip" width="172.5" height="34" rx="17" stroke-width="1"/><text class="ct" x="86.25" y="22" text-anchor="middle">httpx · oauth extra</text></g>
+    <g transform="translate(50,1138)">
+      <rect class="chip3" width="22" height="14" rx="4" stroke-width="1"/>
+      <text class="sub" x="34" y="12">Only zeeb_orm/cli/ and zeeb_orm/scaffold/ may import upward. The auth tables reach the ORM through a model provider, never a reverse import.</text>
+    </g>
+    </svg>
+    <script>
+    (function () {
+      var fit = function () { document.body.style.zoom = Math.min(1, window.innerWidth / 1600); };
+      window.addEventListener('resize', fit); fit();
+    })();
+  </script>
+  </body>
+</html>

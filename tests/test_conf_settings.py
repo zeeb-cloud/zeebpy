@@ -187,3 +187,44 @@ def test_create_app_with_a_custom_lifespan_points_the_orm_at_the_projects_databa
     finally:
         settings._wrapped, settings._configured, settings._explicit_settings = saved
         Settings._instance = saved_orm
+
+
+# --------------------------------------------------------------------------- #
+# Runtime overrides sit above the settings module and can be removed
+# --------------------------------------------------------------------------- #
+
+
+def test_deleting_a_runtime_override_reads_through_to_the_default():
+    from types import ModuleType
+
+    from zeeb_api.conf.settings import Settings
+
+    s = Settings()
+    s._configured = True
+    s.DEBUG = True
+    assert s.DEBUG is True and s.is_overridden("DEBUG")
+
+    del s.DEBUG
+
+    assert s.DEBUG is False
+    assert not s.is_overridden("DEBUG")
+    with pytest.raises(AttributeError):
+        del s.DEBUG
+
+    # The project's own value survives an override being set and removed.
+    project = ModuleType("project_settings")
+    project.DEBUG = True
+    s._wrapped = project
+    s.DEBUG = False
+    del s.DEBUG
+    assert s.DEBUG is True and project.DEBUG is True
+    assert s.is_overridden("DEBUG")
+
+
+def test_monkeypatch_undo_restores_a_setting_only_the_defaults_define():
+    # pytest >= 9.2 undoes a patch of a non-__dict__ attribute with delattr.
+    previous = settings.DEBUG
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(settings, "DEBUG", not previous, raising=False)
+        assert settings.DEBUG is (not previous)
+    assert settings.DEBUG is previous
