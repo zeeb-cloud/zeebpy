@@ -333,6 +333,17 @@ zeebpy has three settings layers with a defined hand-off:
 3. **`zeeb_agents`** — reads a *target* project's settings off disk by path
    (`load_project_settings`); intentionally independent of the current process.
 
+### Runtime overrides
+
+Assigning to `zeeb_api.conf.settings` at runtime (`settings.DEBUG = True`)
+records an override that sits above your `settings.py` and the defaults; the
+settings module itself is never modified. `del settings.DEBUG` removes the
+override, and the setting reads through to the project's value (or the default)
+again. pytest's `monkeypatch.setattr(settings, ...)` therefore undoes cleanly,
+including on pytest 9.2+, which restores such patches with `delattr`. Loading a
+settings module (`configure_settings("myproject.settings")`, `create_app(...)`)
+clears earlier overrides.
+
 ### How the tooling finds `settings.py`
 
 `manage.py` commands (`migrate`, `makemigrations`, `showmigrations`,

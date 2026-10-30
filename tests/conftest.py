@@ -64,6 +64,7 @@ def _isolate_global_state():
         api_settings._wrapped,
         api_settings._configured,
         set(api_settings._explicit_settings),
+        dict(api_settings._overrides),
     )
     try:
         yield
@@ -72,7 +73,13 @@ def _isolate_global_state():
             api_settings._wrapped,
             api_settings._configured,
             api_settings._explicit_settings,
-        ) = settings_before[0], settings_before[1], set(settings_before[2])
+            api_settings._overrides,
+        ) = (
+            settings_before[0],
+            settings_before[1],
+            set(settings_before[2]),
+            dict(settings_before[3]),
+        )
 
         # Fully restore the registry rather than deleting new keys: scaffolded
         # models reuse common names (User, Post, …) and *overwrite* entries a

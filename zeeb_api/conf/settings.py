@@ -23,9 +23,15 @@ class Settings:
 
     _wrapped: ModuleType | None = None
     _explicit_settings: set
+    # Values assigned at runtime (``settings.X = ...``). They sit above the
+    # settings module rather than being written into it, so deleting one
+    # (``del settings.X``, or pytest's monkeypatch undo) restores whatever
+    # the project or the defaults say, and never removes the project's value.
+    _overrides: dict
 
     def __init__(self):
         self._explicit_settings = set()
+        self._overrides = {}
         self._wrapped = None
         self._configured = False
 
@@ -41,6 +47,7 @@ class Settings:
 
         if settings_module:
             self._wrapped = importlib.import_module(settings_module)
+            self._overrides = {}
 
             # Track which settings were explicitly set
             for setting in dir(self._wrapped):
@@ -93,6 +100,9 @@ class Settings:
         if not self._configured:
             self._setup()
 
+        if name in self._overrides:
+            return self._overrides[name]
+
         # Check project settings first
         if self._wrapped is not None and hasattr(self._wrapped, name):
             return getattr(self._wrapped, name)
@@ -113,10 +123,21 @@ class Settings:
             if not self._configured:
                 self._setup()
             self._explicit_settings.add(name)
-            if self._wrapped is None:
-                # Create a dummy module to hold runtime settings
-                self._wrapped = ModuleType("runtime_settings")
-            setattr(self._wrapped, name, value)
+            self._overrides[name] = value
+
+    def __delattr__(self, name: str):
+        """
+        Remove a runtime override, so the setting reads through again.
+        """
+        if name.startswith('_'):
+            object.__delattr__(self, name)
+            return
+        try:
+            del self._overrides[name]
+        except KeyError:
+            raise AttributeError(f"Settings has no runtime override '{name}'") from None
+        if self._wrapped is None or not hasattr(self._wrapped, name):
+            self._explicit_settings.discard(name)
 
     def is_configured(self) -> bool:
         """Check if settings have been configured."""
@@ -136,6 +157,7 @@ class Settings:
             self._explicit_settings.add(name)
 
         self._wrapped = holder
+        self._overrides = {}
         self._configured = True
 
     def is_overridden(self, setting: str) -> bool:
@@ -170,6 +192,7 @@ class Settings:
                 if name.isupper():
                     result[name] = getattr(self._wrapped, name)
 
+        result.update(self._overrides)
         return result
 
 
