@@ -1,0 +1,369 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>zeebpy Agents and MCP</title>
+    <style>
+/* rendercraft theme: ember — warm dark. Every neutral carries a low-chroma amber hue. */
+@import url('https://fonts.googleapis.com/css2?family=Inter+Tight:wght@500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+:root {
+  --theme-name: "ember";
+  /* Components first. Every colour below is built from one of these, so a token
+     and its alpha grades can never drift apart: any transparency you need is
+     oklch(var(--a1-raw) / 20%). See SKILL.md §4. */
+  --ground-raw: 0.152 0.016 52;
+  --surface-raw: 0.185 0.018 52;
+  --ink-raw: 0.958 0.012 70;
+  --a1-raw: 0.83 0.13 195;   /* cyan — primary, forward paths */
+  --a2-raw: 0.735 0.168 42;  /* ember — actions, returns */
+  --a3-raw: 0.7 0.21 335;    /* magenta — external, tertiary */
+  --a4-raw: 0.85 0.18 125;   /* lime — success */
+
+  --ground: oklch(var(--ground-raw));
+  --surface: oklch(var(--surface-raw) / 92%);
+  --line: oklch(0.98 0.01 60 / 15%);
+  --ink: oklch(var(--ink-raw));
+  --ink-dim: oklch(0.735 0.018 60);
+  --ink-faint: oklch(0.62 0.02 60);
+  --a1: oklch(var(--a1-raw));
+  --a2: oklch(var(--a2-raw));
+  --a3: oklch(var(--a3-raw));
+  --a4: oklch(var(--a4-raw));
+  --grad: linear-gradient(100deg, oklch(0.958 0.012 70) 4%, oklch(0.84 0.15 85) 44%, oklch(0.735 0.168 42) 96%);
+  --glow1: oklch(var(--a2-raw));
+  --glow2: oklch(var(--a1-raw));
+  --glow-opacity: 0.16;
+  --dot: oklch(0.98 0.01 60 / 9%);
+  --shadow: 0 32px 80px -20px oklch(0 0 0 / 0.55);
+  --font-display: "Inter Tight", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", monospace;
+}
+
+</style>
+    <style>
+      html { background: oklch(0.152 0.016 52); }
+      body { width: 1600px; height: 1010px; }
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      body { overflow: hidden; background: var(--ground); position: relative; font-family: var(--font-display); }
+      .glow { position: absolute; border-radius: 999px; filter: blur(120px); opacity: var(--glow-opacity); }
+      .g1 { width: 620px; height: 620px; top: -260px; left: -120px; background: var(--glow1); }
+      .g2 { width: 580px; height: 580px; top: -220px; right: -140px; background: var(--glow2); }
+      .dots { position: absolute; inset: 0;
+        background-image: radial-gradient(circle at 1px 1px, var(--dot) 1px, transparent 0);
+        background-size: 30px 30px;
+        -webkit-mask-image: radial-gradient(ellipse 80% 75% at 50% 45%, #000 40%, transparent 100%); }
+      svg { position: absolute; top: 0; left: 0; display: block; }
+      .head { position: absolute; left: 50px; top: 36px; z-index: 1; }
+      .kick { font: 500 14px var(--font-mono); color: var(--ink-faint); letter-spacing: 0.06em; }
+      h1 { font: 650 30px var(--font-display); color: var(--ink); margin-top: 10px; letter-spacing: -0.01em; }
+      .grad { background: var(--grad); -webkit-background-clip: text; background-clip: text; color: transparent; }
+      .lede { font: 400 13.5px var(--font-mono); color: var(--ink-dim); margin-top: 8px; }
+      .title { font: 600 20px var(--font-display); fill: var(--ink); }
+      .ptitle { font: 650 23px var(--font-mono); fill: var(--ink); }
+      .sub { font: 400 12.5px var(--font-mono); fill: var(--ink-dim); }
+      .tag { font: 500 12px var(--font-mono); fill: var(--ink-faint); letter-spacing: 0.04em; }
+      .lbl { font: 500 12.5px var(--font-mono); }
+      .sm { font: 500 11.5px var(--font-mono); }
+      .code { font: 400 12.5px var(--font-mono); fill: var(--ink); }
+      .codef { font: 400 12px var(--font-mono); fill: var(--ink-faint); }
+      .ct { font: 500 12.5px var(--font-mono); fill: var(--ink); }
+      .cs { font: 400 11px var(--font-mono); fill: var(--ink-dim); }
+      .kicker { font: 500 13px var(--font-mono); fill: var(--ink-faint); letter-spacing: 0.06em; }
+      .node { fill: var(--surface); stroke: var(--line); }
+      .band { fill: oklch(var(--a1-raw) / 5%); stroke: oklch(var(--a1-raw) / 35%); }
+      .chip { fill: oklch(var(--surface-raw) / 92%); stroke: var(--line); }
+      .chip3 { fill: oklch(var(--a3-raw) / 7%); stroke: oklch(var(--a3-raw) / 55%); stroke-dasharray: 5 4; }
+      .chipd { fill: oklch(var(--a1-raw) / 9%); stroke: oklch(var(--a1-raw) / 40%); }
+      .frame { fill: none; stroke: var(--ink-faint); stroke-dasharray: 6 6; opacity: 0.6; }
+      .s1 { stroke: var(--a1); } .s2 { stroke: var(--a2); } .s3 { stroke: var(--a3); } .s4 { stroke: var(--a4); }
+      .f1 { fill: var(--a1); } .f2 { fill: var(--a2); } .f3 { fill: var(--a3); } .f4 { fill: var(--a4); }
+      .sline { stroke: var(--line); } .fline { fill: var(--line); }
+      .sfaint { stroke: var(--ink-faint); } .ffaint { fill: var(--ink-faint); }
+      .fground { fill: var(--ground); }
+      .glyph { fill: none; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+
+    </style>
+  </head>
+  <body>
+    <div class="glow g1"></div>
+    <div class="glow g2"></div>
+    <div class="dots"></div>
+    <div class="head">
+      <div class="kick">ZEEBPY · AGENT LAYER + MCP</div>
+      <h1>One decorator, 132 tools, <span class="grad">an MCP-ready contract</span></h1>
+      <div class="lede">zeebpy ships no MCP dependency. A host registers the tools and resources; every call returns an AgentResult.</div>
+    </div>
+    <svg width="1600" height="1010" viewBox="0 0 1600 1010" fill="none">
+  <defs>
+    <marker id="m1" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="f1" d="M0 0 L10 5 L0 10 z"/></marker>
+    <marker id="m2" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="f2" d="M0 0 L10 5 L0 10 z"/></marker>
+    <marker id="m3" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="f3" d="M0 0 L10 5 L0 10 z"/></marker>
+  </defs>
+
+    <g transform="translate(50,160)">
+      <rect class="node" width="240" height="100" rx="14" stroke-width="1"/>
+      <g class="s3 glyph" transform="translate(20,22)">
+  <rect x="7" y="7" width="14" height="14" rx="2.5"/>
+  <rect x="11.5" y="11.5" width="5" height="5"/>
+  <path d="M10 7 V4 M14 7 V4 M18 7 V4 M10 21 v3 M14 21 v3 M18 21 v3"/>
+  <path d="M7 10 H4 M7 14 H4 M7 18 H4 M21 10 h3 M21 14 h3 M21 18 h3"/>
+</g>
+      <text class="title" x="62" y="42">Coding agent</text>
+      <text class="sub" x="62" y="64">LLM client</text>
+      
+    </g>
+
+    <g transform="translate(50,330)">
+      <rect class="node" width="240" height="400" rx="14" stroke-width="1"/>
+      <g class="s3 glyph" transform="translate(20,22)">
+  <circle cx="14" cy="6.5" r="3"/>
+  <circle cx="6" cy="21.5" r="3"/>
+  <circle cx="22" cy="21.5" r="3"/>
+  <path d="M12.6 9.2 L7.6 18.9 M15.4 9.2 l4.9 9.7 M9 21.5 h10"/>
+</g>
+      <text class="title" x="62" y="42">MCP server</text>
+      <text class="sub" x="62" y="64">host-owned code</text>
+      <text class="tag" x="22" y="92">projects</text>
+      <text class="code" x="22" y="111">set_project_resolver</text>
+      <text class="codef" x="22" y="128">project_id → path</text>
+      <text class="tag" x="22" y="153">tools</text>
+      <text class="code" x="22" y="172">DEFAULT_SURFACE (30)</text>
+      <text class="codef" x="22" y="190">rest stays dispatchable</text>
+      <text class="tag" x="22" y="285">discovery</text>
+      <text class="code" x="22" y="305">list_capabilities</text>
+      <text class="tag" x="22" y="355">resources</text>
+      <text class="code" x="22" y="375">mcp://docs/* (8)</text>
+    </g>
+
+    <g transform="translate(50,765)">
+      <rect class="node" width="240" height="135" rx="14" stroke-width="1"/>
+      <g class="s3 glyph" transform="translate(20,22)">
+  <rect x="3.5" y="4.5" width="21" height="19" rx="3"/>
+  <path d="M8 10.5 l3.5 3 -3.5 3 M15 16.5 h4.5"/>
+</g>
+      <text class="title" x="62" y="42">Any other host</text>
+      <text class="sub" x="62" y="64">CLI · script · CI</text>
+      <text class="codef" x="22" y="94">same functions,</text>
+      <text class="codef" x="22" y="114">same AgentResult</text>
+    </g>
+
+    <g transform="translate(390,280)">
+      <rect class="node" width="260" height="132" rx="14" stroke-width="1"/>
+      <g class="s1 glyph" transform="translate(20,22)">
+  <rect x="6.5" y="12.5" width="15" height="11" rx="3"/>
+  <path d="M10 12.5 V9.5 a4 4 0 0 1 8 0 v3"/>
+  <path d="M14 16.5 v3"/>
+</g>
+      <text class="title" x="62" y="42">Public contract</text>
+      <text class="sub" x="62" y="64">golden-file guarded</text>
+      <text class="codef" x="22" y="92">names + data keys are stable</text>
+      <text class="codef" x="22" y="110">new params: optional, appended</text>
+    </g>
+
+    <g transform="translate(390,440)">
+      <rect class="node" width="260" height="130" rx="14" stroke-width="1"/>
+      <g class="s1 glyph" transform="translate(20,22)">
+  <path d="M14 3.5 L24.5 9.5 14 15.5 3.5 9.5 z"/>
+  <path d="M3.5 14.5 L14 20.5 24.5 14.5"/>
+  <path d="M3.5 19.5 L14 25.5 24.5 19.5"/>
+</g>
+      <text class="title" x="62" y="42">tiers.py</text>
+      <text class="sub" x="62" y="64">what an agent sees first</text>
+      <rect x="20" y="82" width="36.666666666666664" height="12" rx="3" class="f1"/>
+      <rect x="58.666666666666664" y="82" width="11.333333333333334" height="12" rx="3" class="f3"/>
+      <rect x="72" y="82" width="168" height="12" rx="3" class="ffaint" opacity="0.45"/>
+      <text class="sm f1" x="20" y="114">core 22</text>
+      <text class="sm f3" x="86" y="114">escape 8</text>
+      <text class="sm ffaint" x="158" y="114">advanced 102</text>
+    </g>
+
+    <g transform="translate(390,595)">
+      <rect class="node" width="260" height="80" rx="14" stroke-width="1"/>
+      <g class="s1 glyph" transform="translate(20,22)">
+  <circle cx="12.5" cy="12.5" r="7"/>
+  <path d="M17.6 17.6 L24 24"/>
+</g>
+      <text class="title" x="62" y="42">list_capabilities</text>
+      <text class="sub" x="62" y="64">tier per tool · tier=</text>
+      
+    </g>
+
+    <g transform="translate(390,700)">
+      <rect class="node" width="260" height="200" rx="14" stroke-width="1"/>
+      <g class="s1 glyph" transform="translate(20,22)">
+  <path d="M8.5 3.5 h7 L22 10 v12 a2.5 2.5 0 0 1 -2.5 2.5 h-11 A2.5 2.5 0 0 1 6 22 V6 a2.5 2.5 0 0 1 2.5 -2.5 z"/>
+  <path d="M15.5 3.5 V10 H22"/>
+</g>
+      <text class="title" x="62" y="42">resources.py</text>
+      <text class="sub" x="62" y="64">get_resource(uri)</text>
+      <text class="cs" x="22" y="90">principles · capabilities</text>
+      <text class="cs" x="22" y="104.5">project-lifecycle</text>
+      <text class="cs" x="22" y="119">backend-generation</text>
+      <text class="cs" x="22" y="133.5">frontend-generation</text>
+      <text class="cs" x="22" y="148">deployment · recipes</text>
+      <text class="cs" x="22" y="162.5">error-recovery</text>
+      <text class="cs" x="22" y="177"></text>
+      <text class="cs" x="22" y="191.5">← zeeb_agents/agent_docs/*.md</text>
+    </g>
+
+    <g transform="translate(710,150)">
+      <rect class="band" width="840" height="150" rx="16" stroke-width="1.2"/>
+      <g class="s1 glyph" transform="translate(20,18)">
+  <circle cx="14" cy="14" r="6.8"/>
+  <circle cx="14" cy="14" r="2.4"/>
+  <path d="M14 7.2 V3.8 M14 20.8 V24.2 M7.2 14 H3.8 M20.8 14 H24.2"/>
+  <path d="M9.2 9.2 L6.8 6.8 M18.8 9.2 L21.2 6.8 M9.2 18.8 L6.8 21.2 M18.8 18.8 L21.2 21.2"/>
+</g>
+      <text class="ptitle" x="62" y="40">@agent_function</text>
+      <text class="sub" x="300" y="39">wraps every public tool · logs to "zeeb_agents"</text>
+      <g transform="translate(20,76)"><rect class="chipd" width="142.4" height="50" rx="9" stroke-width="1"/><text class="ct" x="12" y="21">1 resolve</text><text class="cs" x="12" y="39">project_id → Path</text></g>
+      <g transform="translate(184.4,76)"><rect class="chipd" width="142.4" height="50" rx="9" stroke-width="1"/><text class="ct" x="12" y="21">2 project_scope</text><text class="cs" x="12" y="39">isolated .env</text></g>
+      <g transform="translate(348.8,76)"><rect class="chipd" width="142.4" height="50" rx="9" stroke-width="1"/><text class="ct" x="12" y="21">3 confine_path</text><text class="cs" x="12" y="39">paths stay in root</text></g>
+      <g transform="translate(513.2,76)"><rect class="chip" width="142.4" height="50" rx="9" stroke-width="1"/><text class="ct" x="12" y="21">4 tool body</text><text class="cs" x="12" y="39">async, awaited</text></g>
+      <g transform="translate(677.6,76)"><rect class="chipd" width="142.4" height="50" rx="9" stroke-width="1"/><text class="ct" x="12" y="21">5 wrap</text><text class="cs" x="12" y="39">error → AgentResult</text></g>
+      <path d="M166.4 101 H 180.4" class="s1" stroke-width="1.6" marker-end="url(#m1)"/><path d="M330.8 101 H 344.8" class="s1" stroke-width="1.6" marker-end="url(#m1)"/><path d="M495.20000000000005 101 H 509.20000000000005" class="s1" stroke-width="1.6" marker-end="url(#m1)"/><path d="M659.6 101 H 673.6" class="s1" stroke-width="1.6" marker-end="url(#m1)"/>
+    </g>
+<rect class="frame" x="690" y="340" width="880" height="380" rx="18" stroke-width="1.2"/>
+<text class="kicker" x="710" y="366">132 TOOLS · ALL WRAPPED</text>
+
+    <g transform="translate(710,380)">
+      <rect class="node" width="260" height="320" rx="14" stroke-width="1"/>
+      <g class="s1 glyph" transform="translate(20,22)">
+  <path d="M14 3.5 L24.5 9.5 14 15.5 3.5 9.5 z"/>
+  <path d="M3.5 14.5 L14 20.5 24.5 14.5"/>
+  <path d="M3.5 19.5 L14 25.5 24.5 19.5"/>
+</g>
+      <text class="title" x="62" y="42">intent.py</text>
+      <text class="sub" x="62" y="64">core · the lifecycle</text>
+      <text class="code" x="22" y="98">plan_feature  (dry run)</text>
+      <text class="code" x="22" y="118">build_feature · apply_plan</text>
+      <text class="code" x="22" y="138">change_feature</text>
+      <text class="code" x="22" y="158">list_features</text>
+      <text class="code" x="22" y="178">deactivate / activate</text>
+      <text class="code" x="22" y="198">delete_feature (confirm)</text>
+      <text class="code" x="22" y="218">bootstrap_project</text>
+      <text class="code" x="22" y="238">configure_auth</text>
+      <text class="code" x="22" y="258">verify_project</text>
+      <text class="code" x="22" y="278">diagnose_problem</text>
+    </g>
+
+    <g transform="translate(1030,380)">
+      <rect class="node" width="230" height="160" rx="14" stroke-width="1"/>
+      <g class="s1 glyph" transform="translate(20,22)">
+  <path d="M4 5.5 H24 L16.5 14.5 V23 L11.5 20.5 V14.5 Z"/>
+</g>
+      <text class="title" x="62" y="42">feature_spec</text>
+      <text class="sub" x="62" y="64">private compiler</text>
+      <text class="cs" x="22" y="94">FeatureSpec → plan → ops</text>
+      <text class="cs" x="22" y="112">every problem at once</text>
+      <text class="cs" x="22" y="130">action · endpoint · hook</text>
+      <text class="cs" x="22" y="148">task · rule</text>
+    </g>
+
+    <g transform="translate(1030,560)">
+      <rect class="node" width="230" height="140" rx="14" stroke-width="1"/>
+      <g class="s3 glyph" transform="translate(20,22)">
+  <circle cx="9.5" cy="9.5" r="5"/>
+  <path d="M13.1 13.1 L23.5 23.5 M19.8 19.8 l2.7 -2.7"/>
+</g>
+      <text class="title" x="62" y="42">escape hatch</text>
+      <text class="sub" x="62" y="64">8 direct tools</text>
+      <text class="cs" x="22" y="84">read/write/edit/delete_file</text>
+      <text class="cs" x="22" y="99">search_code · add_dependency</text>
+      <text class="cs" x="22" y="114">run_query (read-only gate)</text>
+      <text class="cs" x="22" y="129">run_management_command</text>
+    </g>
+
+    <g transform="translate(1320,380)">
+      <rect class="node" width="230" height="320" rx="14" stroke-width="1"/>
+      <g class="s1 glyph" transform="translate(20,22)">
+  <circle cx="14" cy="14" r="6.8"/>
+  <circle cx="14" cy="14" r="2.4"/>
+  <path d="M14 7.2 V3.8 M14 20.8 V24.2 M7.2 14 H3.8 M20.8 14 H24.2"/>
+  <path d="M9.2 9.2 L6.8 6.8 M18.8 9.2 L21.2 6.8 M9.2 18.8 L6.8 21.2 M18.8 18.8 L21.2 21.2"/>
+</g>
+      <text class="title" x="62" y="42">per-object</text>
+      <text class="sub" x="62" y="64">advanced · 102</text>
+      <text class="code" x="22" y="96">create_app</text>
+      <text class="code" x="22" y="115.5">create_model · add_field</text>
+      <text class="code" x="22" y="135">create_serializer</text>
+      <text class="code" x="22" y="154.5">create_viewset</text>
+      <text class="code" x="22" y="174">create_route</text>
+      <text class="code" x="22" y="193.5">add_viewset_action</text>
+      <text class="code" x="22" y="213">create_signal_receiver</text>
+      <text class="code" x="22" y="232.5">create_task</text>
+      <text class="code" x="22" y="252">create_permission_class</text>
+      <text class="codef" x="22" y="271.5">… and more</text>
+    </g>
+
+    <g transform="translate(710,780)">
+      <rect class="node" width="260" height="120" rx="14" stroke-width="1"/>
+      <g class="s2 glyph" transform="translate(20,22)">
+  <path d="M8.5 3.5 h7 L22 10 v12 a2.5 2.5 0 0 1 -2.5 2.5 h-11 A2.5 2.5 0 0 1 6 22 V6 a2.5 2.5 0 0 1 2.5 -2.5 z"/>
+  <path d="M15.5 3.5 V10 H22"/>
+</g>
+      <text class="title" x="62" y="42">write_source</text>
+      <text class="sub" x="62" y="64">code_gen · the one gate</text>
+      <text class="cs" x="22" y="90">AST-located blocks, atomic</text>
+      <text class="cs" x="22" y="107">refused on syntax_error</text>
+    </g>
+
+    <g transform="translate(1030,780)">
+      <rect class="node" width="230" height="120" rx="14" stroke-width="1"/>
+      <g class="s2 glyph" transform="translate(20,22)">
+  <path d="M3.5 22 V6.5 a2 2 0 0 1 2 -2 h4.6 a2 2 0 0 1 1.6 0.8 l1.7 2.2 h9.1 a2 2 0 0 1 2 2 V22 a2 2 0 0 1 -2 2 h-17 a2 2 0 0 1 -2 -2 z"/>
+</g>
+      <text class="title" x="62" y="42">Project</text>
+      <text class="sub" x="62" y="64">on disk + its DB</text>
+      <text class="cs" x="22" y="90">apps/&lt;app&gt;/*.py</text>
+      <text class="cs" x="22" y="107">migrations/ · tests/</text>
+    </g>
+
+    <g transform="translate(1320,780)">
+      <rect class="node" width="230" height="120" rx="14" stroke-width="1"/>
+      <g class="s2 glyph" transform="translate(20,22)">
+  <ellipse cx="14" cy="6.8" rx="9.5" ry="3.3"/>
+  <path d="M4.5 6.8 V21.2 c0 1.8 4.3 3.3 9.5 3.3 s9.5 -1.5 9.5 -3.3 V6.8"/>
+  <path d="M4.5 14 c0 1.8 4.3 3.3 9.5 3.3 s9.5 -1.5 9.5 -3.3"/>
+</g>
+      <text class="title" x="62" y="42">.zeeb/</text>
+      <text class="sub" x="62" y="64">committed state</text>
+      <text class="cs" x="22" y="90">features.json: ownership</text>
+      <text class="cs" x="22" y="107">archive/&lt;feature&gt;/</text>
+    </g>
+<path d="M120 260 V 326" class="s3" stroke-width="1.8" marker-end="url(#m3)" />
+<text class="lbl f3" x="132" y="300" text-anchor="start">call</text>
+<path d="M230 330 V 264" class="s2" stroke-width="1.8" marker-end="url(#m2)" />
+<text class="lbl f2" x="222" y="300" text-anchor="end">result</text>
+<path d="M290 380 H 305 Q 320 380 320 365 V 215 Q 320 200 335 200 H 706" class="s3" stroke-width="1.8" marker-end="url(#m3)" />
+<text class="lbl f3" x="520" y="190" text-anchor="middle">tools/call · project_id + args</text>
+<path d="M710 255 H 360 Q 345 255 345 270 V 425 Q 345 440 330 440 H 294" class="s2" stroke-width="1.8" marker-end="url(#m2)" />
+<text class="lbl f2" x="530" y="245" text-anchor="middle">AgentResult(success, message, data)</text>
+<path d="M290 502 H 386" class="s1" stroke-width="1.8" marker-end="url(#m1)" />
+<path d="M290 632 H 386" class="s1" stroke-width="1.8" marker-end="url(#m1)" />
+<path d="M290 702 H 386" class="s1" stroke-width="1.8" marker-end="url(#m1)" />
+<path d="M1130 300 V 336" class="s1" stroke-width="1.8" marker-end="url(#m1)" />
+<text class="lbl f1" x="1142" y="325" text-anchor="start">dispatch</text>
+<path d="M970 440 H 1026" class="s1" stroke-width="1.8" marker-end="url(#m1)" />
+<text class="sm f1" x="1000" y="430" text-anchor="middle">compile</text>
+<path d="M1260 460 H 1316" class="s1" stroke-width="1.8" marker-end="url(#m1)" />
+<text class="sm f1" x="1290" y="450" text-anchor="middle">run ops</text>
+<path d="M840 720 V 776" class="s2" stroke-width="1.8" marker-end="url(#m2)" />
+<text class="lbl f2" x="852" y="754" text-anchor="start">every .py edit</text>
+<path d="M970 840 H 1026" class="s2" stroke-width="1.8" marker-end="url(#m2)" />
+<text class="sm f2" x="1000" y="830" text-anchor="middle">writes</text>
+<path d="M1435 720 V 776" class="s2" stroke-width="1.8" marker-end="url(#m2)" />
+<text class="lbl f2" x="1447" y="754" text-anchor="start">manifest</text>
+
+    <text class="sub" x="50" y="952">Features may share an app, so deactivate_feature is surgical AST edits into .zeeb/archive/ and never touches models.py: the schema stays and no data is lost.</text>
+    <text class="sub" x="50" y="974">Dropping tables is delete_feature(confirm=True). The intent layer, tiers, capabilities and resources are public contract; advanced tools are supported, not deprecated.</text>
+    </svg>
+    <script>
+    (function () {
+      var fit = function () { document.body.style.zoom = Math.min(1, window.innerWidth / 1600); };
+      window.addEventListener('resize', fit); fit();
+    })();
+  </script>
+  </body>
+</html>
