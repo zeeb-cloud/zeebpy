@@ -775,7 +775,12 @@ async def change_feature(
             place (restate every option; the old definition is replaced, not
             merged) instead of the remove+add that would drop the column.
             ``set_permissions`` / ``set_authentication`` re-gate an existing
-            endpoint. ``add_workflow`` adds the status field (when missing)
+            endpoint. ``add_function`` / ``remove_function`` add or remove one
+            entry of the spec's ``functions`` block (``{"operation":
+            "add_function", "function": {"name": ..., "kind": ..., ...}}``;
+            the removal names ``name``, ``kind`` and ``entity``) without
+            restating the rest of the spec. ``add_workflow`` adds the status
+            field (when missing)
             plus one transition endpoint per transition (see the ``workflow``
             shape in :func:`plan_feature`); ``add_transition`` adds a single
             transition endpoint to an existing status field — its from/to

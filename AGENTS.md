@@ -90,6 +90,7 @@ myproject/
 ├── manage.py
 ├── .env / .env.example          # env-driven config; .env holds a generated SECRET_KEY (0600)
 ├── AGENTS.md                    # what a coding agent reads; CLAUDE.md + .cursor/rules point here
+├── .agents/skills/zeebpy/       # the on-demand framework skill; .claude/skills/ mirrors SKILL.md
 ├── pyproject.toml               # [tool.zeeb] identity marker + ruff config
 ├── pytest.ini
 ├── myproject/{settings.py, urls.py, asgi.py}
@@ -125,6 +126,14 @@ Three more pieces of `zeeb_orm/scaffold/` are load-bearing:
 - `agent_guide.py` owns `AGENTS.md`; `CLAUDE.md` and `.cursor/rules/zeebpy.mdc`
   are rendered from the same constant. `tests/test_scaffold_agent_docs.py`
   asserts every path, command and flag it names actually exists.
+- `skill.py` owns the skill: `.agents/skills/zeebpy/` (`SKILL.md`,
+  `references/*.md`, `scripts/zeeb_agent.py`) plus the byte-identical
+  `.claude/skills/zeebpy/SKILL.md`. `tests/test_scaffold_skill.py` resolves
+  every backticked name in it against the real code — paths, commands, flags,
+  field classes, lookups, QuerySet methods, `zeeb_api` classes, settings, env
+  keys, error codes, `zeeb_agents` functions — and runs the runner script and
+  the FeatureSpec example against a scaffolded project. An unverifiable token
+  fails the suite; extend the registries, not the allowlist.
 - The app templates carry their example in the **module docstring**, not as
   commented-out code. That means anything inspecting a generated file must read
   the AST, never the text — see `code_gen.router_registrations` and

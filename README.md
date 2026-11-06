@@ -134,6 +134,7 @@ shop/
 ├── manage.py
 ├── .env / .env.example     # every setting, env-driven; .env holds a generated SECRET_KEY
 ├── AGENTS.md               # conventions for coding agents (CLAUDE.md + .cursor/rules point here)
+├── .agents/skills/zeebpy/  # the framework skill: SKILL.md, references/, a shell runner
 ├── pyproject.toml          # [tool.zeeb] marker + ruff config
 ├── pytest.ini
 ├── requirements.txt

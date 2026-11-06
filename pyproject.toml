@@ -89,6 +89,8 @@ ignore = ["N818"]
 # one line (zeeb_agents.manage_settings rewrites them with a single-line regex).
 "demo_blog/migrations/*" = ["E501"]
 "demo_blog/demo_blog/settings.py" = ["E501"]
+# The skill is markdown held in string constants; its tables cannot wrap.
+"zeeb_orm/scaffold/skill.py" = ["E501"]
 
 # NOTE: `strict = true` was aspirational (528 errors); this is the honest,
 # attainable baseline. mypy is advisory: the metaclass-heavy ORM internals and

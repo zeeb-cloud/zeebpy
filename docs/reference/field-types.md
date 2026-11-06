@@ -394,7 +394,7 @@ All fields support these options:
 | `blank` | bool | False | Allow empty strings |
 | `default` | any | None | Default value |
 | `unique` | bool | False | Unique constraint |
-| `db_index` | bool | False | Create database index |
+| `index` | bool | False | Create database index |
 | `primary_key` | bool | False | Primary key |
 | `db_column` | str | Auto | Database column name |
 | `verbose_name` | str | Auto | Human-readable name |
@@ -410,7 +410,7 @@ All fields support these options:
 middle_name = CharField(max_length=50, null=True, default=None)
 
 # Unique with index
-email = EmailField(unique=True, db_index=True)
+email = EmailField(unique=True, index=True)
 
 # Choices
 STATUS_CHOICES = [
@@ -501,7 +501,7 @@ is_active = IntegerField(default=1)  # Use BooleanField
 
 ```python
 # Foreign keys are automatically indexed, but for frequently queried fields:
-status = CharField(max_length=20, db_index=True)
+status = CharField(max_length=20, index=True)
 category = ForeignKey("Category")  # Auto-indexed
 ```
 

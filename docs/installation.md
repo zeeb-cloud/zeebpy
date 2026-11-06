@@ -92,6 +92,8 @@ myproject/
 ├── tests/               # Shared fixtures + a smoke suite that already passes
 ├── migrations/          # Migration files live flat in here
 ├── logs/
+├── .agents/skills/zeebpy/   # The framework skill a coding agent loads on demand
+├── .claude/skills/zeebpy/   # The same SKILL.md, where Claude Code looks for it
 ├── .cursor/rules/       # The AGENTS.md body, for Cursor
 ├── .env                 # Generated signing key — gitignored, mode 0600
 ├── .env.example         # Every supported variable
