@@ -168,8 +168,8 @@ a long low-level sequence where one declarative call would do.
 
 | tier | count | what it is |
 |---|---|---|
-| `core` | 20 | The default surface: feature lifecycle, project setup, migrations, verification. |
-| `escape_hatch` | 5 | `read_file`, `write_file`, `search_code`, `run_query`, `run_management_command`. |
+| `core` | 22 | The default surface: discovery, project setup, feature lifecycle, migrations, tests, verification. |
+| `escape_hatch` | 8 | `read_file`, `write_file`, `edit_file`, `delete_file`, `search_code`, `run_query`, `run_management_command`, `add_dependency`. |
 | `advanced` | the rest | One tool per object (`create_model`, `add_field`, `create_viewset`, …). |
 
 ```python
@@ -1661,7 +1661,7 @@ result = await get_resource("mcp://docs/deployment", project_id="<id>", tool_pre
 
 ### `get_capabilities_doc(project_id=None, tool_prefix='', framework=None)` → `mcp://docs/capabilities`
 
-Complete inventory of all public `zeeb_agents` functions (127), grouped by
+Complete inventory of all public `zeeb_agents` functions (128), grouped by
 tier — core first — with signatures and descriptions. Auto-generated — regenerate with
 `python -m zeeb_agents._utils.capabilities_doc --write`.  Tool names use `{prefix}` in
 the source file — rendered with the given `tool_prefix` at call time.
@@ -1733,3 +1733,29 @@ async def read_resource(uri: str):
         raise ValueError(result.message)
     return result.data["content"]
 ```
+
+Two things an MCP host should know. Resources are application-driven: no
+agent reads `mcp://docs/*` on its own, so register `get_started` and
+`get_resource` as tools and say in the server's instructions to call
+`get_started` first. And register `DEFAULT_SURFACE`, not all 128 functions —
+a hundred equally weighted tools is the selection problem the tiers exist to
+avoid; `list_capabilities(tier="advanced")` discovers the rest on demand.
+
+### Agents without an MCP server
+
+A coding agent working with plain file and shell tools in a generated project
+reaches the same functions through the skill `startproject` writes to
+`.agents/skills/zeebpy/` (mirrored to `.claude/skills/zeebpy/`). Its
+`references/lifecycle.md` documents the feature lifecycle, and
+`scripts/zeeb_agent.py` runs any public function on that project from the
+shell and prints the `AgentResult` as JSON:
+
+```bash
+python .agents/skills/zeebpy/scripts/zeeb_agent.py describe_project
+python .agents/skills/zeebpy/scripts/zeeb_agent.py build_feature '{"spec": {...}}'
+```
+
+Everything the skill names is verified against the code by
+`tests/test_scaffold_skill.py`, so it is the documentation an agent can trust
+to copy from. See [Commands](commands.md) for what else a generated project
+contains.

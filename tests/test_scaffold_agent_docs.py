@@ -32,14 +32,17 @@ def agents_md(project) -> str:
 
 
 # ---------------------------------------------------------------------------
-# The three files, and the one source they come from
+# The entry points, and the one source they come from (the skill they point
+# at has its own guards in test_scaffold_skill.py)
 # ---------------------------------------------------------------------------
 
 
-def test_the_project_ships_all_three_entry_points(project):
+def test_the_project_ships_every_entry_point(project):
     assert (project / "AGENTS.md").is_file()
     assert (project / "CLAUDE.md").is_file()
     assert (project / ".cursor" / "rules" / "zeebpy.mdc").is_file()
+    assert (project / ".agents" / "skills" / "zeebpy" / "SKILL.md").is_file()
+    assert (project / ".claude" / "skills" / "zeebpy" / "SKILL.md").is_file()
 
 
 def test_claude_md_imports_agents_md(project):

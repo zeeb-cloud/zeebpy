@@ -9,7 +9,10 @@ vocabulary this framework does not have.
 ``AGENTS.md`` is the cross-vendor convention and the single source of truth.
 ``CLAUDE.md`` and ``.cursor/rules/zeebpy.mdc`` are the vendor entry points; the
 cursor rule carries the *same rendered body*, generated from the same constant,
-so the second surface cannot drift from the first.
+so the second surface cannot drift from the first. The depth behind it — the
+field classes, lookups, viewset options, the feature lifecycle — is the skill
+in :mod:`zeeb_orm.scaffold.skill`, which ``AGENTS.md`` points at and an agent
+loads only when a task calls for it.
 
 Rendered by :func:`str.replace` on ``@PROJECT@`` rather than by ``str.format``:
 these are markdown documents full of JSON, f-strings and ``{id}`` path params,
@@ -213,6 +216,11 @@ python -c "import zeeb_api, os; print(os.path.dirname(zeeb_api.__file__))"
 
 Start with `viewsets/base.py`, `serializers/pydantic.py`, `routers/default.py`
 and `exceptions.py`.
+
+The framework reference written for this project — fields, lookups, viewset
+options, the feature lifecycle, migrations, troubleshooting — is the skill at
+`.agents/skills/zeebpy/SKILL.md` (also under `.claude/skills/`). Read it before
+writing ORM or API code from memory.
 
 ## Verifying a change
 

@@ -38,6 +38,7 @@ from zeeb_orm.scaffold.project import (
     generate_secret_key,
     zeeb_version,
 )
+from zeeb_orm.scaffold.skill import render_skill_files
 
 __all__ = [
     "APPS_INIT_PY",
@@ -143,6 +144,10 @@ def run_startproject(name: str, directory: str, json_output: bool = False) -> in
             "AGENTS.md": render_agents_md(name),
             "CLAUDE.md": CLAUDE_MD,
             ".cursor/rules/zeebpy.mdc": render_cursor_rules(name),
+            # The on-demand depth behind AGENTS.md: a skill under
+            # .agents/skills/ (Codex, Cursor, Copilot) with its references and
+            # shell runner, plus the same SKILL.md under .claude/skills/.
+            **render_skill_files(name),
         }
 
         for filepath, content in files.items():

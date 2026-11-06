@@ -493,6 +493,9 @@ logs/*.log
 
 # Migrations
 migrations/__pycache__/
+
+# Committed on purpose: .agents/ and .claude/ hold the coding-agent skill,
+# .zeeb/ the feature manifest. None of them is build output.
 '''
 
 README_MD = '''# {project_name}
@@ -574,6 +577,7 @@ stdout instead of prose.
 {project_name}/
 ├── manage.py
 ├── AGENTS.md               conventions, for humans and coding agents
+├── .agents/skills/zeebpy/  the framework reference a coding agent loads on demand
 ├── {project_name}/
 │   ├── settings.py         all configuration, every value read from .env
 │   ├── urls.py             the project router
