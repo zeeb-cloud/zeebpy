@@ -1,8 +1,7 @@
 # AGENTS.md
 
 Guidance for every coding agent working in the **zeebpy** repository. This is the
-single agent guide: there is no vendor-specific copy to keep in sync. Repository
-skills live in `.agents/skills/`.
+single agent guide: there is no vendor-specific copy to keep in sync.
 
 ## Project Overview
 

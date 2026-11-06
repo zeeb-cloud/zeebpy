@@ -41,7 +41,6 @@ _SCANNED_DIRS = (
     "zeeb_agents",
     "zeeb_api",
     "zeeb_orm",
-    "zeebpy-course",
 )
 _TEXT_SUFFIXES = {
     ".cfg", ".html", ".ini", ".json", ".md", ".mdc", ".py", ".toml", ".txt", ".yaml", ".yml",
