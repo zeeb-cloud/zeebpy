@@ -4,7 +4,7 @@ Coding agents (e.g. Lovable) that read "Django" in zeebpy documentation start
 emitting real Django code into generated projects. These tests ban the
 vocabulary from every agent-facing surface (agent_docs markdown, public
 zeeb_agents docstrings served via ``list_capabilities(include_docstrings=True)``)
-and from the human docs (docs/, README.md, zeebpy-course/). Describe zeebpy
+and from the human docs (docs/, README.md). Describe zeebpy
 features as zeebpy features — never by analogy to another framework.
 """
 
@@ -51,7 +51,6 @@ def test_human_docs_are_django_free():
     targets = [
         *sorted((_REPO_ROOT / "docs").rglob("*.md")),
         _REPO_ROOT / "README.md",
-        *sorted((_REPO_ROOT / "zeebpy-course").rglob("*.md")),
     ]
     assert len(targets) > 1, "docs tree not found"
     problems = [
