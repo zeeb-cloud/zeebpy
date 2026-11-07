@@ -82,6 +82,9 @@ jobs:
   # The rest of the suite runs on SQLite; this runs the dialect conformance
   # tests on the databases whose code paths SQLite never executes.
   dialects:
+    # The ruleset requires "dialects (postgres)" / "dialects (mysql)"; without
+    # an explicit name the check would be called after every matrix value.
+    name: dialects (${{ matrix.database }})
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
