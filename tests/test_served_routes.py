@@ -52,11 +52,15 @@ def test_reads_nested_included_routers():
 
 
 def test_fallback_walker_without_iter_route_contexts(monkeypatch):
+    # Before 0.137 include_router() copied the route, prefixed, so the declared
+    # route *is* the served one; from 0.137 the walker wraps the original.
+    lazily_included = router_module._iter_route_contexts is not None
     monkeypatch.setattr(router_module, "_iter_route_contexts", None)
     served = served_routes(_app().routes)
     assert EXPECTED <= _paths(served)
     item = next(r for r in served if r.path == "/api/inner/items/{item_id}")
-    assert declared_route(item).path == "/items/{item_id}"
+    declared = "/items/{item_id}" if lazily_included else "/api/inner/items/{item_id}"
+    assert declared_route(item).path == declared
 
 
 def test_fallback_walker_when_iter_route_contexts_breaks(monkeypatch):

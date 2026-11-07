@@ -136,9 +136,11 @@ def max_limit():
 def test_query_limit_follows_max_limit(max_limit):
     settings.MAX_LIMIT = 500
     spec = _openapi(Open)
-    ref = spec["paths"]["/posts/query"]["post"]["requestBody"]["content"]["application/json"][
+    schema = spec["paths"]["/posts/query"]["post"]["requestBody"]["content"]["application/json"][
         "schema"
-    ]["$ref"]
+    ]
+    # Older FastAPI (0.100, the floor) wraps a titled body model in ``allOf: [{"$ref": ...}]``.
+    ref = schema["$ref"] if "$ref" in schema else schema["allOf"][0]["$ref"]
     limit = spec["components"]["schemas"][ref.rsplit("/", 1)[1]]["properties"]["limit"]
     assert limit["maximum"] == 500
 

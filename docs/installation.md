@@ -2,7 +2,7 @@
 
 ## Requirements
 
-- Python 3.11 or higher
+- Python 3.10 or higher (3.10, 3.12 and 3.14 are tested in CI)
 - pip or poetry
 
 ## Install from GitHub
@@ -28,17 +28,25 @@ pip install -e .
 
 ## Dependencies
 
+`pyproject.toml` is the source of truth; these are the floors it declares,
+and every floor is tested (the weekly `Dependencies` workflow installs the
+lowest versions on Python 3.10 and runs the suite).
+
 ### zeeb_orm
-- `sqlalchemy[asyncio]>=2.0` - Async ORM
-- `alembic>=1.13` - Database migrations
-- `aiosqlite` - SQLite async driver (included)
+- `sqlalchemy>=2.0.10` - Async ORM
+- `alembic>=1.12` - Database migrations
+- `greenlet>=3.0` - SQLAlchemy's async bridge
+- `aiosqlite>=0.19` - SQLite async driver (`sqlite` extra)
 
 ### zeeb_api
 - `fastapi>=0.100` - Web framework
-- `uvicorn[standard]` - ASGI server
-- `pydantic>=2.0` - Data validation
-- `python-jose[cryptography]` - JWT tokens
-- `passlib[bcrypt]` - Password hashing
+- `uvicorn[standard]>=0.23` - ASGI server
+- `pydantic[email]>=2.0` - Data validation
+- `pyjwt>=2.8` - JWT tokens
+- `bcrypt>=4.0` - Password hashing
+
+Contributors can install the exact versions CI runs with
+`pip install -e ".[all,dev]" -c requirements-ci.txt`; see `.github/CI.md`.
 
 ## Database Drivers
 

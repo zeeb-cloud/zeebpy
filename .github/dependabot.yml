@@ -1,0 +1,65 @@
+# Dependabot keeps three things current, each as a pull request that runs the
+# full CI gate before it can merge (see .github/CI.md):
+#
+#   * the pinned CI constraints in requirements-ci.txt — this is where every
+#     upstream release of SQLAlchemy, FastAPI, pytest, ... shows up as a PR
+#     whose CI run tells us whether zeebpy still works with it;
+#   * the GitHub Actions the workflows run (pinned by commit SHA);
+#   * the demo project's requirements.
+#
+# pyproject.toml declares floors (`>=`), so Dependabot only touches it for a
+# security advisory that the floor still admits. Minor and patch updates are
+# grouped into one PR per area and auto-merged once CI is green
+# (.github/workflows/dependabot-auto-merge.yml); a major update gets its own
+# PR and waits for a human.
+version: 2
+
+updates:
+  - package-ecosystem: pip
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Europe/Berlin
+    open-pull-requests-limit: 10
+    labels: [dependencies, python]
+    commit-message:
+      prefix: "chore(deps)"
+    groups:
+      dev-tools:
+        patterns:
+          - "pytest*"
+          - "mypy*"
+          - "ruff"
+          - "pip-audit"
+          - "uv"
+        update-types: [minor, patch]
+      runtime:
+        patterns: ["*"]
+        update-types: [minor, patch]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Europe/Berlin
+    labels: [dependencies, github-actions]
+    commit-message:
+      prefix: "chore(ci)"
+    groups:
+      actions:
+        patterns: ["*"]
+
+  - package-ecosystem: pip
+    directory: /demo_blog
+    schedule:
+      interval: monthly
+    labels: [dependencies, demo]
+    commit-message:
+      prefix: "chore(demo)"
+    groups:
+      demo:
+        patterns: ["*"]

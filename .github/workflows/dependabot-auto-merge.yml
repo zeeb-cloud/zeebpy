@@ -1,0 +1,42 @@
+# Dependabot PRs for minor/patch updates (and GitHub Actions bumps) merge on
+# their own once the ruleset's required checks are green; majors wait for a
+# human. Enabling auto-merge is all this does — GitHub performs the merge
+# only when every check required by .github/rulesets/main.json has passed,
+# so the CI gate is never bypassed.
+#
+# The token is the workflow's own GITHUB_TOKEN with the permissions below
+# (Dependabot-triggered runs honour an explicit `permissions:` block). A merge
+# made with it does not start the push-to-main CI run — the PR already ran
+# the same gate on the exact commit being merged.
+name: Dependabot auto-merge
+
+on: pull_request
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  auto-merge:
+    if: github.event.pull_request.user.login == 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - id: metadata
+        uses: dependabot/fetch-metadata@25dd0e34f4fe68f24cc83900b1fe3fe149efef98 # v3.1.0
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      # For a grouped PR, update-type is the largest bump in the group.
+      - name: Enable auto-merge for minor and patch updates
+        if: steps.metadata.outputs.update-type != 'version-update:semver-major'
+        run: gh pr merge --auto --squash "$PR_URL"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+
+      - name: Leave a major update for review
+        if: steps.metadata.outputs.update-type == 'version-update:semver-major'
+        run: |
+          echo "::notice::major update ($DEPS) — not auto-merged, review it"
+        env:
+          DEPS: ${{ steps.metadata.outputs.dependency-names }}
