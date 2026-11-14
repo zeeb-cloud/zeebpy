@@ -126,4 +126,8 @@ through `.env` — see [Settings](configuration/settings.md).
 
 ## License
 
-MIT License
+[MIT](../LICENSE), Copyright (c) 2026 Marc Zeeb.
+
+You may use, modify and redistribute zeebpy, commercially or not. Every copy
+or substantial portion you pass on (a fork, a vendored copy, a bundled image)
+must keep the copyright notice, which names zeebpy, and the license text.
