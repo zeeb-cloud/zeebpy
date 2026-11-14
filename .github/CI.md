@@ -48,6 +48,11 @@ re-resolves what the change requires; use `--upgrade` to refresh everything
 (normally Dependabot's job). Raising a floor is a real change: the `lowest`
 job in `dependencies.yml` runs on the PR and must pass on Python 3.11.
 
+The `constraints` job recompiles a copy and compares the pin lines only, not
+uv's `# via` comments. Dependabot bumps versions without rewriting those, so
+after a bump that adds a dependency edge the comments can lag until the next
+regeneration; the pins themselves are always checked exactly.
+
 ## Dependabot PR lifecycle
 
 1. Dependabot checks every weekday at 06:00 Berlin and opens a PR for a

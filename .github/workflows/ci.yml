@@ -53,12 +53,22 @@ jobs:
           python-version: "3.14"
       - run: pip install uv -c requirements-ci.txt
       - name: requirements-ci.txt matches pyproject.toml
+        shell: bash
         run: |
-          # uv keeps the pins already in the output file; this checks that they
-          # still satisfy pyproject.toml, not that they are the newest.
+          # uv keeps the pins already in the output file, so recompiling a copy
+          # checks that the pins still satisfy pyproject.toml and are a complete
+          # resolution, not that they are the newest.
+          #
+          # Only the pin lines are compared, not uv's `# via` comments:
+          # Dependabot bumps versions but never rewrites those, so a bump that
+          # adds a dependency edge (fastapi starting to require anyio, say)
+          # would otherwise fail here although every pin is right. A missing,
+          # extra or unresolvable pin still fails.
+          cp requirements-ci.txt "$RUNNER_TEMP/fresh.txt"
           uv pip compile pyproject.toml --all-extras --universal --python-version 3.11 \
-            -o requirements-ci.txt
-          git diff --exit-code -- requirements-ci.txt || {
+            -o "$RUNNER_TEMP/fresh.txt"
+          pins() { grep -vE '^[[:space:]]*(#|$)' "$1"; }
+          diff -u <(pins requirements-ci.txt) <(pins "$RUNNER_TEMP/fresh.txt") || {
             echo "::error file=requirements-ci.txt::out of date — run: uv pip compile pyproject.toml --all-extras --universal --python-version 3.11 -o requirements-ci.txt"
             exit 1
           }
