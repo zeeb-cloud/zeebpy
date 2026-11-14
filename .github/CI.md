@@ -85,9 +85,17 @@ Two advisory sources, three triggers:
   whose environment markers do not match its interpreter, and the universal
   resolution pins some packages differently below 3.11. Platform-only pins
   (`; sys_platform == 'win32'`) are not audited on the Linux runner. A red run
-  with no fix PR from Dependabot means the advisory has no fixed release yet:
+  with no fix PR from Dependabot means there is no usable fixed release:
   decide whether zeebpy is affected, and either wait for the fix or add the
-  advisory id with `--ignore-vuln <id>` and a comment saying why.
+  advisory id to that matrix leg's `ignore-vulns`, with a comment saying why.
+
+  The 3.10 leg carries such a list today: fixes for `dnspython` and
+  `filelock` shipped only in releases that require Python ≥ 3.11 (3.10 is
+  past end-of-life), and neither vulnerable code path is reachable from
+  zeebpy. The 3.11+ pins are fixed and audited without exceptions. Dependabot
+  raises alerts for the same 3.10 pins and cannot open a fix PR for them;
+  dismiss those as *tolerable risk* with a pointer to `security.yml`. The list
+  goes away with Python 3.10 support.
 
 All of this rests on the **dependency graph**. With it off, Dependabot alerts
 and security updates report "enabled" and stay silent, and
