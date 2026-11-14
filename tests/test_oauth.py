@@ -5,7 +5,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import re
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from urllib.parse import parse_qs, urlparse
 
 import httpx
@@ -80,7 +80,7 @@ def jwks(rsa_key):
 
 def make_id_token(claims: dict, key, *, kid: str = KID, alg: str = "RS256") -> str:
     """Sign an RS256 ID token with sane defaults (override via claims)."""
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     payload = {
         "iss": ISSUER,
         "aud": CLIENT_ID,
@@ -306,7 +306,7 @@ class TestJWKSValidation:
 
     async def test_expired(self, cache, rsa_key):
         token = make_id_token(
-            {"exp": datetime.now(timezone.utc) - timedelta(minutes=5)}, rsa_key
+            {"exp": datetime.now(UTC) - timedelta(minutes=5)}, rsa_key
         )
         with pytest.raises(OAuthValidationError):
             await validate_id_token(token, jwks=cache, client_id=CLIENT_ID, issuer=ISSUER)

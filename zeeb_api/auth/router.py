@@ -5,6 +5,7 @@ Authentication router with login, refresh, logout, register endpoints.
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
+from datetime import UTC
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Body, Depends, Request
@@ -87,7 +88,7 @@ class LogoutRequest(BaseModel):
 
 async def _revoke_refresh_token(token: str, user: Any) -> None:
     """Consume *token* and revoke its family, if it is *user*'s valid refresh token."""
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     from zeeb_api.auth.jwt import TokenError
     from zeeb_api.auth.refresh_store import get_refresh_token_store
@@ -99,7 +100,7 @@ async def _revoke_refresh_token(token: str, user: Any) -> None:
     if payload.sub != str(getattr(user, "id", "")):
         return
     store = get_refresh_token_store()
-    ttl = (payload.exp - datetime.now(timezone.utc)).total_seconds()
+    ttl = (payload.exp - datetime.now(UTC)).total_seconds()
     await store.consume(payload.jti, ttl)
     await store.revoke_family(
         payload.family or payload.jti, get_jwt_config().refresh_token_expire_days * 86400
@@ -344,7 +345,7 @@ def create_auth_router(
         from the authoritative source so a refreshed token never carries stale
         privileges.
         """
-        from datetime import datetime, timezone
+        from datetime import datetime
 
         from zeeb_api.auth.refresh_store import get_refresh_token_store
 
@@ -365,7 +366,7 @@ def create_auth_router(
         # Tokens minted before families existed carry no ``fam``: each is its
         # own family.
         family = payload.family or payload.jti
-        ttl = (payload.exp - datetime.now(timezone.utc)).total_seconds()
+        ttl = (payload.exp - datetime.now(UTC)).total_seconds()
 
         if await store.is_family_revoked(family):
             raise AuthenticationException(

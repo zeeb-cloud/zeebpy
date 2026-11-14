@@ -38,7 +38,7 @@
         "required_status_checks": [
           { "context": "lint" },
           { "context": "constraints" },
-          { "context": "test (3.10)" },
+          { "context": "test (3.11)" },
           { "context": "test (3.12)" },
           { "context": "test (3.14)" },
           { "context": "dialects (postgres)" },

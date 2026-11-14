@@ -3,10 +3,10 @@
 # against the PyPI advisory data as a second source, over the pinned set CI
 # installs (requirements-ci.txt).
 #
-# requirements-ci.txt is a universal resolution: some packages pin a
-# different version below Python 3.11 (sqlalchemy, python-multipart, ...),
-# and pip-audit only audits the pins whose markers match the interpreter it
-# runs on. Auditing on both ends of the supported range covers both sets.
+# requirements-ci.txt is a universal resolution: a package may pin a
+# different version per Python (`; python_full_version < ...` markers), and
+# pip-audit only audits the pins whose markers match the interpreter it runs
+# on. Auditing on both ends of the supported range covers every such split.
 #
 # Not a required check: a new advisory without a fixed release would
 # otherwise block every pull request. A red scheduled run is the signal;
@@ -37,27 +37,15 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.10", "3.14"]
+        # Oldest and newest supported Python. An advisory with no usable fixed
+        # release on one interpreter is accepted on that leg only: add its id
+        # to `ignore-vulns` (space-separated) with a comment saying why it
+        # cannot reach zeebpy. Empty means no exceptions.
         include:
-          # Accepted on 3.10 only: the fixed releases (dnspython 2.9, filelock
-          # 4.2.1) require Python >= 3.11, so no 3.10 pin can carry the fix.
-          # The 3.11+ pins are fixed and the 3.14 leg audits them without
-          # exceptions. Neither code path is reachable from zeebpy:
-          #   dnspython — DoS parsing untrusted DNS wire data / zone files.
-          #     Only email-validator imports it, for deliverability checks,
-          #     and pydantic's EmailStr calls it with check_deliverability=False.
-          #   filelock — local-user races on lock files. Reaches CI only
-          #     through pip-audit -> cachecontrol; not a runtime dependency.
-          # Delete this list when Python 3.10 support is dropped. A new
-          # advisory against either package still fails the run.
-          - python-version: "3.10"
-            ignore-vulns: >-
-              CVE-2026-114605 CVE-2026-128089
-              CVE-2026-112906 CVE-2026-112907 CVE-2026-112908 CVE-2026-112909
-              CVE-2026-112910 CVE-2026-112911 CVE-2026-112912 CVE-2026-112913
-              CVE-2026-112914 CVE-2026-112915 CVE-2026-112934 CVE-2026-112935
-              CVE-2026-112937 CVE-2026-112938 CVE-2026-112939 CVE-2026-112940
-              CVE-2026-112941
+          - python-version: "3.11"
+            ignore-vulns: ""
+          - python-version: "3.14"
+            ignore-vulns: ""
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0

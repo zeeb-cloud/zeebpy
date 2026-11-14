@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import uuid
+from datetime import UTC
 from pathlib import Path
 from typing import Any
 
@@ -208,9 +209,9 @@ async def create_user(
             ):
                 data["id"] = uuid4().hex
             if "date_joined" in cols:
-                from datetime import datetime, timezone
+                from datetime import datetime
 
-                data["date_joined"] = datetime.now(timezone.utc).isoformat()
+                data["date_joined"] = datetime.now(UTC).isoformat()
             # Custom user models may declare extra NOT NULL columns without a
             # DB-level default (zeeb field defaults are client-side only and
             # this INSERT bypasses the ORM). Fill common scalar types with a

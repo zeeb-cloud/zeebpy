@@ -2,7 +2,7 @@
 
 ## Requirements
 
-- Python 3.10 or higher (3.10, 3.12 and 3.14 are tested in CI)
+- Python 3.11 or higher (3.11, 3.12 and 3.14 are tested in CI)
 - pip or poetry
 
 ## Install from GitHub
@@ -30,7 +30,7 @@ pip install -e .
 
 `pyproject.toml` is the source of truth; these are the floors it declares,
 and every floor is tested (the weekly `Dependencies` workflow installs the
-lowest versions on Python 3.10 and runs the suite).
+lowest versions on Python 3.11 and runs the suite).
 
 ### zeeb_orm
 - `sqlalchemy>=2.0.10` - Async ORM

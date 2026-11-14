@@ -10,7 +10,7 @@ Provides Django-like user models:
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any, ClassVar
 
 from zeeb_api.auth.hashers import check_password, is_password_usable, make_password
@@ -83,7 +83,7 @@ class AbstractBaseUser(Model):
 
     async def update_last_login(self) -> None:
         """Update the last_login timestamp."""
-        self.last_login = datetime.now(timezone.utc)
+        self.last_login = datetime.now(UTC)
         await self.save()
 
 

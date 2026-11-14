@@ -535,10 +535,10 @@ class Model(metaclass=ModelBase):
             # Auto timestamps
             if isinstance(field, DateTimeField):
                 if field.auto_now_add and value is None:
-                    value = datetime.datetime.now(datetime.timezone.utc)
+                    value = datetime.datetime.now(datetime.UTC)
                     setattr(self, field.name, value)
                 elif field.auto_now:
-                    value = datetime.datetime.now(datetime.timezone.utc)
+                    value = datetime.datetime.now(datetime.UTC)
                     setattr(self, field.name, value)
             elif isinstance(field, DateField):
                 if field.auto_now_add and value is None:
@@ -721,7 +721,7 @@ class Model(metaclass=ModelBase):
 
             # Handle auto timestamps
             if isinstance(field, DateTimeField) and field.auto_now:
-                value = datetime.datetime.now(datetime.timezone.utc)
+                value = datetime.datetime.now(datetime.UTC)
                 setattr(self, field.name, value)
             elif isinstance(field, DateField) and field.auto_now:
                 value = datetime.date.today()

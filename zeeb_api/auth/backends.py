@@ -10,6 +10,7 @@ Provides:
 from __future__ import annotations
 
 import sys
+from datetime import UTC
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, TypeVar
 
@@ -375,7 +376,7 @@ async def create_user(
             last_name="Doe"
         )
     """
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     User = get_user_model()  # noqa: N806
 
@@ -385,7 +386,7 @@ async def create_user(
 
     # Set date_joined if the model has it
     if hasattr(user, "date_joined"):
-        user.date_joined = datetime.now(timezone.utc)
+        user.date_joined = datetime.now(UTC)
 
     await user.save()
     return user

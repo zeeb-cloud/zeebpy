@@ -26,21 +26,21 @@ mypy zeeb_orm zeeb_api zeeb_agents      # type check (advisory — metaclass-hea
 ZEEB_TEST_DATABASE_URL=postgresql+asyncpg://user:pw@host/db \
   pytest tests/test_dialect_conformance.py   # the same ORM checks on a real Postgres/MySQL
 pip install -e ".[all,dev]" -c requirements-ci.txt   # the exact versions CI runs
-uv pip compile pyproject.toml --all-extras --universal --python-version 3.10 \
+uv pip compile pyproject.toml --all-extras --universal --python-version 3.11 \
   -o requirements-ci.txt                # regenerate the CI pins after editing pyproject.toml
 ```
 
 CI (`.github/workflows/ci.yml`) runs lint, the mypy ratchet, the suite on
-Python 3.10/3.12/3.14, and the dialect conformance tests against PostgreSQL and
+Python 3.11/3.12/3.14, and the dialect conformance tests against PostgreSQL and
 MySQL services — all installed from the pins in `requirements-ci.txt`, which a
 `constraints` job checks against `pyproject.toml` (edit one, regenerate the
 other). Dependabot checks those pins daily (a release waits out a 3-day
 cooldown first); minor/patch PRs auto-merge once the gate is green, majors wait
 for review. `dependency-review.yml` is a required check that fails a PR adding a
 dependency version with a known advisory; `security.yml` runs `pip-audit` over
-the pins daily, on Python 3.10 and 3.14. A weekly `dependencies.yml` canary runs
+the pins daily, on Python 3.11 and 3.14. A weekly `dependencies.yml` canary runs
 the suite against unpinned latest and against the lowest floors `pyproject.toml`
-declares — raising a floor must keep the `lowest` job passing on Python 3.10.
+declares — raising a floor must keep the `lowest` job passing on Python 3.11.
 `.github/CI.md` documents the setup and the one-time repository settings. Test
 ids must be deterministic (xdist workers compare them): parametrize over objects
 with an explicit `ids=`.

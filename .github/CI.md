@@ -9,13 +9,13 @@ and that a dependency moving under us is a pull request, not a surprise.
 
 | File | Role |
 | --- | --- |
-| `workflows/ci.yml` | The gate: lint + mypy ratchet, `constraints`, the suite on Python 3.10/3.12/3.14, dialect conformance on PostgreSQL and MySQL. Runs on every PR and push to `main`. |
+| `workflows/ci.yml` | The gate: lint + mypy ratchet, `constraints`, the suite on Python 3.11/3.12/3.14, dialect conformance on PostgreSQL and MySQL. Runs on every PR and push to `main`. |
 | `../requirements-ci.txt` | Pinned, cross-platform (`--universal`) resolution of `pyproject.toml` with every extra. CI installs with `-c requirements-ci.txt`, so a run is reproducible. |
 | `dependabot.yml` | Bumps the pins in `requirements-ci.txt`, the actions in the workflows, and the demo's requirements. Daily, grouped, after a 3-day cooldown (7 for a major). |
 | `workflows/dependabot-auto-merge.yml` | Enables auto-merge on Dependabot PRs that are not a major bump. GitHub merges only once the ruleset's required checks pass. |
 | `workflows/dependencies.yml` | Weekly canary: the suite against **unpinned latest** and against the **lowest floors** `pyproject.toml` declares. Also runs on a PR that touches the dependency files. |
 | `workflows/dependency-review.yml` | Required check on every PR: fails if the PR *introduces* a dependency version with a known advisory (GitHub Advisory Database, from the dependency graph). |
-| `workflows/security.yml` | Daily scan: `pip-audit` over `requirements-ci.txt` on Python 3.10 and 3.14 (the universal pins differ below 3.11). Also runs on a PR that touches the dependency files. Not required. |
+| `workflows/security.yml` | Daily scan: `pip-audit` over `requirements-ci.txt` on Python 3.11 and 3.14 (universal pins can differ per Python). Also runs on a PR that touches the dependency files. Not required. |
 | `rulesets/main.json` | The branch ruleset that makes the above safe: PRs only, the CI jobs are required checks, repository admins may bypass. |
 
 ## Why a pinned file for a library with `>=` floors
@@ -40,13 +40,18 @@ local workflow; pass `-c requirements-ci.txt` to reproduce CI exactly.
 Regenerate the pins, or the `constraints` job fails:
 
 ```bash
-uv pip compile pyproject.toml --all-extras --universal --python-version 3.10 -o requirements-ci.txt
+uv pip compile pyproject.toml --all-extras --universal --python-version 3.11 -o requirements-ci.txt
 ```
 
 `uv` is in the `dev` extra. The command keeps existing pins and only adds or
 re-resolves what the change requires; use `--upgrade` to refresh everything
 (normally Dependabot's job). Raising a floor is a real change: the `lowest`
-job in `dependencies.yml` runs on the PR and must pass on Python 3.10.
+job in `dependencies.yml` runs on the PR and must pass on Python 3.11.
+
+The `constraints` job recompiles a copy and compares the pin lines only, not
+uv's `# via` comments. Dependabot bumps versions without rewriting those, so
+after a bump that adds a dependency edge the comments can lag until the next
+regeneration; the pins themselves are always checked exactly.
 
 ## Dependabot PR lifecycle
 
@@ -81,21 +86,23 @@ Two advisory sources, three triggers:
   It only looks at what the PR changes, so it cannot go red on an unrelated
   PR. It is required, so auto-merge cannot bypass it.
 - **`security.yml`** runs `pip-audit` (PyPI advisory data) over the pinned
-  set every day. It audits on 3.10 and 3.14 because `pip-audit` skips pins
-  whose environment markers do not match its interpreter, and the universal
-  resolution pins some packages differently below 3.11. Platform-only pins
+  set every day. It audits on the oldest and newest supported Python (3.11
+  and 3.14) because `pip-audit` skips pins whose environment markers do not
+  match its interpreter, and a universal resolution pins a package
+  differently per Python once one of its releases drops an old interpreter.
+  Platform-only pins
   (`; sys_platform == 'win32'`) are not audited on the Linux runner. A red run
   with no fix PR from Dependabot means there is no usable fixed release:
   decide whether zeebpy is affected, and either wait for the fix or add the
-  advisory id to that matrix leg's `ignore-vulns`, with a comment saying why.
+  advisory id to that matrix leg's `ignore-vulns` in `security.yml`, with a
+  comment saying why. Dependabot raises an alert
+  for the same pin and cannot open a fix PR for it; dismiss it as *tolerable
+  risk* with a pointer to `security.yml`.
 
-  The 3.10 leg carries such a list today: fixes for `dnspython` and
-  `filelock` shipped only in releases that require Python ≥ 3.11 (3.10 is
-  past end-of-life), and neither vulnerable code path is reachable from
-  zeebpy. The 3.11+ pins are fixed and audited without exceptions. Dependabot
-  raises alerts for the same 3.10 pins and cannot open a fix PR for them;
-  dismiss those as *tolerable risk* with a pointer to `security.yml`. The list
-  goes away with Python 3.10 support.
+  That is how Python 3.10 support ended: fixes for `dnspython` and `filelock`
+  shipped only in releases requiring Python ≥ 3.11, after 3.10 reached
+  end-of-life. When the oldest supported Python can only pin a vulnerable
+  release, dropping that Python is usually the real fix.
 
 All of this rests on the **dependency graph**. With it off, Dependabot alerts
 and security updates report "enabled" and stay silent, and
