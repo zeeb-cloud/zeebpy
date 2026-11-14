@@ -1,0 +1,53 @@
+# The daily vulnerability scan. Dependabot alerts already watch the
+# dependency graph against the GitHub Advisory Database; this runs pip-audit
+# against the PyPI advisory data as a second source, over the pinned set CI
+# installs (requirements-ci.txt).
+#
+# requirements-ci.txt is a universal resolution: some packages pin a
+# different version below Python 3.11 (sqlalchemy, python-multipart, ...),
+# and pip-audit only audits the pins whose markers match the interpreter it
+# runs on. Auditing on both ends of the supported range covers both sets.
+#
+# Not a required check: a new advisory without a fixed release would
+# otherwise block every pull request. A red scheduled run is the signal;
+# Dependabot's security update PR is usually the fix.
+name: Security
+
+on:
+  schedule:
+    - cron: "30 4 * * *" # daily 04:30 UTC, before Dependabot's 06:00 Berlin run
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - pyproject.toml
+      - requirements-ci.txt
+      - .github/workflows/security.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: security-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  pip-audit:
+    name: pip-audit (${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.14"]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: ${{ matrix.python-version }}
+      - run: pip install pip-audit -c requirements-ci.txt
+      # The pinned set is fully resolved already, so --no-deps audits it as
+      # written instead of installing it into a scratch environment first.
+      - name: Audit requirements-ci.txt
+        shell: bash # -eo pipefail: a finding fails the step through the tee
+        run: |
+          pip-audit --no-deps --strict --desc on -r requirements-ci.txt --format markdown \
+            | tee -a "$GITHUB_STEP_SUMMARY"

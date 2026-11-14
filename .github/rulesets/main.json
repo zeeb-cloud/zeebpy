@@ -42,7 +42,8 @@
           { "context": "test (3.12)" },
           { "context": "test (3.14)" },
           { "context": "dialects (postgres)" },
-          { "context": "dialects (mysql)" }
+          { "context": "dialects (mysql)" },
+          { "context": "dependency-review" }
         ]
       }
     }
