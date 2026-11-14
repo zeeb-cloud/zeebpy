@@ -131,3 +131,8 @@ through `.env` — see [Settings](configuration/settings.md).
 You may use, modify and redistribute zeebpy, commercially or not. Every copy
 or substantial portion you pass on (a fork, a vendored copy, a bundled image)
 must keep the copyright notice, which names zeebpy, and the license text.
+
+zeebpy is provided **as is, without warranty of any kind**. Its authors and
+copyright holders are not liable for any claim, damages or other liability
+arising from it or its use: what you build, deploy and run with it is your
+responsibility. The [LICENSE](../LICENSE) is the binding text.
