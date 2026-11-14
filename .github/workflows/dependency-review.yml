@@ -1,0 +1,28 @@
+# Blocks a pull request that *introduces* a dependency version with a known
+# vulnerability (GitHub Advisory Database, read from the dependency graph's
+# diff between the PR's base and head). Advisories against versions already
+# on main are not this check's business — Dependabot alerts and
+# security.yml report those — so it never turns red on an unrelated PR.
+#
+# It is a required check in .github/rulesets/main.json, which is what stops
+# an auto-merged Dependabot PR from pulling in a vulnerable release. It must
+# therefore run on every pull request: no `paths:` filter, or a PR that does
+# not touch dependencies would wait forever for a check that never reports.
+name: Dependency review
+
+on: pull_request
+
+permissions:
+  contents: read
+
+jobs:
+  dependency-review:
+    runs-on: ubuntu-latest
+    steps:
+      # The action reads the diff from the API; no checkout needed. The
+      # result goes to the job summary rather than a PR comment, which would
+      # need a write token that pull requests from forks do not get.
+      - uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
+        with:
+          fail-on-severity: low
+          show-patched-versions: true

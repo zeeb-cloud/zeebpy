@@ -1,0 +1,79 @@
+# The daily vulnerability scan. Dependabot alerts already watch the
+# dependency graph against the GitHub Advisory Database; this runs pip-audit
+# against the PyPI advisory data as a second source, over the pinned set CI
+# installs (requirements-ci.txt).
+#
+# requirements-ci.txt is a universal resolution: some packages pin a
+# different version below Python 3.11 (sqlalchemy, python-multipart, ...),
+# and pip-audit only audits the pins whose markers match the interpreter it
+# runs on. Auditing on both ends of the supported range covers both sets.
+#
+# Not a required check: a new advisory without a fixed release would
+# otherwise block every pull request. A red scheduled run is the signal;
+# Dependabot's security update PR is usually the fix.
+name: Security
+
+on:
+  schedule:
+    - cron: "30 4 * * *" # daily 04:30 UTC, before Dependabot's 06:00 Berlin run
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - pyproject.toml
+      - requirements-ci.txt
+      - .github/workflows/security.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: security-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  pip-audit:
+    name: pip-audit (${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.14"]
+        include:
+          # Accepted on 3.10 only: the fixed releases (dnspython 2.9, filelock
+          # 4.2.1) require Python >= 3.11, so no 3.10 pin can carry the fix.
+          # The 3.11+ pins are fixed and the 3.14 leg audits them without
+          # exceptions. Neither code path is reachable from zeebpy:
+          #   dnspython — DoS parsing untrusted DNS wire data / zone files.
+          #     Only email-validator imports it, for deliverability checks,
+          #     and pydantic's EmailStr calls it with check_deliverability=False.
+          #   filelock — local-user races on lock files. Reaches CI only
+          #     through pip-audit -> cachecontrol; not a runtime dependency.
+          # Delete this list when Python 3.10 support is dropped. A new
+          # advisory against either package still fails the run.
+          - python-version: "3.10"
+            ignore-vulns: >-
+              CVE-2026-114605 CVE-2026-128089
+              CVE-2026-112906 CVE-2026-112907 CVE-2026-112908 CVE-2026-112909
+              CVE-2026-112910 CVE-2026-112911 CVE-2026-112912 CVE-2026-112913
+              CVE-2026-112914 CVE-2026-112915 CVE-2026-112934 CVE-2026-112935
+              CVE-2026-112937 CVE-2026-112938 CVE-2026-112939 CVE-2026-112940
+              CVE-2026-112941
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: ${{ matrix.python-version }}
+      - run: pip install pip-audit -c requirements-ci.txt
+      # The pinned set is fully resolved already. --no-deps alone still has
+      # pip install it into a scratch venv; --disable-pip reads the pins as
+      # written, so the scan runs no package's install code.
+      - name: Audit requirements-ci.txt
+        shell: bash # -eo pipefail: a finding fails the step through the tee
+        env:
+          IGNORE_VULNS: ${{ matrix.ignore-vulns }}
+        run: |
+          ignores=()
+          for id in $IGNORE_VULNS; do ignores+=(--ignore-vuln "$id"); done
+          pip-audit --disable-pip --no-deps --strict --desc on -r requirements-ci.txt \
+            --format markdown \
+            "${ignores[@]}" | tee -a "$GITHUB_STEP_SUMMARY"

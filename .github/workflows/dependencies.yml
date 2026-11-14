@@ -2,10 +2,12 @@
 # this is where the unpinned world gets tested:
 #
 #   latest  — install whatever resolves today, nothing pinned. Catches an
-#             upstream release breaking zeebpy before Dependabot's weekly PR.
+#             upstream release breaking zeebpy before Dependabot's PR for it
+#             (which waits out the cooldown in dependabot.yml).
 #   lowest  — install the *floors* pyproject.toml declares (`>=`). Proves the
 #             versions we claim to support actually work.
-#   audit   — pip-audit over the pinned CI set, for known vulnerabilities.
+#
+# The vulnerability scan is security.yml (daily), not this workflow.
 #
 # Runs weekly, on demand, and on a pull request that changes the dependency
 # declarations themselves.
@@ -57,16 +59,3 @@ jobs:
       - run: uv pip install --system --resolution lowest-direct -e ".[all,dev]"
       - run: pip list
       - run: pytest -n auto
-
-  audit:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
-        with:
-          python-version: "3.12"
-      - run: pip install pip-audit -c requirements-ci.txt
-      # The pinned set is what CI runs and what a Dependabot PR changes, so
-      # that is what gets audited. It is fully resolved already, so no need
-      # to install it into a scratch environment first.
-      - run: pip-audit --no-deps --strict --desc on -r requirements-ci.txt
