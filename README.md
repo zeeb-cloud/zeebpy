@@ -12,7 +12,7 @@ all async from the database driver to the HTTP response.
 [![FastAPI](https://img.shields.io/badge/FastAPI-Pydantic%20v2-009688?logo=fastapi&logoColor=white)](docs/api/viewsets.md)
 [![Docs coverage](https://img.shields.io/badge/docs%20coverage-100%25-brightgreen)](tests/test_docs_coverage.py)
 [![Lint: ruff](https://img.shields.io/badge/lint-ruff-D7FF64?logo=ruff&logoColor=black)](pyproject.toml)
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue)](pyproject.toml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
 [Quickstart](#-quickstart) · [Tour](#-a-quick-tour) · [Agents](#-zeeb_agents-a-framework-your-coding-agent-can-drive) · [Docs](#-documentation) · [Contributing](#-development)
 
@@ -424,4 +424,13 @@ above will tell you what's missing. Contributor and agent conventions are in
 
 ## 📄 License
 
-MIT
+[MIT](LICENSE), Copyright (c) 2026 Marc Zeeb.
+
+You may use, modify and redistribute zeebpy, commercially or not. Every copy
+or substantial portion you pass on (a fork, a vendored copy, a bundled image)
+must keep the copyright notice, which names zeebpy, and the license text.
+
+zeebpy is provided **as is, without warranty of any kind**. As far as the law
+allows, its authors and copyright holders are not liable for any claim,
+damages or other liability arising from it or its use: what you build, deploy
+and run with it is your responsibility. The [LICENSE](LICENSE) is the binding text.
