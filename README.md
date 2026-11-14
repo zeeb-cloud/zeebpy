@@ -7,7 +7,7 @@
 A model-driven ORM, a declarative API layer and an agent toolkit that can build features for you,<br>
 all async from the database driver to the HTTP response.
 
-[![Python](https://img.shields.io/badge/python-3.10%2B-3776AB?logo=python&logoColor=white)](pyproject.toml)
+[![Python](https://img.shields.io/badge/python-3.11%2B-3776AB?logo=python&logoColor=white)](pyproject.toml)
 [![SQLAlchemy](https://img.shields.io/badge/SQLAlchemy-2.0%20async-D71F00?logo=sqlalchemy&logoColor=white)](docs/orm/models.md)
 [![FastAPI](https://img.shields.io/badge/FastAPI-Pydantic%20v2-009688?logo=fastapi&logoColor=white)](docs/api/viewsets.md)
 [![Docs coverage](https://img.shields.io/badge/docs%20coverage-100%25-brightgreen)](tests/test_docs_coverage.py)

@@ -298,9 +298,9 @@ def to_sa_instance(instance: Model) -> Any:
         # Handle auto timestamps
         if isinstance(field, DateTimeField):
             if field.auto_now_add and value is None and not instance._state.persisted:
-                value = datetime.datetime.now(datetime.timezone.utc)
+                value = datetime.datetime.now(datetime.UTC)
             elif field.auto_now:
-                value = datetime.datetime.now(datetime.timezone.utc)
+                value = datetime.datetime.now(datetime.UTC)
         elif isinstance(field, DateField):
             if field.auto_now_add and value is None and not instance._state.persisted:
                 value = datetime.date.today()

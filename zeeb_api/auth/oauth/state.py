@@ -17,7 +17,7 @@ import base64
 import hashlib
 import secrets
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import jwt as pyjwt
@@ -81,7 +81,7 @@ def create_state_token(
     """
     config = get_jwt_config()
     _ensure_secure_secret(config)
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     payload: dict[str, Any] = {
         "sub": provider,
         "type": STATE_TOKEN_TYPE,

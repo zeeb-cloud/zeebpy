@@ -19,7 +19,7 @@ import json
 import logging
 import logging.handlers
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -61,11 +61,11 @@ class JsonFormatter(logging.Formatter):
         if self.include_timestamp:
             if self.timestamp_format:
                 log_data["timestamp"] = datetime.fromtimestamp(
-                    record.created, tz=timezone.utc
+                    record.created, tz=UTC
                 ).strftime(self.timestamp_format)
             else:
                 log_data["timestamp"] = datetime.fromtimestamp(
-                    record.created, tz=timezone.utc
+                    record.created, tz=UTC
                 ).isoformat()
 
         # Level

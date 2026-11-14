@@ -27,8 +27,8 @@ Anything that reads a project's settings off disk should go through here
 from __future__ import annotations
 
 import importlib.util
-import re
 import sys
+import tomllib
 from pathlib import Path
 from types import ModuleType
 
@@ -83,21 +83,11 @@ def _declared_settings_module(project_root: Path) -> str | None:
         return None
     text = pyproject.read_text(encoding="utf-8", errors="replace")
     try:
-        import tomllib
-    except ModuleNotFoundError:  # Python 3.10
-        tomllib = None  # type: ignore[assignment]
-    if tomllib is not None:
-        try:
-            data = tomllib.loads(text)
-        except tomllib.TOMLDecodeError:
-            return None
-        value = data.get("tool", {}).get("zeeb", {}).get("settings_module")
-        return value if isinstance(value, str) and value else None
-    section = re.search(r"^\[tool\.zeeb\]\s*$(.*?)(?=^\[|\Z)", text, re.M | re.S)
-    if section is None:
+        data = tomllib.loads(text)
+    except tomllib.TOMLDecodeError:
         return None
-    match = re.search(r"^settings_module\s*=\s*[\"']([^\"']+)[\"']", section.group(1), re.M)
-    return match.group(1) if match else None
+    value = data.get("tool", {}).get("zeeb", {}).get("settings_module")
+    return value if isinstance(value, str) and value else None
 
 
 def _module_path(project_root: Path, module: str) -> Path:

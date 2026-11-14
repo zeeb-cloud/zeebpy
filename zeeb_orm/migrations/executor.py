@@ -12,7 +12,7 @@ import re
 import sys
 from collections.abc import Iterator
 from contextlib import contextmanager, nullcontext
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, NamedTuple
 
@@ -430,7 +430,7 @@ def record_migration(connection, name: str) -> None:
 
     # Naive UTC: a TIMESTAMP/DATETIME column without a zone accepts it on
     # every backend, where an ISO string with "+00:00" is refused by MySQL.
-    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    now = datetime.now(UTC).replace(tzinfo=None)
     connection.execute(insert(tracking_table()).values(name=name, applied_at=now))
 
 

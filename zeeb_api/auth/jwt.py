@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import logging
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import jwt
@@ -248,7 +248,7 @@ def create_access_token(
     """
     config = config or get_jwt_config()
     _ensure_secure_secret(config)
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
 
     payload = {
         "sub": str(user_id),
@@ -293,7 +293,7 @@ def create_refresh_token(
     """
     config = config or get_jwt_config()
     _ensure_secure_secret(config)
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
 
     payload = {
         "sub": str(user_id),
@@ -414,8 +414,8 @@ def decode_token(
         return TokenPayload(
             sub=payload["sub"],
             type=payload["type"],
-            exp=datetime.fromtimestamp(payload["exp"], tz=timezone.utc),
-            iat=datetime.fromtimestamp(payload["iat"], tz=timezone.utc),
+            exp=datetime.fromtimestamp(payload["exp"], tz=UTC),
+            iat=datetime.fromtimestamp(payload["iat"], tz=UTC),
             jti=payload["jti"],
             iss=payload.get("iss"),
             aud=payload.get("aud"),

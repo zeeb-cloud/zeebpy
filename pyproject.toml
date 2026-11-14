@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "An async-first Python web framework: ORM (SQLAlchemy/Alembic), declarative API layer, and agent tooling"
 readme = "README.md"
 license = "MIT"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 authors = [
     { name = "Zeeb Cloud" }
 ]
@@ -18,9 +18,10 @@ classifiers = [
     "Intended Audience :: Developers",
     "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Framework :: AsyncIO",
     "Topic :: Database",
 ]
@@ -78,7 +79,7 @@ packages = ["zeeb_orm", "zeeb_api", "zeeb_agents"]
 
 [tool.ruff]
 line-length = 100
-target-version = "py310"
+target-version = "py311"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "N", "W", "UP"]
@@ -99,7 +100,7 @@ ignore = ["N818"]
 # the serializer layer are not fully typed yet (~290 known findings at default
 # strictness). New code should not introduce errors in cleanly-typed modules.
 [tool.mypy]
-python_version = "3.10"
+python_version = "3.11"
 warn_unused_configs = true
 warn_redundant_casts = true
 no_implicit_optional = true

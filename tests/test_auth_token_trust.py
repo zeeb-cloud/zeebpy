@@ -15,7 +15,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import httpx
 import jwt as pyjwt
@@ -78,7 +78,7 @@ def _jwk(key, kid: str) -> dict:
 
 
 def _sign(key, kid: str, **claims) -> str:
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     payload = {"aud": CLIENT_ID, "exp": now + timedelta(minutes=5), "iat": now, **claims}
     return pyjwt.encode(payload, _pem(key), algorithm="RS256", headers={"kid": kid})
 

@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import Mapping
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from enum import Enum
 from typing import Any
 
@@ -17,7 +17,9 @@ from fastapi import HTTPException
 from pydantic import BaseModel, Field
 
 
-class ErrorCode(str, Enum):
+# Not StrEnum: that changes str(ErrorCode.X) from "ErrorCode.X" to "X",
+# which callers may rely on.
+class ErrorCode(str, Enum):  # noqa: UP042
     """
     Standard error codes for i18n support.
 
@@ -149,7 +151,7 @@ class ErrorMeta(BaseModel):
         description="Unique request identifier for debugging"
     )
     timestamp: str = Field(
-        default_factory=lambda: datetime.now(timezone.utc).isoformat(),
+        default_factory=lambda: datetime.now(UTC).isoformat(),
         description="ISO 8601 timestamp when error occurred"
     )
     path: str | None = Field(

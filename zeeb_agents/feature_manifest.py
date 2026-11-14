@@ -27,7 +27,7 @@ Nothing here writes application code.  Archiving and restoring live in
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from zeeb_agents._utils.errors import AgentError
@@ -76,7 +76,7 @@ def archive_path(root: Path, feature: str) -> Path:
 
 
 def _now() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+    return datetime.now(UTC).isoformat(timespec="seconds")
 
 
 def empty_manifest() -> dict:

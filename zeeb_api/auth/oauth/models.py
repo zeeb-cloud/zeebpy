@@ -11,7 +11,7 @@ using OAuth never see this table. If you use OAuth, run ``makemigrations`` /
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from zeeb_api.exceptions import AuthenticationException, ErrorCode
@@ -147,7 +147,7 @@ async def get_or_create_user_for_identity(
     from zeeb_api.auth.backends import get_user_model
 
     user_model = get_user_model()
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
 
     identity = await ExternalIdentity.objects.filter(
         provider=provider, subject=claims.subject

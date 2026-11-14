@@ -71,7 +71,7 @@ async def db():
 async def _seed() -> tuple[DcAuthor, DcAuthor]:
     ada = await DcAuthor.objects.create(name="ada")
     bob = await DcAuthor.objects.create(name="bob")
-    when = datetime.datetime(2024, 3, 5, 12, 0, tzinfo=datetime.timezone.utc)
+    when = datetime.datetime(2024, 3, 5, 12, 0, tzinfo=datetime.UTC)
     await DcPost.objects.create(
         title="50% off_sale", views=10, price=Decimal("9.99"), published=when,
         meta={"lang": "en"}, author_id=ada.id,
