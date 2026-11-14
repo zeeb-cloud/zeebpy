@@ -10,7 +10,7 @@ readme = "README.md"
 license = "MIT"
 requires-python = ">=3.11"
 authors = [
-    { name = "Zeeb Cloud" }
+    { name = "Marc Zeeb" }
 ]
 keywords = ["orm", "sqlalchemy", "alembic", "async", "database", "api"]
 classifiers = [
