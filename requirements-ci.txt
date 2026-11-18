@@ -48,11 +48,11 @@ defusedxml==0.7.1
     # via py-serializable
 dnspython==2.9.2
     # via email-validator
-email-validator==2.3.0
+email-validator==2.4.0
     # via pydantic
 execnet==2.1.2
     # via pytest-xdist
-fastapi==0.162.7
+fastapi==0.163.0
     # via zeebpy (pyproject.toml)
 filelock==4.2.10
     # via cachecontrol
