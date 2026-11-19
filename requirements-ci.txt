@@ -52,7 +52,7 @@ email-validator==2.4.0
     # via pydantic
 execnet==2.1.2
     # via pytest-xdist
-fastapi==0.163.0
+fastapi==0.163.1
     # via zeebpy (pyproject.toml)
 filelock==4.2.10
     # via cachecontrol
