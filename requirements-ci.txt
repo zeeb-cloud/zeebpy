@@ -23,7 +23,7 @@ bcrypt==5.0.0
     # via zeebpy (pyproject.toml)
 boolean-py==5.0
     # via license-expression
-cachecontrol==0.14.4
+cachecontrol==0.15.0
     # via pip-audit
 certifi==2026.10.23
     # via
@@ -157,7 +157,7 @@ pytest-xdist==3.8.0
     # via zeebpy (pyproject.toml)
 python-dotenv==1.2.4
     # via uvicorn
-python-multipart==0.0.33
+python-multipart==0.0.34
     # via zeebpy (pyproject.toml)
 pyyaml==6.0.3
     # via uvicorn
@@ -171,7 +171,7 @@ ruff==0.17.5
     # via zeebpy (pyproject.toml)
 sortedcontainers==2.4.0
     # via cyclonedx-python-lib
-sqlalchemy==2.1.8
+sqlalchemy==2.1.9
     # via
     #   zeebpy (pyproject.toml)
     #   alembic
