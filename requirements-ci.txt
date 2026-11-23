@@ -167,7 +167,7 @@ requests==2.34.2
     #   pip-audit
 rich==15.0.0
     # via pip-audit
-ruff==0.17.5
+ruff==0.17.6
     # via zeebpy (pyproject.toml)
 sortedcontainers==2.4.0
     # via cyclonedx-python-lib
@@ -201,7 +201,7 @@ typing-inspection==0.4.5
     #   pydantic
 urllib3==2.8.0
     # via requests
-uv==0.13.8
+uv==0.13.9
     # via zeebpy (pyproject.toml)
 uvicorn==0.54.0
     # via zeebpy (pyproject.toml)
