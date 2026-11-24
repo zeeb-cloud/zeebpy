@@ -25,7 +25,7 @@ boolean-py==5.0
     # via license-expression
 cachecontrol==0.15.0
     # via pip-audit
-certifi==2026.10.23
+certifi==2026.11.20
     # via
     #   httpcore
     #   httpx
@@ -38,7 +38,7 @@ click==8.5.1
     # via uvicorn
 colorama==0.4.6 ; sys_platform == 'win32'
     # via pytest
-coverage==7.17.3
+coverage==7.17.4
     # via pytest-cov
 cryptography==50.0.2
     # via pyjwt
@@ -113,7 +113,7 @@ pip-audit==2.10.1
     # via zeebpy (pyproject.toml)
 pip-requirements-parser==32.0.1
     # via pip-audit
-platformdirs==4.14.7
+platformdirs==4.14.8
     # via pip-audit
 pluggy==1.7.0
     # via
@@ -159,7 +159,7 @@ python-dotenv==1.2.4
     # via uvicorn
 python-multipart==0.0.34
     # via zeebpy (pyproject.toml)
-pyyaml==6.0.3
+pyyaml==6.0.4
     # via uvicorn
 requests==2.34.2
     # via
